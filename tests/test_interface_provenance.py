@@ -49,6 +49,10 @@ def mul(left: object, right: object) -> dict[str, object]:
     return {"op": "mul32", "args": [left, right]}
 
 
+def bit_and(left: object, right: object) -> dict[str, object]:
+    return {"op": "and32", "args": [left, right]}
+
+
 def load(address: object) -> dict[str, object]:
     return {"op": "load", "width": 4, "address": address}
 
@@ -2624,6 +2628,126 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(
             resolution["failure"]["code"],
             "register_target_origin_missing",
+        )
+
+    def test_bounded_mask_recovers_every_immutable_jump_table_target(self) -> None:
+        table = IMAGE_BASE + 0x5000
+        target_addresses = [IMAGE_BASE + 0x2000 + index for index in range(4)]
+        target = load(add(
+            const(table),
+            mul(bit_and(reg("eax"), const(3)), const(4)),
+        ))
+        jump = unit("jump", 0x1000)
+        jump["semantics"]["outcome"] = {
+            "kind": "indirect_jump",
+            "target": target,
+        }
+        targets = [
+            unit(f"target-{index}", 0x2000 + index)
+            for index in range(4)
+        ]
+
+        def immutable_reader(address: int, size: int) -> bytes | None:
+            if size != 4 or not table <= address < table + 16:
+                return None
+            index = (address - table) // 4
+            return target_addresses[index].to_bytes(4, "little")
+
+        result = self._run(
+            [jump, *targets],
+            [],
+            roots=["jump"],
+            indirect_exits=[{
+                "id": "exit:jump",
+                "source_unit_id": "jump",
+                "source_rva": 0x1000,
+                "source_event_index": None,
+                "kind": "indirect_jump",
+                "target_expression": target,
+            }],
+            static_data_reader=immutable_reader,
+        )
+
+        resolution = result["resolutions"][0]
+        self.assertEqual(resolution["status"], "recovered", resolution)
+        self.assertEqual(
+            resolution["target_unit_ids"],
+            [f"target-{index}" for index in range(4)],
+        )
+
+    def test_unresolved_dispatch_reports_missing_symbolic_memory_fact(self) -> None:
+        target = load(add(reg("eax"), const(28)))
+        call = unit(
+            "call",
+            0x1400,
+            events=[{
+                "kind": "indirect_call",
+                "return_rva": 0x1401,
+                "target": target,
+                "register_inputs": {name: reg(name) for name in REGISTERS},
+            }],
+        )
+
+        result = self._run(
+            [call],
+            [],
+            roots=["call"],
+            indirect_exits=[{
+                "id": "exit:call",
+                "source_unit_id": "call",
+                "source_rva": 0x1400,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": target,
+            }],
+        )
+
+        failure = result["resolutions"][0]["failure"]
+        self.assertEqual(failure["code"], "operation_view_origin_missing")
+        frontier = failure["analysis_frontier"]
+        self.assertEqual(frontier["code"], "load_value_origin_missing")
+        self.assertEqual(frontier["path"], "target")
+        self.assertEqual(
+            [cause["code"] for cause in frontier["causes"]],
+            ["symbolic_memory_fact_missing"],
+        )
+
+    def test_nested_dispatch_reports_deepest_missing_receiver_load(self) -> None:
+        target = load(add(const(48), load(load(reg("edx")))))
+        call = unit(
+            "call",
+            0x1400,
+            events=[{
+                "kind": "indirect_call",
+                "return_rva": 0x1401,
+                "target": target,
+                "register_inputs": {name: reg(name) for name in REGISTERS},
+            }],
+        )
+
+        result = self._run(
+            [call],
+            [],
+            roots=["call"],
+            indirect_exits=[{
+                "id": "exit:call",
+                "source_unit_id": "call",
+                "source_rva": 0x1400,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": target,
+            }],
+        )
+
+        frontier = result["resolutions"][0]["failure"]["analysis_frontier"]
+        self.assertEqual(frontier["code"], "load_address_origin_missing")
+        operand = frontier["cause"]
+        self.assertEqual(operand["code"], "operand_origin_missing")
+        receiver = operand["cause"]
+        self.assertEqual(receiver["code"], "load_address_origin_missing")
+        self.assertEqual(
+            receiver["cause"]["causes"][0]["code"],
+            "symbolic_memory_fact_missing",
         )
 
     def test_unknown_call_preservation_is_bootstrap_only(self) -> None:

@@ -4476,7 +4476,14 @@ def _resolve_exits(
             ),
         )
         if classified is None:
-            failure = _target_resolution_failure(target, origins)
+            failure = _target_resolution_failure(
+                target,
+                origins,
+                state=state,
+                inventory=inventory,
+                known_slots=known_slots,
+                finite_value_budget=finite_value_budget,
+            )
             result.append({
                 **base,
                 "status": "incomplete",
@@ -4516,49 +4523,324 @@ def _resolve_exits(
 def _target_resolution_failure(
     expression: Any,
     origins: _Value,
+    *,
+    state: _State | None = None,
+    inventory: _ProfileInventory | None = None,
+    known_slots: Mapping[int, _Value] | None = None,
+    finite_value_budget: int = 32,
 ) -> dict[str, Any]:
+    frontier = (
+        None
+        if state is None or inventory is None
+        else _expression_analysis_frontier(
+            expression,
+            state=state,
+            inventory=inventory,
+            known_slots=known_slots or {},
+            budget=finite_value_budget,
+            path="target",
+        )
+    )
+
+    def with_frontier(result: dict[str, Any]) -> dict[str, Any]:
+        return result if frontier is None else {**result, "analysis_frontier": frontier}
+
     if origins is not None:
-        return {
+        return with_frontier({
             "code": "target_origin_kind_unsupported",
             "observed_origin_kinds": sorted({origin.kind for origin in origins}),
             "next_action": (
                 "add or repair the producer, call-frame, or operation-profile rule "
                 "for the observed bounded origin"
             ),
-        }
+        })
     row = _mapping(expression)
     op = str(row.get("op") or "").lower()
     if op in {"reg", "input_reg", "register"}:
-        return {
+        return with_frontier({
             "code": "register_target_origin_missing",
             "register": row.get("name", row.get("reg")),
             "next_action": (
                 "recover the register producer or add the missing call/return "
                 "preservation contract"
             ),
-        }
+        })
     if op in {"load", "read32", "mem32"}:
         address = _mapping(row.get("address"))
         address_op = str(address.get("op") or "").lower()
         if address_op in {"const", "constant"}:
-            return {
+            return with_frontier({
                 "code": "static_slot_target_origin_missing",
                 "address": address.get("value"),
                 "next_action": (
                     "classify the static slot initializer and every reachable write"
                 ),
-            }
-        return {
+            })
+        return with_frontier({
             "code": "operation_view_origin_missing",
             "next_action": (
                 "recover the receiver resource view, table load, and slot offset "
                 "from a pinned operation profile"
             ),
-        }
-    return {
+        })
+    return with_frontier({
         "code": "target_expression_not_normalized",
         "next_action": "extend the generic expression normalizer for this x86 form",
+    })
+
+
+def _expression_analysis_frontier(
+    expression: Any,
+    *,
+    state: _State,
+    inventory: _ProfileInventory,
+    known_slots: Mapping[int, _Value],
+    budget: int,
+    path: str,
+) -> dict[str, Any]:
+    """Explain the deepest checked-expression fact which prevented evaluation."""
+
+    row = _mapping(expression)
+    op = str(row.get("op") or "").lower()
+    evaluated = _evaluate(
+        expression,
+        state,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+    )
+    if evaluated is not None:
+        return {
+            "code": "expression_origin_not_callable",
+            "path": path,
+            "op": op,
+            "observed_origin_kinds": sorted({origin.kind for origin in evaluated}),
+            "observed_origins": _origins_json(evaluated),
+        }
+    if op in {"reg", "input_reg", "register"}:
+        return {
+            "code": "register_origin_missing",
+            "path": path,
+            "op": op,
+            "register": row.get("name", row.get("reg")),
+        }
+    if op in {
+        "add",
+        "add32",
+        "sub",
+        "sub32",
+        "mul",
+        "mul32",
+        "and",
+        "and32",
+    }:
+        operands = _binary_operands(row)
+        if operands is None:
+            return {
+                "code": "binary_expression_malformed",
+                "path": path,
+                "op": op,
+            }
+        values = tuple(
+            _evaluate(
+                operand,
+                state,
+                inventory=inventory,
+                known_slots=known_slots,
+                budget=budget,
+            )
+            for operand in operands
+        )
+        for index, value in enumerate(values):
+            if value is None:
+                return {
+                    "code": "operand_origin_missing",
+                    "path": path,
+                    "op": op,
+                    "operand_index": index,
+                    "cause": _expression_analysis_frontier(
+                        operands[index],
+                        state=state,
+                        inventory=inventory,
+                        known_slots=known_slots,
+                        budget=budget,
+                        path=f"{path}.args[{index}]",
+                    ),
+                }
+        return {
+            "code": "origin_combination_unsupported",
+            "path": path,
+            "op": op,
+            "operand_origin_kinds": [
+                sorted({origin.kind for origin in value or ()}) for value in values
+            ],
+        }
+    if op in {"neg", "neg32"}:
+        operand = _unary_operand(row)
+        if operand is None:
+            return {
+                "code": "unary_expression_malformed",
+                "path": path,
+                "op": op,
+            }
+        return {
+            "code": "unary_operand_origin_missing",
+            "path": path,
+            "op": op,
+            "cause": _expression_analysis_frontier(
+                operand,
+                state=state,
+                inventory=inventory,
+                known_slots=known_slots,
+                budget=budget,
+                path=f"{path}.args[0]",
+            ),
+        }
+    if op in {"load", "read32", "mem32"}:
+        address_expression = row.get("address")
+        addresses = _evaluate(
+            address_expression,
+            state,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+        )
+        if addresses is None:
+            return {
+                "code": "load_address_origin_missing",
+                "path": path,
+                "op": op,
+                "cause": _expression_analysis_frontier(
+                    address_expression,
+                    state=state,
+                    inventory=inventory,
+                    known_slots=known_slots,
+                    budget=budget,
+                    path=f"{path}.address",
+                ),
+            }
+        causes = [
+            failure
+            for address in sorted(addresses)
+            if (
+                failure := _load_origin_failure(
+                    address,
+                    state=state,
+                    inventory=inventory,
+                    known_slots=known_slots,
+                )
+            ) is not None
+        ]
+        return {
+            "code": "load_value_origin_missing",
+            "path": path,
+            "op": op,
+            "address_origins": _origins_json(addresses),
+            "causes": causes,
+        }
+    return {
+        "code": "expression_form_unsupported",
+        "path": path,
+        "op": op,
     }
+
+
+def _load_origin_failure(
+    address: _Origin,
+    *,
+    state: _State,
+    inventory: _ProfileInventory,
+    known_slots: Mapping[int, _Value],
+) -> dict[str, Any] | None:
+    """Classify why a successfully evaluated address has no load result."""
+
+    base = {"address_origin": address.as_json()}
+    if address.kind == "exact":
+        concrete = int(address.key[0]) & 0xFFFFFFFF
+        if concrete in state.memory:
+            if state.memory[concrete] is not None:
+                return None
+        elif concrete in inventory.iat:
+            return None
+        elif inventory.immutable_u32_origin(concrete) is not None:
+            return None
+        elif (known := known_slots.get(concrete)) is not None and not (
+            state.memory_invalidated
+            and _has_global_slot_authority_dependency(known)
+        ):
+            return None
+        return {
+            **base,
+            "code": (
+                "exact_memory_fact_invalidated"
+                if state.memory_invalidated
+                else "exact_memory_fact_missing"
+            ),
+            "address": concrete,
+            "known_static_slot": concrete in known_slots,
+            "known_import_slot": concrete in inventory.iat,
+        }
+    if address.kind == "stack_location":
+        cell = state.stack.get(int(address.key[0]))
+        if cell is not None and cell.value is not None:
+            return None
+        return {
+            **base,
+            "code": "stack_memory_fact_missing",
+            "stack_offset": int(address.key[0]),
+        }
+    if address.kind in {"dynamic_range", "dynamic_location"}:
+        if _read_memory_fact(
+            state,
+            _dynamic_memory_location(address),
+            known_slots=known_slots,
+        ) is not None:
+            return None
+        return {**base, "code": "dynamic_memory_fact_missing"}
+    if address.kind == "symbolic_affine":
+        if _read_memory_fact(
+            state,
+            _Origin(address.kind, address.key),
+            known_slots=known_slots,
+        ) is not None:
+            return None
+        return {**base, "code": "symbolic_memory_fact_missing"}
+    if address.kind == "interface_object":
+        return None
+    if address.kind == "interface_vtable":
+        profile_sha256, interface_id = address.key
+        if inventory.method(str(profile_sha256), str(interface_id), 0) is not None:
+            return None
+        return {**base, "code": "interface_profile_slot_missing"}
+    if address.kind == "interface_slot":
+        profile_sha256, interface_id, offset = address.key
+        if inventory.method(
+            str(profile_sha256), str(interface_id), int(offset)
+        ) is not None:
+            return None
+        return {**base, "code": "interface_profile_slot_missing"}
+    if address.kind == "resource_view":
+        profile_sha256, view_id, *_ = address.key
+        access = inventory.operation_view_access(
+            str(profile_sha256), str(view_id)
+        )
+        if access == "object_table" or (
+            access == "direct_table"
+            and inventory.operation_for_slot(
+                str(profile_sha256), str(view_id), 0
+            ) is not None
+        ):
+            return None
+        return {**base, "code": "operation_profile_slot_missing"}
+    if address.kind in {"operation_table", "operation_slot"}:
+        profile_sha256, view_id, *rest = address.key
+        offset = 0 if address.kind == "operation_table" else int(rest[0])
+        if inventory.operation_for_slot(
+            str(profile_sha256), str(view_id), offset
+        ) is not None:
+            return None
+        return {**base, "code": "operation_profile_slot_missing"}
+    return {**base, "code": "load_address_origin_unsupported"}
 
 
 def _classify_target_origins(
@@ -4691,7 +4973,16 @@ def _evaluate(
             if value is None
             else frozenset({_Origin("exact", (value & 0xFFFFFFFF,))})
         )
-    if op in {"add", "add32", "sub", "sub32", "mul", "mul32"}:
+    if op in {
+        "add",
+        "add32",
+        "sub",
+        "sub32",
+        "mul",
+        "mul32",
+        "and",
+        "and32",
+    }:
         operands = _binary_operands(expression)
         if operands is None:
             return None
@@ -4701,6 +4992,8 @@ def _evaluate(
         right = _evaluate(
             operands[1], state, inventory=inventory, known_slots=known_slots, budget=budget
         )
+        if op in {"and", "and32"}:
+            return _bitwise_and_values(left, right, budget=budget)
         if op in {"mul", "mul32"}:
             return _multiply_values(left, right, budget=budget)
         return _add_values(
@@ -4709,6 +5002,22 @@ def _evaluate(
             subtract=op in {"sub", "sub32"},
             budget=budget,
             inventory=inventory,
+        )
+    if op in {"neg", "neg32"}:
+        operand = _unary_operand(expression)
+        return (
+            None
+            if operand is None
+            else _negate_values(
+                _evaluate(
+                    operand,
+                    state,
+                    inventory=inventory,
+                    known_slots=known_slots,
+                    budget=budget,
+                ),
+                budget=budget,
+            )
         )
     if op in {"load", "read32", "mem32"}:
         width = expression.get("width", expression.get("width_bits", 4))
@@ -5000,6 +5309,76 @@ def _multiply_values(left: _Value, right: _Value, *, budget: int) -> _Value:
                 continue
             return None
     return frozenset(result) if result and len(result) <= budget else None
+
+
+def _bitwise_and_values(left: _Value, right: _Value, *, budget: int) -> _Value:
+    """Evaluate exact ANDs or enumerate every result of a bounded mask."""
+
+    left_concrete = _concrete_origins(left)
+    right_concrete = _concrete_origins(right)
+    if left_concrete is not None and right_concrete is not None:
+        result = {
+            with_origin_dependencies(
+                _concrete_result_origin(lhs_value & rhs_value, lhs, rhs),
+                set(lhs.dependencies) | set(rhs.dependencies),
+            )
+            for lhs, lhs_value in left_concrete
+            for rhs, rhs_value in right_concrete
+        }
+        return frozenset(result) if result and len(result) <= budget else None
+
+    masks = left_concrete if left_concrete is not None else right_concrete
+    unknown = right if left_concrete is not None else left
+    if masks is None:
+        return None
+    dependencies = set(value_dependencies(unknown))
+    result: set[_Origin] = set()
+    for mask_origin, mask in masks:
+        mask_dependencies = tuple(sorted(dependencies | set(mask_origin.dependencies)))
+        subset = mask & 0xFFFFFFFF
+        while True:
+            result.add(_Origin("exact", (subset,), mask_dependencies))
+            if len(result) > budget:
+                return None
+            if subset == 0:
+                break
+            subset = (subset - 1) & mask
+    return frozenset(result) if result else None
+
+
+def _negate_values(value: _Value, *, budget: int) -> _Value:
+    if value is None or len(value) > budget:
+        return None
+    result: set[_Origin] = set()
+    for origin in value:
+        concrete = origin_concrete_value(origin)
+        if concrete is not None:
+            result.add(with_origin_dependencies(
+                _concrete_result_origin(-concrete, origin),
+                origin.dependencies,
+            ))
+        elif origin.kind == "symbolic_affine":
+            result.add(with_origin_dependencies(
+                _scale_affine_origin(origin, 0xFFFFFFFF),
+                origin.dependencies,
+            ))
+        else:
+            return None
+    return frozenset(result) if result and len(result) <= budget else None
+
+
+def _concrete_origins(
+    value: _Value,
+) -> tuple[tuple[_Origin, int], ...] | None:
+    if value is None:
+        return None
+    result: list[tuple[_Origin, int]] = []
+    for origin in value:
+        concrete = origin_concrete_value(origin)
+        if concrete is None:
+            return None
+        result.append((origin, concrete))
+    return tuple(result)
 
 
 def _symbolic_affine_value(symbol: str) -> _Value:
@@ -6044,6 +6423,21 @@ def _binary_operands(expression: Mapping[str, Any]) -> tuple[Any, Any] | None:
         return arguments[0], arguments[1]
     if "left" in expression and "right" in expression:
         return expression["left"], expression["right"]
+    return None
+
+
+def _unary_operand(expression: Mapping[str, Any]) -> Any | None:
+    arguments = expression.get("args")
+    if (
+        isinstance(arguments, Sequence)
+        and not isinstance(arguments, (str, bytes))
+        and len(arguments) == 1
+    ):
+        return arguments[0]
+    if "value" in expression:
+        return expression["value"]
+    if "arg" in expression:
+        return expression["arg"]
     return None
 
 
