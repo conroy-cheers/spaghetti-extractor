@@ -18,14 +18,134 @@ from .global_slot_image_v2 import (
     build_image_span_binding_v2,
     loader_initial_bytes_v2,
 )
+from .global_slot_analysis_v2 import analyze_global_slots_v2
 from .machine_ir_authority_v2 import recompute_unit_binding
 from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
+from .mutable_slot_candidates_v2 import (
+    derive_recovery_slot_requirements_v2,
+)
 from .stage_binary import StageABinary
 from .stack_range_analysis_v2 import validate_stack_range_analysis_v2
 
 
 GLOBAL_SLOT_AUTHORITY_V2_FORMAT = "spaghetti-extractor-global-slot-authority-v2"
 GLOBAL_SLOT_ANALYSIS_V2_FORMAT = "stage-a-global-slot-analysis-v2"
+
+
+def replay_global_slot_authority_v2(
+    *,
+    submitted_analysis: Mapping[str, Any],
+    provenance: Mapping[str, Any],
+    units: Sequence[Mapping[str, Any]],
+    graph: Mapping[str, Any],
+    interprocedural: Mapping[str, Any],
+    stack_range_analysis: Mapping[str, Any],
+    launch_assumptions: Mapping[str, Any],
+    memory_range_invariant_analysis: Mapping[str, Any] | None,
+    original_binary: StageABinary,
+    machine_ir_sha256: str,
+    finite_value_budget: int = 32,
+) -> dict[str, Any]:
+    """Reconstruct slot inputs, replay analysis, then promote safe evidence."""
+
+    recoveries = interprocedural.get("recovered_targets")
+    if not isinstance(recoveries, list) or any(
+        not isinstance(row, Mapping) for row in recoveries
+    ):
+        return _violated_replay_authority(
+            "global_slot_replay_recovery_inventory_invalid"
+        )
+    try:
+        requirements = derive_recovery_slot_requirements_v2(
+            original_binary, recoveries
+        )
+    except (TypeError, ValueError) as exc:
+        return _violated_replay_authority(
+            "global_slot_replay_recovery_inventory_invalid",
+            detail=str(exc),
+        )
+    candidate_slots = [
+        original_binary.image_base + requirement.slot_rva
+        for requirement in requirements
+    ]
+    relevant_reads = [
+        row
+        for requirement in requirements
+        for row in requirement.dependency_rows()
+    ]
+    launch_initial_values: dict[int, int] = {}
+    for address in candidate_slots:
+        try:
+            data, _kind = loader_initial_bytes_v2(
+                original_binary,
+                rva_start=address - original_binary.image_base,
+                width_bytes=4,
+            )
+        except GlobalSlotImageV2Error:
+            continue
+        launch_initial_values[address] = int.from_bytes(data, "little")
+    operation = interprocedural.get("operation_provenance")
+    access_facts = (
+        operation.get("checked_memory_access_facts", [])
+        if isinstance(operation, Mapping)
+        else []
+    )
+    fixed = interprocedural.get("fixed_point")
+    interprocedural_sha256 = (
+        fixed.get("authority_artifact_sha256")
+        if isinstance(fixed, Mapping)
+        else None
+    )
+    call_summaries = interprocedural.get("call_summaries")
+    if not isinstance(call_summaries, Mapping):
+        call_summaries = {}
+    expected = analyze_global_slots_v2(
+        units=units,
+        graph=graph,
+        candidate_slot_addresses=candidate_slots,
+        image_base=original_binary.image_base,
+        size_of_image=original_binary.size_of_image,
+        checked_memory_spatial_facts=stack_range_analysis.get(
+            "checked_spatial_facts", []
+        ),
+        range_authority_binding=stack_range_analysis.get("binding"),
+        relevant_read_dependencies=relevant_reads,
+        launch_initial_values=launch_initial_values,
+        checked_memory_access_facts=access_facts,
+        memory_range_invariant_analysis=memory_range_invariant_analysis,
+        pe_sha256=original_binary.sha256,
+        machine_ir_sha256=machine_ir_sha256,
+        interprocedural_authority_sha256=interprocedural_sha256,
+        alternative_budget=finite_value_budget,
+    )
+    authority = build_global_slot_authority_v2(
+        provenance=provenance,
+        global_slot_analysis=expected,
+        units=units,
+        pe_sha256=original_binary.sha256,
+        machine_ir_sha256=machine_ir_sha256,
+        image_base=original_binary.image_base,
+        size_of_image=original_binary.size_of_image,
+        original_binary=original_binary,
+        stack_range_analysis=stack_range_analysis,
+        stack_graph=graph,
+        stack_launch_assumptions=launch_assumptions,
+        stack_call_summaries=call_summaries,
+        stack_indirect_recoveries=recoveries,
+        stack_finite_offset_budget=finite_value_budget,
+    )
+    if dict(submitted_analysis) == expected:
+        return authority
+    return _with_replay_violation(
+        authority,
+        code="global_slot_analysis_replay_mismatch",
+        details={
+            "submitted_analysis_sha256": submitted_analysis.get(
+                "analysis_sha256"
+            ),
+            "expected_analysis_sha256": expected["analysis_sha256"],
+        },
+    )
 
 
 def build_global_slot_authority_v2(
@@ -123,9 +243,14 @@ def build_global_slot_authority_v2(
                     indirect_recoveries=stack_indirect_recoveries,
                     finite_offset_budget=stack_finite_offset_budget,
                 )
-                expected_spatial = [
-                    dict(row) for row in replayed.values()
-                ]
+                expected_spatial = sorted(
+                    (dict(row) for row in replayed.values()),
+                    key=lambda row: (
+                        str(row.get("unit_id")),
+                        int(row.get("event_index", -1)),
+                        str(row.get("id")),
+                    ),
+                )
                 if raw_spatial_facts != expected_spatial:
                     raise ValueError(
                         "global-slot spatial inventory differs from stack replay"
@@ -334,6 +459,55 @@ def _analysis_issues(analysis: Mapping[str, Any]) -> list[dict[str, Any]]:
     return issues
 
 
+def _with_replay_violation(
+    authority: Mapping[str, Any],
+    *,
+    code: str,
+    details: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    body = {
+        key: json.loads(canonical_json_bytes(value))
+        for key, value in authority.items()
+        if key != "authority_sha256"
+    }
+    body["status"] = "violated"
+    body["global_slot_invariants"] = []
+    body["issues"] = sorted(
+        [
+            *body.get("issues", []),
+            _issue("violated", code, **dict(details or {})),
+        ],
+        key=lambda row: (str(row.get("status")), str(row.get("code"))),
+    )
+    return {**body, "authority_sha256": _sha256(body)}
+
+
+def _violated_replay_authority(
+    code: str, **details: Any
+) -> dict[str, Any]:
+    body = {
+        "format": GLOBAL_SLOT_AUTHORITY_V2_FORMAT,
+        "status": "violated",
+        "source_analysis": {"status": None, "analysis_sha256": None},
+        "authoritative_provenance": {
+            "static_interface_slots": [],
+            "rejected_tainted_slots": [],
+        },
+        "global_slot_evidence": [],
+        "global_slot_invariants": [],
+        "checks": [],
+        "issues": [_issue("violated", code, **details)],
+        "constraints": {
+            "cold_replay_required": True,
+            "checked_spatial_facts_require_full_stack_replay": True,
+            "inductive_facts_require_final_complete_rooted_graph": True,
+            "tainted_slots_exported": False,
+            "incomplete_evidence_exported": False,
+        },
+    }
+    return {**body, "authority_sha256": _sha256(body)}
+
+
 def _issue(status: str, code: str, **details: Any) -> dict[str, Any]:
     return {"status": status, "code": code, **details}
 
@@ -354,4 +528,5 @@ __all__ = [
     "GLOBAL_SLOT_AUTHORITY_V2_FORMAT",
     "apply_global_slot_authority_v2",
     "build_global_slot_authority_v2",
+    "replay_global_slot_authority_v2",
 ]

@@ -87,7 +87,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("controlManifest = provisionalMachineIr", module)
         self.assertIn("prepared_units_reused", module)
 
-    def test_joint_phase_owns_slot_analysis_and_projections_stay_small(self) -> None:
+    def test_joint_phase_owns_slot_analysis_and_authority_replays_it(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
             encoding="utf-8"
         )
@@ -110,9 +110,19 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             projection_phases.count(
                 'pythonModules = [ "spaghetti_extractor.artifact_projection_v2" ];'
             ),
-            3,
+            2,
         )
         self.assertNotIn("analyze_global_slots_v2", projection_phases)
+        self.assertIn("replay_global_slot_authority_v2", projection_phases)
+        self.assertIn('inputs["base_graph"]', projection_phases)
+        self.assertIn('inputs["memory_range_invariants"]', projection_phases)
+        authority_phase = module[
+            module.index("      globalSlotAuthority = {") :
+            module.index("      callbackEntryContracts = {")
+        ]
+        self.assertNotIn("artifact_projection_v2", authority_phase)
+        self.assertIn("derive_rooted_control_closure_v2", authority_phase)
+        self.assertIn("_parse_stage_a_pe", authority_phase)
 
     def test_stack_range_authority_is_replayed_inside_joint_phase(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(

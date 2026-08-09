@@ -96,6 +96,8 @@ let
   };
   globalSlotAuthority = mkPhase "globalSlotAuthority" {
     joint_interprocedural = jointInterproceduralV2.artifact;
+    base_graph = baseGraph.artifact;
+    memory_range_invariants = memoryRangeInvariants.artifact;
   };
   interproceduralV2 = mkPhase "interproceduralV2" {
     joint_interprocedural = jointInterproceduralV2.artifact;

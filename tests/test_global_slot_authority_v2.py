@@ -12,7 +12,9 @@ from spaghetti_extractor.global_slot_authority_v2 import (
     GLOBAL_SLOT_AUTHORITY_V2_FORMAT,
     apply_global_slot_authority_v2,
     build_global_slot_authority_v2,
+    replay_global_slot_authority_v2,
 )
+from spaghetti_extractor.global_slot_analysis_v2 import analyze_global_slots_v2
 from spaghetti_extractor.global_slot_contract_v2 import GlobalSlotInvariant
 from spaghetti_extractor.authority_bindings_v2 import canonical_json_bytes
 from spaghetti_extractor.global_slot_image_v2 import (
@@ -55,6 +57,164 @@ def _provenance(*, slot: int = SLOT) -> dict:
 
 
 class GlobalSlotAuthorityV2Tests(unittest.TestCase):
+    def _replay_fixture(self) -> tuple[dict, dict]:
+        temporary, binary = self._writable_data_binary()
+        self.addCleanup(temporary.cleanup)
+        self.addCleanup(binary.pe.close)
+        slot = binary.image_base + 0x2000
+        units = [_unit(
+            "entry",
+            0x1000,
+            [
+                _write(_const(7), address={
+                    "op": "add32",
+                    "args": [_reg("esp"), _const(12)],
+                }),
+                _write(_const(0x401020), address=_const(slot)),
+                _read(_const(slot)),
+            ],
+        )]
+        graph = _graph(units)
+        launch = {
+            "assumptions": {
+                "initial_stack": {
+                    "contract": "private-non-image-stack-range-v2",
+                    "mapped_separately_from_image": True,
+                    "minimum_accessible_bytes_below": 0x1000,
+                    "minimum_accessible_bytes_above": 0x1000,
+                }
+            }
+        }
+        recovery = {
+            "id": "indirect-exit:entry",
+            "mutable_slot_dependencies": [{
+                "slot_rva": 0x2000,
+                "width_bytes": 4,
+                "read_sites": [{"unit_id": "entry", "event_index": 2}],
+                "origin_witnessed": True,
+            }],
+        }
+        machine_sha = machine_ir_sha256(units)
+        stack = derive_stack_range_analysis_v2(
+            units=units,
+            graph=graph,
+            launch_assumptions=launch,
+            pe_sha256=binary.sha256,
+            machine_ir_sha256=machine_sha,
+            image_base=binary.image_base,
+            size_of_image=binary.size_of_image,
+            indirect_recoveries=[recovery],
+            finite_offset_budget=32,
+        )
+        interprocedural = {
+            "recovered_targets": [recovery],
+            "call_summaries": {},
+            "operation_provenance": {"checked_memory_access_facts": []},
+        }
+        relevant_reads = [{
+            "slot_rva": 0x2000,
+            "exit_id": recovery["id"],
+            "unit_id": "entry",
+            "event_index": 2,
+            "proof_authority": False,
+        }]
+        analysis = analyze_global_slots_v2(
+            units=units,
+            graph=graph,
+            candidate_slot_addresses=[slot],
+            image_base=binary.image_base,
+            size_of_image=binary.size_of_image,
+            checked_memory_spatial_facts=stack["checked_spatial_facts"],
+            range_authority_binding=stack["binding"],
+            relevant_read_dependencies=relevant_reads,
+            launch_initial_values={slot: 0x401000},
+            checked_memory_access_facts=[],
+            memory_range_invariant_analysis=None,
+            pe_sha256=binary.sha256,
+            machine_ir_sha256=machine_sha,
+            interprocedural_authority_sha256=None,
+            alternative_budget=32,
+        )
+        replay_inputs = {
+            "provenance": _provenance(slot=slot),
+            "units": units,
+            "graph": graph,
+            "interprocedural": interprocedural,
+            "stack_range_analysis": stack,
+            "launch_assumptions": launch,
+            "memory_range_invariant_analysis": None,
+            "original_binary": binary,
+            "machine_ir_sha256": machine_sha,
+            "finite_value_budget": 32,
+        }
+        return analysis, replay_inputs
+
+    def test_independent_replay_accepts_exact_submitted_analysis(self) -> None:
+        analysis, replay_inputs = self._replay_fixture()
+
+        authority = replay_global_slot_authority_v2(
+            submitted_analysis=analysis,
+            **replay_inputs,
+        )
+
+        self.assertEqual(authority["status"], "complete", authority["issues"])
+        self.assertEqual(len(authority["global_slot_invariants"]), 1)
+
+    def test_independent_replay_rejects_removed_spatial_evidence(self) -> None:
+        analysis, replay_inputs = self._replay_fixture()
+        forged = copy.deepcopy(analysis)
+        forged["checked_memory_spatial_facts"] = []
+        forged["counts"]["checked_memory_spatial_facts"] = 0
+        body = dict(forged)
+        body.pop("analysis_sha256")
+        forged["analysis_sha256"] = hashlib.sha256(
+            canonical_json_bytes(body)
+        ).hexdigest()
+
+        authority = replay_global_slot_authority_v2(
+            submitted_analysis=forged,
+            **replay_inputs,
+        )
+
+        self.assertEqual(authority["status"], "violated")
+        self.assertEqual(authority["global_slot_invariants"], [])
+        self.assertIn(
+            "global_slot_analysis_replay_mismatch",
+            {row["code"] for row in authority["issues"]},
+        )
+
+    def test_independent_replay_rejects_forged_write_alternative(self) -> None:
+        analysis, replay_inputs = self._replay_fixture()
+        forged = copy.deepcopy(analysis)
+        forged_origin = {
+            "kind": "exact_bits",
+            "value": 0xDEADBEEF,
+            "width_bits": 32,
+        }
+        forged["global_slot_evidence"][0]["reachable_write_inventory"][
+            "writes"
+        ][0]["alternatives"] = [forged_origin]
+        forged["slots"][0]["evidence"]["reachable_write_inventory"][
+            "writes"
+        ][0]["alternatives"] = [forged_origin]
+        body = dict(forged)
+        body.pop("analysis_sha256")
+        forged["analysis_sha256"] = hashlib.sha256(
+            canonical_json_bytes(body)
+        ).hexdigest()
+
+        authority = replay_global_slot_authority_v2(
+            submitted_analysis=forged,
+            **replay_inputs,
+        )
+
+        self.assertEqual(authority["status"], "violated")
+        self.assertEqual(authority["global_slot_invariants"], [])
+        self.assertIn(
+            "global_slot_analysis_replay_mismatch",
+            {row["code"] for row in authority["issues"]},
+        )
+
     def test_stack_spatial_authority_requires_full_rooted_replay(self) -> None:
         units = [_unit(
             "entry",

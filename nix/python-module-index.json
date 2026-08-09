@@ -647,10 +647,12 @@
         "spaghetti_extractor.authority_bindings_v2",
         "spaghetti_extractor.checked_memory_access_v2",
         "spaghetti_extractor.entry_fact_derivation_v2",
+        "spaghetti_extractor.global_slot_analysis_v2",
         "spaghetti_extractor.global_slot_image_v2",
         "spaghetti_extractor.global_slot_proposal_v2",
         "spaghetti_extractor.machine_ir_authority_v2",
         "spaghetti_extractor.memory_range_invariants_v2",
+        "spaghetti_extractor.mutable_slot_candidates_v2",
         "spaghetti_extractor.stack_range_analysis_v2",
         "spaghetti_extractor.stage_binary"
       ],

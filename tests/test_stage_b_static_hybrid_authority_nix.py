@@ -62,6 +62,10 @@ class StageBStaticHybridAuthorityNixTests(unittest.TestCase):
             graph.index('globalSlotAnalysis = mkPhase "globalSlotAnalysis"')
         ]
         self.assertNotIn("stack_range_analysis", joint_dependencies)
+        self.assertIn("base_graph = baseGraph.artifact", graph)
+        self.assertIn(
+            "memory_range_invariants = memoryRangeInvariants.artifact", graph
+        )
         self.assertIn("rooted_closure = rootedClosure.artifact", graph)
         self.assertIn("checked_external_sites = checkedExternalSites.artifact", graph)
         self.assertIn("global_slot_authority = globalSlotAuthority.artifact", graph)

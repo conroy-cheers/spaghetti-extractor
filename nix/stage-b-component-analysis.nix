@@ -716,7 +716,9 @@ let
           from spaghetti_extractor.external_interface_profiles import load_external_interface_profile
           from spaghetti_extractor.external_operation_profiles import load_external_operation_profile
           from spaghetti_extractor.global_slot_analysis_v2 import analyze_global_slots_v2
-          from spaghetti_extractor.global_slot_authority_v2 import build_global_slot_authority_v2
+          from spaghetti_extractor.global_slot_authority_v2 import (
+              replay_global_slot_authority_v2,
+          )
           from spaghetti_extractor.global_slot_image_v2 import (
               GlobalSlotImageV2Error,
               loader_initial_bytes_v2,
@@ -991,25 +993,18 @@ let
               graph,
               interprocedural,
           ):
-              return build_global_slot_authority_v2(
+              return replay_global_slot_authority_v2(
+                  submitted_analysis=slot_analysis,
                   provenance=provenance,
-                  global_slot_analysis=slot_analysis,
                   units=units,
-                  pe_sha256=binary.sha256,
-                  machine_ir_sha256=machine_ir_sha256,
-                  image_base=binary.image_base,
-                  size_of_image=binary.size_of_image,
-                  original_binary=binary,
+                  graph=graph,
+                  interprocedural=interprocedural,
                   stack_range_analysis=stack_ranges,
-                  stack_graph=graph,
-                  stack_launch_assumptions={"assumptions": assumptions},
-                  stack_call_summaries=interprocedural.get(
-                      "call_summaries", {}
-                  ),
-                  stack_indirect_recoveries=interprocedural.get(
-                      "recovered_targets", []
-                  ),
-                  stack_finite_offset_budget=analysis_finite_value_budget,
+                  launch_assumptions={"assumptions": assumptions},
+                  memory_range_invariant_analysis=memory_range_invariants,
+                  original_binary=binary,
+                  machine_ir_sha256=machine_ir_sha256,
+                  finite_value_budget=analysis_finite_value_budget,
               )
 
           payload = derive_joint_fixed_point_v2(
@@ -1259,22 +1254,104 @@ let
         kind = "global-slot-authority";
         artifactName = "global-slot-authority.json";
         expectedFormat = "spaghetti-extractor-global-slot-authority-v2";
-        allowedStatuses = [ "complete" "violated" ];
-        pythonModules = [ "spaghetti_extractor.artifact_projection_v2" ];
-        inputs = { };
+        allowedStatuses = [ "complete" "incomplete" "violated" ];
+        pythonModules = [
+          "spaghetti_extractor.control_analysis_v2"
+          "spaghetti_extractor.global_slot_authority_v2"
+          "spaghetti_extractor.launch_profile_v2"
+          "spaghetti_extractor.stage_binary"
+        ];
+        inputs = {
+          original_pe = original;
+          machine_ir = "${machineIr}/machine-ir.jsonl";
+          machine_ir_manifest = "${machineIr}/machine-ir-manifest.json";
+        } // lib.optionalAttrs (launchProfile != null) {
+          launch_profile = launchProfile;
+        } // lib.optionalAttrs (launchProfileTemplate != null) {
+          launch_profile_template = launchProfileTemplate;
+        };
         program = ''
-          from spaghetti_extractor.artifact_projection_v2 import (
-              project_joint_interprocedural_artifact_v2,
-          )
+          import hashlib
 
+          from spaghetti_extractor.control_analysis_v2 import (
+              derive_rooted_control_closure_v2,
+          )
+          from spaghetti_extractor.global_slot_authority_v2 import (
+              replay_global_slot_authority_v2,
+          )
+          from spaghetti_extractor.launch_profile_v2 import (
+              parse_launch_assumption_template_v1,
+              parse_launch_profile_v2,
+          )
+          from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+
+          units = [
+              json.loads(line)
+              for line in inputs["machine_ir"].read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+          manifest = json.loads(
+              inputs["machine_ir_manifest"].read_text(encoding="utf-8")
+          )
           joint = json.loads(
               inputs["joint_interprocedural"].read_text(encoding="utf-8")
           )
-          payload = project_joint_interprocedural_artifact_v2(
-              joint,
-              field="global_slot_authority",
-              expected_format="spaghetti-extractor-global-slot-authority-v2",
-              allowed_statuses=("complete", "violated"),
+          interprocedural = joint.get("interprocedural", {})
+          base_graph = json.loads(
+              inputs["base_graph"].read_text(encoding="utf-8")
+          )
+          graph = derive_rooted_control_closure_v2(
+              rows=units,
+              base_graph=base_graph,
+              interprocedural=interprocedural,
+          )
+          binary = _parse_stage_a_pe(inputs["original_pe"])
+          if "launch_profile" in inputs:
+              launch = parse_launch_profile_v2(
+                  json.loads(
+                      inputs["launch_profile"].read_text(encoding="utf-8")
+                  )
+              )
+              if launch.binary.pe_sha256 != binary.sha256:
+                  raise ValueError("launch profile is bound to another PE")
+              assumptions = {
+                  item.kind: item.value.to_value()
+                  for item in launch.assumptions
+              }
+          elif "launch_profile_template" in inputs:
+              launch = parse_launch_assumption_template_v1(
+                  json.loads(
+                      inputs["launch_profile_template"].read_text(
+                          encoding="utf-8"
+                      )
+                  )
+              )
+              assumptions = launch.assumption_map
+          else:
+              assumptions = {}
+          provenance = manifest.get("control", {}).get(
+              "external_interface_provenance", {}
+          )
+          payload = replay_global_slot_authority_v2(
+              submitted_analysis=joint.get("global_slot_analysis", {}),
+              provenance=provenance,
+              units=units,
+              graph=graph,
+              interprocedural=interprocedural,
+              stack_range_analysis=joint.get("stack_range_analysis", {}),
+              launch_assumptions={"assumptions": assumptions},
+              memory_range_invariant_analysis=json.loads(
+                  inputs["memory_range_invariants"].read_text(
+                      encoding="utf-8"
+                  )
+              ),
+              original_binary=binary,
+              machine_ir_sha256=hashlib.sha256(
+                  inputs["machine_ir"].read_bytes()
+              ).hexdigest(),
+              finite_value_budget=32,
           )
           output.write_text(
               json.dumps(payload, indent=2, sort_keys=True) + "\n",
