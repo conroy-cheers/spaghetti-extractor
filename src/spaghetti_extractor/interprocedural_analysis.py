@@ -951,6 +951,7 @@ def _run_typed_pass(
     dependency_edges: frozenset[tuple[str, str]] = frozenset()
     summaries: Mapping[str, Any] = {"summaries": []}
     operation_provenance: Mapping[str, Any] = {"resolutions": []}
+    call_site_effects: tuple[Mapping[str, Any], ...] = ()
     value_provenance: Mapping[str, Any] = {"resolutions": []}
     scc_evaluations = 0
     decomposition: SCCDecomposition[str] = decompose_scc(tuple[str]())
@@ -964,6 +965,7 @@ def _run_typed_pass(
     for evaluation in range(1, max_evaluations + 1):
         current_roots = tuple(sorted(active_roots))
         input_recoveries = _freeze_recovery_inputs(selected)
+        input_call_site_effects = _freeze_call_site_effects(call_site_effects)
         summaries = derive_internal_call_preservation_summaries(
             units=units,
             roots=current_roots,
@@ -972,6 +974,7 @@ def _run_typed_pass(
             recovered_indirect_targets=selected,
             indirect_exits=indirect_exits,
             import_abis=import_abis,
+            call_site_effects=call_site_effects,
             # Reviewed source/RE contracts are discovery hints.  They have not
             # been replayed against the machine semantics, so allowing them in
             # the unseeded pass would turn an operator assertion into v2 call
@@ -980,6 +983,7 @@ def _run_typed_pass(
             declared_summaries=(
                 internal_function_contracts if allow_bootstrap else {}
             ),
+            max_value_alternatives=finite_value_budget,
         )
         preserved, cleanup, results = _call_summary_inputs(
             summaries, image_base=image_base
@@ -1023,6 +1027,7 @@ def _run_typed_pass(
             initial_known_slots=checked_global_slots,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
         )
+        next_call_site_effects = _call_site_effect_rows(operation_provenance)
         next_roots = active_roots | _callback_root_unit_ids(
             operation_provenance, known_units=known_unit_ids
         )
@@ -1096,6 +1101,10 @@ def _run_typed_pass(
         decomposition = worklist.decomposition
 
         transfer_stable = _freeze_recovery_inputs(next_selected) == input_recoveries
+        call_effects_stable = (
+            _freeze_call_site_effects(next_call_site_effects)
+            == input_call_site_effects
+        )
         roots_stable = next_roots == active_roots
         facts = next_facts
         dependency_edges = next_edges
@@ -1105,7 +1114,7 @@ def _run_typed_pass(
         # and roots.  Once those inputs are stable, another whole-program
         # transfer would emit the same proposals; lattice joins and edge unions
         # are idempotent, so the state below is already the least fixed point.
-        if transfer_stable and roots_stable:
+        if transfer_stable and call_effects_stable and roots_stable:
             return _PassResult(
                 True,
                 evaluation,
@@ -1119,6 +1128,7 @@ def _run_typed_pass(
                 tuple(copy.deepcopy(row) for row in selected),
                 tuple(sorted(active_roots)),
             )
+        call_site_effects = next_call_site_effects
 
     return _PassResult(
         False,
@@ -2743,6 +2753,23 @@ def _freeze_recovery_inputs(
             key=repr,
         )
     )
+
+
+def _call_site_effect_rows(
+    operation_provenance: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], ...]:
+    raw = operation_provenance.get("call_site_effects", [])
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ValueError("operation provenance call-site effects must be an array")
+    if any(not isinstance(row, Mapping) for row in raw):
+        raise ValueError("operation provenance call-site effect is not an object")
+    return tuple(copy.deepcopy(dict(row)) for row in raw)
+
+
+def _freeze_call_site_effects(
+    effects: Sequence[Mapping[str, Any]],
+) -> tuple[Hashable, ...]:
+    return tuple(sorted((_freeze_value(row) for row in effects), key=repr))
 
 
 def _inductive_reproduction_status(

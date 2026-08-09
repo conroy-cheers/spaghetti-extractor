@@ -4,6 +4,10 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
+from spaghetti_extractor.call_site_effects import (
+    CallSiteEffect,
+    CallSiteId,
+)
 from spaghetti_extractor.interprocedural_analysis import (
     _call_summary_inputs,
     _call_summary_memory_preservation,
@@ -17,6 +21,7 @@ from spaghetti_extractor.checked_memory_access_v2 import (
     MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
 )
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
+from spaghetti_extractor.machine_abi import resolve_machine_call_abi
 from spaghetti_extractor.hybrid_authority_v2 import (
     BinaryBinding,
     EvidenceIssue,
@@ -548,6 +553,45 @@ class InterproceduralAnalysisTests(unittest.TestCase):
 
         self.assertTrue(result.complete, result.fixed_point)
         self.assertEqual(observed, [contract, {}])
+
+    def test_call_site_effects_participate_in_each_typed_fixed_point(self) -> None:
+        observed: list[tuple[object, ...]] = []
+        abi = resolve_machine_call_abi("pe32-cdecl-v1")
+        assert abi is not None
+        effect = CallSiteEffect(
+            site=CallSiteId("root", 0),
+            transfer_kind="external_call",
+            status="incomplete",
+            register_frame_status="complete",
+            preserved_registers=frozenset(abi.preserved_registers),
+            stack_frame_status="complete",
+            stack_cleanup_bytes=0,
+            result_status="complete",
+            outputs=(),
+            memory_frame_status="incomplete",
+            memory_preserved=False,
+            memory_writes=(),
+            abi=abi,
+            argument_words=0,
+            failure_codes=("memory_frame_unknown",),
+        ).as_json()
+
+        def summaries(**kwargs: Any) -> dict[str, object]:
+            observed.append(tuple(kwargs["call_site_effects"]))
+            return summary_adapter(**kwargs)
+
+        def resolver(**_kwargs: Any) -> dict[str, object]:
+            return {"resolutions": [], "call_site_effects": [effect]}
+
+        result = self._run(
+            units=[unit("root", 0x1000)],
+            roots=["root"],
+            resolver=resolver,
+            summary_resolver=summaries,
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        self.assertEqual(observed, [(), (effect,), (), (effect,)])
 
     def test_writable_image_reader_is_proposal_only(self) -> None:
         observed: list[bytes | None] = []

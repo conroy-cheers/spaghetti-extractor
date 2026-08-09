@@ -14,11 +14,17 @@ import heapq
 import json
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
+from .call_site_effects import (
+    CallSiteEffect,
+    CallSiteId,
+    parse_call_site_effects,
+)
 from .import_abi import SelectedImportABI
 from .machine_abi import resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity
+from .provenance_domain import ValueOrigin
 
 
 INTERNAL_CALL_SUMMARY_FORMAT = "stage-a-internal-call-preservation-v1"
@@ -72,12 +78,18 @@ class _InternalContractResult:
     nullable: bool
 
 
+@dataclass(frozen=True)
+class _TypedOrigins:
+    origins: tuple[ValueOrigin, ...]
+
+
 _Value = (
     _RegisterOrigin
     | _StackAddress
     | _Exact
     | _ExternalResult
     | _InternalContractResult
+    | _TypedOrigins
     | None
 )
 
@@ -108,18 +120,41 @@ def derive_internal_call_preservation_summaries(
     recovered_indirect_targets: Sequence[Mapping[str, Any]],
     indirect_exits: Sequence[Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    call_site_effects: Sequence[Mapping[str, Any]] = (),
     declared_summaries: Mapping[str, Mapping[str, Any]] | None = None,
     max_units_per_summary: int = 4096,
     max_stack_words: int = 256,
     max_fixed_point_rounds: int = 64,
+    max_value_alternatives: int = 32,
 ) -> dict[str, Any]:
     """Propose frame/return facts for reachable callees and behavioral roots."""
 
-    if min(max_units_per_summary, max_stack_words, max_fixed_point_rounds) <= 0:
+    if min(
+        max_units_per_summary,
+        max_stack_words,
+        max_fixed_point_rounds,
+        max_value_alternatives,
+    ) <= 0:
         raise ValueError("internal call summary budgets must be positive")
     by_id = {str(unit["id"]): unit for unit in units}
     if len(by_id) != len(units):
         raise ValueError("internal call summaries require unique unit IDs")
+    effects_by_site = parse_call_site_effects(
+        call_site_effects,
+        finite_value_budget=max_value_alternatives,
+    )
+    for site, effect in effects_by_site.items():
+        unit = by_id.get(site.unit_id)
+        events = _events(unit or {})
+        if (
+            unit is None
+            or not 0 <= site.event_index < len(events)
+            or events[site.event_index].get("kind") != effect.transfer_kind
+        ):
+            raise ValueError(
+                "call-site effect does not bind an exact machine-IR call: "
+                f"{site.unit_id}:{site.event_index}"
+            )
     declarations = declared_summaries or {}
     unknown_declarations = sorted(set(declarations) - set(by_id))
     if unknown_declarations:
@@ -248,9 +283,11 @@ def derive_internal_call_preservation_summaries(
                     recovered_calls=recovered_calls,
                     completed_summaries=summaries,
                     import_abis=import_abis,
+                    call_site_effects=effects_by_site,
                     max_units=max_units_per_summary,
                     max_stack_words=max_stack_words,
                     max_rounds=max_fixed_point_rounds,
+                    max_value_alternatives=max_value_alternatives,
                 )
             )
             rounds = max(rounds, component_rounds)
@@ -269,8 +306,10 @@ def derive_internal_call_preservation_summaries(
             recovered_calls=recovered_calls,
             summaries=summaries,
             import_abis=import_abis,
+            call_site_effects=effects_by_site,
             max_units=max_units_per_summary,
             max_stack_words=max_stack_words,
+            max_value_alternatives=max_value_alternatives,
         )
         forced_blockers = (
             {"call_dependency_inventory_budget_exceeded"}
@@ -345,6 +384,7 @@ def derive_internal_call_preservation_summaries(
             "max_units_per_summary": max_units_per_summary,
             "max_stack_words": max_stack_words,
             "max_fixed_point_rounds": max_fixed_point_rounds,
+            "max_value_alternatives": max_value_alternatives,
         },
         "fixed_point_rounds": rounds,
         "fixed_point_complete": fixed_point_complete,
@@ -640,21 +680,21 @@ def _strongly_connected_components(
         if node in visited:
             continue
         visited.add(node)
-        stack: list[tuple[str, Iterable[str]]] = [
+        dfs_stack: list[tuple[str, Iterator[str]]] = [
             (node, iter(sorted(graph.get(node, set()))))
         ]
-        while stack:
-            current, targets = stack[-1]
+        while dfs_stack:
+            current, targets = dfs_stack[-1]
             try:
                 target = next(targets)
             except StopIteration:
-                stack.pop()
+                dfs_stack.pop()
                 finish_order.append(current)
                 continue
             if target in visited:
                 continue
             visited.add(target)
-            stack.append((target, iter(sorted(graph.get(target, set())))))
+            dfs_stack.append((target, iter(sorted(graph.get(target, set())))))
 
     reverse_graph: dict[str, set[str]] = defaultdict(set)
     for source, targets in graph.items():
@@ -667,14 +707,14 @@ def _strongly_connected_components(
             continue
         component: list[str] = []
         assigned.add(node)
-        stack = [(node, False)]
-        while stack:
-            current, _ = stack.pop()
+        component_stack = [node]
+        while component_stack:
+            current = component_stack.pop()
             component.append(current)
             for source in sorted(reverse_graph.get(current, set()), reverse=True):
                 if source not in assigned:
                     assigned.add(source)
-                    stack.append((source, False))
+                    component_stack.append(source)
         components.append(component)
     return components
 
@@ -750,9 +790,11 @@ def _analyze_recursive_component(
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     completed_summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     max_units: int,
     max_stack_words: int,
     max_rounds: int,
+    max_value_alternatives: int,
 ) -> tuple[dict[str, dict[str, Any]], int, bool]:
     """Establish one simultaneous inductive summary for a recursive SCC."""
 
@@ -771,8 +813,10 @@ def _analyze_recursive_component(
                 recovered_calls=recovered_calls,
                 summaries=assumptions,
                 import_abis=import_abis,
+                call_site_effects=call_site_effects,
                 max_units=max_units,
                 max_stack_words=max_stack_words,
+                max_value_alternatives=max_value_alternatives,
             )
             summary["recursive_induction"] = {
                 "status": "checked_fixed_point_candidate",
@@ -835,8 +879,10 @@ def _analyze_callee(
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     max_units: int,
     max_stack_words: int,
+    max_value_alternatives: int,
 ) -> dict[str, Any]:
     initial = _State(
         registers={
@@ -877,6 +923,7 @@ def _analyze_callee(
             recovered_calls=recovered_calls,
             summaries=summaries,
             import_abis=import_abis,
+            call_site_effects=call_site_effects,
         )
         if call_frame is not None:
             blockers.update(call_frame.blocker_codes)
@@ -894,6 +941,7 @@ def _analyze_callee(
             recovered_calls=recovered_calls,
             summaries=summaries,
             import_abis=import_abis,
+            call_site_effects=call_site_effects,
             max_stack_words=max_stack_words,
         )
         blockers.update(transfer_blockers)
@@ -922,7 +970,15 @@ def _analyze_callee(
             continue
         for target in sorted(successors):
             prior = states.get(target)
-            joined = copy.deepcopy(output) if prior is None else _join_states(prior, output)
+            joined = (
+                copy.deepcopy(output)
+                if prior is None
+                else _join_states(
+                    prior,
+                    output,
+                    max_value_alternatives=max_value_alternatives,
+                )
+            )
             if prior != joined:
                 states[target] = joined
                 work.append(target)
@@ -1157,6 +1213,7 @@ def _unit_call_frame(
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     input_registers: Mapping[str, _Value] | None = None,
 ) -> _CallFrame | None:
     events = _events(unit)
@@ -1179,6 +1236,16 @@ def _unit_call_frame(
         )
     event_index, event = calls[0]
     kind = event.get("kind")
+    effect = call_site_effects.get(CallSiteId(unit_id, event_index))
+    if (
+        effect is not None
+        and kind in {"external_call", "indirect_call"}
+        and effect.abi is not None
+        and effect.register_frame_status == "complete"
+        and effect.stack_frame_status == "complete"
+        and effect.result_status == "complete"
+    ):
+        return _call_site_effect_frame(effect)
     if kind == "external_call":
         identity = _event_import_identity(event)
         selected = import_abis.get(identity) if identity is not None else None
@@ -1364,6 +1431,24 @@ def _returning_abi_frame(
     )
 
 
+def _call_site_effect_frame(effect: CallSiteEffect) -> _CallFrame:
+    result_registers: dict[str, _Value] = {}
+    for output in effect.outputs:
+        if output.location.kind != "register_location" or len(output.location.key) != 1:
+            continue
+        register = output.location.key[0]
+        if register not in _REGISTERS or output.value is None:
+            continue
+        result_registers[str(register)] = _TypedOrigins(
+            tuple(sorted(output.value, key=_typed_origin_sort_key))
+        )
+    return _returning_abi_frame(
+        preserved_registers=effect.preserved_registers,
+        stack_cleanup=effect.stack_cleanup_bytes,
+        result_registers=result_registers,
+    )
+
+
 def _incomplete_call_frame(code: str) -> _CallFrame:
     return _CallFrame(
         behavior_complete=False,
@@ -1411,6 +1496,7 @@ def _transfer(
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     max_stack_words: int,
 ) -> tuple[_State, set[str]]:
     events = _events(unit)
@@ -1429,6 +1515,7 @@ def _transfer(
             recovered_calls=recovered_calls,
             summaries=summaries,
             import_abis=import_abis,
+            call_site_effects=call_site_effects,
             input_registers=pre_call.registers,
         )
         if frame is None:
@@ -1467,7 +1554,7 @@ def _transfer(
     writes = semantics.get("register_writes")
     if not isinstance(writes, list):
         return _unknown_state(), {"register_write_inventory_invalid"}
-    registers = dict(state.registers)
+    registers: dict[str, _Value] = dict(state.registers)
     for raw in writes:
         write = _mapping(raw)
         register = write.get("register")
@@ -1656,6 +1743,11 @@ def _serialize_summary_value(value: _Value) -> dict[str, Any] | None:
             "relation": value.relation,
             "nullable": value.nullable,
         }
+    if isinstance(value, _TypedOrigins):
+        return {
+            "kind": "typed_origins",
+            "origins": [origin.as_json() for origin in value.origins],
+        }
     return None
 
 
@@ -1674,9 +1766,9 @@ def _parse_summary_value(value: Any) -> _Value:
             term = _mapping(raw)
             register = term.get("register")
             coefficient = _integer(term.get("coefficient"))
-            if register not in _REGISTERS or coefficient in {None, 0}:
+            if register not in _REGISTERS or coefficient is None or coefficient == 0:
                 return None
-            terms.append((str(register), int(coefficient)))
+            terms.append((str(register), coefficient))
         return _StackAddress(offset, _normalize_register_terms(terms))
     if kind == "exact":
         exact = _integer(row.get("value"))
@@ -1693,6 +1785,22 @@ def _parse_summary_value(value: Any) -> _Value:
         ):
             return None
         return _InternalContractResult(contract_id, str(relation), nullable)
+    if kind == "typed_origins":
+        raw_origins = row.get("origins")
+        if not isinstance(raw_origins, list) or not raw_origins:
+            return None
+        try:
+            origins = tuple(
+                sorted(
+                    (_parse_typed_origin(raw) for raw in raw_origins),
+                    key=_typed_origin_sort_key,
+                )
+            )
+        except ValueError:
+            return None
+        if len(set(origins)) != len(origins):
+            return None
+        return _TypedOrigins(origins)
     if kind != "external_result":
         return None
     imported = _mapping(row.get("import"))
@@ -1719,6 +1827,39 @@ def _parse_summary_value(value: Any) -> _Value:
         relation=str(relation),
         nullable=nullable,
     )
+
+
+def _parse_typed_origin(raw: Any) -> ValueOrigin:
+    row = _mapping(raw)
+    kind = row.get("kind")
+    key = row.get("key")
+    dependencies = row.get("authority_dependencies", [])
+    if (
+        not isinstance(kind, str)
+        or not isinstance(key, list)
+        or not isinstance(dependencies, list)
+        or any(not isinstance(value, str) or not value for value in dependencies)
+        or dependencies != sorted(set(dependencies))
+        or set(row) - {"kind", "key", "authority_dependencies"}
+    ):
+        raise ValueError("typed summary origin is malformed")
+    return ValueOrigin(
+        kind,
+        tuple(_freeze_origin_key(value) for value in key),
+        tuple(dependencies),
+    )
+
+
+def _freeze_origin_key(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool)) or _integer(value) is not None:
+        return value
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_origin_key(item) for item in value)
+    raise ValueError("typed summary origin key is not canonical JSON")
+
+
+def _typed_origin_sort_key(origin: ValueOrigin) -> tuple[str, str, tuple[str, ...]]:
+    return (origin.kind, repr(origin.key), origin.dependencies)
 
 
 def _summary_result_registers(
@@ -1772,9 +1913,9 @@ def _instantiate_summary_value(
             term = _mapping(raw_term)
             register = term.get("register")
             coefficient = _integer(term.get("coefficient"))
-            if register not in _REGISTERS or coefficient in {None, 0}:
+            if register not in _REGISTERS or coefficient is None or coefficient == 0:
                 return None
-            terms.append((str(register), int(coefficient)))
+            terms.append((str(register), coefficient))
         # A machine CALL pushes a four-byte return address after the event's
         # pre-call register state.  Summary offset zero denotes callee-entry
         # ESP, hence the caller-relative constant is offset - 4.
@@ -1986,21 +2127,42 @@ def _stack_transform_json(transform: _StackTransform) -> dict[str, Any]:
     }
 
 
-def _join_states(left: _State, right: _State) -> _State:
+def _join_states(
+    left: _State,
+    right: _State,
+    *,
+    max_value_alternatives: int,
+) -> _State:
     registers = {
-        register: (
-            left.registers.get(register)
-            if left.registers.get(register) == right.registers.get(register)
-            else None
+        register: _join_summary_value(
+            left.registers.get(register),
+            right.registers.get(register),
+            maximum=max_value_alternatives,
         )
         for register in _REGISTERS
     }
-    stack_words = {
-        offset: value
-        for offset, value in left.stack_words.items()
-        if value is not None and right.stack_words.get(offset) == value
-    }
+    stack_words: dict[int, _Value] = {}
+    for offset, value in left.stack_words.items():
+        joined = _join_summary_value(
+            value,
+            right.stack_words.get(offset),
+            maximum=max_value_alternatives,
+        )
+        if joined is not None:
+            stack_words[offset] = joined
     return _State(registers=registers, stack_words=stack_words)
+
+
+def _join_summary_value(
+    left: _Value, right: _Value, *, maximum: int
+) -> _Value:
+    if left == right:
+        return left
+    if isinstance(left, _TypedOrigins) and isinstance(right, _TypedOrigins):
+        joined = set(left.origins) | set(right.origins)
+        if len(joined) <= maximum:
+            return _TypedOrigins(tuple(sorted(joined, key=_typed_origin_sort_key)))
+    return None
 
 
 def _unknown_state() -> _State:

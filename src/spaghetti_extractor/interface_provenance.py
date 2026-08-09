@@ -22,6 +22,12 @@ from .callback_contracts import (
     parse_callback_source,
 )
 from .call_arguments import CallArgumentRecovery, recover_pe32_stack_call_arguments
+from .call_site_effects import (
+    CallOutput,
+    CallSiteEffect,
+    CallSiteId,
+    CallWriteSpan,
+)
 from .external_interface_profiles import (
     ExternalInterfaceProfile,
     InterfaceCallerMemoryFrame,
@@ -121,6 +127,80 @@ class _WriteSpan:
     size: int | None
 
 
+def _call_site_effect(
+    *,
+    unit_id: str,
+    event_index: int,
+    transfer_kind: str,
+    facts: _CallFacts,
+    failure_codes: Iterable[str] = (),
+) -> CallSiteEffect:
+    cleanup = facts.stack_cleanup_bytes
+    if cleanup is None and facts.abi is not None:
+        cleanup = _abi_stack_cleanup(facts.abi, facts.argument_words)
+
+    register_status = (
+        "complete" if facts.preserved is not None else "incomplete"
+    )
+    stack_status = "complete" if cleanup is not None else "incomplete"
+    result_status = (
+        "complete"
+        if all(value is not None and value for value in facts.outputs.values())
+        else "incomplete"
+    )
+    memory_status = (
+        "complete"
+        if facts.memory_preserved or facts.memory_writes is not None
+        else "incomplete"
+    )
+    failures = set(failure_codes)
+    for status, code in (
+        (register_status, "register_frame_unknown"),
+        (stack_status, "stack_frame_unknown"),
+        (result_status, "result_frame_unknown"),
+        (memory_status, "memory_frame_unknown"),
+    ):
+        if status == "incomplete":
+            failures.add(code)
+    return CallSiteEffect(
+        site=CallSiteId(unit_id, event_index),
+        transfer_kind=transfer_kind,
+        status="complete" if not failures else "incomplete",
+        register_frame_status=register_status,
+        preserved_registers=(
+            facts.preserved if facts.preserved is not None else frozenset()
+        ),
+        stack_frame_status=stack_status,
+        stack_cleanup_bytes=cleanup,
+        result_status=result_status,
+        outputs=(
+            tuple(
+                CallOutput(location, value)
+                for location, value in sorted(facts.outputs.items())
+                if value is not None
+            )
+            if result_status == "complete"
+            else ()
+        ),
+        memory_frame_status=memory_status,
+        memory_preserved=(
+            facts.memory_preserved if memory_status == "complete" else False
+        ),
+        memory_writes=(
+            tuple(
+                CallWriteSpan(span.base, span.size)
+                for span in facts.memory_writes or ()
+            )
+            if memory_status == "complete"
+            else ()
+        ),
+        abi=facts.abi,
+        argument_words=facts.argument_words,
+        dependencies=tuple(sorted(facts.dependencies)),
+        failure_codes=tuple(sorted(failures)),
+    )
+
+
 @dataclass(frozen=True)
 class _Edge:
     kind: str
@@ -162,10 +242,22 @@ class _RunResult:
     tainted_slots: set[_MemoryLocation]
     issues: list[dict[str, Any]]
     argument_recoveries: list[dict[str, Any]]
+    call_site_effects: list[CallSiteEffect]
     evaluations: int
     transfer_requests: int
     transfer_cache_hits: int
     budget_exceeded: int
+
+
+_UnitTransfer = tuple[
+    tuple[_State, dict[int, _State]],
+    dict[_MemoryLocation, _Value],
+    set[_MemoryLocation],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    tuple[CallSiteEffect, ...],
+    int,
+]
 
 
 def recover_external_interface_targets(
@@ -486,6 +578,9 @@ def recover_external_interface_targets(
         "internal_call_cleanup_inference": [
             evidence.as_json(image_base=image_base)
             for evidence in cleanup_evidence
+        ],
+        "call_site_effects": [
+            effect.as_json() for effect in final.call_site_effects
         ],
         "budgets": {
             "finite_values": finite_value_budget,
@@ -990,30 +1085,14 @@ def _run_dataflow(
     tainted_slots: set[_MemoryLocation] = set()
     issues: list[dict[str, Any]] = []
     argument_recoveries: list[dict[str, Any]] = []
+    call_site_effects: list[CallSiteEffect] = []
     evaluations = 0
     transfer_requests = 0
     transfer_cache_hits = 0
     budget_exceeded = 0
-    transfer_cache: dict[
-        tuple[str, tuple[Any, ...]],
-        tuple[
-            tuple[_State, dict[int, _State]],
-            dict[_MemoryLocation, _Value],
-            set[_MemoryLocation],
-            list[dict[str, Any]],
-            list[dict[str, Any]],
-            int,
-        ],
-    ] = {}
+    transfer_cache: dict[tuple[str, tuple[Any, ...]], _UnitTransfer] = {}
 
-    def transfer_unit(source_id: str) -> tuple[
-        tuple[_State, dict[int, _State]],
-        dict[_MemoryLocation, _Value],
-        set[_MemoryLocation],
-        list[dict[str, Any]],
-        list[dict[str, Any]],
-        int,
-    ]:
+    def transfer_unit(source_id: str) -> _UnitTransfer:
         nonlocal evaluations, transfer_requests, transfer_cache_hits, budget_exceeded
         transfer_requests += 1
         checked_state = _with_checked_stack_entry(
@@ -1062,6 +1141,7 @@ def _run_dataflow(
         queued.remove(source_id)
         (
             transfer,
+            _,
             _,
             _,
             _,
@@ -1130,10 +1210,12 @@ def _run_dataflow(
             taints,
             transfer_issues,
             unit_argument_recoveries,
+            unit_call_site_effects,
             exceeded,
         ) = transfer_unit(source_id)
         issues.extend(transfer_issues)
         argument_recoveries.extend(unit_argument_recoveries)
+        call_site_effects.extend(unit_call_site_effects)
         tainted_slots.update(taints)
         for address, origins in proposals.items():
             proposed_slots[address] = _join_value(
@@ -1159,6 +1241,13 @@ def _run_dataflow(
         tainted_slots=tainted_slots,
         issues=_deduplicate(issues),
         argument_recoveries=_deduplicate(argument_recoveries),
+        call_site_effects=sorted(
+            call_site_effects,
+            key=lambda effect: (
+                effect.site.unit_id,
+                effect.site.event_index,
+            ),
+        ),
         evaluations=evaluations,
         transfer_requests=transfer_requests,
         transfer_cache_hits=transfer_cache_hits,
@@ -1344,14 +1433,7 @@ def _transfer_unit(
     finite_value_budget: int,
     static_slot_budget: int,
     stack_slot_budget: int,
-) -> tuple[
-    tuple[_State, dict[int, _State]],
-    dict[_MemoryLocation, _Value],
-    set[_MemoryLocation],
-    list[dict[str, Any]],
-    list[dict[str, Any]],
-    int,
-]:
+) -> _UnitTransfer:
     events = _events(unit)
     call_entries: dict[int, _State] = {}
     for event_index, event in enumerate(events):
@@ -1379,12 +1461,23 @@ def _transfer_unit(
     if calls:
         if len(calls) != 1:
             issues.append({"code": "multiple_calls_in_interface_unit", "unit_id": unit_id})
+            call_site_effects = tuple(
+                _call_site_effect(
+                    unit_id=unit_id,
+                    event_index=event_index,
+                    transfer_kind=str(event["kind"]),
+                    facts=_CallFacts(None, None, None, None, {}),
+                    failure_codes=("multiple_calls_in_interface_unit",),
+                )
+                for event_index, event in calls
+            )
             return (
                 (_unknown_state(), call_entries),
                 proposals,
                 taints,
                 issues,
                 argument_recoveries,
+                call_site_effects,
                 0,
             )
         event_index, event = calls[0]
@@ -1418,6 +1511,12 @@ def _transfer_unit(
         )
         issues.extend(call_issues)
         argument_recoveries.extend(call_argument_recoveries)
+        call_site_effects = (_call_site_effect(
+            unit_id=unit_id,
+            event_index=event_index,
+            transfer_kind=str(event["kind"]),
+            facts=facts,
+        ),)
         framed_memory, framed_stack, memory_invalidated = _apply_call_memory_frame(
             pre_call, facts
         )
@@ -1489,6 +1588,7 @@ def _transfer_unit(
                 taints,
                 issues,
                 argument_recoveries,
+                call_site_effects,
                 1,
             )
         return (
@@ -1497,6 +1597,7 @@ def _transfer_unit(
             taints,
             issues,
             argument_recoveries,
+            call_site_effects,
             0,
         )
 
@@ -1516,6 +1617,7 @@ def _transfer_unit(
             taints,
             issues,
             argument_recoveries,
+            (),
             exceeded,
         )
     for raw in writes:
@@ -1642,6 +1744,7 @@ def _transfer_unit(
         taints,
         issues,
         argument_recoveries,
+        (),
         exceeded,
     )
 
@@ -2089,6 +2192,13 @@ def _internal_call_result_outputs(
         for raw in raw_origins:
             row = _mapping(raw)
             kind = row.get("kind")
+            if kind == "typed_origins":
+                value = _typed_summary_origins(row, budget=budget)
+                if value is None:
+                    malformed = True
+                    break
+                origins.update(value)
+                continue
             if kind == "exact":
                 value = _integer(row.get("value"))
                 if value is None:
@@ -2154,11 +2264,11 @@ def _internal_call_result_outputs(
                 malformed = True
                 break
             producer = row.get("producer_unit_id")
-            event_index = _integer(row.get("event_index"))
+            relation_event_index = _integer(row.get("event_index"))
             nullable = row.get("nullable")
             if (
                 not isinstance(producer, str)
-                or event_index is None
+                or relation_event_index is None
                 or row.get("relation") != "dynamic_range_base"
                 or not isinstance(nullable, bool)
             ):
@@ -2166,7 +2276,7 @@ def _internal_call_result_outputs(
                 break
             value = _dynamic_range_origin(
                 producer_unit_id=producer,
-                event_index=event_index,
+                event_index=relation_event_index,
                 identity=identity,
                 nullable=nullable,
             )
@@ -2174,9 +2284,145 @@ def _internal_call_result_outputs(
                 malformed = True
                 break
             origins.update(value)
-        if origins and not malformed:
-            outputs[_Origin("register_location", (register,))] = frozenset(origins)
+        location = _Origin("register_location", (register,))
+        if malformed or len(origins) > budget:
+            outputs[location] = None
+        elif origins:
+            outputs[location] = frozenset(origins)
     return outputs
+
+
+def _typed_summary_origins(
+    row: Mapping[str, Any], *, budget: int
+) -> frozenset[_Origin] | None:
+    if set(row) != {"kind", "origins"}:
+        return None
+    raw_origins = row.get("origins")
+    if (
+        not isinstance(raw_origins, list)
+        or not 1 <= len(raw_origins) <= budget
+    ):
+        return None
+    origins: list[_Origin] = []
+    try:
+        for raw in raw_origins:
+            if not isinstance(raw, Mapping):
+                return None
+            if not {"kind", "key"} <= set(raw) <= {
+                "kind",
+                "key",
+                "authority_dependencies",
+            }:
+                return None
+            kind = raw.get("kind")
+            key = raw.get("key")
+            dependencies = raw.get("authority_dependencies", [])
+            if (
+                not isinstance(kind, str)
+                or not isinstance(key, list)
+                or not isinstance(dependencies, list)
+                or any(
+                    not isinstance(value, str) or not value
+                    for value in dependencies
+                )
+                or dependencies != sorted(set(dependencies))
+            ):
+                return None
+            origins.append(_Origin(
+                kind,
+                tuple(_freeze_typed_origin_key(value) for value in key),
+                tuple(dependencies),
+            ))
+    except (TypeError, ValueError):
+        return None
+    value = frozenset(origins)
+    if len(value) != len(raw_origins):
+        return None
+    try:
+        normalized_json = json.dumps(
+            origins_json(value),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+        supplied_json = json.dumps(
+            raw_origins,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        return None
+    if normalized_json != supplied_json:
+        return None
+    return value
+
+
+def _freeze_typed_origin_key(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool)) or (
+        isinstance(value, int) and not isinstance(value, bool)
+    ):
+        return value
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_typed_origin_key(item) for item in value)
+    raise ValueError("typed origin key is not canonical JSON data")
+
+
+def _internal_target_call_facts(
+    target_address: int,
+    *,
+    producer_unit_id: str,
+    event_index: int,
+    pre_call: _State,
+    inventory: _ProfileInventory,
+    internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_stack_cleanup: Mapping[int, int],
+    internal_call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
+    internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_result_relations: Mapping[
+        int, Mapping[_Origin, _Value]
+    ],
+    dependencies: frozenset[str],
+    budget: int,
+    issues: list[dict[str, Any]],
+) -> _CallFacts:
+    outputs: dict[_Origin, _Value] = {}
+    _merge_output_effects(
+        outputs,
+        _internal_call_result_outputs(
+            internal_call_result_relations.get(target_address, {}),
+            producer_unit_id=producer_unit_id,
+            event_index=event_index,
+            pre_call=pre_call,
+            inventory=inventory,
+            budget=budget,
+        ),
+        budget=budget,
+        issues=issues,
+        unit_id=producer_unit_id,
+    )
+    _merge_output_effects(
+        outputs,
+        internal_call_memory_result_relations.get(target_address, {}),
+        budget=budget,
+        issues=issues,
+        unit_id=producer_unit_id,
+    )
+    return _CallFacts(
+        internal_call_preserved_registers.get(target_address),
+        None,
+        None,
+        internal_call_stack_cleanup.get(target_address),
+        outputs,
+        memory_preserved=bool(
+            internal_call_memory_preservation.get(target_address)
+        ),
+        dependencies=dependencies,
+    )
 
 
 def _instantiate_stack_summary_value(
@@ -2614,66 +2860,57 @@ def _call_contract(
             if target_rva is None
             else (image_base + target_rva) & 0xFFFFFFFF
         )
-        preserved = (
-            None
-            if target_address is None
-            else internal_call_preserved_registers.get(target_address)
+        dependencies = internal_call_dependency_ids.get(
+            (unit_id, event_index), frozenset()
         )
-        cleanup = (
-            None
+        facts = (
+            _CallFacts(None, None, None, None, {}, dependencies=dependencies)
             if target_address is None
-            else internal_call_stack_cleanup.get(target_address)
+            else _internal_target_call_facts(
+                target_address,
+                producer_unit_id=unit_id,
+                event_index=event_index,
+                pre_call=pre_call,
+                inventory=inventory,
+                internal_call_preserved_registers=(
+                    internal_call_preserved_registers
+                ),
+                internal_call_stack_cleanup=internal_call_stack_cleanup,
+                internal_call_result_relations=internal_call_result_relations,
+                internal_call_memory_preservation=(
+                    internal_call_memory_preservation
+                ),
+                internal_call_memory_result_relations=(
+                    internal_call_memory_result_relations
+                ),
+                dependencies=dependencies,
+                budget=budget,
+                issues=issues,
+            )
         )
-        if preserved is None and bootstrap_unknown_call_preserved_registers is not None:
-            preserved = bootstrap_unknown_call_preserved_registers
+        if (
+            facts.preserved is None
+            and bootstrap_unknown_call_preserved_registers is not None
+        ):
+            facts = _CallFacts(
+                bootstrap_unknown_call_preserved_registers,
+                facts.abi,
+                facts.argument_words,
+                facts.stack_cleanup_bytes,
+                facts.outputs,
+                memory_preserved=facts.memory_preserved,
+                memory_writes=facts.memory_writes,
+                dependencies=facts.dependencies,
+            )
             issues.append({
                 "code": "bootstrap_call_preservation_used",
                 "unit_id": unit_id,
                 "event_index": event_index,
                 "call_kind": "internal_call",
                 "target_rva": target_rva,
-                "preserved_registers": sorted(preserved),
+                "preserved_registers": sorted(facts.preserved),
             })
-        if target_address is not None:
-            _merge_output_effects(
-                outputs,
-                _internal_call_result_outputs(
-                    internal_call_result_relations.get(target_address, {}),
-                    producer_unit_id=unit_id,
-                    event_index=event_index,
-                    pre_call=pre_call,
-                    inventory=inventory,
-                    budget=budget,
-                ),
-                budget=budget,
-                issues=issues,
-                unit_id=unit_id,
-            )
-            _merge_output_effects(
-                outputs,
-                internal_call_memory_result_relations.get(target_address, {}),
-                budget=budget,
-                issues=issues,
-                unit_id=unit_id,
-            )
-        return (
-            _CallFacts(
-                preserved,
-                None,
-                None,
-                cleanup,
-                outputs,
-                memory_preserved=bool(
-                    target_address is not None
-                    and internal_call_memory_preservation.get(target_address)
-                ),
-                dependencies=internal_call_dependency_ids.get(
-                    (unit_id, event_index), frozenset()
-                ),
-            ),
-            issues,
-            argument_recoveries,
-        )
+        return facts, issues, argument_recoveries
     if kind != "indirect_call":
         return _CallFacts(None, None, None, None, outputs), issues, argument_recoveries
 
@@ -2809,9 +3046,14 @@ def _call_contract(
         )
         direct_facts = _origin_call_facts(
             targets,
+            producer_unit_id=unit_id,
+            event_index=event_index,
+            pre_call=pre_call,
+            inventory=inventory,
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
             internal_call_stack_cleanup=internal_call_stack_cleanup,
+            internal_call_result_relations=internal_call_result_relations,
             internal_call_memory_preservation=(
                 internal_call_memory_preservation
             ),
@@ -2819,6 +3061,8 @@ def _call_contract(
                 internal_call_memory_result_relations
             ),
             dependencies=call_dependencies,
+            budget=budget,
+            issues=issues,
         )
         if direct_facts is not None:
             return direct_facts, issues, argument_recoveries
@@ -2837,6 +3081,7 @@ def _call_contract(
                     internal_call_preserved_registers
                 ),
                 internal_call_stack_cleanup=internal_call_stack_cleanup,
+                internal_call_result_relations=internal_call_result_relations,
                 internal_call_memory_preservation=(
                     internal_call_memory_preservation
                 ),
@@ -3648,14 +3893,23 @@ def _call_instruction_rva(
 def _origin_call_facts(
     origins: _Value,
     *,
+    producer_unit_id: str,
+    event_index: int,
+    pre_call: _State,
+    inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     internal_call_stack_cleanup: Mapping[int, int],
+    internal_call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
     internal_call_memory_preservation: Mapping[int, bool],
     internal_call_memory_result_relations: Mapping[
         int, Mapping[_Origin, _Value]
     ],
     dependencies: frozenset[str] = frozenset(),
+    budget: int,
+    issues: list[dict[str, Any]],
 ) -> _CallFacts | None:
     if origins is None or not origins:
         return None
@@ -3677,24 +3931,33 @@ def _origin_call_facts(
             continue
         if origin.kind == "exact":
             address = int(origin.key[0]) & 0xFFFFFFFF
-            preserved = internal_call_preserved_registers.get(address)
-            cleanup = internal_call_stack_cleanup.get(address)
-            if preserved is None:
-                return None
-            alternatives.append(_CallFacts(
-                preserved,
-                None,
-                None,
-                cleanup,
-                internal_call_memory_result_relations.get(address, {}),
-                memory_preserved=bool(
-                    internal_call_memory_preservation.get(address)
+            facts = _internal_target_call_facts(
+                address,
+                producer_unit_id=producer_unit_id,
+                event_index=event_index,
+                pre_call=pre_call,
+                inventory=inventory,
+                internal_call_preserved_registers=(
+                    internal_call_preserved_registers
+                ),
+                internal_call_stack_cleanup=internal_call_stack_cleanup,
+                internal_call_result_relations=internal_call_result_relations,
+                internal_call_memory_preservation=(
+                    internal_call_memory_preservation
+                ),
+                internal_call_memory_result_relations=(
+                    internal_call_memory_result_relations
                 ),
                 dependencies=dependencies,
-            ))
+                budget=budget,
+                issues=issues,
+            )
+            if facts.preserved is None:
+                return None
+            alternatives.append(facts)
             continue
         return None
-    return _combine_call_facts(alternatives)
+    return _combine_call_facts(alternatives, budget=budget)
 
 
 def _recovered_call_facts(
@@ -3710,6 +3973,9 @@ def _recovered_call_facts(
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     internal_call_stack_cleanup: Mapping[int, int],
+    internal_call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
     internal_call_memory_preservation: Mapping[int, bool],
     internal_call_memory_result_relations: Mapping[
         int, Mapping[_Origin, _Value]
@@ -3770,21 +4036,30 @@ def _recovered_call_facts(
         if target_rva is None:
             return None, issues, argument_recoveries
         target_address = (image_base + target_rva) & 0xFFFFFFFF
-        preserved = internal_call_preserved_registers.get(target_address)
-        cleanup = internal_call_stack_cleanup.get(target_address)
-        if preserved is None or cleanup is None:
-            return None, issues, argument_recoveries
-        alternatives.append(_CallFacts(
-            preserved,
-            None,
-            None,
-            cleanup,
-            internal_call_memory_result_relations.get(target_address, {}),
-            memory_preserved=bool(
-                internal_call_memory_preservation.get(target_address)
+        facts = _internal_target_call_facts(
+            target_address,
+            producer_unit_id=unit_id,
+            event_index=event_index,
+            pre_call=pre_call,
+            inventory=inventory,
+            internal_call_preserved_registers=(
+                internal_call_preserved_registers
+            ),
+            internal_call_stack_cleanup=internal_call_stack_cleanup,
+            internal_call_result_relations=internal_call_result_relations,
+            internal_call_memory_preservation=(
+                internal_call_memory_preservation
+            ),
+            internal_call_memory_result_relations=(
+                internal_call_memory_result_relations
             ),
             dependencies=dependencies,
-        ))
+            budget=budget,
+            issues=issues,
+        )
+        if facts.preserved is None or facts.stack_cleanup_bytes is None:
+            return None, issues, argument_recoveries
+        alternatives.append(facts)
     return (
         _combine_call_facts(alternatives, budget=budget),
         issues,
@@ -4141,8 +4416,7 @@ def _combine_call_facts(
             value = _join_value(value, facts.outputs[location], budget)
             if value is None:
                 break
-        if value is not None:
-            outputs[location] = value
+        outputs[location] = value
     return _CallFacts(
         frozenset(preserved),
         next(iter(abis)) if len(abis) == 1 else None,
