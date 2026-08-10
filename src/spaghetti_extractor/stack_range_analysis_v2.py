@@ -19,6 +19,7 @@ from typing import Any, Mapping, Sequence
 from .analysis_schema_v2 import CHECKED_MEMORY_RANGE_FACT_V2_FORMAT
 from .address_expression_v2 import affine_register_offset
 from .artifact_identity_v2 import canonical_sha256
+from .call_site_effects import CallSiteEffect, CallSiteId, parse_call_site_effects
 from .control_analysis_v2 import exact_control_inventory_v2
 
 
@@ -41,6 +42,7 @@ def derive_stack_range_analysis_v2(
     size_of_image: int,
     call_summaries: Mapping[str, Any] | None = None,
     indirect_recoveries: Sequence[Mapping[str, Any]] = (),
+    call_site_effects: Sequence[Mapping[str, Any]] = (),
     finite_offset_budget: int = 256,
 ) -> dict[str, Any]:
     """Derive checked ESP-relative ranges and reproduce them from empty state."""
@@ -51,6 +53,14 @@ def derive_stack_range_analysis_v2(
     roots = _root_ids(graph, normalized_units)
     stack_contract = _stack_contract(launch_assumptions)
     summaries = _complete_summary_index(call_summaries or {})
+    effects = _checked_call_site_effects(
+        call_site_effects,
+        units=normalized_units,
+        finite_value_budget=finite_offset_budget,
+    )
+    effects_sha256 = canonical_sha256([
+        effect.as_json() for effect in effects.values()
+    ])
     exact = exact_control_inventory_v2(tuple(normalized_units.values()))
     first = _run(
         units=normalized_units,
@@ -58,6 +68,7 @@ def derive_stack_range_analysis_v2(
         exact=exact,
         stack_contract=stack_contract,
         summaries=summaries,
+        call_site_effects=effects,
         indirect_recoveries=indirect_recoveries,
         finite_offset_budget=finite_offset_budget,
     )
@@ -67,6 +78,7 @@ def derive_stack_range_analysis_v2(
         exact=exact,
         stack_contract=stack_contract,
         summaries=summaries,
+        call_site_effects=effects,
         indirect_recoveries=indirect_recoveries,
         finite_offset_budget=finite_offset_budget,
     )
@@ -87,6 +99,7 @@ def derive_stack_range_analysis_v2(
         "launch_assumptions_sha256": canonical_sha256(launch_assumptions),
         "image_base": _u32(image_base, "image base"),
         "size_of_image": _positive_u32(size_of_image, "image size"),
+        "call_site_effects_sha256": effects_sha256,
     }
     if binding["image_base"] + binding["size_of_image"] > _UINT32:
         raise ValueError("PE image range wraps the 32-bit address space")
@@ -161,6 +174,7 @@ def _run(
     exact: Mapping[str, Sequence[Mapping[str, Any]]],
     stack_contract: Mapping[str, int],
     summaries: Mapping[int, Mapping[str, Any]],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     indirect_recoveries: Sequence[Mapping[str, Any]],
     finite_offset_budget: int,
 ) -> dict[str, Any]:
@@ -212,6 +226,7 @@ def _run(
             call_edges=calls.get(unit_id, ()),
             by_rva=by_rva,
             summaries=summaries,
+            call_site_effects=call_site_effects,
             recovery=(
                 recoveries.get(str(exit_by_source[unit_id]["id"]))
                 if unit_id in exit_by_source
@@ -324,6 +339,7 @@ def _successor_offsets(
     call_edges: Sequence[Mapping[str, Any]],
     by_rva: Mapping[int, str],
     summaries: Mapping[int, Mapping[str, Any]],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     recovery: Mapping[str, Any] | None,
 ) -> tuple[dict[str, set[int]], list[dict[str, Any]]]:
     semantics = unit["semantics"]
@@ -362,6 +378,7 @@ def _successor_offsets(
         })
         return transitions, frontiers
     event_index, event = call_events[0]
+    effect = call_site_effects.get(CallSiteId(unit_id, event_index))
     event_esp = _affine_esp_offset(
         _mapping(event.get("register_inputs")).get("esp")
     )
@@ -380,7 +397,9 @@ def _successor_offsets(
         target = by_rva.get(target_rva) if isinstance(target_rva, int) else None
         if target is not None:
             transitions[target].update(value + event_esp - 4 for value in offsets)
-        cleanup = _internal_cleanup(target_rva, summaries)
+        cleanup = _call_effect_cleanup(effect)
+        if effect is None:
+            cleanup = _internal_cleanup(target_rva, summaries)
         if cleanup is None:
             frontiers.append({
                 "status": "incomplete",
@@ -397,7 +416,9 @@ def _successor_offsets(
         return transitions, frontiers
 
     if kind == "external_call":
-        cleanup = _external_cleanup(event)
+        cleanup = _call_effect_cleanup(effect)
+        if effect is None:
+            cleanup = _external_cleanup(event)
         disposition = _mapping(event.get("abi_contract")).get("disposition")
         if cleanup is None or disposition not in {"returns", "may_return"}:
             if disposition not in {"terminates", "noreturn"}:
@@ -414,7 +435,12 @@ def _successor_offsets(
                 )
         return transitions, frontiers
 
-    cleanup, target_units = _indirect_cleanup(recovery, summaries=summaries)
+    recovery_cleanup, target_units = _indirect_cleanup(
+        recovery, summaries=summaries
+    )
+    cleanup = _call_effect_cleanup(effect)
+    if effect is None:
+        cleanup = recovery_cleanup
     for target in target_units:
         transitions[target].update(value + event_esp - 4 for value in offsets)
     if cleanup is None:
@@ -542,6 +568,7 @@ def validate_checked_stack_range_facts_v2(
     launch_assumptions_sha256: str,
     image_base: int,
     size_of_image: int,
+    call_site_effects_sha256: str | None = None,
 ) -> frozenset[str]:
     """Replay exact stack facts and return their authorized unit IDs."""
 
@@ -573,6 +600,14 @@ def validate_checked_stack_range_facts_v2(
             "launch_assumptions_sha256": launch_assumptions_sha256,
             "image_base": image_base,
             "size_of_image": size_of_image,
+            "call_site_effects_sha256": (
+                _digest(
+                    call_site_effects_sha256,
+                    "call-site effects SHA-256",
+                )
+                if call_site_effects_sha256 is not None
+                else canonical_sha256([])
+            ),
         }
         if dict(binding) != expected_binding:
             raise ValueError("checked stack-range fact authority binding is stale")
@@ -601,6 +636,7 @@ def validate_stack_range_analysis_v2(
     size_of_image: int,
     call_summaries: Mapping[str, Any] | None = None,
     indirect_recoveries: Sequence[Mapping[str, Any]] = (),
+    call_site_effects: Sequence[Mapping[str, Any]] = (),
     finite_offset_budget: int = 256,
 ) -> dict[str, Mapping[str, Any]]:
     """Replay the complete stack analysis and index exact spatial facts.
@@ -620,6 +656,7 @@ def validate_stack_range_analysis_v2(
         size_of_image=size_of_image,
         call_summaries=call_summaries,
         indirect_recoveries=indirect_recoveries,
+        call_site_effects=call_site_effects,
         finite_offset_budget=finite_offset_budget,
     )
     if dict(analysis) != expected:
@@ -713,6 +750,45 @@ def _complete_summary_index(value: Mapping[str, Any]) -> dict[int, Mapping[str, 
         if isinstance(rva, int) and not isinstance(rva, bool):
             result[rva] = raw
     return result
+
+
+def _checked_call_site_effects(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    units: Mapping[str, Mapping[str, Any]],
+    finite_value_budget: int,
+) -> dict[CallSiteId, CallSiteEffect]:
+    effects = parse_call_site_effects(
+        rows,
+        finite_value_budget=finite_value_budget,
+    )
+    for site, effect in effects.items():
+        unit = units.get(site.unit_id)
+        semantics = unit.get("semantics") if isinstance(unit, Mapping) else None
+        events = (
+            semantics.get("external_events")
+            if isinstance(semantics, Mapping)
+            else None
+        )
+        if (
+            not isinstance(events, list)
+            or not 0 <= site.event_index < len(events)
+            or not isinstance(events[site.event_index], Mapping)
+            or events[site.event_index].get("kind") != effect.transfer_kind
+        ):
+            raise ValueError(
+                "call-site effect does not bind an exact stack transition"
+            )
+    return dict(sorted(
+        effects.items(),
+        key=lambda item: (item[0].unit_id, item[0].event_index),
+    ))
+
+
+def _call_effect_cleanup(effect: CallSiteEffect | None) -> int | None:
+    if effect is None or effect.stack_frame_status != "complete":
+        return None
+    return effect.stack_cleanup_bytes
 
 
 def _internal_cleanup(

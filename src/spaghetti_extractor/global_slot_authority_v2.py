@@ -138,6 +138,7 @@ def replay_global_slot_authority_v2(
         stack_launch_assumptions=launch_assumptions,
         stack_call_summaries=call_summaries,
         stack_indirect_recoveries=recoveries,
+        stack_call_site_effects=call_site_effects,
         stack_finite_offset_budget=finite_value_budget,
     )
     if dict(submitted_analysis) == expected:
@@ -169,6 +170,7 @@ def build_global_slot_authority_v2(
     stack_launch_assumptions: Mapping[str, Any] | None = None,
     stack_call_summaries: Mapping[str, Any] | None = None,
     stack_indirect_recoveries: Sequence[Mapping[str, Any]] = (),
+    stack_call_site_effects: Sequence[Mapping[str, Any]] = (),
     stack_finite_offset_budget: int = 256,
 ) -> dict[str, Any]:
     """Build only facts that complete cold replay can authorize."""
@@ -247,6 +249,7 @@ def build_global_slot_authority_v2(
                     size_of_image=size_of_image,
                     call_summaries=stack_call_summaries,
                     indirect_recoveries=stack_indirect_recoveries,
+                    call_site_effects=stack_call_site_effects,
                     finite_offset_budget=stack_finite_offset_budget,
                 )
                 expected_spatial = sorted(

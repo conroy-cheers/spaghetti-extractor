@@ -15,6 +15,7 @@ from typing import Any, Mapping, Sequence
 from .control_analysis_v2 import exact_control_inventory_v2
 from .analysis_schema_v2 import ROOTED_CONTROL_GRAPH_V2_FORMAT
 from .artifact_identity_v2 import canonical_sha256
+from .call_site_effects import parse_call_site_effects
 from .mutable_slot_candidates_v2 import required_recovery_slot_rvas_v2
 
 
@@ -248,6 +249,30 @@ def validate_joint_replay_v2(
         isinstance(stack_binding, Mapping)
         and stack_binding.get("rooted_graph_id") == cold_graph.get("id")
     )
+    call_effect_binding_valid = False
+    try:
+        operation = interprocedural.get("operation_provenance")
+        raw_call_effects = (
+            operation.get("call_site_effects", [])
+            if isinstance(operation, Mapping)
+            else []
+        )
+        if not isinstance(raw_call_effects, list):
+            raise ValueError("call-site effect inventory is not an array")
+        parsed_call_effects = parse_call_site_effects(
+            raw_call_effects,
+            finite_value_budget=256,
+        )
+        call_effects_sha256 = canonical_sha256([
+            effect.as_json() for effect in parsed_call_effects.values()
+        ])
+        call_effect_binding_valid = (
+            isinstance(stack_binding, Mapping)
+            and stack_binding.get("call_site_effects_sha256")
+            == call_effects_sha256
+        )
+    except (TypeError, ValueError):
+        call_effect_binding_valid = False
     (
         slot_inventory_valid,
         missing_slots,
@@ -265,6 +290,7 @@ def validate_joint_replay_v2(
             and stack_replay.get("deterministic") is True
             and stack_replay.get("empty_initial_state") is True
             and stack_binding_valid
+            and call_effect_binding_valid
         ),
         "slot_replay_complete": global_slot_analysis.get("status") == "complete",
         "slot_authority_valid": global_slot_authority.get("status") == "complete",
@@ -281,6 +307,16 @@ def validate_joint_replay_v2(
             "expected_graph_id": cold_graph.get("id"),
             "observed_graph_id": (
                 stack_binding.get("rooted_graph_id")
+                if isinstance(stack_binding, Mapping)
+                else None
+            ),
+        })
+    if not call_effect_binding_valid:
+        issues.append({
+            "status": "violated",
+            "code": "authoritative_stack_call_effect_binding_mismatch",
+            "observed_sha256": (
+                stack_binding.get("call_site_effects_sha256")
                 if isinstance(stack_binding, Mapping)
                 else None
             ),

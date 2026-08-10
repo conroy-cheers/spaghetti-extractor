@@ -883,7 +883,8 @@ let
                   authority_only=True,
               )
 
-          def derive_stack_ranges(graph, call_summaries, recoveries):
+          def derive_stack_ranges(graph, interprocedural):
+              operation = interprocedural.get("operation_provenance", {})
               return derive_stack_range_analysis_v2(
                   units=units,
                   graph=graph,
@@ -892,8 +893,11 @@ let
                   machine_ir_sha256=machine_ir_sha256,
                   image_base=binary.image_base,
                   size_of_image=binary.size_of_image,
-                  call_summaries=call_summaries,
-                  indirect_recoveries=recoveries,
+                  call_summaries=interprocedural.get("call_summaries", {}),
+                  indirect_recoveries=interprocedural.get(
+                      "recovered_targets", []
+                  ),
+                  call_site_effects=operation.get("call_site_effects", []),
                   finite_offset_budget=analysis_finite_value_budget,
               )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 
+from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
 from spaghetti_extractor.control_analysis_v2 import exact_control_inventory_v2
 from spaghetti_extractor.joint_interprocedural_analysis_v2 import (
     build_proposal_control_graph_v2,
@@ -31,6 +32,13 @@ def _unit(unit_id: str, rva: int, *, indirect: bool = False) -> dict[str, object
 def _base() -> dict[str, object]:
     return {
         "roots": [{"unit_id": "root", "kind": "pe_entrypoint"}],
+    }
+
+
+def _stack_binding(graph_id: str) -> dict[str, object]:
+    return {
+        "rooted_graph_id": graph_id,
+        "call_site_effects_sha256": canonical_sha256([]),
     }
 
 
@@ -146,7 +154,7 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
             proposal_recoveries=[proposal],
             stack_range_analysis={
                 "status": "complete",
-                "binding": {"rooted_graph_id": graph["id"]},
+                "binding": _stack_binding(str(graph["id"])),
                 "cold_replay": {
                     "status": "complete",
                     "deterministic": True,
@@ -185,7 +193,7 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
             proposal_recoveries=[],
             stack_range_analysis={
                 "status": "complete",
-                "binding": {"rooted_graph_id": "stale-graph"},
+                "binding": _stack_binding("stale-graph"),
                 "cold_replay": {
                     "status": "complete",
                     "deterministic": True,
@@ -222,7 +230,7 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
             proposal_recoveries=[],
             stack_range_analysis={
                 "status": "complete",
-                "binding": {"rooted_graph_id": graph["id"]},
+                "binding": _stack_binding(str(graph["id"])),
                 "cold_replay": {
                     "status": "complete",
                     "deterministic": True,
@@ -274,7 +282,7 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
             proposal_recoveries=[],
             stack_range_analysis={
                 "status": "complete",
-                "binding": {"rooted_graph_id": graph["id"]},
+                "binding": _stack_binding(str(graph["id"])),
                 "cold_replay": {
                     "status": "complete",
                     "deterministic": True,

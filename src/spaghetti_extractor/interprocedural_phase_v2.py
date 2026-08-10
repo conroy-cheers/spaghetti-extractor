@@ -140,9 +140,21 @@ def derive_interprocedural_result_v2(
         if isinstance(binding, Mapping)
         and isinstance(binding.get("rooted_graph_id"), str)
     }
+    stack_call_effect_hashes = {
+        str(binding.get("call_site_effects_sha256"))
+        for fact in checked_stack_range_facts
+        if isinstance(fact, Mapping)
+        for binding in (fact.get("authority_binding"),)
+        if isinstance(binding, Mapping)
+        and isinstance(binding.get("call_site_effects_sha256"), str)
+    }
     if checked_stack_range_facts and len(stack_graph_ids) != 1:
         raise InterproceduralPhaseV2Error(
             "checked stack-range facts do not share one rooted graph binding"
+        )
+    if checked_stack_range_facts and len(stack_call_effect_hashes) != 1:
+        raise InterproceduralPhaseV2Error(
+            "checked stack-range facts do not share one call-effect binding"
         )
     if checked_stack_range_facts and stack_launch_assumptions_sha256 is None:
         raise InterproceduralPhaseV2Error(
@@ -162,6 +174,7 @@ def derive_interprocedural_result_v2(
                 ),
                 image_base=binary.image_base,
                 size_of_image=binary.size_of_image,
+                call_site_effects_sha256=next(iter(stack_call_effect_hashes)),
             )
         except ValueError as exc:
             raise InterproceduralPhaseV2Error(

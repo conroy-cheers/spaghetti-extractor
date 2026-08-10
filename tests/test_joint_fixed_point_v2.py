@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
 from spaghetti_extractor.joint_fixed_point_v2 import (
     JointFixedPointCallbacks,
     derive_joint_fixed_point_v2,
@@ -45,7 +46,10 @@ def _stack(
     generation = int(call_summaries.get("generation", 0))
     return {
         "status": "complete",
-        "binding": {"rooted_graph_id": graph_id},
+        "binding": {
+            "rooted_graph_id": graph_id,
+            "call_site_effects_sha256": canonical_sha256([]),
+        },
         "entry_offsets": {},
         "checked_range_facts": [{"id": f"stack-{generation}"}],
         "cold_replay": {
@@ -80,8 +84,9 @@ class JointFixedPointV2Tests(unittest.TestCase):
             proposal_recoveries=[{"id": "exit-a"}],
             callbacks=JointFixedPointCallbacks(
                 derive_interprocedural=interprocedural,
-                derive_stack_ranges=lambda graph, summaries, _recoveries: _stack(
-                    dict(summaries), graph_id=str(graph["id"])
+                derive_stack_ranges=lambda graph, interprocedural: _stack(
+                    dict(interprocedural["call_summaries"]),
+                    graph_id=str(graph["id"]),
                 ),
                 derive_global_slots=lambda _graph, _ranges: {"status": "complete"},
                 derive_global_slot_authority=authority,
@@ -135,8 +140,9 @@ class JointFixedPointV2Tests(unittest.TestCase):
             proposal_recoveries=[],
             callbacks=JointFixedPointCallbacks(
                 derive_interprocedural=interprocedural,
-                derive_stack_ranges=lambda graph, summaries, _recoveries: _stack(
-                    dict(summaries), graph_id=str(graph["id"])
+                derive_stack_ranges=lambda graph, interprocedural: _stack(
+                    dict(interprocedural["call_summaries"]),
+                    graph_id=str(graph["id"]),
                 ),
                 derive_global_slots=lambda _graph, _ranges: {"status": "complete"},
                 derive_global_slot_authority=authority,
@@ -164,8 +170,9 @@ class JointFixedPointV2Tests(unittest.TestCase):
             proposal_recoveries=[],
             callbacks=JointFixedPointCallbacks(
                 derive_interprocedural=interprocedural,
-                derive_stack_ranges=lambda graph, summaries, _recoveries: _stack(
-                    dict(summaries), graph_id=str(graph["id"])
+                derive_stack_ranges=lambda graph, interprocedural: _stack(
+                    dict(interprocedural["call_summaries"]),
+                    graph_id=str(graph["id"]),
                 ),
                 derive_global_slots=lambda _graph, _ranges: {"status": "complete"},
                 derive_global_slot_authority=lambda *_args: {
@@ -194,7 +201,7 @@ class JointFixedPointV2Tests(unittest.TestCase):
                 proposal_seed_count=0 if recoveries is None else len(recoveries),
             )
 
-        def stack(graph, _summaries, _recoveries):
+        def stack(graph, _interprocedural):
             return {
                 **_stack({}, graph_id=str(graph["id"])),
                 "entry_offsets": {"root": [0], "continuation": [-8, -8]},

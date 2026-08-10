@@ -40,7 +40,6 @@ class JointFixedPointCallbacks:
         [
             Mapping[str, Any],
             Mapping[str, Any],
-            Sequence[Mapping[str, Any]],
         ],
         Mapping[str, Any],
     ]
@@ -292,11 +291,9 @@ def _derive_graph_evidence(
     interprocedural: Mapping[str, Any],
     callbacks: JointFixedPointCallbacks,
 ) -> tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
-    recoveries = _mapping_rows(interprocedural.get("recovered_targets"))
     stack_ranges = callbacks.derive_stack_ranges(
         graph,
-        _mapping(interprocedural.get("call_summaries")),
-        recoveries,
+        interprocedural,
     )
     slot_analysis = (
         callbacks.derive_global_slots(graph, stack_ranges)

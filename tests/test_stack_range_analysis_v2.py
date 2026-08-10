@@ -101,11 +101,46 @@ def _launch() -> dict[str, object]:
     }
 
 
+def _call_effect(
+    unit_id: str,
+    *,
+    transfer_kind: str,
+    cleanup_bytes: int | None,
+) -> dict[str, object]:
+    complete = cleanup_bytes is not None
+    return {
+        "format": "stage-a-call-site-effect-v2",
+        "unit_id": unit_id,
+        "event_index": 0,
+        "transfer_kind": transfer_kind,
+        "status": "complete" if complete else "incomplete",
+        "register_frame": {
+            "status": "not_applicable",
+            "preserved_registers": [],
+        },
+        "stack_frame": {
+            "status": "complete" if complete else "incomplete",
+            "stack_cleanup_bytes": cleanup_bytes,
+        },
+        "result_frame": {"status": "not_applicable", "outputs": []},
+        "memory_frame": {
+            "status": "not_applicable",
+            "preserved": False,
+            "writes": [],
+        },
+        "abi": None,
+        "argument_words": None,
+        "dependencies": [],
+        "failure_codes": [] if complete else ["call_stack_frame_incomplete"],
+    }
+
+
 def _derive(
     units: list[dict[str, object]],
     *,
     summaries: dict[str, object] | None = None,
     recoveries: list[dict[str, object]] | None = None,
+    call_site_effects: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return derive_stack_range_analysis_v2(
         units=units,
@@ -117,6 +152,9 @@ def _derive(
         size_of_image=IMAGE_SIZE,
         call_summaries=summaries,
         indirect_recoveries=[] if recoveries is None else recoveries,
+        call_site_effects=(
+            [] if call_site_effects is None else call_site_effects
+        ),
     )
 
 
@@ -441,6 +479,104 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
             "indirect_call_frame_unresolved",
             {row["code"] for row in unresolved["frontiers"]},
         )
+
+    def test_checked_call_effect_carries_stack_frame_across_indirect_call(self) -> None:
+        call = {
+            "kind": "indirect_call",
+            "target": _reg("edi"),
+            "register_inputs": {"esp": _add(-4)},
+        }
+        units = [
+            _unit(
+                "caller",
+                0x1000,
+                target_rvas=[0x1010],
+                stack_delta=None,
+                external_events=[call],
+            ),
+            _unit("continuation", 0x1010, memory_offsets=[0]),
+        ]
+        effect = _call_effect(
+            "caller",
+            transfer_kind="indirect_call",
+            cleanup_bytes=4,
+        )
+
+        result = _derive(units, call_site_effects=[effect])
+
+        self.assertEqual(result["entry_offsets"]["continuation"], [0])
+        self.assertEqual(
+            result["binding"]["call_site_effects_sha256"],
+            canonical_sha256([effect]),
+        )
+        self.assertNotIn(
+            "indirect_call_frame_unresolved",
+            {row["code"] for row in result["frontiers"]},
+        )
+
+    def test_incomplete_call_effect_cannot_fall_back_to_recovery_abi(self) -> None:
+        call = {
+            "kind": "indirect_call",
+            "target": _reg("edi"),
+            "register_inputs": {"esp": _add(-4)},
+        }
+        units = [
+            _unit(
+                "caller",
+                0x1000,
+                target_rvas=[0x1010],
+                stack_delta=None,
+                external_events=[call],
+            ),
+            _unit("continuation", 0x1010, memory_offsets=[0]),
+        ]
+        from spaghetti_extractor.control_analysis_v2 import exact_control_inventory_v2
+
+        exit_id = exact_control_inventory_v2(units)["indirect_exits"][0]["id"]
+        recovery = {
+            "id": exit_id,
+            "status": "recovered",
+            "kind": "indirect_call",
+            "target_unit_ids": [],
+            "target_rvas": [],
+            "external_targets": [{
+                "argument_words": 1,
+                "disposition": "returns",
+                "abi": {
+                    "template": "pe32-stdcall-v1",
+                    "callee_cleanup": True,
+                },
+            }],
+        }
+
+        result = _derive(
+            units,
+            recoveries=[recovery],
+            call_site_effects=[_call_effect(
+                "caller",
+                transfer_kind="indirect_call",
+                cleanup_bytes=None,
+            )],
+        )
+
+        self.assertNotIn("continuation", result["entry_offsets"])
+        self.assertIn(
+            "indirect_call_frame_unresolved",
+            {row["code"] for row in result["frontiers"]},
+        )
+
+    def test_call_effect_requires_its_exact_machine_event(self) -> None:
+        units = [_unit("entry", 0x1000)]
+
+        with self.assertRaisesRegex(ValueError, "exact stack transition"):
+            _derive(
+                units,
+                call_site_effects=[_call_effect(
+                    "entry",
+                    transfer_kind="indirect_call",
+                    cleanup_bytes=0,
+                )],
+            )
 
 
 if __name__ == "__main__":
