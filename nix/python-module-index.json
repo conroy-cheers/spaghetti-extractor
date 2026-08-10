@@ -480,6 +480,13 @@
       ],
       "path": "src/spaghetti_extractor/control_analysis_v2.py"
     },
+    "spaghetti_extractor.control_disposition_profile": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.machine_import_profiles"
+      ],
+      "path": "src/spaghetti_extractor/control_disposition_profile.py"
+    },
     "spaghetti_extractor.control_invariant_phase_v2": {
       "dependencies": [
         "spaghetti_extractor",

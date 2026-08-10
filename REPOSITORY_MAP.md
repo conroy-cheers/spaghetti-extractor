@@ -118,6 +118,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `checked_memory_address_domain_v2.py` | Exhaustive bounded-context address-domain certificates for one exact memory event; these authorize conditional mutable-slot reads without turning ordinary provenance observations into coverage claims. |
 | `authority_v2_cli.py` | Stable command-line adapters for emitting and validating v2 authority artifacts. |
 | `control_analysis_v2.py` | Exact unit/control inventories and rooted closure, independent of legacy provenance. |
+| `control_disposition_profile.py` | Projects full import profiles onto the stable fixed-arity no-return facts required by structural control extraction. |
 | `entry_fact_derivation_v2.py` | Immutable launch/IAT facts and fail-closed mutable-slot promotion inputs. |
 | `entry_state_analysis_v2.py` | Exact PE/callback entry contracts and checked mutable-global invariants. |
 | `mutable_slot_candidates_v2.py` | Stable rooted discovery of writable 32-bit image slots for point-sensitive replay. |
@@ -294,6 +295,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-a-roundtrip-corpus.nix` | Generated static corpus and qualification result. |
 | `bochs-conformance.nix` | Pinned batched Bochs adapter. |
 | `singlestep-80386-conformance.nix` | Hardware-vector corpus packaging. |
+| `machine-import-control-profile.nix` | Content-addressed no-return import projection that isolates machine IR from ordinary API-profile edits. |
 | `stage-b-component-analysis.nix` | Original inventory through component proposals. |
 | `stage-b-component-discovery.nix` | Independent proposal phase. |
 | `stage-b-component-selection.nix` | Authored selection materialization. |

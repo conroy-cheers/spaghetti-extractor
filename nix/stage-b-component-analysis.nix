@@ -65,21 +65,6 @@ let
     [ externalProfile ]
     ++ additionalMachineImportProfiles
     ++ externalInterfaceProfiles;
-  machineImportProfilesJson = builtins.toJSON (
-    map toString machineImportProfiles
-  );
-  externalInterfaceProfilesJson = builtins.toJSON (
-    map toString externalInterfaceProfiles
-  );
-  externalOperationProfilesJson = builtins.toJSON (
-    map toString externalOperationProfiles
-  );
-  callableExternalProfilesJson = builtins.toJSON (
-    map toString callableExternalProfiles
-  );
-  internalFunctionContractProfilesJson = builtins.toJSON (
-    map toString internalFunctionContractProfiles
-  );
   selectedProfileInventory = pkgs.writeText
     "${namePrefix}-selected-profile-inventory-v2.json"
     (builtins.toJSON {
@@ -91,6 +76,17 @@ let
       internal_function_contract_profiles =
         map toString internalFunctionContractProfiles;
     });
+
+  # Exact extraction depends only on whether a fixed-arity import returns.
+  # Full ABI/effect/profile bindings belong to interprocedural and external-site
+  # phases.  As a CA artifact this projection retains the same output path when
+  # an unrelated returning import contract changes.
+  machineImportControlProfile = import ./machine-import-control-profile.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = staticPythonSource;
+    profiles = machineImportProfiles;
+    name = "${namePrefix}-machine-import-control-dispositions-v1";
+  };
 
   originalInventory = pkgs.runCommand
     "${namePrefix}-original-inventory-v1"
@@ -190,7 +186,7 @@ let
         ${inputStateMachine} \
         ${lib.escapeShellArg (toString original)} \
         ${staticExport}/reference-contract.json \
-        ${lib.escapeShellArg machineImportProfilesJson} \
+        ${lib.escapeShellArg (builtins.toJSON [ "${machineImportControlProfile}/control-dispositions.json" ])} \
         ${if controlManifest == null then "-" else "${controlManifest}/machine-ir-manifest.json"} \
         "$out/state-machine.jsonl" \
         "$out/rooted-control-closure.json" <<'PY'
@@ -2056,6 +2052,7 @@ in
   inherit
     originalInventory
     staticExport
+    machineImportControlProfile
     directStateMachine
     directPreparedMachineIr
     provisionalMachineIr

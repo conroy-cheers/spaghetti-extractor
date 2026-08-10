@@ -2866,6 +2866,41 @@ class InterfaceProvenanceTests(unittest.TestCase):
             "registration",
         )
 
+        selected_contract = dict(event["abi_contract"])
+        selected_from_profile = self._selected_abi(
+            identity,
+            argument_words=1,
+            contract=selected_contract,
+        )
+        unannotated_event = {
+            key: value for key, value in event.items() if key != "abi_contract"
+        }
+        unannotated_registration = unit(
+            "registration",
+            0x1500,
+            memory=writes,
+            events=[unannotated_event],
+            ordered=[
+                *writes,
+                {**unannotated_event, "instruction_rva": 0x1502},
+            ],
+        )
+        profile_result = self._run(
+            [unannotated_registration, unit("callback", 0x1800), indirect_call()],
+            [edge("registration", "call")],
+            roots=["registration"],
+            extra_import_abis={identity: selected_from_profile},
+        )
+        profile_evidence = profile_result["callback_registrations"][0]
+        self.assertEqual(profile_evidence["status"], "complete", profile_evidence)
+        self.assertEqual(profile_evidence["target_unit_ids"], ["callback"])
+        self.assertEqual(profile_evidence["profile_binding"], {
+            "profile_id": "fixture",
+            "profile_sha256": "1" * 64,
+            "entry_key": "machine_import_signatures",
+            "entry_index": 1,
+        })
+
         event_contract = event["abi_contract"]
         assert isinstance(event_contract, dict)
         event_contract["world_effect"] = "nativeCallthrough"

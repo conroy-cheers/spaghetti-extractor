@@ -255,6 +255,12 @@
               pythonEnv = testPython;
               pythonSource = testSource;
             };
+          machineImportControlProfileFixture =
+            import ./nix/tests/machine-import-control-profile.nix {
+              inherit pkgs;
+              pythonEnv = testPython;
+              pythonSource = testSource;
+            };
         in {
           import-smoke = pkgs.runCommand "spaghetti-extractor-import-smoke" {
             nativeBuildInputs = [ package ];
@@ -292,6 +298,7 @@
               touch "$out"
             '';
           static-hybrid-v2-phase-graph = staticHybridV2GraphFixture.check;
+          machine-import-control-profile = machineImportControlProfileFixture;
           isa-kernel = self.packages.${system}.isa-kernel;
           roundtrip = self.packages.${system}.roundtrip-qualification;
         });

@@ -181,6 +181,15 @@ unit once; an expanded rooted pass reuses exact input-hash-bound units and only
 prepares newly discovered transfers. Final manifests recompute graph-derived
 facts rather than accepting cached reachability.
 
+The direct rooted pass consumes a canonical control-disposition projection of
+the selected import profiles.  That projection contains only exact fixed-arity
+imports proven not to return.  Argument inventories, memory/resource effects,
+callbacks, and source-profile bindings are deliberately excluded and enter at
+the interprocedural/external-site phases.  Adding or repairing an ordinary
+returning API contract therefore cannot invalidate the exact state machine or
+machine IR; changing a no-return disposition correctly invalidates rooted
+control and its descendants.
+
 Analysis derivations preserve structurally valid `incomplete` artifacts so
 their blocker inventories are cacheable and inspectable. Policy enforcement is
 kept in a separate closure gate; an incomplete analysis must not discard hours

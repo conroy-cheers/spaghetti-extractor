@@ -4572,6 +4572,7 @@ def _call_contract(
     if kind == "external_call":
         identity = _event_import_identity(event)
         selected = import_abis.get(identity) if identity is not None else None
+        machine_contract = _selected_machine_import_contract(event, selected)
         if selected is not None:
             _merge_output_effects(
                 outputs,
@@ -4592,6 +4593,7 @@ def _call_contract(
             inventory=inventory,
             known_slots=known_slots,
             budget=budget,
+            contract=machine_contract,
         )
         if callback is not None:
             callback_evidence, callback_arguments = callback
@@ -4606,7 +4608,7 @@ def _call_contract(
                     "instruction_rva": event.get("instruction_rva"),
                     "failure": callback_evidence["failure"]["code"],
                 })
-            raw_contract = _mapping(event.get("abi_contract"))
+            raw_contract = _mapping(machine_contract)
             callback_result = parse_callback_result(
                 raw_contract,
                 context=f"{unit_id} external event {event_index}",
@@ -5588,8 +5590,8 @@ def _machine_callback_registration(
     inventory: _ProfileInventory,
     known_slots: Mapping[int, _Value],
     budget: int,
+    contract: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-    contract = event.get("abi_contract")
     if not isinstance(contract, Mapping) or not (
         contract.get("world_effect") == "callbackRegistration"
         or contract.get("callback_effect") == "explicit"
@@ -5757,6 +5759,33 @@ def _machine_callback_registration(
         "target_unit_ids": sorted(target[1] for target in targets),
         "failure": None,
     }, recovery)
+
+
+def _selected_machine_import_contract(
+    event: Mapping[str, Any],
+    selected: SelectedImportABI | None,
+) -> dict[str, Any] | None:
+    """Return the canonical selected contract for one direct import site.
+
+    Machine IR may carry an old diagnostic contract for compatibility, but v2
+    interprocedural authority comes from the independently selected profile
+    inventory.  The fallback keeps profile-free unit fixtures and v1 artifacts
+    readable without allowing them to override a selected contract.
+    """
+
+    if selected is not None and isinstance(selected.contract, Mapping):
+        contract = copy.deepcopy(dict(selected.contract))
+        contract["argument_words"] = selected.argument_words
+        contract["contract_id"] = contract.get("id", contract.get("contract_id"))
+        contract["profile_binding"] = {
+            "profile_id": selected.profile_id,
+            "profile_sha256": selected.profile_sha256,
+            "entry_key": selected.entry_key,
+            "entry_index": selected.entry_index,
+        }
+        return contract
+    observed = event.get("abi_contract")
+    return copy.deepcopy(dict(observed)) if isinstance(observed, Mapping) else None
 
 
 def _callback_activation_evidence(

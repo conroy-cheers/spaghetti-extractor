@@ -18,6 +18,9 @@ from spaghetti_extractor.machine_import_profiles import (
     MachineImportProfileError,
     load_machine_import_profile_set,
 )
+from spaghetti_extractor.control_disposition_profile import (
+    build_control_disposition_profile,
+)
 from spaghetti_extractor.stage_b_state_machine import (
     _annotate_machine_import_arguments,
     _machine_import_contracts,
@@ -153,6 +156,88 @@ def _scheduled_call_row() -> dict[str, object]:
 
 
 class MachineImportProfileTests(unittest.TestCase):
+    def test_control_disposition_projection_ignores_returning_contracts(self) -> None:
+        terminating = {
+            "id": "exit",
+            "import": {"dll": "fixture.dll", "symbol": "Exit"},
+            "abi_template": "pe32-stdcall-v1",
+            "argument_words": 1,
+            "disposition": "terminates",
+        }
+        base = {
+            "format": "stage-a-static-machine-import-profile-v1",
+            "id": "base",
+            "default_callback_effect": "none",
+            "machine_import_signatures": [terminating],
+        }
+        extended = {
+            **base,
+            "id": "extended",
+            "machine_import_signatures": [
+                {
+                    "id": "ordinary",
+                    "import": {"dll": "fixture.dll", "symbol": "Ordinary"},
+                    "abi_template": "pe32-stdcall-v1",
+                    "argument_words": 3,
+                    "disposition": "returns",
+                },
+                terminating,
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            base_path = directory / "base.json"
+            extended_path = directory / "extended.json"
+            base_path.write_text(json.dumps(base), encoding="utf-8")
+            extended_path.write_text(json.dumps(extended), encoding="utf-8")
+
+            base_projection = build_control_disposition_profile([base_path])
+            extended_projection = build_control_disposition_profile(
+                [extended_path]
+            )
+
+        self.assertEqual(base_projection, extended_projection)
+        self.assertEqual(
+            base_projection["machine_import_signatures"],
+            [{
+                "id": "control-disposition:fixture.dll!Exit",
+                "import": {"dll": "fixture.dll", "symbol": "Exit"},
+                "abi_template": "pe32-stdcall-v1",
+                "argument_words": 1,
+                "disposition": "terminates",
+            }],
+        )
+
+    def test_control_disposition_projection_tracks_control_changes(self) -> None:
+        def profile(words: int) -> dict:
+            return {
+                "format": "stage-a-static-machine-import-profile-v1",
+                "id": f"fixture-{words}",
+                "machine_import_signatures": [{
+                    "id": "exit",
+                    "import": {"dll": "fixture.dll", "ordinal": 7},
+                    "abi_template": "pe32-cdecl-v1",
+                    "argument_words": words,
+                    "disposition": "terminates",
+                }],
+            }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            first = directory / "first.json"
+            second = directory / "second.json"
+            first.write_text(json.dumps(profile(1)), encoding="utf-8")
+            second.write_text(json.dumps(profile(2)), encoding="utf-8")
+
+            first_projection = build_control_disposition_profile([first])
+            second_projection = build_control_disposition_profile([second])
+
+        self.assertNotEqual(first_projection, second_projection)
+        self.assertEqual(
+            first_projection["machine_import_signatures"][0]["id"],
+            "control-disposition:fixture.dll!ordinal-7",
+        )
+
     def test_runtime_profiles_pin_reviewed_pe32_abi_and_effects(self) -> None:
         profile_set = load_machine_import_profile_set([
             _REPOSITORY_ROOT / "profiles/pe32-msvcrt-machine-runtime-v1.json"

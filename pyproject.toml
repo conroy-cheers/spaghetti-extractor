@@ -36,6 +36,7 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
   "nix/bochs-conformance.nix",
   "nix/ca-python-json-phase.nix",
   "nix/callable-external-runtime-contract.py",
+  "nix/machine-import-control-profile.nix",
   "nix/python-module-closure.nix",
   "nix/python-module-index.json",
   "nix/singlestep-80386-conformance.nix",
