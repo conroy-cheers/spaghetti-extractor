@@ -706,6 +706,8 @@ let
         };
         program = ''
           import hashlib
+          import sys
+          import time
 
           from spaghetti_extractor.control_analysis_v2 import (
               derive_rooted_control_closure_v2,
@@ -850,6 +852,7 @@ let
                   finite_value_budget=analysis_finite_value_budget,
                   proposal_only=static_recoveries is not None,
                   authority_only=static_recoveries is None,
+                  progress=emit_progress,
               )
 
           def derive_inductive_interprocedural(
@@ -881,6 +884,7 @@ let
                   finite_value_budget=analysis_finite_value_budget,
                   proposal_only=False,
                   authority_only=True,
+                  progress=emit_progress,
               )
 
           def derive_stack_ranges(graph, interprocedural):
@@ -1016,6 +1020,25 @@ let
                   finite_value_budget=analysis_finite_value_budget,
               )
 
+          progress_started = time.monotonic()
+
+          def emit_progress(phase, details):
+              print(
+                  json.dumps(
+                      {
+                          "event": "joint_interprocedural_progress_v2",
+                          "phase": phase,
+                          "elapsed_seconds": round(
+                              time.monotonic() - progress_started, 3
+                          ),
+                          **details,
+                      },
+                      sort_keys=True,
+                  ),
+                  file=sys.stderr,
+                  flush=True,
+              )
+
           payload = derive_joint_fixed_point_v2(
               proposal_graph=proposal_graph,
               proposal_recoveries=proposals,
@@ -1039,6 +1062,7 @@ let
                       derive_dependency_scoped_global_slots
                   ),
               ),
+              progress=emit_progress,
           )
           output.write_text(
               json.dumps(payload, indent=2, sort_keys=True) + "\n",

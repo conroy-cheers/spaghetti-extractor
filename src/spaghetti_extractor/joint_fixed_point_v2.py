@@ -79,6 +79,7 @@ def derive_joint_fixed_point_v2(
     proposal_call_frame_hypotheses: Sequence[Mapping[str, Any]] = (),
     callbacks: JointFixedPointCallbacks,
     finite_round_budget: int = 32,
+    progress: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Close one graph-bound finite lattice and replay it without seeds.
 
@@ -131,6 +132,13 @@ def derive_joint_fixed_point_v2(
         input_signature = _authority_state_signature(
             invariants, stack_entry_offsets, stack_range_facts
         )
+        _progress(progress, "round_started", {
+            "round": round_index,
+            "global_slot_invariants": len(invariants),
+            "stack_entry_units": len(stack_entry_offsets),
+            "checked_stack_ranges": len(stack_range_facts),
+            "input_authority_signature": input_signature,
+        })
         hypotheses = tuple(
             copy.deepcopy(dict(row)) for row in proposal_recoveries
         )
@@ -150,11 +158,33 @@ def derive_joint_fixed_point_v2(
                 proposal_call_frame_hypotheses,
             )
         )
+        _progress(progress, "interprocedural_derived", {
+            "round": round_index,
+            "status": interprocedural.get("status"),
+            "recovered_targets": len(
+                _mapping_rows(interprocedural.get("recovered_targets"))
+            ),
+            "call_summaries": len(_mapping_rows(
+                _mapping(interprocedural.get("call_summaries")).get("summaries")
+            )),
+            "analysis_rounds": _mapping(
+                interprocedural.get("fixed_point")
+            ).get("rounds"),
+        })
         cold_graph = callbacks.derive_graph(interprocedural)
+        _progress(progress, "graph_derived", {
+            "round": round_index,
+            "status": cold_graph.get("status"),
+            "graph_id": cold_graph.get("id"),
+            "reachable_units": _sequence_len(cold_graph.get("reachable_units")),
+            "frontiers": len(_mapping_rows(cold_graph.get("frontiers"))),
+        })
         stack_ranges, slot_analysis, slot_authority = _derive_graph_evidence(
             graph=cold_graph,
             interprocedural=interprocedural,
             callbacks=callbacks,
+            progress=progress,
+            round_index=round_index,
         )
         next_invariants = _global_slot_invariants(slot_authority)
         next_stack_entry_offsets = _stack_entry_offsets(stack_ranges)
@@ -186,6 +216,10 @@ def derive_joint_fixed_point_v2(
             "input_authority_signature": input_signature,
             "output_authority_signature": output_signature,
         })
+        _progress(progress, "round_finished", {
+            **authoritative_rounds[-1],
+            "converged": output_signature == input_signature,
+        })
         invariants = next_invariants
         stack_entry_offsets = next_stack_entry_offsets
         stack_range_facts = next_stack_range_facts
@@ -193,6 +227,10 @@ def derive_joint_fixed_point_v2(
             authoritative_converged = True
             break
 
+    _progress(progress, "joint_replay_started", {
+        "authoritative_converged": authoritative_converged,
+        "authoritative_rounds": len(authoritative_rounds),
+    })
     payload = validate_joint_replay_v2(
         proposal_graph=proposal_graph,
         proposal_recoveries=proposal_recoveries,
@@ -203,6 +241,10 @@ def derive_joint_fixed_point_v2(
         cold_graph=cold_graph,
         authoritative_evidence_stable=authoritative_converged,
     )
+    _progress(progress, "joint_replay_finished", {
+        "status": payload.get("status"),
+        "issues": len(_mapping_rows(payload.get("issues"))),
+    })
     issues = [
         copy.deepcopy(dict(issue))
         for issue in payload.get("issues", ())
@@ -290,11 +332,25 @@ def _derive_graph_evidence(
     graph: Mapping[str, Any],
     interprocedural: Mapping[str, Any],
     callbacks: JointFixedPointCallbacks,
+    progress: Callable[[str, Mapping[str, Any]], None] | None,
+    round_index: int,
 ) -> tuple[Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]]:
     stack_ranges = callbacks.derive_stack_ranges(
         graph,
         interprocedural,
     )
+    _progress(progress, "stack_ranges_derived", {
+        "round": round_index,
+        "status": stack_ranges.get("status"),
+        "entry_units": len(_mapping(stack_ranges.get("entry_offsets"))),
+        "checked_ranges": len(
+            _mapping_rows(stack_ranges.get("checked_range_facts"))
+        ),
+        "checked_spatial_facts": len(
+            _mapping_rows(stack_ranges.get("checked_spatial_facts"))
+        ),
+        "frontiers": len(_mapping_rows(stack_ranges.get("frontiers"))),
+    })
     slot_analysis = (
         callbacks.derive_global_slots(graph, stack_ranges)
         if callbacks.derive_dependency_scoped_global_slots is None
@@ -304,13 +360,41 @@ def _derive_graph_evidence(
             interprocedural,
         )
     )
+    _progress(progress, "global_slots_derived", {
+        "round": round_index,
+        "status": slot_analysis.get("status"),
+        "complete_slots": _mapping(slot_analysis.get("counts")).get(
+            "complete_slots"
+        ),
+        "incomplete_slots": _mapping(slot_analysis.get("counts")).get(
+            "incomplete_slots"
+        ),
+        "issues": len(_mapping_rows(slot_analysis.get("issues"))),
+    })
     slot_authority = callbacks.derive_global_slot_authority(
         slot_analysis,
         stack_ranges,
         graph,
         interprocedural,
     )
+    _progress(progress, "global_slot_authority_derived", {
+        "round": round_index,
+        "status": slot_authority.get("status"),
+        "global_slot_invariants": len(
+            _mapping_rows(slot_authority.get("global_slot_invariants"))
+        ),
+        "issues": len(_mapping_rows(slot_authority.get("issues"))),
+    })
     return stack_ranges, slot_analysis, slot_authority
+
+
+def _progress(
+    callback: Callable[[str, Mapping[str, Any]], None] | None,
+    phase: str,
+    details: Mapping[str, Any],
+) -> None:
+    if callback is not None:
+        callback(phase, details)
 
 
 def _global_slot_invariants(
@@ -352,6 +436,12 @@ def _mapping_rows(value: Any) -> tuple[Mapping[str, Any], ...]:
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
         return ()
     return tuple(row for row in value if isinstance(row, Mapping))
+
+
+def _sequence_len(value: Any) -> int:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return 0
+    return len(value)
 
 
 def _authority_state_signature(

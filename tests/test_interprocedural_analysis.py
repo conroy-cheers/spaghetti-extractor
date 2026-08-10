@@ -657,6 +657,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         proposal_static_data_reader=None,
         writable_image_ranges: list[tuple[int, int]] | None = None,
         bind_memory_accesses: bool = False,
+        progress=None,
     ):
         exit_rows = exits or []
         static = [incomplete_recovery(row) for row in exit_rows]
@@ -703,7 +704,45 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 proposal_only=proposal_only,
                 authority_only=authority_only,
                 internal_function_contracts=internal_contracts,
+                progress=progress,
             )
+
+    def test_progress_reports_each_pass_and_evaluation(self) -> None:
+        observed: list[tuple[str, dict[str, object]]] = []
+
+        result = self._run(
+            units=[unit("root", 0x1000)],
+            roots=["root"],
+            resolver=lambda **_kwargs: {"resolutions": []},
+            progress=lambda phase, details: observed.append(
+                (phase, dict(details))
+            ),
+        )
+
+        self.assertTrue(result.complete)
+        self.assertEqual(
+            [
+                details["pass_kind"]
+                for phase, details in observed
+                if phase == "pass_started"
+            ],
+            ["discovery", "cold"],
+        )
+        self.assertEqual(
+            [
+                details["pass_kind"]
+                for phase, details in observed
+                if phase == "pass_finished"
+            ],
+            ["discovery", "cold"],
+        )
+        self.assertTrue(
+            all(
+                details["stable"]
+                for phase, details in observed
+                if phase == "evaluation_finished"
+            )
+        )
 
     def test_cold_replay_seals_event_bound_memory_access_facts(self) -> None:
         root = unit(

@@ -232,6 +232,67 @@ class JointFixedPointV2Tests(unittest.TestCase):
             2,
         )
 
+    def test_progress_reports_each_expensive_phase_without_changing_output(self) -> None:
+        events: list[tuple[str, dict[str, object]]] = []
+
+        def interprocedural(
+            _invariants, _stack_entry_offsets, _stack_range_facts, _recoveries
+        ):
+            return _interprocedural(generation=0, proposal_seed_count=0)
+
+        def run(progress=None):
+            return derive_joint_fixed_point_v2(
+                proposal_graph=_graph(),
+                proposal_recoveries=[],
+                callbacks=JointFixedPointCallbacks(
+                    derive_interprocedural=interprocedural,
+                    derive_stack_ranges=lambda graph, interprocedural: _stack(
+                        dict(interprocedural["call_summaries"]),
+                        graph_id=str(graph["id"]),
+                    ),
+                    derive_global_slots=lambda _graph, _ranges: {
+                        "status": "complete",
+                        "counts": {"complete_slots": 0, "incomplete_slots": 0},
+                        "issues": [],
+                    },
+                    derive_global_slot_authority=lambda *_args: {
+                        "status": "complete",
+                        "global_slot_invariants": [],
+                        "issues": [],
+                    },
+                    derive_graph=lambda _interprocedural: _graph(),
+                ),
+                progress=progress,
+            )
+
+        observed = run(lambda phase, details: events.append((phase, dict(details))))
+        baseline = run()
+
+        self.assertEqual(observed, baseline)
+        phases = [phase for phase, _details in events]
+        self.assertEqual(
+            phases,
+            [
+                "round_started",
+                "interprocedural_derived",
+                "graph_derived",
+                "stack_ranges_derived",
+                "global_slots_derived",
+                "global_slot_authority_derived",
+                "round_finished",
+                "round_started",
+                "interprocedural_derived",
+                "graph_derived",
+                "stack_ranges_derived",
+                "global_slots_derived",
+                "global_slot_authority_derived",
+                "round_finished",
+                "joint_replay_started",
+                "joint_replay_finished",
+            ],
+        )
+        self.assertTrue(events[-3][1]["converged"])
+
 
 if __name__ == "__main__":
     unittest.main()

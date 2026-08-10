@@ -58,6 +58,7 @@ def derive_interprocedural_result_v2(
     finite_value_budget: int = 32,
     proposal_only: bool = False,
     authority_only: bool = False,
+    progress: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Replay the unified analyzer instead of inheriting manifest authority."""
 
@@ -221,6 +222,7 @@ def derive_interprocedural_result_v2(
         finite_value_budget=finite_value_budget,
         proposal_only=proposal_only,
         authority_only=authority_only,
+        progress=progress,
     )
     payload = _interprocedural_result_payload(result, control=control)
     return _validate_interprocedural_mutable_handoff(

@@ -239,6 +239,7 @@ def analyze_interprocedural_control(
     max_rounds: int | None = None,
     proposal_only: bool = False,
     authority_only: bool = False,
+    progress: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> InterproceduralAnalysisResult:
     """Compute summaries and targets together, then reproduce them cold.
 
@@ -309,6 +310,7 @@ def analyze_interprocedural_control(
     )
 
     discovery = None if authority_only else _run_typed_pass(
+        pass_kind="discovery",
         units=units,
         roots=roots,
         direct_edges=direct_edges,
@@ -333,8 +335,10 @@ def analyze_interprocedural_control(
         checked_nonimage_stack_units=frozenset(checked_nonimage_stack_units),
         writable_image_ranges=normalized_writable_ranges,
         allow_bootstrap=True,
+        progress=progress,
     )
     cold = None if proposal_only else _run_typed_pass(
+        pass_kind="cold",
         units=units,
         roots=roots,
         direct_edges=direct_edges,
@@ -359,6 +363,7 @@ def analyze_interprocedural_control(
         checked_nonimage_stack_units=frozenset(checked_nonimage_stack_units),
         writable_image_ranges=normalized_writable_ranges,
         allow_bootstrap=False,
+        progress=progress,
     )
     inductive_required = bool(
         not proposal_only
@@ -388,6 +393,7 @@ def analyze_interprocedural_control(
         None
         if not inductive_required
         else _run_typed_pass(
+            pass_kind="inductive",
             units=units,
             roots=roots,
             direct_edges=direct_edges,
@@ -414,6 +420,7 @@ def analyze_interprocedural_control(
             ),
             writable_image_ranges=normalized_writable_ranges,
             allow_bootstrap=False,
+            progress=progress,
         )
     )
 
@@ -1108,6 +1115,7 @@ def _recursive_control_units(
 
 def _run_typed_pass(
     *,
+    pass_kind: str,
     units: Sequence[Mapping[str, Any]],
     roots: Sequence[str],
     direct_edges: Sequence[Mapping[str, Any]],
@@ -1132,6 +1140,7 @@ def _run_typed_pass(
     checked_stack_entry_offsets: Mapping[str, Sequence[int]],
     checked_nonimage_stack_units: frozenset[str],
     writable_image_ranges: tuple[tuple[int, int], ...],
+    progress: Callable[[str, Mapping[str, Any]], None] | None,
 ) -> _PassResult:
     known_unit_ids = frozenset(_unit_id(unit) for unit in units)
     selected = _prefer_indirect_recoveries(
@@ -1155,8 +1164,24 @@ def _run_typed_pass(
         image_base=image_base,
         finite_value_budget=finite_value_budget,
     )
+    _progress(progress, "pass_started", {
+        "pass_kind": pass_kind,
+        "units": len(units),
+        "roots": len(active_roots),
+        "indirect_exits": len(indirect_exits),
+        "initial_recoveries": len(initial_recoveries),
+        "initial_call_frame_hypotheses": len(initial_call_frame_hypotheses),
+    })
 
     for evaluation in range(1, max_evaluations + 1):
+        _progress(progress, "evaluation_started", {
+            "pass_kind": pass_kind,
+            "evaluation": evaluation,
+            "roots": len(active_roots),
+            "selected_recoveries": len(selected),
+            "call_site_effects": len(call_site_effects),
+            "typed_facts": len(facts),
+        })
         current_roots = tuple(sorted(active_roots))
         input_recoveries = _freeze_recovery_inputs(selected)
         input_call_site_effects = _freeze_call_site_effects(call_site_effects)
@@ -1183,6 +1208,12 @@ def _run_typed_pass(
             ),
             max_value_alternatives=finite_value_budget,
         )
+        _progress(progress, "call_summaries_derived", {
+            "pass_kind": pass_kind,
+            "evaluation": evaluation,
+            "summaries": _row_count(summaries.get("summaries")),
+            "status": summaries.get("status"),
+        })
         preserved, cleanup, results, memory_results = _call_summary_inputs(
             summaries,
             image_base=image_base,
@@ -1234,6 +1265,17 @@ def _run_typed_pass(
                 for hypothesis in call_frame_hypotheses
             ],
         )
+        _progress(progress, "operation_provenance_derived", {
+            "pass_kind": pass_kind,
+            "evaluation": evaluation,
+            "resolutions": _row_count(operation_provenance.get("resolutions")),
+            "call_site_effects": _row_count(
+                operation_provenance.get("call_site_effects")
+            ),
+            "callback_registrations": _row_count(
+                operation_provenance.get("callback_registrations")
+            ),
+        })
         next_call_site_effects = _call_site_effect_rows(operation_provenance)
         next_callback_root_arguments = callback_root_argument_origins(
             operation_provenance,
@@ -1270,6 +1312,11 @@ def _run_typed_pass(
             global_slot_invariants=global_slot_invariants,
             writable_image_ranges=writable_image_ranges,
         )
+        _progress(progress, "mutable_influence_derived", {
+            "pass_kind": pass_kind,
+            "evaluation": evaluation,
+            "exit_facts": len(mutable_influence),
+        })
         next_selected = _prefer_indirect_recoveries(
             static_recoveries,
             value_provenance.get("resolutions", []),
@@ -1357,6 +1404,24 @@ def _run_typed_pass(
         callback_root_arguments_stable = (
             next_callback_root_arguments == input_callback_root_arguments
         )
+        stable = (
+            transfer_stable
+            and call_effects_stable
+            and call_frame_hypotheses_stable
+            and roots_stable
+            and callback_root_arguments_stable
+        )
+        _progress(progress, "evaluation_finished", {
+            "pass_kind": pass_kind,
+            "evaluation": evaluation,
+            "stable": stable,
+            "typed_facts": len(next_facts),
+            "dependency_edges": len(next_edges),
+            "scc_evaluations": scc_evaluations,
+            "selected_recoveries": len(next_selected),
+            "call_site_effects": len(next_call_site_effects),
+            "roots": len(next_roots),
+        })
         facts = next_facts
         dependency_edges = next_edges
         selected = next_selected
@@ -1367,13 +1432,14 @@ def _run_typed_pass(
         # and roots.  Once those inputs are stable, another whole-program
         # transfer would emit the same proposals; lattice joins and edge unions
         # are idempotent, so the state below is already the least fixed point.
-        if (
-            transfer_stable
-            and call_effects_stable
-            and call_frame_hypotheses_stable
-            and roots_stable
-            and callback_root_arguments_stable
-        ):
+        if stable:
+            _progress(progress, "pass_finished", {
+                "pass_kind": pass_kind,
+                "converged": True,
+                "evaluations": evaluation,
+                "typed_facts": len(facts),
+                "dependency_edges": len(dependency_edges),
+            })
             return _PassResult(
                 True,
                 evaluation,
@@ -1390,6 +1456,13 @@ def _run_typed_pass(
             )
         call_site_effects = next_call_site_effects
 
+    _progress(progress, "pass_finished", {
+        "pass_kind": pass_kind,
+        "converged": False,
+        "evaluations": max_evaluations,
+        "typed_facts": len(facts),
+        "dependency_edges": len(dependency_edges),
+    })
     return _PassResult(
         False,
         max_evaluations,
@@ -1404,6 +1477,21 @@ def _run_typed_pass(
         call_frame_hypotheses,
         tuple(sorted(active_roots)),
     )
+
+
+def _progress(
+    callback: Callable[[str, Mapping[str, Any]], None] | None,
+    phase: str,
+    details: Mapping[str, Any],
+) -> None:
+    if callback is not None:
+        callback(phase, details)
+
+
+def _row_count(value: Any) -> int:
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        return 0
+    return sum(isinstance(row, Mapping) for row in value)
 
 
 def _callback_root_unit_ids(
