@@ -2176,6 +2176,117 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         )
         self.assertNotIn("mutable_slot_dependencies", recovery)
 
+    def test_indirect_call_target_uses_pre_call_register_state(self) -> None:
+        exit_row = indirect_exit("exit:dispatch:0", "dispatch")
+        exit_row["target_expression"] = load({
+            "op": "add32",
+            "args": [const(28), reg("edx")],
+        })
+        dispatch = unit("dispatch", 0x1030)
+        call_event = {
+            "kind": "indirect_call",
+            "register_inputs": {
+                register: reg(register) for register in REGISTERS
+            },
+            "target": exit_row["target_expression"],
+        }
+        dispatch["semantics"].update({
+            "external_events": [call_event],
+            "ordered_events": [call_event],
+            "register_writes": [{
+                "register": register,
+                "value": {
+                    "op": "call_response",
+                    "call_index": 0,
+                    "register": register,
+                    "width": 32,
+                },
+            } for register in REGISTERS],
+        })
+
+        result = self._run(
+            units=[
+                unit(
+                    "load-slot",
+                    0x1010,
+                    writes=({"register": "eax", "value": load(const(SLOT))},),
+                    memory=(slot_read(),),
+                ),
+                unit(
+                    "load-object-table",
+                    0x1020,
+                    writes=({"register": "edx", "value": load(reg("eax"))},),
+                    memory=({
+                        "kind": "read",
+                        "width": 4,
+                        "address": reg("eax"),
+                    },),
+                ),
+                dispatch,
+                unit("target", 0x2000),
+            ],
+            roots=["load-slot"],
+            direct=[
+                edge("load-slot", "load-object-table"),
+                edge("load-object-table", "dispatch"),
+            ],
+            exits=[exit_row],
+            writable_image_ranges=[(SLOT, SLOT + 4)],
+            resolver=lambda **_kwargs: {
+                "resolutions": [recovered(exit_row, "target")]
+            },
+        )
+
+        recovery = result.recovered_targets[0]
+        self.assertEqual(
+            recovery["failure"]["code"],
+            "mutable_slot_tainted",
+        )
+        self.assertEqual(
+            [row["slot_rva"] for row in recovery["mutable_slot_dependencies"]],
+            [SLOT - IMAGE_BASE],
+        )
+
+    def test_indirect_call_event_binding_mismatch_fails_closed(self) -> None:
+        exit_row = indirect_exit("exit:dispatch:0", "dispatch")
+        exit_row["target_expression"] = load(const(SLOT))
+        dispatch = unit("dispatch", 0x1010)
+        wrong_event = {
+            "kind": "external_call",
+            "register_inputs": {
+                register: reg(register) for register in REGISTERS
+            },
+        }
+        dispatch["semantics"].update({
+            "external_events": [wrong_event],
+            "ordered_events": [wrong_event],
+        })
+        invariant = slot_invariant(
+            "dispatch", 0x1010, IMAGE_BASE + 0x2000
+        )
+
+        result = self._run(
+            units=[dispatch, unit("target", 0x2000)],
+            roots=["dispatch"],
+            exits=[exit_row],
+            globals=[invariant],
+            writable_image_ranges=[(SLOT, SLOT + 4)],
+            resolver=lambda **_kwargs: {
+                "resolutions": [recovered(exit_row, "target")]
+            },
+        )
+
+        recovery = result.recovered_targets[0]
+        self.assertEqual(recovery["status"], "incomplete")
+        self.assertEqual(recovery["failure"]["code"], "mutable_slot_tainted")
+        self.assertEqual(
+            recovery["authority_dependencies"],
+            [{
+                "role": "mutable_slot_invariant",
+                "content_id": invariant.content_id,
+            }],
+        )
+
     def test_tainted_global_invariant_cannot_authorize_recovery(self) -> None:
         exit_row = indirect_exit("exit:dispatch:0", "dispatch")
         invariant = slot_invariant(

@@ -604,10 +604,14 @@ class StaticHybridPipelineV2Tests(unittest.TestCase):
             "direct_targets": [0x1201],
             "has_indirect_target": False,
         }
-        units[2]["semantics"]["external_events"] = [{
+        indirect_call_event = {
             "kind": "indirect_call",
             "target": copy.deepcopy(indirect_exit["target_expression"]),
-        }]
+        }
+        units[2]["semantics"]["external_events"] = [indirect_call_event]
+        units[2]["semantics"]["ordered_events"] = [
+            copy.deepcopy(indirect_call_event)
+        ]
         units[3]["control"] = {
             "kind": "return",
             "direct_targets": [],

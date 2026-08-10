@@ -1801,9 +1801,36 @@ def _analyze_mutable_slot_influence(
             calls_preserve_memory=call_memory_preservation.get(source, True),
             writable_image_ranges=writable_image_ranges,
         )
+        target_state = output
+        if row.get("kind") == "indirect_call":
+            event_index = row.get("source_event_index")
+            source_events = _events(by_id[source])
+            if source_events:
+                target_state = (
+                    _mutable_call_input_state(
+                        by_id[source],
+                        states[source],
+                        event_index=event_index,
+                        unit_id=source,
+                        image_base=image_base,
+                        image_size=image_size,
+                        maximum=finite_value_budget,
+                        writable_image_ranges=writable_image_ranges,
+                        checked_nonimage_stack=(
+                            source in checked_nonimage_stack_units
+                        ),
+                        apply_local_writes=True,
+                    )
+                    if isinstance(event_index, int)
+                    and not isinstance(event_index, bool)
+                    and 0 <= event_index < len(source_events)
+                    and source_events[event_index].get("kind")
+                    == "indirect_call"
+                    else _unknown_mutable_state(states[source])
+                )
         influence = _expression_influence(
             row.get("target_expression"),
-            output,
+            target_state,
             unit_id=source,
             unit=by_id[source],
             image_base=image_base,
@@ -2412,10 +2439,6 @@ def _mutable_call_input_state(
     if not 0 <= event_index < len(events):
         return _unknown_mutable_state(state)
     event = events[event_index]
-    raw_inputs = event.get("register_inputs")
-    if not isinstance(raw_inputs, Mapping):
-        return _unknown_mutable_state(state)
-    input_registers = dict(state.registers)
     working = (
         _mutable_state_before_call_event(
             unit,
@@ -2431,6 +2454,19 @@ def _mutable_call_input_state(
         if apply_local_writes
         else state
     )
+    raw_inputs = event.get("register_inputs")
+    if not isinstance(raw_inputs, Mapping):
+        return _MutableState(
+            registers=tuple(
+                (register, _Influence(unsafe=True))
+                for register in sorted(_REGISTER_UNIVERSE)
+            ),
+            memory=working.memory,
+            stack=working.stack,
+            esp_offset=None,
+            unknown_write=working.unknown_write,
+        )
+    input_registers = dict(state.registers)
     memory = dict(working.memory)
     stack = dict(working.stack)
     read_sites = _mutable_read_sites(
