@@ -11,6 +11,9 @@ from spaghetti_extractor.import_abi import (
     expand_import_abi_policy,
     load_selected_import_abis,
 )
+from spaghetti_extractor.external_profile_authority_v2 import (
+    build_external_profile_authority_v2,
+)
 from spaghetti_extractor.machine_import_profiles import (
     MachineImportProfileError,
     load_machine_import_profile_set,
@@ -71,6 +74,13 @@ _RUNTIME_PROFILE_ARITIES = {
     ("winmm.dll", "midiStreamProperty"): 3,
     ("winmm.dll", "midiStreamRestart"): 1,
     ("winmm.dll", "timeGetTime"): 0,
+}
+
+_ABI_ONLY_PROFILE_ARITIES = {
+    ("user32.dll", "DispatchMessageA"): 1,
+    ("user32.dll", "GetMessageA"): 4,
+    ("user32.dll", "PeekMessageA"): 5,
+    ("user32.dll", "TranslateMessage"): 1,
 }
 
 
@@ -200,6 +210,38 @@ class MachineImportProfileTests(unittest.TestCase):
         self.assertEqual(
             string_type["memory_footprints"][1]["size"]["unit_bytes"], 2
         )
+
+    def test_message_loop_abi_facts_do_not_claim_external_effects(self) -> None:
+        profile = (
+            _REPOSITORY_ROOT
+            / "profiles/pe32-win32-windowing-runtime-v1.json"
+        )
+        selected = load_machine_import_profile_set([profile]).by_identity()
+        authority = build_external_profile_authority_v2([profile])
+        authority_entries = {
+            (entry.identity.get("dll"), entry.identity.get("symbol")): entry
+            for entry in authority.entries
+        }
+
+        for (dll, symbol), argument_words in _ABI_ONLY_PROFILE_ARITIES.items():
+            with self.subTest(import_identity=(dll, symbol)):
+                contract = next(
+                    value
+                    for identity, value in selected.items()
+                    if identity.dll == dll and identity.value == symbol
+                )
+                self.assertEqual(contract.arity_kind, "fixed")
+                self.assertEqual(contract.argument_words, argument_words)
+                self.assertEqual(
+                    contract.contract["abi_template"], "pe32-stdcall-v1"
+                )
+                self.assertNotIn("memory_effect", contract.contract)
+                self.assertNotIn("world_effect", contract.contract)
+                self.assertFalse(authority_entries[(dll, symbol)].complete)
+                self.assertEqual(
+                    authority_entries[(dll, symbol)].failure_reason,
+                    "machine import profile entry lacks an exact ABI/effect contract",
+                )
 
     def test_callback_profiles_declare_source_abi_and_lifetime(self) -> None:
         profile_set = load_machine_import_profile_set([

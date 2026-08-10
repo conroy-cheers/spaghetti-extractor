@@ -33,6 +33,11 @@ resource. The binary must still contain the named import or call pattern, the
 site analysis must recover compatible arguments, and the generated candidate
 must pass static assurance plus candidate-only behavioral tests.
 
+An entry may intentionally provide only an ABI template and fixed arity. Such
+an entry can support register preservation, stack cleanup, and indirect-target
+recovery, but remains incomplete external-site evidence until memory, world,
+and callback effects are supplied separately.
+
 Missing calls, unresolved argument sources, unsupported callbacks, ambiguous
 footprints, or stale profile bindings remain `incomplete`. A profile never
 turns an inferred C prototype or API name into proof of behavior.
