@@ -124,6 +124,19 @@
       "world_effect": "opaqueResources"
     },
     {
+      "import": {"dll": "kernel32.dll", "symbol": "GetStringTypeA"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 4},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "memory_effect": "argumentRanges",
+      "memory_footprints": [
+        {"access": "read", "base_argument": 1, "offset": 0, "size": {"kind": "argument_or_bounded_terminated", "length_argument": 2, "terminated_value": 4294967295, "source_argument": 1, "source_offset": 0, "unit_bytes": 1, "sentinel": [0], "max_units": 1048576}, "nullable": false},
+        {"access": "write", "base_argument": 3, "offset": 0, "size": {"kind": "argument", "argument": 2, "scale": 2}, "nullable": false}
+      ],
+      "world_effect": "tlsState"
+    },
+    {
       "import": {"dll": "kernel32.dll", "symbol": "GetStringTypeW"},
       "abi_template": "pe32-stdcall-v1",
       "arity": {"kind": "fixed", "words": 4},

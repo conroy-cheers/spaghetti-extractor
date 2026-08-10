@@ -38,6 +38,7 @@ _RUNTIME_PROFILE_ARITIES = {
     ("kernel32.dll", "GetOEMCP"): 0,
     ("kernel32.dll", "GetStartupInfoA"): 1,
     ("kernel32.dll", "GetStdHandle"): 1,
+    ("kernel32.dll", "GetStringTypeA"): 4,
     ("kernel32.dll", "GetStringTypeW"): 4,
     ("kernel32.dll", "GetVersion"): 0,
     ("kernel32.dll", "GlobalFree"): 1,
@@ -197,18 +198,32 @@ class MachineImportProfileTests(unittest.TestCase):
             {"kind": "fixed", "bytes": 20},
         )
 
-        string_type = next(
+        string_type_a = next(
+            contract.contract
+            for identity, contract in selected.items()
+            if identity.dll == "kernel32.dll"
+            and identity.value == "GetStringTypeA"
+        )
+        self.assertEqual(
+            string_type_a["memory_footprints"][0]["size"]["unit_bytes"], 1
+        )
+        self.assertEqual(
+            string_type_a["memory_footprints"][1]["size"],
+            {"kind": "argument", "argument": 2, "scale": 2},
+        )
+
+        string_type_w = next(
             contract.contract
             for identity, contract in selected.items()
             if identity.dll == "kernel32.dll"
             and identity.value == "GetStringTypeW"
         )
         self.assertEqual(
-            string_type["memory_footprints"][0]["size"]["kind"],
+            string_type_w["memory_footprints"][0]["size"]["kind"],
             "argument_or_bounded_terminated",
         )
         self.assertEqual(
-            string_type["memory_footprints"][1]["size"]["unit_bytes"], 2
+            string_type_w["memory_footprints"][1]["size"]["unit_bytes"], 2
         )
 
     def test_message_loop_abi_facts_do_not_claim_external_effects(self) -> None:
