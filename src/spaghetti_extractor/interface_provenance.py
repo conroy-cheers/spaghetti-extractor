@@ -2064,6 +2064,9 @@ def _run_contextual_target_discovery(
             impacted=identity in impacted_exits or work_budget_exceeded,
             finite_value_budget=finite_value_budget,
             truncated_calls=truncated_calls,
+            by_id=by_id,
+            inventory=inventory,
+            image_base=image_base,
         )
         for identity, rows in sorted(contextual_rows.items())
         if final_by_id.get(identity, {}).get("status") != "recovered"
@@ -2174,17 +2177,28 @@ def _contextual_recovery_proposal(
     impacted: bool,
     finite_value_budget: int,
     truncated_calls: int,
+    by_id: Mapping[str, Mapping[str, Any]],
+    inventory: _ProfileInventory,
+    image_base: int,
 ) -> dict[str, Any]:
-    context_records = [
-        {
+    context_records: list[dict[str, Any]] = []
+    for context, row in sorted(rows, key=lambda item: item[0]):
+        proposal_reads = _context_static_table_reads(
+            context,
+            row,
+            by_id=by_id,
+            inventory=inventory,
+            image_base=image_base,
+            finite_value_budget=finite_value_budget,
+        )
+        context_records.append({
             **context.as_json(),
             "status": str(row.get("status") or "incomplete"),
             "target_rvas": copy.deepcopy(row.get("target_rvas", [])),
             "target_unit_ids": copy.deepcopy(row.get("target_unit_ids", [])),
             "failure": copy.deepcopy(row.get("failure")),
-        }
-        for context, row in sorted(rows, key=lambda item: item[0])
-    ]
+            "proposal_static_read_addresses": list(proposal_reads),
+        })
     incomplete = [
         record for record in context_records if record["status"] != "recovered"
     ]
@@ -2264,6 +2278,11 @@ def _contextual_recovery_proposal(
         if isinstance(value, str)
     })
     exemplar = copy.deepcopy(dict(rows[0][1]))
+    proposal_static_reads = sorted({
+        address
+        for record in context_records
+        for address in record["proposal_static_read_addresses"]
+    })
     return {
         **exemplar,
         "id": identity,
@@ -2279,8 +2298,91 @@ def _contextual_recovery_proposal(
         "proposal_source": "bounded_call_context_v1",
         "proof_authority": False,
         "context_coverage": coverage,
+        "proposal_static_read_addresses": proposal_static_reads,
         "failure": None,
     }
+
+
+def _context_static_table_reads(
+    context: _PathContext,
+    resolution: Mapping[str, Any],
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    inventory: _ProfileInventory,
+    image_base: int,
+    finite_value_budget: int,
+) -> tuple[int, ...]:
+    """Propose complete local [start,end) callback-table read inventories.
+
+    This is deliberately synthesis guidance. A candidate range must come from
+    two exact same-unit call arguments, be a bounded contiguous dword range,
+    and reproduce exactly the internal targets recovered for that context from
+    initialized PE words. Mutable-slot replay must independently validate every
+    proposed word before the range can influence cold authority.
+    """
+
+    if inventory.static_data_reader is None:
+        return ()
+    target_rvas = resolution.get("target_rvas")
+    if (
+        resolution.get("status") != "recovered"
+        or not isinstance(target_rvas, list)
+        or not target_rvas
+        or any(
+            not isinstance(value, int) or isinstance(value, bool)
+            for value in target_rvas
+        )
+    ):
+        return ()
+    expected_targets = frozenset(int(value) for value in target_rvas)
+    candidates: set[tuple[int, ...]] = set()
+    for frame in context.calls:
+        source = by_id.get(frame.source_unit_id)
+        if source is None or frame.event_index < 0:
+            continue
+        local = recover_pe32_local_stack_argument_prefix(
+            source,
+            event_index=frame.event_index,
+            max_argument_words=min(64, finite_value_budget),
+        )
+        if local.status != "complete":
+            continue
+        constants = tuple(
+            _constant_u32_expression(expression)
+            for expression in local.arguments
+        )
+        for start in constants:
+            if start is None:
+                continue
+            for end in constants:
+                if (
+                    end is None
+                    or end <= start
+                    or start % 4
+                    or end % 4
+                    or (end - start) % 4
+                    or (end - start) // 4 > finite_value_budget
+                ):
+                    continue
+                addresses = tuple(range(start, end, 4))
+                observed_targets: set[int] = set()
+                valid = True
+                for address in addresses:
+                    data = inventory.static_data_reader(address, 4)
+                    if data is None or len(data) != 4:
+                        valid = False
+                        break
+                    target = int.from_bytes(data, "little") & 0xFFFF_FFFF
+                    if target == 0:
+                        continue
+                    bindings = inventory.unit_targets.get(target, ())
+                    if len(bindings) != 1:
+                        valid = False
+                        break
+                    observed_targets.add((target - image_base) & 0xFFFF_FFFF)
+                if valid and frozenset(observed_targets) == expected_targets:
+                    candidates.add(addresses)
+    return next(iter(candidates)) if len(candidates) == 1 else ()
 
 
 def _merge_context_and_legacy_proposals(

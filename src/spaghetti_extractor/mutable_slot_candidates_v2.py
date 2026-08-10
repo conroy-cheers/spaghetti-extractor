@@ -117,24 +117,37 @@ def derive_proposal_slot_dependencies(
             continue
         exit_id = recovery.get("id")
         witnesses = recovery.get("target_origin_witnesses")
-        if (
-            not isinstance(exit_id, str)
-            or not exit_id
-            or not isinstance(witnesses, Sequence)
-            or isinstance(witnesses, (str, bytes))
-        ):
+        if not isinstance(exit_id, str) or not exit_id:
             continue
-        for witness in witnesses:
-            if (
-                not isinstance(witness, Mapping)
-                or witness.get("kind") not in {"static_code", "static_data"}
-            ):
-                continue
-            key = witness.get("key")
-            sources = key[1] if isinstance(key, list) and len(key) == 2 else None
-            if not isinstance(sources, list):
-                continue
-            for address in sources:
+        if isinstance(witnesses, Sequence) and not isinstance(
+            witnesses, (str, bytes)
+        ):
+            for witness in witnesses:
+                if (
+                    not isinstance(witness, Mapping)
+                    or witness.get("kind") not in {"static_code", "static_data"}
+                ):
+                    continue
+                key = witness.get("key")
+                sources = (
+                    key[1]
+                    if isinstance(key, list) and len(key) == 2
+                    else None
+                )
+                if not isinstance(sources, list):
+                    continue
+                for address in sources:
+                    if (
+                        isinstance(address, int)
+                        and not isinstance(address, bool)
+                        and writable_image_span(binary, address, 4)
+                    ):
+                        dependencies.add((address - binary.image_base, exit_id))
+        proposal_reads = recovery.get("proposal_static_read_addresses", ())
+        if isinstance(proposal_reads, Sequence) and not isinstance(
+            proposal_reads, (str, bytes)
+        ):
+            for address in proposal_reads:
                 if (
                     isinstance(address, int)
                     and not isinstance(address, bool)

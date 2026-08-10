@@ -4214,6 +4214,14 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(proposal["target_rvas"], [0x2000, 0x2010, 0x2020])
         self.assertEqual(proposal["context_coverage"]["status"], "complete")
         self.assertEqual(proposal["context_coverage"]["context_count"], 2)
+        self.assertEqual(
+            proposal["proposal_static_read_addresses"],
+            sorted(table_words),
+        )
+        self.assertTrue(all(
+            context["proposal_static_read_addresses"]
+            for context in proposal["context_coverage"]["contexts"]
+        ))
         self.assertFalse(proposal["proof_authority"])
 
     def _run(

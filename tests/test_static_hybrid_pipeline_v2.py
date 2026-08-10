@@ -410,6 +410,7 @@ class StaticHybridPipelineV2Tests(unittest.TestCase):
                     "kind": "static_code",
                     "key": [0x401100, [0x403020, 0x401020]],
                 }],
+                "proposal_static_read_addresses": [0x403024, 0x401024],
             },
             {
                 "id": "indirect-exit:ignored",
@@ -428,6 +429,12 @@ class StaticHybridPipelineV2Tests(unittest.TestCase):
             [
                 {
                     "slot_rva": 0x3020,
+                    "exit_id": "indirect-exit:one",
+                    "witness_only": True,
+                    "proof_authority": False,
+                },
+                {
+                    "slot_rva": 0x3024,
                     "exit_id": "indirect-exit:one",
                     "witness_only": True,
                     "proof_authority": False,
