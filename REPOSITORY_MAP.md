@@ -122,6 +122,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `entry_fact_derivation_v2.py` | Immutable launch/IAT facts and fail-closed mutable-slot promotion inputs. |
 | `entry_state_analysis_v2.py` | Exact PE/callback entry contracts and checked mutable-global invariants. |
 | `mutable_slot_candidates_v2.py` | Stable rooted discovery of writable 32-bit image slots for point-sensitive replay. |
+| `global_slot_hypotheses_v2.py` | Non-authorizing loader-value induction hypotheses for mutable-slot/interprocedural SCC bootstrap; cold replay must reproduce them before use. |
 | `global_slot_analysis_v2.py` | Point-sensitive mutable-slot replay, taint, dominance, finite joins, and cold replay. |
 | `global_slot_authority_v2.py` | Separately cached promotion of complete cold-replayed slots into typed v2 invariants. |
 | `global_slot_contract_v2.py`, `global_slot_image_v2.py`, `global_slot_proposal_v2.py` | Typed mutable-slot invariants, exact image-span bindings, and non-authorizing replay proposals. |
@@ -140,6 +141,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `isa_kernel_selection.py` | Binary-specific binding from reachable forms to qualified semantics and fallback capabilities. |
 | `machine_ir_isa_catalog_v2.py`, `machine_ir_isa_requirements_v2.py`, `machine_ir_isa_selection_v2.py` | Exact machine-IR ISA inventory, required-form extraction, and binary-bound qualification selection. |
 | `launch_profile_v2.py` | Conditional PE32 launch assumptions and exact static/callback root inventory. |
+| `launch_memory_ranges_v2.py` | Exact event-bound spatial separation facts for private launch ranges such as the Win32 TEB; it does not claim content immutability. |
 | `hybrid_authority_builder_v2.py` | Constructs the immutable authority bundle from independently replayed v2 records. |
 | `hybrid_diagnostics_v2.py` | Collapses dependent consequences behind deterministic primary blocker IDs. |
 | `static_hybrid_pipeline_v2.py` | Compatibility facade over the phase-oriented v2 analysis modules. |

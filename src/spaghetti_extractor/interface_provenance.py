@@ -3957,16 +3957,22 @@ def _dynamic_range_origin(
     event_index: int,
     identity: MachineImportIdentity,
     nullable: bool,
+    extent_lower_bound: int | None = None,
 ) -> _Value:
+    identity_key: tuple[Any, ...] = (
+        producer_unit_id,
+        event_index,
+        identity.dll,
+        identity.kind,
+        identity.value,
+    )
+    if extent_lower_bound is not None:
+        if not 0 < extent_lower_bound <= 0xFFFFFFFF:
+            raise ValueError("dynamic-range lower bound is invalid")
+        identity_key = (*identity_key, extent_lower_bound)
     dynamic = _Origin(
         "dynamic_range",
-        (
-            producer_unit_id,
-            event_index,
-            identity.dll,
-            identity.kind,
-            identity.value,
-        ),
+        identity_key,
     )
     return frozenset(
         {_Origin("exact", (0,)), dynamic} if nullable else {dynamic}
@@ -3994,6 +4000,7 @@ def _selected_import_result_outputs(
     *,
     unit_id: str,
     event_index: int,
+    arguments: Sequence[_Value] | None = None,
 ) -> dict[_Origin, _Value]:
     contract = selected.contract
     if not isinstance(contract, Mapping):
@@ -4016,9 +4023,78 @@ def _selected_import_result_outputs(
                     event_index=event_index,
                     identity=selected.identity,
                     nullable=bool(relation["nullable"]),
+                    extent_lower_bound=(
+                        _selected_dynamic_result_extent_lower_bound(
+                            relation,
+                            arguments=arguments,
+                        )
+                    ),
                 )
             )
     return outputs
+
+
+def _selected_dynamic_result_extent_lower_bound(
+    relation: Mapping[str, Any],
+    *,
+    arguments: Sequence[_Value] | None,
+) -> int | None:
+    minimum = _integer(relation.get("minimum_size"))
+    if minimum is None or minimum < 0 or minimum > 0xFFFFFFFF:
+        minimum = 0
+    size = _mapping(relation.get("size"))
+    kind = size.get("kind")
+    if kind == "fixed":
+        fixed = _integer(size.get("bytes"))
+        if fixed is not None and 0 <= fixed <= 0xFFFFFFFF:
+            minimum = max(minimum, fixed)
+    elif kind == "argument" and arguments is not None:
+        argument = _integer(size.get("argument"))
+        scale = _integer(size.get("scale"))
+        values = (
+            arguments[argument]
+            if argument is not None and 0 <= argument < len(arguments)
+            else None
+        )
+        if values is not None and scale is not None and 0 < scale <= 0xFFFFFFFF:
+            concrete = {origin_concrete_value(origin) for origin in values}
+            if None not in concrete and concrete:
+                scaled = {
+                    int(value) * scale
+                    for value in concrete
+                    if int(value) <= 0xFFFFFFFF // scale
+                }
+                if len(scaled) == len(concrete):
+                    minimum = max(minimum, min(scaled))
+    return minimum if minimum > 0 else None
+
+
+def _selected_dynamic_result_argument_indices(
+    selected: SelectedImportABI | None,
+) -> frozenset[int]:
+    contract = selected.contract if selected is not None else None
+    relations = (
+        contract.get("result_register_relations")
+        if isinstance(contract, Mapping)
+        else None
+    )
+    if not isinstance(relations, list):
+        return frozenset()
+    result: set[int] = set()
+    for raw in relations:
+        relation = _mapping(raw)
+        size = _mapping(relation.get("size"))
+        argument = _integer(size.get("argument"))
+        if (
+            relation.get("relation") == "dynamic_range_base"
+            and size.get("kind") == "argument"
+            and argument is not None
+            and selected is not None
+            and selected.argument_words is not None
+            and 0 <= argument < selected.argument_words
+        ):
+            result.add(argument)
+    return frozenset(result)
 
 
 def _internal_call_result_outputs(
@@ -4120,11 +4196,19 @@ def _internal_call_result_outputs(
             producer = row.get("producer_unit_id")
             relation_event_index = _integer(row.get("event_index"))
             nullable = row.get("nullable")
+            extent_lower_bound = _integer(row.get("extent_lower_bound"))
             if (
                 not isinstance(producer, str)
                 or relation_event_index is None
                 or row.get("relation") != "dynamic_range_base"
                 or not isinstance(nullable, bool)
+                or (
+                    "extent_lower_bound" in row
+                    and (
+                        extent_lower_bound is None
+                        or not 0 < extent_lower_bound <= 0xFFFFFFFF
+                    )
+                )
             ):
                 malformed = True
                 break
@@ -4133,6 +4217,7 @@ def _internal_call_result_outputs(
                 event_index=relation_event_index,
                 identity=identity,
                 nullable=nullable,
+                extent_lower_bound=extent_lower_bound,
             )
             if value is None:
                 malformed = True
@@ -4573,11 +4658,41 @@ def _call_contract(
         identity = _event_import_identity(event)
         selected = import_abis.get(identity) if identity is not None else None
         machine_contract = _selected_machine_import_contract(event, selected)
+        result_arguments: Sequence[_Value] | None = None
+        result_size_arguments = _selected_dynamic_result_argument_indices(
+            selected
+        )
+        if (
+            selected is not None
+            and selected.argument_words is not None
+            and result_size_arguments
+        ):
+            result_arguments, extent_recovery = _recover_call_arguments(
+                pre_call,
+                state,
+                unit,
+                unit_id=unit_id,
+                event_index=event_index,
+                argument_words=selected.argument_words,
+                inventory=inventory,
+                known_slots=known_slots,
+                budget=budget,
+                required_argument_indices=result_size_arguments,
+            )
+            extent_recovery["purpose"] = "dynamic_range_result_extent"
+            extent_recovery["machine_import"] = {
+                "dll": selected.identity.dll,
+                selected.identity.kind: selected.identity.value,
+            }
+            argument_recoveries.append(extent_recovery)
         if selected is not None:
             _merge_output_effects(
                 outputs,
                 _selected_import_result_outputs(
-                    selected, unit_id=unit_id, event_index=event_index
+                    selected,
+                    unit_id=unit_id,
+                    event_index=event_index,
+                    arguments=result_arguments,
                 ),
                 budget=budget,
                 issues=issues,
@@ -4899,10 +5014,36 @@ def _call_contract(
             else None
         )
         if selected is not None:
+            result_arguments = None
+            result_size_arguments = _selected_dynamic_result_argument_indices(
+                selected
+            )
+            if selected.argument_words is not None and result_size_arguments:
+                result_arguments, extent_recovery = _recover_call_arguments(
+                    pre_call,
+                    state,
+                    unit,
+                    unit_id=unit_id,
+                    event_index=event_index,
+                    argument_words=selected.argument_words,
+                    inventory=inventory,
+                    known_slots=known_slots,
+                    budget=budget,
+                    required_argument_indices=result_size_arguments,
+                )
+                extent_recovery["purpose"] = "dynamic_range_result_extent"
+                extent_recovery["machine_import"] = {
+                    "dll": selected.identity.dll,
+                    selected.identity.kind: selected.identity.value,
+                }
+                argument_recoveries.append(extent_recovery)
             _merge_output_effects(
                 outputs,
                 _selected_import_result_outputs(
-                    selected, unit_id=unit_id, event_index=event_index
+                    selected,
+                    unit_id=unit_id,
+                    event_index=event_index,
+                    arguments=result_arguments,
                 ),
                 budget=budget,
                 issues=issues,

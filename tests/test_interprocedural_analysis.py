@@ -1246,6 +1246,111 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertNotIn("memory_access_proposals", result.operation_provenance)
         self.assertEqual(result.fixed_point["checked_memory_access_fact_count"], 1)
 
+    def test_call_summary_consumes_memory_fact_through_scc_dependency(
+        self,
+    ) -> None:
+        root = unit(
+            "root",
+            0x1000,
+            memory=(stack_write(12, const(1)),),
+        )
+        root["source"]["instruction_bytes_sha256"] = "e" * 64
+
+        def resolver(**_kwargs: Any) -> dict[str, object]:
+            event = root["semantics"]["memory_events"][0]
+            return {
+                "resolutions": [],
+                "memory_access_proposals": [{
+                    "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+                    "status": "complete",
+                    "unit_id": "root",
+                    "event_index": 0,
+                    "memory_kind": "write",
+                    "width_bytes": 4,
+                    "address_expression": event["address"],
+                    "address_origins": [{
+                        "kind": "stack_location",
+                        "key": [12],
+                    }],
+                    "authority_dependencies": [],
+                }],
+            }
+
+        def summaries(**kwargs: Any) -> dict[str, object]:
+            result = summary_adapter(**kwargs)
+            fact_ids = sorted(
+                str(row["id"])
+                for row in kwargs.get("prepared_memory_access_facts", ())
+            )
+            for row in result["summaries"]:
+                row["target_dependencies"] = fact_ids
+            return result
+
+        result = self._run(
+            units=[root],
+            roots=["root"],
+            resolver=resolver,
+            summary_resolver=summaries,
+            bind_memory_accesses=True,
+        )
+
+        facts = result.operation_provenance["checked_memory_access_facts"]
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(
+            result.call_summaries["summaries"][0]["target_dependencies"],
+            [facts[0]["id"]],
+        )
+        self.assertGreaterEqual(result.fixed_point["cold_replay_rounds"], 2)
+
+    def test_contextual_memory_fact_is_retained_until_dependents_stabilize(
+        self,
+    ) -> None:
+        root = unit(
+            "root",
+            0x1000,
+            memory=(stack_write(12, const(1)),),
+        )
+        root["source"]["instruction_bytes_sha256"] = "e" * 64
+
+        def resolver(**kwargs: Any) -> dict[str, object]:
+            contextual = kwargs.get("run_contextual_recovery") is True
+            event = root["semantics"]["memory_events"][0]
+            return {
+                "resolutions": [],
+                "contextual_recovery": {
+                    "required": True,
+                    "executed": contextual,
+                },
+                "memory_access_proposals": ([] if not contextual else [{
+                    "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+                    "status": "complete",
+                    "unit_id": "root",
+                    "event_index": 0,
+                    "memory_kind": "write",
+                    "width_bytes": 4,
+                    "address_expression": event["address"],
+                    "address_origins": [{
+                        "kind": "stack_location",
+                        "key": [12],
+                    }],
+                    "authority_dependencies": [],
+                }]),
+            }
+
+        result = self._run(
+            units=[root],
+            roots=["root"],
+            resolver=resolver,
+            bind_memory_accesses=True,
+        )
+
+        self.assertEqual(
+            len(result.operation_provenance["checked_memory_access_facts"]),
+            1,
+        )
+        self.assertLessEqual(result.fixed_point["cold_replay_rounds"], 3)
+        self.assertTrue(result.fixed_point["cold_replay_validated"])
+
     def test_inductive_memory_fact_requires_all_accepted_dependencies(self) -> None:
         proposal = {
             "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,

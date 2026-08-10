@@ -390,6 +390,14 @@ def analyze_interprocedural_control(
     normalized_writable_ranges = _normalize_writable_image_ranges(
         writable_image_ranges
     )
+    binary_binding = (
+        None
+        if pe_sha256 is None or machine_ir_sha256 is None
+        else BinaryBinding(
+            pe_sha256=pe_sha256,
+            machine_ir_sha256=machine_ir_sha256,
+        )
+    )
 
     discovery = None if authority_only else _run_typed_pass(
         pass_kind="discovery",
@@ -403,6 +411,7 @@ def analyze_interprocedural_control(
         imports=imports,
         image_base=image_base,
         image_size=normalized_image_size,
+        binary_binding=binary_binding,
         static_data_reader=(proposal_static_data_reader or static_data_reader),
         interface_profiles=interface_profiles,
         operation_profiles=operation_profiles,
@@ -431,6 +440,7 @@ def analyze_interprocedural_control(
         imports=imports,
         image_base=image_base,
         image_size=normalized_image_size,
+        binary_binding=binary_binding,
         static_data_reader=static_data_reader,
         interface_profiles=interface_profiles,
         operation_profiles=operation_profiles,
@@ -486,6 +496,7 @@ def analyze_interprocedural_control(
             imports=imports,
             image_base=image_base,
             image_size=normalized_image_size,
+            binary_binding=binary_binding,
             static_data_reader=static_data_reader,
             interface_profiles=interface_profiles,
             operation_profiles=operation_profiles,
@@ -612,10 +623,7 @@ def analyze_interprocedural_control(
         else prepare_checked_memory_access_facts_v2(
             access_proposals,
             units=units,
-            binary=BinaryBinding(
-                pe_sha256=pe_sha256,
-                machine_ir_sha256=machine_ir_sha256,
-            ),
+            binary=binary_binding,
         )
     )
     domain_proposals = authority_pass.operation_provenance.get(
@@ -633,10 +641,7 @@ def analyze_interprocedural_control(
         else prepare_checked_memory_address_domains_v2(
             domain_proposals,
             units=units,
-            binary=BinaryBinding(
-                pe_sha256=pe_sha256,
-                machine_ir_sha256=machine_ir_sha256,
-            ),
+            binary=binary_binding,
         )
     )
     authority_artifact_sha256 = interprocedural_authority_signature_v2(
@@ -1384,6 +1389,7 @@ def _run_typed_pass(
     imports: Sequence[Mapping[str, Any]],
     image_base: int,
     image_size: int,
+    binary_binding: BinaryBinding | None,
     static_data_reader: Callable[[int, int], bytes | None] | None,
     interface_profiles: Sequence[ExternalInterfaceProfile],
     operation_profiles: Sequence[ExternalOperationProfile],
@@ -1409,6 +1415,8 @@ def _run_typed_pass(
     dependency_edges: frozenset[tuple[str, str]] = frozenset()
     summaries: Mapping[str, Any] = {"summaries": []}
     operation_provenance: Mapping[str, Any] = {"resolutions": []}
+    prepared_memory_access_facts: tuple[Mapping[str, Any], ...] = ()
+    contextual_memory_access_facts: tuple[Mapping[str, Any], ...] | None = None
     call_site_effects: tuple[Mapping[str, Any], ...] = ()
     value_provenance: Mapping[str, Any] = {"resolutions": []}
     scc_evaluations = 0
@@ -1456,6 +1464,9 @@ def _run_typed_pass(
             call_frame_hypotheses
         )
         input_callback_root_arguments = callback_root_arguments
+        input_memory_access_facts = _freeze_value(
+            list(prepared_memory_access_facts)
+        )
         summaries = derive_internal_call_preservation_summaries(
             units=units,
             roots=current_roots,
@@ -1465,6 +1476,10 @@ def _run_typed_pass(
             indirect_exits=indirect_exits,
             import_abis=import_abis,
             call_site_effects=call_site_effects,
+            prepared_memory_access_facts=prepared_memory_access_facts,
+            binary_binding=binary_binding,
+            image_base=image_base,
+            image_size=image_size,
             # Reviewed source/RE contracts are discovery hints.  They have not
             # been replayed against the machine semantics, so allowing them in
             # the unseeded pass would turn an operator assertion into v2 call
@@ -1543,6 +1558,16 @@ def _run_typed_pass(
 
         operation_provenance = derive_operation_provenance(
             run_contextual_recovery=False
+        )
+        base_memory_access_facts = _prepare_pass_memory_access_facts(
+            operation_provenance,
+            units=units,
+            binary_binding=binary_binding,
+        )
+        next_memory_access_facts = (
+            base_memory_access_facts
+            if contextual_memory_access_facts is None
+            else contextual_memory_access_facts
         )
         contextual_required, contextual_executed = (
             _validate_contextual_recovery(
@@ -1654,6 +1679,7 @@ def _run_typed_pass(
             global_slot_invariants=used_global_slots,
             call_frame_hypotheses=next_call_frame_hypotheses,
             call_site_effects=next_call_site_effects,
+            prepared_memory_access_facts=next_memory_access_facts,
             finite_value_budget=finite_value_budget,
         )
         proposed_edges = _derive_dependency_edges(
@@ -1665,6 +1691,9 @@ def _run_typed_pass(
             summaries=summaries,
             recoveries=next_selected,
             call_frame_hypotheses=next_call_frame_hypotheses,
+            memory_access_fact_ids=frozenset(
+                str(row["id"]) for row in next_memory_access_facts
+            ),
         )
         # Each outer evaluation is a successively more precise proposal graph,
         # not an additional execution alternative.  Retaining facts or edges
@@ -1700,12 +1729,21 @@ def _run_typed_pass(
         callback_root_arguments_stable = (
             next_callback_root_arguments == input_callback_root_arguments
         )
+        memory_access_facts_stable = (
+            _freeze_value(list(next_memory_access_facts))
+            == input_memory_access_facts
+        )
         stable = (
             transfer_stable
             and call_effects_stable
             and call_frame_hypotheses_stable
             and roots_stable
             and callback_root_arguments_stable
+            and memory_access_facts_stable
+        )
+        call_effect_changes = _call_site_effect_changes(
+            call_site_effects,
+            next_call_site_effects,
         )
         contextual_required = bool(
             contextual_required
@@ -1752,6 +1790,12 @@ def _run_typed_pass(
                 input_callback_root_arguments=input_callback_root_arguments,
             )
             operation_provenance = checkpoint_provenance
+            next_memory_access_facts = _prepare_pass_memory_access_facts(
+                operation_provenance,
+                units=units,
+                binary_binding=binary_binding,
+            )
+            contextual_memory_access_facts = next_memory_access_facts
             next_call_site_effects = checkpoint_outputs.call_site_effects
             next_callback_root_arguments = (
                 checkpoint_outputs.callback_root_arguments
@@ -1761,6 +1805,11 @@ def _run_typed_pass(
             next_selected = list(checkpoint_outputs.recoveries)
             next_call_frame_hypotheses = (
                 checkpoint_outputs.call_frame_hypotheses
+            )
+            stable = bool(
+                stable
+                and _freeze_value(list(next_memory_access_facts))
+                == input_memory_access_facts
             )
         _progress(progress, "evaluation_finished", {
             "pass_kind": pass_kind,
@@ -1775,6 +1824,18 @@ def _run_typed_pass(
             "contextual_probe_requested": contextual_requested,
             "contextual_probe": contextual_executed,
             "contextual_required": contextual_required,
+            "stability": {
+                "recoveries": transfer_stable,
+                "call_site_effects": call_effects_stable,
+                "call_frame_hypotheses": call_frame_hypotheses_stable,
+                "roots": roots_stable,
+                "callback_root_arguments": callback_root_arguments_stable,
+                "memory_access_facts": memory_access_facts_stable,
+            },
+            "changed_call_site_effects": {
+                "count": len(call_effect_changes),
+                "sites": call_effect_changes[:16],
+            },
         })
         facts = next_facts
         dependency_edges = next_edges
@@ -1782,6 +1843,7 @@ def _run_typed_pass(
         call_frame_hypotheses = next_call_frame_hypotheses
         active_roots = next_roots
         callback_root_arguments = next_callback_root_arguments
+        prepared_memory_access_facts = next_memory_access_facts
         # Proposals are a deterministic function of the frozen recovery inputs
         # and roots.  Once those inputs are stable, another whole-program
         # transfer would emit the same proposals; lattice joins and edge unions
@@ -1876,6 +1938,28 @@ def _validate_contextual_recovery(
             "scheduled recovery"
         )
     return required, executed
+
+
+def _prepare_pass_memory_access_facts(
+    operation_provenance: Mapping[str, Any],
+    *,
+    units: Sequence[Mapping[str, Any]],
+    binary_binding: BinaryBinding | None,
+) -> tuple[Mapping[str, Any], ...]:
+    rows = operation_provenance.get("memory_access_proposals", [])
+    if not isinstance(rows, list) or any(
+        not isinstance(row, Mapping) for row in rows
+    ):
+        raise ValueError(
+            "interprocedural memory-access proposal inventory is invalid"
+        )
+    if binary_binding is None:
+        return ()
+    return prepare_checked_memory_access_facts_v2(
+        rows,
+        units=units,
+        binary=binary_binding,
+    )
 
 
 def _derive_operation_outputs(
@@ -4278,6 +4362,7 @@ def _typed_proposals(
     global_slot_invariants: Sequence[GlobalSlotInvariant],
     call_frame_hypotheses: Sequence[PreservedRegisterHypothesis] = (),
     call_site_effects: Sequence[Mapping[str, Any]] = (),
+    prepared_memory_access_facts: Sequence[Mapping[str, Any]] = (),
     finite_value_budget: int,
 ) -> dict[str, _NodeState]:
     result: dict[str, _NodeState] = {}
@@ -4307,7 +4392,29 @@ def _typed_proposals(
                 CallSiteId(hypothesis.unit_id, hypothesis.event_index)
             ),
         )
+    for row in prepared_memory_access_facts:
+        identity = row.get("id") if isinstance(row, Mapping) else None
+        if not isinstance(identity, str) or identity in result:
+            raise ValueError(
+                "prepared memory-access fact has an invalid or duplicate node ID"
+            )
+        result[identity] = _memory_access_fact_state()
     return result
+
+
+def _memory_access_fact_state() -> _NodeState:
+    return _NodeState(
+        InterproceduralFact(
+            may_values=Bottom(),
+            preserved_registers=MustPreservedRegisters(_REGISTER_UNIVERSE),
+            stack_cleanup=NoExactValue(),
+            results=NoExactValue(),
+            return_behavior=ReturnBehavior(),
+            taint=Taint(),
+        ),
+        "complete",
+        (),
+    )
 
 
 def _call_frame_hypothesis_state(
@@ -4575,6 +4682,7 @@ def _derive_dependency_edges(
     summaries: Mapping[str, Any],
     recoveries: Sequence[Mapping[str, Any]],
     call_frame_hypotheses: Sequence[PreservedRegisterHypothesis] = (),
+    memory_access_fact_ids: frozenset[str] = frozenset(),
 ) -> frozenset[tuple[str, str]]:
     """Derive provider-to-consumer dependencies from represented behavior."""
 
@@ -4637,6 +4745,23 @@ def _derive_dependency_edges(
                     dependencies.add((_summary_node(target), consumer))
             for exit_row in exits_by_source.get(source, ()):
                 dependencies.add((_required_string(exit_row, "id"), consumer))
+
+    for row in summaries.get("summaries", []):
+        if not isinstance(row, Mapping):
+            continue
+        root = row.get("target_unit_id")
+        raw_dependencies = row.get("target_dependencies", ())
+        if (
+            not isinstance(root, str)
+            or root not in summary_roots
+            or not isinstance(raw_dependencies, Sequence)
+            or isinstance(raw_dependencies, (str, bytes))
+        ):
+            continue
+        consumer = _summary_node(root)
+        for dependency in raw_dependencies:
+            if dependency in memory_access_fact_ids:
+                dependencies.add((str(dependency), consumer))
 
     # An indirect target certificate is also the reachability authority for
     # each callee summary introduced through that edge.  Without this edge a
@@ -5448,6 +5573,36 @@ def _freeze_call_site_effects(
     effects: Sequence[Mapping[str, Any]],
 ) -> tuple[Hashable, ...]:
     return tuple(sorted((_freeze_value(row) for row in effects), key=repr))
+
+
+def _call_site_effect_changes(
+    left: Sequence[Mapping[str, Any]],
+    right: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    def indexed(
+        rows: Sequence[Mapping[str, Any]],
+    ) -> dict[tuple[str, int], Hashable]:
+        result: dict[tuple[str, int], Hashable] = {}
+        for row in rows:
+            unit_id = row.get("unit_id")
+            event_index = row.get("event_index")
+            if (
+                not isinstance(unit_id, str)
+                or not isinstance(event_index, int)
+                or isinstance(event_index, bool)
+            ):
+                continue
+            result[(unit_id, event_index)] = _freeze_value(row)
+        return result
+
+    before = indexed(left)
+    after = indexed(right)
+    return [
+        f"{unit_id}:{event_index}"
+        for unit_id, event_index in sorted(set(before) | set(after))
+        if before.get((unit_id, event_index))
+        != after.get((unit_id, event_index))
+    ]
 
 
 def _inductive_reproduction_status(

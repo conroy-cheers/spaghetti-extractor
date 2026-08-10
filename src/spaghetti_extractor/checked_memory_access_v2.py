@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence, TypeVar
 
 from .analysis_schema_v2 import CHECKED_MEMORY_ACCESS_FACT_V2_FORMAT
 from .authority_bindings_v2 import (
@@ -38,12 +38,15 @@ _MUTABLE_DEPENDENCY_PREFIXES = (
 )
 
 
+_MemoryFact = TypeVar("_MemoryFact", bound="PreparedMemoryAccessFact")
+
+
 class CheckedMemoryAccessV2Error(ValueError):
     """A memory-access proposal or checked binding is malformed or stale."""
 
 
 @dataclass(frozen=True)
-class CheckedMemoryAccessFact:
+class PreparedMemoryAccessFact:
     fact_id: str
     binding: EventBinding
     memory_kind: str
@@ -51,17 +54,12 @@ class CheckedMemoryAccessFact:
     address_expression: CanonicalJson
     address_origins: tuple[CanonicalJson, ...]
     authority_dependencies: tuple[str, ...]
-    interprocedural_authority_sha256: str
 
     def __post_init__(self) -> None:
         if self.memory_kind not in _MEMORY_KINDS:
             raise AuthorityDataError("checked memory access has an invalid kind")
         if not 0 < self.width_bytes <= 4096:
             raise AuthorityDataError("checked memory access has an invalid width")
-        _digest(
-            self.interprocedural_authority_sha256,
-            "interprocedural authority SHA-256",
-        )
         if not self.address_origins:
             raise AuthorityDataError("checked memory access has no address origins")
         if tuple(sorted(set(self.authority_dependencies))) != self.authority_dependencies:
@@ -90,6 +88,18 @@ class CheckedMemoryAccessFact:
         if include_id:
             payload["id"] = self.fact_id
         return payload
+
+
+@dataclass(frozen=True)
+class CheckedMemoryAccessFact(PreparedMemoryAccessFact):
+    interprocedural_authority_sha256: str
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        _digest(
+            self.interprocedural_authority_sha256,
+            "interprocedural authority SHA-256",
+        )
 
     def to_payload(self) -> dict[str, Any]:
         payload = {
@@ -196,12 +206,39 @@ def seal_checked_memory_access_facts_v2(
     _digest(interprocedural_authority_sha256, "interprocedural authority SHA-256")
     result = []
     for row in prepared:
-        fact = _parse_prepared(
-            row,
+        prepared_fact = _parse_prepared(row)
+        fact = CheckedMemoryAccessFact(
+            **_prepared_fields(prepared_fact),
             interprocedural_authority_sha256=interprocedural_authority_sha256,
         )
         result.append(fact.to_payload())
     return tuple(sorted(result, key=lambda row: str(row["id"])))
+
+
+def validate_prepared_memory_access_facts_v2(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    units: Sequence[Mapping[str, Any]],
+    binary: BinaryBinding,
+) -> dict[str, PreparedMemoryAccessFact]:
+    """Replay exact bindings before facts enter the interprocedural SCC."""
+
+    parsed: list[PreparedMemoryAccessFact] = []
+    for index, row in enumerate(rows):
+        try:
+            parsed.append(_parse_prepared(row))
+        except (AuthorityDataError, MachineIRAuthorityV2Error, TypeError, ValueError) as exc:
+            if isinstance(exc, CheckedMemoryAccessV2Error):
+                raise
+            raise CheckedMemoryAccessV2Error(
+                f"prepared memory-access fact {index} is invalid: {exc}"
+            ) from exc
+    return _validate_fact_bindings(
+        parsed,
+        units=units,
+        binary=binary,
+        context="prepared memory-access fact",
+    )
 
 
 def validate_checked_memory_access_facts_v2(
@@ -214,9 +251,7 @@ def validate_checked_memory_access_facts_v2(
     """Recompute every exact event binding and return facts by event node."""
 
     _digest(interprocedural_authority_sha256, "interprocedural authority SHA-256")
-    by_id = _unit_rows(units)
-    result: dict[str, CheckedMemoryAccessFact] = {}
-    seen_ids: set[str] = set()
+    parsed: list[CheckedMemoryAccessFact] = []
     for index, raw in enumerate(rows):
         try:
             fact = _parse_sealed(raw)
@@ -224,6 +259,134 @@ def validate_checked_memory_access_facts_v2(
                 raise CheckedMemoryAccessV2Error(
                     "memory-access fact has a stale interprocedural binding"
                 )
+            parsed.append(fact)
+        except (AuthorityDataError, MachineIRAuthorityV2Error, TypeError, ValueError) as exc:
+            if isinstance(exc, CheckedMemoryAccessV2Error):
+                raise
+            raise CheckedMemoryAccessV2Error(
+                f"checked memory-access fact {index} is invalid: {exc}"
+            ) from exc
+    return _validate_fact_bindings(
+        parsed,
+        units=units,
+        binary=binary,
+        context="checked memory-access fact",
+    )
+
+
+def memory_access_fact_signature_projection_v2(
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Return the non-self-referential part covered by interprocedural authority."""
+
+    return {
+        key: value
+        for key, value in dict(row).items()
+        if key not in {"interprocedural_authority_sha256", "fact_sha256"}
+    }
+
+
+def _parse_prepared(
+    row: Mapping[str, Any],
+) -> PreparedMemoryAccessFact:
+    expected = {
+        "format",
+        "id",
+        "status",
+        "binding",
+        "memory_kind",
+        "width_bytes",
+        "address_expression",
+        "address_origins",
+        "authority_dependencies",
+    }
+    if not isinstance(row, Mapping) or set(row) != expected:
+        raise CheckedMemoryAccessV2Error(
+            "prepared memory-access fact has noncanonical fields"
+        )
+    if (
+        row.get("format") != CHECKED_MEMORY_ACCESS_FACT_V2_FORMAT
+        or row.get("status") != "complete"
+    ):
+        raise CheckedMemoryAccessV2Error(
+            "prepared memory-access fact has an invalid format or status"
+        )
+    origins, origin_dependencies = _origins(row.get("address_origins"))
+    dependencies = _dependencies(row.get("authority_dependencies"))
+    if dependencies != origin_dependencies:
+        raise CheckedMemoryAccessV2Error(
+            "prepared memory-access dependency inventory is stale"
+        )
+    return PreparedMemoryAccessFact(
+        fact_id=_text(row.get("id"), "memory-access fact ID"),
+        binding=EventBinding.parse(row.get("binding")),
+        memory_kind=_text(row.get("memory_kind"), "memory kind"),
+        width_bytes=_uint(row.get("width_bytes"), "memory width", maximum=4096),
+        address_expression=CanonicalJson.of(row.get("address_expression")),
+        address_origins=origins,
+        authority_dependencies=dependencies,
+    )
+
+
+def _parse_sealed(row: Mapping[str, Any]) -> CheckedMemoryAccessFact:
+    expected = {
+        "format",
+        "id",
+        "status",
+        "binding",
+        "memory_kind",
+        "width_bytes",
+        "address_expression",
+        "address_origins",
+        "authority_dependencies",
+        "interprocedural_authority_sha256",
+        "fact_sha256",
+    }
+    if not isinstance(row, Mapping) or set(row) != expected:
+        raise CheckedMemoryAccessV2Error(
+            "checked memory-access fact has noncanonical fields"
+        )
+    payload = {key: value for key, value in row.items() if key != "fact_sha256"}
+    if row.get("fact_sha256") != _sha256(payload):
+        raise CheckedMemoryAccessV2Error(
+            "checked memory-access fact digest is stale"
+        )
+    prepared = _parse_prepared(
+        memory_access_fact_signature_projection_v2(row)
+    )
+    return CheckedMemoryAccessFact(
+        **_prepared_fields(prepared),
+        interprocedural_authority_sha256=_digest(
+            row.get("interprocedural_authority_sha256"),
+            "interprocedural authority SHA-256",
+        ),
+    )
+
+
+def _prepared_fields(fact: PreparedMemoryAccessFact) -> dict[str, Any]:
+    return {
+        "fact_id": fact.fact_id,
+        "binding": fact.binding,
+        "memory_kind": fact.memory_kind,
+        "width_bytes": fact.width_bytes,
+        "address_expression": fact.address_expression,
+        "address_origins": fact.address_origins,
+        "authority_dependencies": fact.authority_dependencies,
+    }
+
+
+def _validate_fact_bindings(
+    facts: Iterable[_MemoryFact],
+    *,
+    units: Sequence[Mapping[str, Any]],
+    binary: BinaryBinding,
+    context: str,
+) -> dict[str, _MemoryFact]:
+    by_id = _unit_rows(units)
+    result: dict[str, _MemoryFact] = {}
+    seen_ids: set[str] = set()
+    for index, fact in enumerate(facts):
+        try:
             unit_row = by_id.get(fact.binding.unit.unit_id)
             if unit_row is None:
                 raise CheckedMemoryAccessV2Error(
@@ -262,7 +425,9 @@ def validate_checked_memory_access_facts_v2(
                     "memory-access fact ID is duplicated"
                 )
             seen_ids.add(fact.fact_id)
-            event_node = f"event:{fact.binding.unit.unit_id}:{fact.binding.event_index}"
+            event_node = (
+                f"event:{fact.binding.unit.unit_id}:{fact.binding.event_index}"
+            )
             if event_node in result:
                 raise CheckedMemoryAccessV2Error(
                     "multiple memory-access facts bind one event"
@@ -272,98 +437,9 @@ def validate_checked_memory_access_facts_v2(
             if isinstance(exc, CheckedMemoryAccessV2Error):
                 raise
             raise CheckedMemoryAccessV2Error(
-                f"checked memory-access fact {index} is invalid: {exc}"
+                f"{context} {index} is invalid: {exc}"
             ) from exc
     return dict(sorted(result.items()))
-
-
-def memory_access_fact_signature_projection_v2(
-    row: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Return the non-self-referential part covered by interprocedural authority."""
-
-    return {
-        key: value
-        for key, value in dict(row).items()
-        if key not in {"interprocedural_authority_sha256", "fact_sha256"}
-    }
-
-
-def _parse_prepared(
-    row: Mapping[str, Any],
-    *,
-    interprocedural_authority_sha256: str,
-) -> CheckedMemoryAccessFact:
-    expected = {
-        "format",
-        "id",
-        "status",
-        "binding",
-        "memory_kind",
-        "width_bytes",
-        "address_expression",
-        "address_origins",
-        "authority_dependencies",
-    }
-    if not isinstance(row, Mapping) or set(row) != expected:
-        raise CheckedMemoryAccessV2Error(
-            "prepared memory-access fact has noncanonical fields"
-        )
-    if (
-        row.get("format") != CHECKED_MEMORY_ACCESS_FACT_V2_FORMAT
-        or row.get("status") != "complete"
-    ):
-        raise CheckedMemoryAccessV2Error(
-            "prepared memory-access fact has an invalid format or status"
-        )
-    origins, origin_dependencies = _origins(row.get("address_origins"))
-    dependencies = _dependencies(row.get("authority_dependencies"))
-    if dependencies != origin_dependencies:
-        raise CheckedMemoryAccessV2Error(
-            "prepared memory-access dependency inventory is stale"
-        )
-    return CheckedMemoryAccessFact(
-        fact_id=_text(row.get("id"), "memory-access fact ID"),
-        binding=EventBinding.parse(row.get("binding")),
-        memory_kind=_text(row.get("memory_kind"), "memory kind"),
-        width_bytes=_uint(row.get("width_bytes"), "memory width", maximum=4096),
-        address_expression=CanonicalJson.of(row.get("address_expression")),
-        address_origins=origins,
-        authority_dependencies=dependencies,
-        interprocedural_authority_sha256=interprocedural_authority_sha256,
-    )
-
-
-def _parse_sealed(row: Mapping[str, Any]) -> CheckedMemoryAccessFact:
-    expected = {
-        "format",
-        "id",
-        "status",
-        "binding",
-        "memory_kind",
-        "width_bytes",
-        "address_expression",
-        "address_origins",
-        "authority_dependencies",
-        "interprocedural_authority_sha256",
-        "fact_sha256",
-    }
-    if not isinstance(row, Mapping) or set(row) != expected:
-        raise CheckedMemoryAccessV2Error(
-            "checked memory-access fact has noncanonical fields"
-        )
-    payload = {key: value for key, value in row.items() if key != "fact_sha256"}
-    if row.get("fact_sha256") != _sha256(payload):
-        raise CheckedMemoryAccessV2Error(
-            "checked memory-access fact digest is stale"
-        )
-    return _parse_prepared(
-        memory_access_fact_signature_projection_v2(row),
-        interprocedural_authority_sha256=_digest(
-            row.get("interprocedural_authority_sha256"),
-            "interprocedural authority SHA-256",
-        ),
-    )
 
 
 def _proposal(value: Any) -> Mapping[str, Any]:
@@ -475,7 +551,21 @@ def _unit_rows(
 
 
 def _fact_id(value: Mapping[str, Any]) -> str:
-    return "memory-access:" + hashlib.sha256(canonical_json_bytes(value)).hexdigest()[:20]
+    identity = {
+        key: value.get(key)
+        for key in (
+            "format",
+            "status",
+            "binding",
+            "memory_kind",
+            "width_bytes",
+            "address_expression",
+        )
+    }
+    return (
+        "memory-access:"
+        + hashlib.sha256(canonical_json_bytes(identity)).hexdigest()[:20]
+    )
 
 
 def _sha256(value: Any) -> str:
@@ -517,8 +607,10 @@ __all__ = [
     "CheckedMemoryAccessFact",
     "CheckedMemoryAccessV2Error",
     "MEMORY_ACCESS_PROPOSAL_V2_FORMAT",
+    "PreparedMemoryAccessFact",
     "memory_access_fact_signature_projection_v2",
     "prepare_checked_memory_access_facts_v2",
     "seal_checked_memory_access_facts_v2",
     "validate_checked_memory_access_facts_v2",
+    "validate_prepared_memory_access_facts_v2",
 ]

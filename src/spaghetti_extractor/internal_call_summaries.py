@@ -22,10 +22,19 @@ from .call_site_effects import (
     CallWriteSpan,
     parse_call_site_effects,
 )
+from .authority_bindings_v2 import BinaryBinding
+from .checked_memory_access_v2 import (
+    PreparedMemoryAccessFact,
+    validate_prepared_memory_access_facts_v2,
+)
 from .import_abi import SelectedImportABI
 from .machine_abi import resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity
-from .provenance_domain import ValueOrigin, parse_value_origin
+from .provenance_domain import (
+    ValueOrigin,
+    origin_concrete_value,
+    parse_value_origin,
+)
 
 
 INTERNAL_CALL_SUMMARY_FORMAT = "stage-a-internal-call-preservation-v1"
@@ -77,6 +86,7 @@ class _ExternalResult:
     identity_value: str | int
     relation: str
     nullable: bool
+    extent_lower_bound: int | None = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +140,13 @@ class _CallFrame:
     memory_writes: tuple[CallWriteSpan, ...] = ()
 
 
+@dataclass(frozen=True)
+class _MemoryWriteFootprint:
+    fact_id: str
+    stack_offsets: tuple[int, ...]
+    has_non_stack_alternative: bool
+
+
 def derive_internal_call_preservation_summaries(
     *,
     units: Sequence[Mapping[str, Any]],
@@ -140,6 +157,10 @@ def derive_internal_call_preservation_summaries(
     indirect_exits: Sequence[Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     call_site_effects: Sequence[Mapping[str, Any]] = (),
+    prepared_memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    binary_binding: BinaryBinding | None = None,
+    image_base: int | None = None,
+    image_size: int | None = None,
     declared_summaries: Mapping[str, Mapping[str, Any]] | None = None,
     max_units_per_summary: int = 4096,
     max_stack_words: int = 256,
@@ -176,6 +197,34 @@ def derive_internal_call_preservation_summaries(
                 "call-site effect does not bind an exact machine-IR call: "
                 f"{site.unit_id}:{site.event_index}"
             )
+    if prepared_memory_access_facts and binary_binding is None:
+        raise ValueError(
+            "prepared memory-access facts require an exact binary binding"
+        )
+    if prepared_memory_access_facts and (
+        image_base is None
+        or image_size is None
+        or not _valid_image_range(image_base, image_size)
+    ):
+        raise ValueError(
+            "prepared memory-access facts require a bounded PE image range"
+        )
+    prepared_by_event = (
+        {}
+        if binary_binding is None
+        else validate_prepared_memory_access_facts_v2(
+            prepared_memory_access_facts,
+            units=units,
+            binary=binary_binding,
+        )
+    )
+    write_footprints = _memory_write_footprints(
+        prepared_by_event,
+        by_id=by_id,
+        import_abis=import_abis,
+        image_base=image_base,
+        image_size=image_size,
+    )
     declarations = declared_summaries or {}
     unknown_declarations = sorted(set(declarations) - set(by_id))
     if unknown_declarations:
@@ -321,6 +370,7 @@ def derive_internal_call_preservation_summaries(
                     completed_summaries=summaries,
                     import_abis=import_abis,
                     call_site_effects=effects_by_site,
+                    memory_write_footprints=write_footprints,
                     return_instruction_cleanups=return_instruction_cleanups,
                     max_units=max_units_per_summary,
                     max_stack_words=max_stack_words,
@@ -346,6 +396,7 @@ def derive_internal_call_preservation_summaries(
             summaries=summaries,
             import_abis=import_abis,
             call_site_effects=effects_by_site,
+            memory_write_footprints=write_footprints,
             max_units=max_units_per_summary,
             max_stack_words=max_stack_words,
             max_memory_words=max_memory_words,
@@ -834,6 +885,9 @@ def _analyze_recursive_component(
     completed_summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+    memory_write_footprints: Mapping[
+        tuple[str, int], _MemoryWriteFootprint
+    ],
     return_instruction_cleanups: Mapping[str, Mapping[str, Any]],
     max_units: int,
     max_stack_words: int,
@@ -867,6 +921,7 @@ def _analyze_recursive_component(
                 summaries=assumptions,
                 import_abis=import_abis,
                 call_site_effects=call_site_effects,
+                memory_write_footprints=memory_write_footprints,
                 max_units=max_units,
                 max_stack_words=max_stack_words,
                 max_memory_words=max_memory_words,
@@ -941,6 +996,9 @@ def _analyze_callee(
     summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+    memory_write_footprints: Mapping[
+        tuple[str, int], _MemoryWriteFootprint
+    ],
     max_units: int,
     max_stack_words: int,
     max_memory_words: int,
@@ -964,6 +1022,7 @@ def _analyze_callee(
     nonreturning_nodes: set[str] = set()
     blockers: set[str] = set()
     register_frames_complete = True
+    memory_fact_dependencies: set[str] = set()
     evaluations = 0
     while work:
         unit_id = work.popleft()
@@ -1000,7 +1059,7 @@ def _analyze_callee(
                 blockers.add("call_return_behavior_incomplete")
             elif call_frame.may_return is False:
                 continue
-        output, transfer_blockers = _transfer(
+        output, transfer_blockers, transfer_dependencies = _transfer(
             unit_id=unit_id,
             unit=unit,
             state=states[unit_id],
@@ -1009,10 +1068,12 @@ def _analyze_callee(
             summaries=summaries,
             import_abis=import_abis,
             call_site_effects=call_site_effects,
+            memory_write_footprints=memory_write_footprints,
             max_stack_words=max_stack_words,
             max_memory_words=max_memory_words,
         )
         blockers.update(transfer_blockers)
+        memory_fact_dependencies.update(transfer_dependencies)
         if "register_write_inventory_invalid" in transfer_blockers:
             register_frames_complete = False
         kind = _mapping(_mapping(unit.get("semantics")).get("outcome")).get("kind")
@@ -1169,6 +1230,7 @@ def _analyze_callee(
         direct_calls=direct_calls,
         recovered_calls=recovered_calls,
         call_site_effects=call_site_effects,
+        memory_fact_dependencies=memory_fact_dependencies,
         complete=control_complete,
     )
     return {
@@ -1225,6 +1287,7 @@ def _summary_effect_families(
     direct_calls: Mapping[tuple[str, int], str],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+    memory_fact_dependencies: Iterable[str],
     complete: bool,
 ) -> dict[str, Any]:
     """Inventory local effects and delegated call dependencies exactly once."""
@@ -1232,7 +1295,7 @@ def _summary_effect_families(
     memory_sites: list[dict[str, Any]] = []
     external_sites: list[dict[str, Any]] = []
     callback_sites: list[dict[str, Any]] = []
-    dependencies: set[str] = set()
+    dependencies: set[str] = set(memory_fact_dependencies)
     for unit_id in sorted(reached_unit_ids):
         semantics = _mapping(by_id[unit_id].get("semantics"))
         memory = semantics.get("memory_events", ())
@@ -1368,7 +1431,10 @@ def _unit_call_frame(
                 preserved_registers=selected.abi.preserved_registers,
                 stack_cleanup=_selected_import_stack_cleanup(selected),
                 result_registers=_selected_import_result_registers(
-                    selected, unit_id=unit_id, event_index=event_index
+                    selected,
+                    unit_id=unit_id,
+                    event_index=event_index,
+                    input_state=input_state,
                 ),
             )
         return _overlay_call_site_effect(
@@ -1821,6 +1887,196 @@ def _external_tail_return_state(
     )
 
 
+def _memory_write_footprints(
+    facts: Mapping[str, PreparedMemoryAccessFact],
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    image_base: int | None,
+    image_size: int | None,
+) -> dict[tuple[str, int], _MemoryWriteFootprint]:
+    """Classify exact write facts that cannot silently alias stack spills.
+
+    Dynamic origins are accepted only when their producer is the exact import
+    event selected by a reviewed ``dynamic_range_base`` contract. Such ranges
+    are relational-world allocations and are disjoint from the launch stack.
+    Concrete origins must lie wholly inside the PE image, whose launch mapping
+    is likewise disjoint from that stack. Any other alternative prevents the
+    fact from becoming a usable footprint.
+    """
+
+    if not facts:
+        return {}
+    assert image_base is not None and image_size is not None
+    result: dict[tuple[str, int], _MemoryWriteFootprint] = {}
+    for fact in facts.values():
+        if fact.memory_kind not in {"write", "read_write"}:
+            continue
+        stack_offsets: set[int] = set()
+        has_non_stack = False
+        complete = True
+        for raw in fact.address_origins:
+            try:
+                origin = parse_value_origin(
+                    raw.to_value(), context="prepared write-footprint origin"
+                )
+            except ValueError:
+                complete = False
+                break
+            stack_offset = _stack_origin_offset(origin)
+            if stack_offset is not None:
+                stack_offsets.add(stack_offset)
+                continue
+            if _origin_is_checked_non_stack(
+                origin,
+                width=fact.width_bytes,
+                by_id=by_id,
+                import_abis=import_abis,
+                image_base=image_base,
+                image_size=image_size,
+            ):
+                has_non_stack = True
+                continue
+            complete = False
+            break
+        if not complete or not (stack_offsets or has_non_stack):
+            continue
+        key = (fact.binding.unit.unit_id, fact.binding.event_index)
+        if key in result:
+            raise ValueError("prepared write footprints duplicate an exact event")
+        result[key] = _MemoryWriteFootprint(
+            fact_id=fact.fact_id,
+            stack_offsets=tuple(sorted(stack_offsets)),
+            has_non_stack_alternative=has_non_stack,
+        )
+    return result
+
+
+def _stack_origin_offset(origin: ValueOrigin) -> int | None:
+    if origin.kind != "stack_location" or len(origin.key) != 1:
+        return None
+    offset = origin.key[0]
+    return (
+        int(offset)
+        if isinstance(offset, int)
+        and not isinstance(offset, bool)
+        and -(1 << 31) <= offset < (1 << 31)
+        else None
+    )
+
+
+def _origin_is_checked_non_stack(
+    origin: ValueOrigin,
+    *,
+    width: int,
+    by_id: Mapping[str, Mapping[str, Any]],
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    image_base: int,
+    image_size: int,
+) -> bool:
+    concrete = origin_concrete_value(origin)
+    if concrete is not None:
+        return _span_inside_image(
+            concrete,
+            width,
+            image_base=image_base,
+            image_size=image_size,
+        )
+    if origin.kind not in {"dynamic_range", "dynamic_location"}:
+        return False
+    key = origin.key
+    if origin.kind == "dynamic_range" and len(key) in {5, 6}:
+        extent_lower_bound = key[5] if len(key) == 6 else None
+        offset = 0
+    elif origin.kind == "dynamic_location" and len(key) in {6, 7}:
+        extent_lower_bound = key[5] if len(key) == 7 else None
+        offset = key[-1]
+    else:
+        return False
+    producer, event_index, dll, identity_kind, identity_value = key[:5]
+    if (
+        not isinstance(producer, str)
+        or not isinstance(event_index, int)
+        or isinstance(event_index, bool)
+        or not isinstance(dll, str)
+        or identity_kind not in {"symbol", "ordinal"}
+        or (identity_kind == "symbol" and not isinstance(identity_value, str))
+        or (identity_kind == "ordinal" and not isinstance(identity_value, int))
+        or not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or offset < 0
+        or offset + width > (1 << 32)
+        or (
+            extent_lower_bound is not None
+            and (
+                not isinstance(extent_lower_bound, int)
+                or isinstance(extent_lower_bound, bool)
+                or not 0 < extent_lower_bound <= 0xFFFFFFFF
+            )
+        )
+    ):
+        return False
+    unit = by_id.get(producer)
+    events = _events(unit or {})
+    if not 0 <= event_index < len(events):
+        return False
+    identity = _event_import_identity(events[event_index])
+    expected_identity = MachineImportIdentity(
+        str(dll).lower(), str(identity_kind), identity_value
+    )
+    selected = import_abis.get(expected_identity)
+    if identity != expected_identity or selected is None:
+        return False
+    contract = selected.contract
+    relations = (
+        contract.get("result_register_relations")
+        if isinstance(contract, Mapping)
+        else None
+    )
+    if not isinstance(relations, list):
+        return False
+    reviewed_bounds = [
+        int(relation.get("minimum_size"))
+        for relation in relations
+        if isinstance(relation, Mapping)
+        and relation.get("relation") == "dynamic_range_base"
+        and isinstance(relation.get("minimum_size"), int)
+        and not isinstance(relation.get("minimum_size"), bool)
+        and 0 <= int(relation["minimum_size"]) <= 0xFFFFFFFF
+    ]
+    reviewed_minimum = min(reviewed_bounds) if reviewed_bounds else 0
+    effective_extent = max(
+        reviewed_minimum,
+        0 if extent_lower_bound is None else int(extent_lower_bound),
+    )
+    return offset + width <= effective_extent
+
+
+def _valid_image_range(image_base: int, image_size: int) -> bool:
+    return (
+        isinstance(image_base, int)
+        and not isinstance(image_base, bool)
+        and isinstance(image_size, int)
+        and not isinstance(image_size, bool)
+        and 0 <= image_base < (1 << 32)
+        and 0 < image_size <= (1 << 32) - image_base
+    )
+
+
+def _span_inside_image(
+    address: int,
+    width: int,
+    *,
+    image_base: int,
+    image_size: int,
+) -> bool:
+    return (
+        0 < width <= 4096
+        and image_base <= address
+        and address + width <= image_base + image_size
+    )
+
+
 def _transfer(
     *,
     unit_id: str,
@@ -1831,9 +2087,12 @@ def _transfer(
     summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+    memory_write_footprints: Mapping[
+        tuple[str, int], _MemoryWriteFootprint
+    ],
     max_stack_words: int,
     max_memory_words: int,
-) -> tuple[_State, set[str]]:
+) -> tuple[_State, set[str], set[str]]:
     events = _events(unit)
     calls = [
         (index, event)
@@ -1854,7 +2113,7 @@ def _transfer(
             input_state=pre_call,
         )
         if frame is None:
-            return _unknown_state(), {"call_inventory_missing"}
+            return _unknown_state(), {"call_inventory_missing"}, set()
         output_registers = {
             register: (
                 pre_call.registers.get(register)
@@ -1894,12 +2153,13 @@ def _transfer(
                 input_stack_kills=input_stack_kills,
             ),
             set(frame.blocker_codes) | stack_blockers,
+            set(),
         )
 
     semantics = _mapping(unit.get("semantics"))
     writes = semantics.get("register_writes")
     if not isinstance(writes, list):
-        return _unknown_state(), {"register_write_inventory_invalid"}
+        return _unknown_state(), {"register_write_inventory_invalid"}, set()
     registers: dict[str, _Value] = dict(state.registers)
     for raw in writes:
         write = _mapping(raw)
@@ -1916,6 +2176,7 @@ def _transfer(
     memory_words = dict(state.memory_words)
     input_stack_valid = state.input_stack_valid
     input_stack_kills = state.input_stack_kills
+    memory_fact_dependencies: set[str] = set()
     memory_events = semantics.get("memory_events")
     if not isinstance(memory_events, list):
         stack_words.clear()
@@ -1923,7 +2184,7 @@ def _transfer(
         input_stack_valid = False
         input_stack_kills = ()
     else:
-        for raw in memory_events:
+        for event_index, raw in enumerate(memory_events):
             event = _mapping(raw)
             if event.get("kind") != "write":
                 continue
@@ -1961,10 +2222,34 @@ def _transfer(
                 if width == 4 and value is not None:
                     memory_words[location] = value
             else:
-                stack_words.clear()
-                memory_words.clear()
-                input_stack_valid = False
-                input_stack_kills = ()
+                footprint = memory_write_footprints.get(
+                    (unit_id, event_index)
+                )
+                if footprint is None or width is None:
+                    stack_words.clear()
+                    memory_words.clear()
+                    input_stack_valid = False
+                    input_stack_kills = ()
+                    continue
+                memory_fact_dependencies.add(footprint.fact_id)
+                for offset in footprint.stack_offsets:
+                    _invalidate_overlapping(stack_words, offset, width)
+                    updated_kills = _add_killed_stack_range(
+                        input_stack_kills,
+                        offset,
+                        width,
+                        maximum=max_stack_words,
+                    )
+                    if updated_kills is None:
+                        input_stack_valid = False
+                        input_stack_kills = ()
+                    else:
+                        input_stack_kills = updated_kills
+                # The fact proves separation from protected stack cells, not
+                # the identity of every non-stack location. Keep stack frame
+                # evidence but conservatively discard ordinary memory facts.
+                if footprint.has_non_stack_alternative:
+                    memory_words.clear()
     schedule = _mapping(semantics.get("instruction_effect_schedule"))
     blockers = schedule.get("blockers")
     if isinstance(blockers, list):
@@ -2010,7 +2295,7 @@ def _transfer(
         memory_words=memory_words,
         input_stack_valid=input_stack_valid,
         input_stack_kills=input_stack_kills,
-    ), stack_blockers
+    ), stack_blockers, memory_fact_dependencies
 
 
 def _summary_preserved(summary: Mapping[str, Any] | None) -> frozenset[str]:
@@ -2082,6 +2367,7 @@ def _selected_import_result_registers(
     *,
     unit_id: str,
     event_index: int,
+    input_state: _State | None,
 ) -> dict[str, _Value]:
     contract = selected.contract
     if not isinstance(contract, Mapping):
@@ -2108,8 +2394,57 @@ def _selected_import_result_registers(
             identity_value=selected.identity.value,
             relation=str(kind),
             nullable=bool(relation["nullable"]),
+            extent_lower_bound=_dynamic_result_extent_lower_bound(
+                selected,
+                relation,
+                input_state=input_state,
+            ),
         )
     return result
+
+
+def _dynamic_result_extent_lower_bound(
+    selected: SelectedImportABI,
+    relation: Mapping[str, Any],
+    *,
+    input_state: _State | None,
+) -> int | None:
+    """Recover a checked lower bound for one allocation-like result.
+
+    The reviewed import contract supplies the extent rule.  A dynamic argument
+    contributes only when the exact call-frame state reduces it to one
+    concrete unsigned word; otherwise the declared minimum remains the only
+    usable bound.
+    """
+
+    minimum = _integer(relation.get("minimum_size"))
+    if minimum is None or minimum < 0 or minimum > 0xFFFFFFFF:
+        minimum = 0
+    size = _mapping(relation.get("size"))
+    kind = size.get("kind")
+    if kind == "fixed":
+        fixed = _integer(size.get("bytes"))
+        if fixed is not None and 0 <= fixed <= 0xFFFFFFFF:
+            minimum = max(minimum, fixed)
+    elif kind == "argument" and input_state is not None:
+        argument = _integer(size.get("argument"))
+        scale = _integer(size.get("scale"))
+        esp = input_state.registers.get("esp")
+        if (
+            argument is not None
+            and selected.argument_words is not None
+            and 0 <= argument < selected.argument_words
+            and scale is not None
+            and 0 < scale <= 0xFFFFFFFF
+            and isinstance(esp, _StackAddress)
+            and not esp.register_terms
+        ):
+            value = _read_stack_word(
+                input_state, esp.offset + argument * 4
+            )
+            if isinstance(value, _Exact) and value.value <= 0xFFFFFFFF // scale:
+                minimum = max(minimum, value.value * scale)
+    return minimum if minimum > 0 else None
 
 
 def _serialize_summary_value(value: _Value) -> dict[str, Any] | None:
@@ -2126,7 +2461,7 @@ def _serialize_summary_value(value: _Value) -> dict[str, Any] | None:
     if isinstance(value, _Exact):
         return {"kind": "exact", "value": value.value & 0xFFFFFFFF}
     if isinstance(value, _ExternalResult):
-        return {
+        result = {
             "kind": "external_result",
             "producer_unit_id": value.producer_unit_id,
             "event_index": value.event_index,
@@ -2137,6 +2472,9 @@ def _serialize_summary_value(value: _Value) -> dict[str, Any] | None:
             "relation": value.relation,
             "nullable": value.nullable,
         }
+        if value.extent_lower_bound is not None:
+            result["extent_lower_bound"] = value.extent_lower_bound
+        return result
     if isinstance(value, _InternalContractResult):
         return {
             "kind": "internal_contract_result",
@@ -2221,11 +2559,19 @@ def _parse_summary_value(value: Any) -> _Value:
     producer = row.get("producer_unit_id")
     relation = row.get("relation")
     nullable = row.get("nullable")
+    extent_lower_bound = _integer(row.get("extent_lower_bound"))
     if (
         event_index is None
         or not isinstance(producer, str)
         or relation != "dynamic_range_base"
         or not isinstance(nullable, bool)
+        or (
+            "extent_lower_bound" in row
+            and (
+                extent_lower_bound is None
+                or not 0 < extent_lower_bound <= 0xFFFFFFFF
+            )
+        )
     ):
         return None
     return _ExternalResult(
@@ -2236,6 +2582,7 @@ def _parse_summary_value(value: Any) -> _Value:
         identity_value=identity.value,
         relation=str(relation),
         nullable=nullable,
+        extent_lower_bound=extent_lower_bound,
     )
 
 

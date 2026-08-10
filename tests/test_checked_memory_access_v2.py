@@ -10,6 +10,7 @@ from spaghetti_extractor.checked_memory_access_v2 import (
     prepare_checked_memory_access_facts_v2,
     seal_checked_memory_access_facts_v2,
     validate_checked_memory_access_facts_v2,
+    validate_prepared_memory_access_facts_v2,
 )
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
 
@@ -88,6 +89,39 @@ class CheckedMemoryAccessV2Tests(unittest.TestCase):
             {"kind": "stack_location", "key": [0]},
         )
 
+    def test_prepared_fact_replays_exact_event_before_sealing(self) -> None:
+        units = [_unit()]
+        prepared = prepare_checked_memory_access_facts_v2(
+            [_proposal()], units=units, binary=self._binary(units)
+        )
+
+        facts = validate_prepared_memory_access_facts_v2(
+            prepared,
+            units=units,
+            binary=self._binary(units),
+        )
+
+        self.assertEqual(list(facts), ["event:entry:0"])
+        self.assertEqual(
+            facts["event:entry:0"].binding.unit.unit_id,
+            "entry",
+        )
+
+    def test_corrupt_prepared_event_binding_is_rejected(self) -> None:
+        units = [_unit()]
+        prepared = list(prepare_checked_memory_access_facts_v2(
+            [_proposal()], units=units, binary=self._binary(units)
+        ))
+        prepared[0] = copy.deepcopy(prepared[0])
+        prepared[0]["binding"]["event_sha256"] = "f" * 64
+
+        with self.assertRaises(CheckedMemoryAccessV2Error):
+            validate_prepared_memory_access_facts_v2(
+                prepared,
+                units=units,
+                binary=self._binary(units),
+            )
+
     def test_corrupt_event_binding_is_rejected(self) -> None:
         units = [_unit()]
         prepared = prepare_checked_memory_access_facts_v2(
@@ -135,6 +169,24 @@ class CheckedMemoryAccessV2Tests(unittest.TestCase):
                 units=units,
                 binary=self._binary(units),
             )
+
+    def test_fact_identity_is_stable_across_dependency_refinement(self) -> None:
+        units = [_unit()]
+        binary = self._binary(units)
+        initial = prepare_checked_memory_access_facts_v2(
+            [_proposal()], units=units, binary=binary
+        )
+        refined = prepare_checked_memory_access_facts_v2(
+            [_proposal(dependencies=["call-summary:callee"])],
+            units=units,
+            binary=binary,
+        )
+
+        self.assertEqual(initial[0]["id"], refined[0]["id"])
+        self.assertNotEqual(
+            initial[0]["authority_dependencies"],
+            refined[0]["authority_dependencies"],
+        )
 
 
 if __name__ == "__main__":
