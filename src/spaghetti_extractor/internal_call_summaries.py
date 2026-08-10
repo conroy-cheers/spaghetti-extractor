@@ -117,8 +117,11 @@ class _CallFrame:
     behavior_complete: bool
     may_return: bool | None
     may_not_return: bool | None
+    register_frame_complete: bool
     preserved_registers: frozenset[str]
+    stack_frame_complete: bool
     stack_cleanup: _StackTransform | None
+    result_frame_complete: bool
     result_registers: Mapping[str, _Value]
     blocker_codes: frozenset[str] = frozenset()
     result_memory: Mapping[ValueOrigin, _Value] = field(default_factory=dict)
@@ -266,6 +269,17 @@ def derive_internal_call_preservation_summaries(
         recovered_call_targets=recovered_call_targets,
     )
     summary_roots = behavioral_roots | callee_roots
+    return_instruction_cleanups = {
+        root: _derive_return_instruction_cleanup(
+            root=root,
+            by_id=by_id,
+            normal_edges=normal_edges,
+            unresolved_direct_sources=unresolved_direct_sources,
+            unresolved_jump_sources=unresolved_jump_sources,
+            max_units=max_units_per_summary,
+        )
+        for root in summary_roots
+    }
     (
         ordered_components,
         recursive_roots,
@@ -279,7 +293,12 @@ def derive_internal_call_preservation_summaries(
         opaque_roots=frozenset(declarations),
     )
     summaries: dict[str, dict[str, Any]] = {
-        root: copy.deepcopy(dict(summary))
+        root: {
+            **copy.deepcopy(dict(summary)),
+            "return_instruction_cleanup": copy.deepcopy(
+                return_instruction_cleanups[root]
+            ),
+        }
         for root, summary in declarations.items()
         if root in summary_roots
     }
@@ -302,6 +321,7 @@ def derive_internal_call_preservation_summaries(
                     completed_summaries=summaries,
                     import_abis=import_abis,
                     call_site_effects=effects_by_site,
+                    return_instruction_cleanups=return_instruction_cleanups,
                     max_units=max_units_per_summary,
                     max_stack_words=max_stack_words,
                     max_memory_words=max_memory_words,
@@ -331,6 +351,9 @@ def derive_internal_call_preservation_summaries(
             max_memory_words=max_memory_words,
             max_value_alternatives=max_value_alternatives,
         )
+        proposed["return_instruction_cleanup"] = copy.deepcopy(
+            return_instruction_cleanups[root]
+        )
         forced_blockers = (
             {"call_dependency_inventory_budget_exceeded"}
             if root in dependency_inventory_incomplete
@@ -353,14 +376,6 @@ def derive_internal_call_preservation_summaries(
         source = _mapping(_mapping(by_id[root].get("source")).get("original"))
         is_behavioral_root = root in behavioral_roots
         is_callee = root in callee_roots
-        return_instruction_cleanup = _derive_return_instruction_cleanup(
-            root=root,
-            by_id=by_id,
-            normal_edges=normal_edges,
-            unresolved_direct_sources=unresolved_direct_sources,
-            unresolved_jump_sources=unresolved_jump_sources,
-            max_units=max_units_per_summary,
-        )
         rows.append(
             {
                 "target_unit_id": root,
@@ -376,7 +391,9 @@ def derive_internal_call_preservation_summaries(
                 # This family depends only on represented intraprocedural
                 # control and exact return instructions.  It remains usable
                 # when register, memory, or external behavior is incomplete.
-                "return_instruction_cleanup": return_instruction_cleanup,
+                "return_instruction_cleanup": copy.deepcopy(
+                    return_instruction_cleanups[root]
+                ),
             }
         )
     complete = [row for row in rows if row["status"] == "complete"]
@@ -817,6 +834,7 @@ def _analyze_recursive_component(
     completed_summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+    return_instruction_cleanups: Mapping[str, Mapping[str, Any]],
     max_units: int,
     max_stack_words: int,
     max_memory_words: int,
@@ -825,7 +843,15 @@ def _analyze_recursive_component(
 ) -> tuple[dict[str, dict[str, Any]], int, bool]:
     """Establish one simultaneous inductive summary for a recursive SCC."""
 
-    current = {root: _recursive_seed_summary() for root in component}
+    current = {
+        root: {
+            **_recursive_seed_summary(),
+            "return_instruction_cleanup": copy.deepcopy(
+                return_instruction_cleanups[root]
+            ),
+        }
+        for root in component
+    }
     for round_index in range(1, max_rounds + 1):
         assumptions = {**completed_summaries, **current}
         proposed: dict[str, dict[str, Any]] = {}
@@ -845,6 +871,9 @@ def _analyze_recursive_component(
                 max_stack_words=max_stack_words,
                 max_memory_words=max_memory_words,
                 max_value_alternatives=max_value_alternatives,
+            )
+            summary["return_instruction_cleanup"] = copy.deepcopy(
+                return_instruction_cleanups[root]
             )
             summary["recursive_induction"] = {
                 "status": "checked_fixed_point_candidate",
@@ -886,6 +915,9 @@ def _recursive_summary_projection(
             "result_register_origins": summary.get("result_register_origins"),
             "result_memory_origins": summary.get("result_memory_origins"),
             "stack_cleanup": summary.get("stack_cleanup"),
+            "return_instruction_cleanup": summary.get(
+                "return_instruction_cleanup"
+            ),
             "return_behavior": summary.get("return_behavior"),
             "memory_effects": summary.get("memory_effects"),
             "callback_effects": summary.get("callback_effects"),
@@ -931,6 +963,7 @@ def _analyze_callee(
     return_unit_ids: set[str] = set()
     nonreturning_nodes: set[str] = set()
     blockers: set[str] = set()
+    register_frames_complete = True
     evaluations = 0
     while work:
         unit_id = work.popleft()
@@ -957,6 +990,10 @@ def _analyze_callee(
         )
         if call_frame is not None:
             blockers.update(call_frame.blocker_codes)
+            register_frames_complete = (
+                register_frames_complete
+                and call_frame.register_frame_complete
+            )
             if call_frame.may_not_return is True:
                 nonreturning_nodes.add(unit_id)
             if not call_frame.behavior_complete:
@@ -976,6 +1013,8 @@ def _analyze_callee(
             max_memory_words=max_memory_words,
         )
         blockers.update(transfer_blockers)
+        if "register_write_inventory_invalid" in transfer_blockers:
+            register_frames_complete = False
         kind = _mapping(_mapping(unit.get("semantics")).get("outcome")).get("kind")
         if kind == "return":
             return_states.append(output)
@@ -983,8 +1022,10 @@ def _analyze_callee(
             continue
         if unit_id in unresolved_direct_sources:
             blockers.add("unresolved_direct_control")
+            register_frames_complete = False
         if unit_id in unresolved_jump_sources:
             blockers.add("unresolved_indirect_jump")
+            register_frames_complete = False
         if not successors:
             tail_return = _external_tail_return_state(
                 unit=unit,
@@ -998,6 +1039,7 @@ def _analyze_callee(
                 nonreturning_nodes.add(unit_id)
             else:
                 blockers.add("unterminated_control_path")
+                register_frames_complete = False
             continue
         for target in sorted(successors):
             prior = states.get(target)
@@ -1034,6 +1076,16 @@ def _analyze_callee(
         "indirect_call_target_inventory_invalid",
         "indirect_call_return_behavior_incomplete",
         "external_call_abi_unresolved",
+        "unresolved_direct_control",
+        "unresolved_indirect_jump",
+        "unterminated_control_path",
+        "return_inventory_empty",
+        "terminating_control_has_successors",
+        "multiple_calls_in_unit",
+        "register_write_inventory_invalid",
+    } & blockers
+    register_control_complete = register_frames_complete and not {
+        "callee_summary_budget_exceeded",
         "unresolved_direct_control",
         "unresolved_indirect_jump",
         "unterminated_control_path",
@@ -1116,13 +1168,18 @@ def _analyze_callee(
         by_id=by_id,
         direct_calls=direct_calls,
         recovered_calls=recovered_calls,
+        call_site_effects=call_site_effects,
         complete=control_complete,
     )
     return {
         "status": "complete" if summary_complete else "incomplete",
-        "preserved_registers": preserved if control_complete else [],
+        "preserved_registers": (
+            preserved if register_control_complete else []
+        ),
         "register_preservation": {
-            "status": "complete" if control_complete else "incomplete",
+            "status": (
+                "complete" if register_control_complete else "incomplete"
+            ),
         },
         "result_register_origins": {
             "status": "complete" if control_complete else "incomplete",
@@ -1167,6 +1224,7 @@ def _summary_effect_families(
     by_id: Mapping[str, Mapping[str, Any]],
     direct_calls: Mapping[tuple[str, int], str],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     complete: bool,
 ) -> dict[str, Any]:
     """Inventory local effects and delegated call dependencies exactly once."""
@@ -1191,6 +1249,9 @@ def _summary_effect_families(
                 })
         for event_index, event in enumerate(_events(by_id[unit_id])):
             kind = event.get("kind")
+            effect = call_site_effects.get(CallSiteId(unit_id, event_index))
+            if effect is not None:
+                dependencies.update(effect.dependencies)
             if kind == "internal_call":
                 target = direct_calls.get((unit_id, event_index))
                 if isinstance(target, str):
@@ -1286,52 +1347,64 @@ def _unit_call_frame(
             behavior_complete=False,
             may_return=None,
             may_not_return=None,
+            register_frame_complete=False,
             preserved_registers=frozenset(),
+            stack_frame_complete=False,
             stack_cleanup=None,
+            result_frame_complete=False,
             result_registers={},
             blocker_codes=frozenset({"multiple_calls_in_unit"}),
         )
     event_index, event = calls[0]
     kind = event.get("kind")
     effect = call_site_effects.get(CallSiteId(unit_id, event_index))
-    if (
-        effect is not None
-        and kind in {"external_call", "indirect_call"}
-        and effect.abi is not None
-        and effect.register_frame_status == "complete"
-        and effect.stack_frame_status == "complete"
-        and effect.result_status == "complete"
-    ):
-        return _call_site_effect_frame(effect)
     if kind == "external_call":
         identity = _event_import_identity(event)
         selected = import_abis.get(identity) if identity is not None else None
         if selected is None:
-            return _incomplete_call_frame("external_call_abi_unresolved")
-        return _returning_abi_frame(
-            preserved_registers=selected.abi.preserved_registers,
-            stack_cleanup=_selected_import_stack_cleanup(selected),
-            result_registers=_selected_import_result_registers(
-                selected, unit_id=unit_id, event_index=event_index
-            ),
+            frame = _incomplete_call_frame("external_call_abi_unresolved")
+        else:
+            frame = _returning_abi_frame(
+                preserved_registers=selected.abi.preserved_registers,
+                stack_cleanup=_selected_import_stack_cleanup(selected),
+                result_registers=_selected_import_result_registers(
+                    selected, unit_id=unit_id, event_index=event_index
+                ),
+            )
+        return _overlay_call_site_effect(
+            frame,
+            effect,
+            may_establish_return_behavior=True,
         )
     if kind == "internal_call":
         target = direct_calls.get((unit_id, event_index))
         if target is None:
-            return _incomplete_call_frame("internal_call_target_unresolved")
-        return _summary_call_frame(
-            summaries.get(target), input_state=input_state
+            frame = _incomplete_call_frame("internal_call_target_unresolved")
+        else:
+            frame = _summary_call_frame(
+                summaries.get(target), input_state=input_state
+            )
+        return _overlay_call_site_effect(
+            frame,
+            effect,
+            may_establish_return_behavior=False,
         )
     if kind != "indirect_call":
         return _incomplete_call_frame("call_kind_unsupported")
     recovery = recovered_calls.get((unit_id, event_index))
     if recovery is None:
-        return _incomplete_call_frame("indirect_call_target_unresolved")
-    return _recovered_indirect_call_frame(
-        recovery=recovery,
-        summaries=summaries,
-        import_abis=import_abis,
-        input_state=input_state,
+        frame = _incomplete_call_frame("indirect_call_target_unresolved")
+    else:
+        frame = _recovered_indirect_call_frame(
+            recovery=recovery,
+            summaries=summaries,
+            import_abis=import_abis,
+            input_state=input_state,
+        )
+    return _overlay_call_site_effect(
+        frame,
+        effect,
+        may_establish_return_behavior=True,
     )
 
 
@@ -1345,25 +1418,40 @@ def _summary_call_frame(
     behavior = _mapping(summary.get("return_behavior"))
     may_return = behavior.get("may_return")
     may_not_return = behavior.get("may_not_return")
-    if (
-        behavior.get("status") != "complete"
-        or not isinstance(may_return, bool)
-        or not isinstance(may_not_return, bool)
-        or not (may_return or may_not_return)
-    ):
-        return _incomplete_call_frame("nested_call_return_behavior_incomplete")
-    stack_cleanup = _summary_stack_cleanup(summary) if may_return else None
+    behavior_complete = behavior.get("status") == "complete" and (
+        isinstance(may_return, bool)
+        and isinstance(may_not_return, bool)
+        and (may_return or may_not_return)
+    )
+    if not behavior_complete:
+        may_return = None
+        may_not_return = None
+    preservation = _mapping(summary.get("register_preservation"))
+    register_frame_complete = preservation.get("status") == "complete"
+    stack_cleanup = _summary_stack_cleanup(summary)
+    stack_frame_complete = stack_cleanup is not None
+    register_results = _mapping(summary.get("result_register_origins"))
+    memory_results = _mapping(summary.get("result_memory_origins"))
+    result_frame_complete = (
+        register_results.get("status") == "complete"
+        and memory_results.get("status") == "complete"
+    )
     return _CallFrame(
-        behavior_complete=True,
+        behavior_complete=behavior_complete,
         may_return=may_return,
         may_not_return=may_not_return,
-        preserved_registers=_summary_preserved(summary) if may_return else frozenset(),
+        register_frame_complete=register_frame_complete,
+        preserved_registers=(
+            _summary_preserved(summary) if register_frame_complete else frozenset()
+        ),
+        stack_frame_complete=stack_frame_complete,
         stack_cleanup=stack_cleanup,
+        result_frame_complete=result_frame_complete,
         result_registers=(
             _summary_result_registers(
                 summary, input_state=input_state
             )
-            if may_return
+            if result_frame_complete
             else {}
         ),
         result_memory=(
@@ -1371,8 +1459,13 @@ def _summary_call_frame(
                 summary,
                 input_state=input_state,
             )
-            if may_return
+            if result_frame_complete
             else {}
+        ),
+        blocker_codes=(
+            frozenset()
+            if behavior_complete
+            else frozenset({"nested_call_return_behavior_incomplete"})
         ),
     )
 
@@ -1443,51 +1536,92 @@ def _recovered_indirect_call_frame(
     blockers = frozenset().union(
         *(alternative.blocker_codes for alternative in alternatives)
     )
-    if not all(alternative.behavior_complete for alternative in alternatives):
-        return _CallFrame(
-            behavior_complete=False,
-            may_return=None,
-            may_not_return=None,
-            preserved_registers=frozenset(),
-            stack_cleanup=None,
-            result_registers={},
-            blocker_codes=blockers | {"indirect_call_return_behavior_incomplete"},
-        )
-    returning = [
-        alternative for alternative in alternatives
-        if alternative.may_return is True
+    behavior_complete = all(
+        alternative.behavior_complete for alternative in alternatives
+    )
+    if not behavior_complete:
+        blockers |= {"indirect_call_return_behavior_incomplete"}
+    possible_returning = [
+        alternative
+        for alternative in alternatives
+        if alternative.may_return is not False
     ]
-    preserved = set(returning[0].preserved_registers) if returning else set()
-    for alternative in returning[1:]:
+    register_frame_complete = bool(possible_returning) and all(
+        alternative.register_frame_complete
+        for alternative in possible_returning
+    )
+    preserved = (
+        set(possible_returning[0].preserved_registers)
+        if register_frame_complete
+        else set()
+    )
+    for alternative in possible_returning[1:]:
         preserved &= alternative.preserved_registers
-    cleanups = {alternative.stack_cleanup for alternative in returning}
-    stack_cleanup = next(iter(cleanups)) if len(cleanups) == 1 else None
-    result_registers = _common_call_results(returning)
-    result_memory = _common_call_memory(returning)
-    memory_frame_complete = bool(returning) and all(
-        alternative.memory_frame_complete for alternative in returning
+    stack_frame_complete = bool(possible_returning) and all(
+        alternative.stack_frame_complete
+        for alternative in possible_returning
+    )
+    cleanups = {
+        alternative.stack_cleanup for alternative in possible_returning
+    }
+    if len(cleanups) != 1:
+        stack_frame_complete = False
+    stack_cleanup = (
+        next(iter(cleanups)) if stack_frame_complete else None
+    )
+    result_frame_complete = bool(possible_returning) and all(
+        alternative.result_frame_complete
+        for alternative in possible_returning
+    )
+    result_registers = (
+        _common_call_results(possible_returning)
+        if result_frame_complete
+        else {}
+    )
+    result_memory = (
+        _common_call_memory(possible_returning)
+        if result_frame_complete
+        else {}
+    )
+    memory_frame_complete = bool(possible_returning) and all(
+        alternative.memory_frame_complete for alternative in possible_returning
     )
     return _CallFrame(
-        behavior_complete=True,
-        may_return=bool(returning),
-        may_not_return=any(
-            alternative.may_not_return is True for alternative in alternatives
+        behavior_complete=behavior_complete,
+        may_return=(
+            any(alternative.may_return is True for alternative in alternatives)
+            if behavior_complete
+            else None
         ),
+        may_not_return=(
+            any(
+                alternative.may_not_return is True
+                for alternative in alternatives
+            )
+            if behavior_complete
+            else None
+        ),
+        register_frame_complete=register_frame_complete,
         preserved_registers=frozenset(preserved),
+        stack_frame_complete=stack_frame_complete,
         stack_cleanup=stack_cleanup,
+        result_frame_complete=result_frame_complete,
         result_registers=result_registers,
         blocker_codes=blockers,
         result_memory=result_memory,
         memory_frame_complete=memory_frame_complete,
         memory_preserved=(
             memory_frame_complete
-            and all(alternative.memory_preserved for alternative in returning)
+            and all(
+                alternative.memory_preserved
+                for alternative in possible_returning
+            )
         ),
         memory_writes=(
             tuple(sorted(
                 {
                     span
-                    for alternative in returning
+                    for alternative in possible_returning
                     for span in alternative.memory_writes
                 },
                 key=lambda span: (
@@ -1515,12 +1649,15 @@ def _returning_abi_frame(
         behavior_complete=True,
         may_return=True,
         may_not_return=False,
+        register_frame_complete=True,
         preserved_registers=frozenset(
             register for register in preserved_registers if register in _REGISTERS
         ),
+        stack_frame_complete=stack_cleanup is not None,
         stack_cleanup=(
             None if stack_cleanup is None else _StackTransform(stack_cleanup)
         ),
+        result_frame_complete=True,
         result_registers=dict(result_registers or {}),
         result_memory=dict(result_memory or {}),
         memory_frame_complete=memory_frame_complete,
@@ -1561,13 +1698,92 @@ def _call_site_effect_frame(effect: CallSiteEffect) -> _CallFrame:
     )
 
 
+def _overlay_call_site_effect(
+    frame: _CallFrame,
+    effect: CallSiteEffect | None,
+    *,
+    may_establish_return_behavior: bool,
+) -> _CallFrame:
+    """Compose independently checked site families with target-derived facts."""
+
+    if effect is None:
+        return frame
+    behavior_from_effect = bool(
+        may_establish_return_behavior
+        and effect.abi is not None
+        and effect.status == "complete"
+    )
+    register_complete = effect.register_frame_status == "complete"
+    stack_complete = effect.stack_frame_status == "complete"
+    result_complete = effect.result_status == "complete"
+    memory_complete = effect.memory_frame_status == "complete"
+    effect_frame = _call_site_effect_frame(effect)
+    return _CallFrame(
+        behavior_complete=(
+            True if behavior_from_effect else frame.behavior_complete
+        ),
+        may_return=True if behavior_from_effect else frame.may_return,
+        may_not_return=False if behavior_from_effect else frame.may_not_return,
+        register_frame_complete=(
+            True if register_complete else frame.register_frame_complete
+        ),
+        preserved_registers=(
+            effect_frame.preserved_registers
+            if register_complete
+            else frame.preserved_registers
+        ),
+        stack_frame_complete=(
+            True if stack_complete else frame.stack_frame_complete
+        ),
+        stack_cleanup=(
+            effect_frame.stack_cleanup
+            if stack_complete
+            else frame.stack_cleanup
+        ),
+        result_frame_complete=(
+            True if result_complete else frame.result_frame_complete
+        ),
+        result_registers=(
+            effect_frame.result_registers
+            if result_complete
+            else frame.result_registers
+        ),
+        blocker_codes=(
+            frozenset(effect.failure_codes)
+            if behavior_from_effect
+            else frame.blocker_codes | frozenset(effect.failure_codes)
+        ),
+        result_memory=(
+            effect_frame.result_memory
+            if result_complete
+            else frame.result_memory
+        ),
+        memory_frame_complete=(
+            True if memory_complete else frame.memory_frame_complete
+        ),
+        memory_preserved=(
+            effect_frame.memory_preserved
+            if memory_complete
+            else frame.memory_preserved
+        ),
+        memory_writes=(
+            effect_frame.memory_writes
+            if memory_complete
+            else frame.memory_writes
+        ),
+    )
+
+
 def _incomplete_call_frame(code: str) -> _CallFrame:
     return _CallFrame(
         behavior_complete=False,
         may_return=None,
         may_not_return=None,
+        register_frame_complete=False,
         preserved_registers=frozenset(),
+        stack_frame_complete=False,
         stack_cleanup=None,
+        result_frame_complete=False,
         result_registers={},
         blocker_codes=frozenset({code}),
     )
@@ -1828,29 +2044,37 @@ def _summary_stack_cleanup(
     if summary is None:
         return None
     cleanup = _mapping(summary.get("stack_cleanup"))
-    if cleanup.get("status") != "complete":
-        return None
-    transform = _mapping(cleanup.get("transform"))
-    if transform:
-        constant = _integer(transform.get("constant"))
-        raw_terms = transform.get("register_terms")
-        if constant is None or not isinstance(raw_terms, list):
-            return None
-        terms: list[tuple[str, int]] = []
-        for raw in raw_terms:
-            row = _mapping(raw)
-            register = row.get("register")
-            coefficient = _integer(row.get("coefficient"))
-            if (
-                register not in _REGISTERS
-                or coefficient is None
-                or coefficient == 0
-            ):
+    if cleanup.get("status") == "complete":
+        transform = _mapping(cleanup.get("transform"))
+        if transform:
+            constant = _integer(transform.get("constant"))
+            raw_terms = transform.get("register_terms")
+            if constant is None or not isinstance(raw_terms, list):
                 return None
-            terms.append((str(register), coefficient))
-        return _StackTransform(constant, _normalize_register_terms(terms))
-    value = _integer(cleanup.get("stack_delta"))
-    return None if value is None else _StackTransform(value)
+            terms: list[tuple[str, int]] = []
+            for raw in raw_terms:
+                row = _mapping(raw)
+                register = row.get("register")
+                coefficient = _integer(row.get("coefficient"))
+                if (
+                    register not in _REGISTERS
+                    or coefficient is None
+                    or coefficient == 0
+                ):
+                    return None
+                terms.append((str(register), coefficient))
+            return _StackTransform(
+                constant, _normalize_register_terms(terms)
+            )
+        value = _integer(cleanup.get("stack_delta"))
+        return None if value is None else _StackTransform(value)
+    instruction_cleanup = _mapping(
+        summary.get("return_instruction_cleanup")
+    )
+    value = _integer(instruction_cleanup.get("cleanup_bytes"))
+    if instruction_cleanup.get("status") == "complete" and value is not None:
+        return _StackTransform(value)
+    return None
 
 
 def _selected_import_result_registers(

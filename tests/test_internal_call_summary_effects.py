@@ -155,6 +155,77 @@ def memory_effect(
 
 
 class InternalCallSummaryEffectTests(unittest.TestCase):
+    def test_partial_call_families_compose_without_closing_behavior(self) -> None:
+        abi = resolve_machine_call_abi("pe32-cdecl-v1")
+        assert abi is not None
+        dependency = "call-frame-hypothesis:fixture"
+        partial = CallSiteEffect(
+            site=CallSiteId("callee", 0),
+            transfer_kind="external_call",
+            status="incomplete",
+            register_frame_status="complete",
+            preserved_registers=frozenset(abi.preserved_registers),
+            stack_frame_status="complete",
+            stack_cleanup_bytes=0,
+            result_status="incomplete",
+            outputs=(),
+            memory_frame_status="incomplete",
+            memory_preserved=False,
+            memory_writes=(),
+            abi=abi,
+            argument_words=0,
+            dependencies=(dependency,),
+            failure_codes=("result_frame_unresolved",),
+        ).as_json()
+        result = derive_internal_call_preservation_summaries(
+            units=[
+                unit(
+                    "caller",
+                    0x1000,
+                    outcome="fallthrough",
+                    events=[internal_call(0x2000)],
+                ),
+                unit("caller-return", 0x1001, outcome="return"),
+                unit(
+                    "callee",
+                    0x2000,
+                    outcome="fallthrough",
+                    events=[external_call("Unknown")],
+                ),
+                unit("callee-return", 0x2001, outcome="return"),
+            ],
+            roots=["caller"],
+            direct_edges=[
+                edge("caller", "caller-return"),
+                edge("callee", "callee-return"),
+            ],
+            internal_call_edges=[{
+                "source_unit_id": "caller",
+                "source_event_index": 0,
+                "target_unit_id": "callee",
+                "status": "resolved",
+            }],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+            call_site_effects=[partial],
+        )
+
+        summaries = {
+            row["target_unit_id"]: row for row in result["summaries"]
+        }
+        for identity in ("callee", "caller"):
+            summary = summaries[identity]
+            self.assertEqual(
+                summary["register_preservation"]["status"], "complete"
+            )
+            self.assertIn("esi", summary["preserved_registers"])
+            self.assertEqual(summary["return_behavior"]["status"], "incomplete")
+            self.assertEqual(
+                summary["return_instruction_cleanup"]["cleanup_bytes"], 0
+            )
+        self.assertIn(dependency, summaries["callee"]["target_dependencies"])
+
     def test_input_stack_word_written_to_global_composes_at_call_site(self) -> None:
         slot = 0x434960
         result = derive_internal_call_preservation_summaries(
