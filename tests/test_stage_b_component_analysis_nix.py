@@ -172,6 +172,14 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             'call_site_effects=operation.get("call_site_effects", [])',
             joint_phase,
         )
+        self.assertIn("build_global_slot_authority_v2", joint_phase)
+        self.assertNotIn("replay_global_slot_authority_v2", joint_phase)
+
+        authority_phase = module[
+            module.index("      globalSlotAuthority = {") :
+            module.index("      callbackEntryContracts = {")
+        ]
+        self.assertIn("replay_global_slot_authority_v2", authority_phase)
 
     def test_memory_range_invariants_are_checked_once_before_joint_analysis(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(

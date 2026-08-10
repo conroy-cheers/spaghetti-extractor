@@ -160,6 +160,80 @@ class ExternalSiteProposalsV2Tests(unittest.TestCase):
                 ],
             )
 
+    def test_resolved_terminating_profile_does_not_require_embedded_abi(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "profile.json"
+            entry = _profile_entry()
+            entry["id"] = "fixture.dll!Stop"
+            entry["import"] = {"dll": "fixture.dll", "symbol": "Stop"}
+            entry["disposition"] = "terminates"
+            profile.write_text(json.dumps({
+                "format": "stage-a-static-machine-import-profile-v1",
+                "id": "terminating-profile",
+                "machine_import_signatures": [entry],
+            }, sort_keys=True), encoding="utf-8")
+            authority = build_external_profile_authority_v2([profile])
+            machine_row = {
+                "id": "unit:stop",
+                "semantics": {"external_events": [{
+                    "kind": "external_call",
+                    "dll": "fixture.dll",
+                    "symbol": "Stop",
+                    "register_inputs": {
+                        "esp": {"op": "reg", "name": "esp", "width": 32}
+                    },
+                }]},
+            }
+
+            result = derive_external_site_proposals_v2(
+                machine_ir_rows=[machine_row],
+                interprocedural={"recovered_targets": []},
+                profile_authority=authority,
+                pe_sha256="a" * 64,
+                machine_ir_sha256="b" * 64,
+                reachable_unit_ids=["unit:stop"],
+            )
+
+            self.assertEqual(result["status"], "complete", result["issues"])
+            self.assertEqual(
+                result["sites"][0]["contract"]["profile_disposition"],
+                "terminates",
+            )
+
+    def test_omitted_profile_disposition_defaults_to_returning(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = Path(temporary) / "profile.json"
+            entry = _profile_entry()
+            entry.pop("disposition")
+            _write_profile(profile, entry)
+            authority = build_external_profile_authority_v2([profile])
+            machine_row = {
+                "id": "unit:call",
+                "semantics": {"external_events": [{
+                    "kind": "external_call",
+                    "dll": "fixture.dll",
+                    "symbol": "Exact",
+                    "register_inputs": {
+                        "esp": {"op": "reg", "name": "esp", "width": 32}
+                    },
+                }]},
+            }
+
+            result = derive_external_site_proposals_v2(
+                machine_ir_rows=[machine_row],
+                interprocedural={"recovered_targets": []},
+                profile_authority=authority,
+                pe_sha256="a" * 64,
+                machine_ir_sha256="b" * 64,
+                reachable_unit_ids=["unit:call"],
+            )
+
+            self.assertEqual(result["status"], "complete", result["issues"])
+            self.assertEqual(
+                result["sites"][0]["contract"]["profile_disposition"],
+                "returns",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

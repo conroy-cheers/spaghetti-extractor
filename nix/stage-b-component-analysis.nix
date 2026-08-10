@@ -717,7 +717,7 @@ let
           from spaghetti_extractor.external_operation_profiles import load_external_operation_profile
           from spaghetti_extractor.global_slot_analysis_v2 import analyze_global_slots_v2
           from spaghetti_extractor.global_slot_authority_v2 import (
-              replay_global_slot_authority_v2,
+              build_global_slot_authority_v2,
           )
           from spaghetti_extractor.global_slot_image_v2 import (
               GlobalSlotImageV2Error,
@@ -1009,19 +1009,33 @@ let
               graph,
               interprocedural,
           ):
-              return replay_global_slot_authority_v2(
-                  submitted_analysis=slot_analysis,
+              # This is the fixed-point promotion step, not the independent
+              # authority boundary.  The separately cached global-slot
+              # authority phase reconstructs these inputs and cold-replays the
+              # final analysis before any record can authorize a candidate.
+              operation = interprocedural.get("operation_provenance", {})
+              return build_global_slot_authority_v2(
                   provenance=provenance,
+                  global_slot_analysis=slot_analysis,
                   units=units,
-                  graph=graph,
-                  interprocedural=interprocedural,
-                  stack_range_analysis=stack_ranges,
-                  launch_assumptions={"assumptions": assumptions},
-                  memory_range_invariant_analysis=memory_range_invariants,
-                  original_binary=binary,
+                  pe_sha256=binary.sha256,
                   machine_ir_sha256=machine_ir_sha256,
-                  finite_value_budget=analysis_finite_value_budget,
-                  proposal_slot_dependencies=proposal_slot_dependencies,
+                  image_base=binary.image_base,
+                  size_of_image=binary.size_of_image,
+                  original_binary=binary,
+                  stack_range_analysis=stack_ranges,
+                  stack_graph=graph,
+                  stack_launch_assumptions={"assumptions": assumptions},
+                  stack_call_summaries=interprocedural.get(
+                      "call_summaries", {}
+                  ),
+                  stack_indirect_recoveries=interprocedural.get(
+                      "recovered_targets", []
+                  ),
+                  stack_call_site_effects=operation.get(
+                      "call_site_effects", []
+                  ),
+                  stack_finite_offset_budget=analysis_finite_value_budget,
               )
 
           progress_started = time.monotonic()

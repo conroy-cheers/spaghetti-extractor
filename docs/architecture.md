@@ -207,9 +207,23 @@ Mutable-slot influence has a separate pass-scoped memo keyed only by the exact
 roots, recovered control, call-result, and memory-frame projection that its
 transfer function consumes. Changes confined to provenance hypotheses do not
 replay that graph; changes to any mutable-analysis dependency invalidate the
-memo. This whole-analysis memo is an intermediate optimization. The durable
-boundary remains independently realizable SCC summaries and their true
-condensation-graph descendants.
+memo. Within a replay, independently converged SCC summaries are also retained
+under exact incoming-state, local-control, target, and consumed-call-fact keys.
+A hit restores the checked final member states and replays only final
+condensation-edge contributions; changed edges or predecessor facts invalidate
+the affected SCC and descendants. These caches are intermediate optimizations,
+are discarded between discovery, cold, and inductive passes, and carry no
+authority. The durable boundary remains independently realizable SCC summaries
+and their true condensation-graph descendants.
+
+Each joint fixed-point round runs dependency-scoped global-slot analysis once.
+The round promotes that already cold-replayed artifact to obtain the invariant
+facts needed by the next iteration; it does not reconstruct and rerun the same
+analysis inside the promotion callback. The separately cached
+`globalSlotAuthority` phase reconstructs the exact final inputs, replays the
+submitted analysis, and compares it byte-for-byte before those invariants can
+authorize any downstream artifact. Iteration therefore avoids duplicate work
+without moving the authority boundary or trusting the joint-phase cache.
 
 Generated files belong under Nix outputs or ignored `build/` workspaces. Authored
 intent and source belong in target bundles. Private binaries belong under the

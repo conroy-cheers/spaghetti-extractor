@@ -19,7 +19,9 @@ from spaghetti_extractor.interprocedural_analysis import (
     _Influence,
     _MutableCallTarget,
     _MutableCell,
+    _MutableSCCCache,
     _MutableState,
+    _analyze_mutable_slot_influence,
     _call_summary_inputs,
     _call_summary_memory_preservation,
     _call_site_memory_preservation,
@@ -385,6 +387,37 @@ def legacy_adapter(operation: dict[str, object], **_kwargs: Any) -> dict[str, ob
 
 
 class InterproceduralAnalysisTests(unittest.TestCase):
+    def _mutable_replay(
+        self,
+        *,
+        units: list[dict[str, object]],
+        roots: list[str],
+        cache: _MutableSCCCache,
+        direct: list[dict[str, object]] | None = None,
+        calls: list[dict[str, object]] | None = None,
+        preserved: dict[int, frozenset[str]] | None = None,
+    ):
+        return _analyze_mutable_slot_influence(
+            units=units,
+            roots=roots,
+            direct_edges=direct or [],
+            internal_call_edges=calls or [],
+            recovered_indirect_edges=[],
+            indirect_exits=[],
+            image_base=IMAGE_BASE,
+            image_size=0x100000,
+            finite_value_budget=8,
+            checked_nonimage_stack_units=frozenset(),
+            call_preserved_registers=preserved or {},
+            call_stack_cleanup={},
+            call_result_relations={},
+            call_memory_result_relations={},
+            call_memory_preservation={},
+            global_slot_invariants=[],
+            writable_image_ranges=(),
+            scc_cache=cache,
+        )
+
     def test_complete_callback_registration_seeds_callback_root_arguments(self) -> None:
         observed: list[tuple[tuple[str, ...], object]] = []
         interface_origin = ValueOrigin(
@@ -989,6 +1022,113 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             all(details["join_evaluations"] == 1 for details in observed)
         )
         self.assertFalse(any(details["budget_exhausted"] for details in observed))
+
+    def test_mutable_scc_cache_replays_exact_graph_without_transfers(self) -> None:
+        units = [
+            unit("root", 0x1000),
+            unit("left", 0x1010),
+            unit("right", 0x1020),
+            unit("join", 0x1030),
+        ]
+        direct = [
+            edge("root", "left"),
+            edge("root", "right"),
+            edge("left", "join"),
+            edge("right", "join"),
+        ]
+        cache = _MutableSCCCache(16)
+
+        cold = self._mutable_replay(
+            units=units,
+            roots=["root"],
+            direct=direct,
+            cache=cache,
+        )
+        warm = self._mutable_replay(
+            units=units,
+            roots=["root"],
+            direct=direct,
+            cache=cache,
+        )
+
+        self.assertEqual(cold.exits, warm.exits)
+        self.assertEqual(cold.reached_units, warm.reached_units)
+        self.assertEqual(cold.exhausted, warm.exhausted)
+        self.assertEqual(cold.transfer_evaluations, 4)
+        self.assertEqual(warm.transfer_evaluations, 0)
+        self.assertEqual(warm.scc_cache_requests, 4)
+        self.assertEqual(warm.scc_cache_hits, 4)
+
+    def test_mutable_scc_cache_projects_call_facts_to_consumers(self) -> None:
+        units = [
+            unit("root", 0x1000),
+            unit("stable", 0x1010),
+            unit("caller", 0x1020, calls=(0x2000,)),
+            unit("callee", 0x2000),
+        ]
+        direct = [edge("root", "stable"), edge("stable", "caller")]
+        calls = [call_edge("caller", "callee")]
+        cache = _MutableSCCCache(16)
+
+        cold = self._mutable_replay(
+            units=units,
+            roots=["root"],
+            direct=direct,
+            calls=calls,
+            cache=cache,
+        )
+        refined = self._mutable_replay(
+            units=units,
+            roots=["root"],
+            direct=direct,
+            calls=calls,
+            preserved={IMAGE_BASE + 0x2000: frozenset({"ebx"})},
+            cache=cache,
+        )
+
+        self.assertEqual(cold.reached_units, refined.reached_units)
+        self.assertEqual(refined.scc_cache_requests, 4)
+        self.assertGreaterEqual(refined.scc_cache_hits, 3)
+        self.assertLessEqual(refined.transfer_evaluations, 1)
+
+    def test_mutable_scc_cache_invalidates_changed_control_edges(self) -> None:
+        units = [
+            unit("root", 0x1000),
+            unit("left", 0x1010),
+            unit("right", 0x1020),
+        ]
+        cache = _MutableSCCCache(16)
+
+        left = self._mutable_replay(
+            units=units,
+            roots=["root"],
+            direct=[edge("root", "left")],
+            cache=cache,
+        )
+        right = self._mutable_replay(
+            units=units,
+            roots=["root"],
+            direct=[edge("root", "right")],
+            cache=cache,
+        )
+
+        self.assertEqual(left.reached_units, 2)
+        self.assertEqual(right.reached_units, 2)
+        self.assertEqual(right.scc_cache_requests, 2)
+        self.assertEqual(right.scc_cache_hits, 0)
+        self.assertEqual(right.transfer_evaluations, 2)
+
+    def test_mutable_scc_cache_is_bounded(self) -> None:
+        cache = _MutableSCCCache(1)
+        result = self._mutable_replay(
+            units=[unit("root", 0x1000), unit("next", 0x1010)],
+            roots=["root"],
+            direct=[edge("root", "next")],
+            cache=cache,
+        )
+
+        self.assertEqual(cache.entry_count, 1)
+        self.assertEqual(result.scc_cache_evictions, 1)
 
     def test_mutable_replay_reuses_unchanged_dependency_projection(self) -> None:
         effect = call_effect("root", preserved=frozenset({"ebx"}))

@@ -888,7 +888,7 @@ def require_profile_match(
         "contract_id": str(profile_contract.get("id")),
         "abi_template": profile_contract.get("abi_template"),
         "argument_words": profile_words,
-        "disposition": profile_contract.get("disposition"),
+        "disposition": profile_contract.get("disposition", "returns"),
         "result_register_relations": _metadata(profile_contract.get("result_register_relations", [])),
         "memory_effect": profile_contract.get("memory_effect"),
         "memory_footprints": _metadata(profile_contract.get("memory_footprints", [])),

@@ -12,7 +12,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass
 from typing import Any, Callable, Hashable, Mapping, Sequence
 
@@ -140,12 +140,69 @@ class _MutableState:
 
 
 @dataclass(frozen=True)
+class _MutableSCCSummary:
+    """Exact final state and condensation-edge contributions for one SCC."""
+
+    states: tuple[tuple[str, _MutableState], ...]
+    outputs: tuple[tuple[str, _MutableState], ...]
+    outgoing: tuple[tuple[str, str, _MutableState], ...]
+
+
+class _MutableSCCCache:
+    """Bounded pass-local cache for exact mutable-influence SCC transfers."""
+
+    def __init__(self, maximum_entries: int) -> None:
+        if maximum_entries <= 0:
+            raise ValueError("mutable SCC cache capacity must be positive")
+        self.maximum_entries = maximum_entries
+        self.requests = 0
+        self.hits = 0
+        self.evictions = 0
+        self._entries: OrderedDict[Hashable, _MutableSCCSummary] = OrderedDict()
+
+    @classmethod
+    def for_unit_count(cls, unit_count: int) -> "_MutableSCCCache":
+        # A repeated topological scan thrashes if capacity is smaller than one
+        # full component inventory: the next scan evicts the retained tail
+        # before reaching it.  Two entries per unit leaves room for one stable
+        # inventory plus changed summaries while retaining a finite memory cap.
+        return cls(max(128, min(32768, max(1, unit_count) * 2)))
+
+    @property
+    def entry_count(self) -> int:
+        return len(self._entries)
+
+    def get(self, key: Hashable) -> _MutableSCCSummary | None:
+        self.requests += 1
+        result = self._entries.get(key)
+        if result is None:
+            return None
+        self.hits += 1
+        self._entries.move_to_end(key)
+        return result
+
+    def put(self, key: Hashable, summary: _MutableSCCSummary) -> None:
+        if key in self._entries:
+            self._entries.move_to_end(key)
+            self._entries[key] = summary
+            return
+        self._entries[key] = summary
+        while len(self._entries) > self.maximum_entries:
+            self._entries.popitem(last=False)
+            self.evictions += 1
+
+
+@dataclass(frozen=True)
 class _MutableInfluenceResult:
     exits: Mapping[str, "_MutableExitInfluence"]
     reached_units: int
     transfer_evaluations: int
     join_evaluations: int
     exhausted: bool
+    scc_cache_requests: int = 0
+    scc_cache_hits: int = 0
+    scc_cache_entries: int = 0
+    scc_cache_evictions: int = 0
 
 
 @dataclass(frozen=True, order=True)
@@ -190,6 +247,10 @@ class _PassResult:
     contextual_probes: int
     mutable_replay_requests: int
     mutable_replay_cache_hits: int
+    mutable_scc_cache_requests: int = 0
+    mutable_scc_cache_hits: int = 0
+    mutable_scc_cache_entries: int = 0
+    mutable_scc_cache_evictions: int = 0
 
     @property
     def lattice_complete(self) -> bool:
@@ -642,6 +703,26 @@ def analyze_interprocedural_control(
             + (0 if cold is None else cold.mutable_replay_cache_hits)
             + (0 if inductive is None else inductive.mutable_replay_cache_hits)
         ),
+        "mutable_scc_cache_requests": (
+            (0 if discovery is None else discovery.mutable_scc_cache_requests)
+            + (0 if cold is None else cold.mutable_scc_cache_requests)
+            + (0 if inductive is None else inductive.mutable_scc_cache_requests)
+        ),
+        "mutable_scc_cache_hits": (
+            (0 if discovery is None else discovery.mutable_scc_cache_hits)
+            + (0 if cold is None else cold.mutable_scc_cache_hits)
+            + (0 if inductive is None else inductive.mutable_scc_cache_hits)
+        ),
+        "mutable_scc_cache_entries": (
+            (0 if discovery is None else discovery.mutable_scc_cache_entries)
+            + (0 if cold is None else cold.mutable_scc_cache_entries)
+            + (0 if inductive is None else inductive.mutable_scc_cache_entries)
+        ),
+        "mutable_scc_cache_evictions": (
+            (0 if discovery is None else discovery.mutable_scc_cache_evictions)
+            + (0 if cold is None else cold.mutable_scc_cache_evictions)
+            + (0 if inductive is None else inductive.mutable_scc_cache_evictions)
+        ),
         "scc_evaluations": (0 if discovery is None else discovery.scc_evaluations) + (
             0 if cold is None else cold.scc_evaluations
         ) + (0 if inductive is None else inductive.scc_evaluations),
@@ -935,6 +1016,20 @@ def _select_inductive_authority(
         mutable_replay_cache_hits=(
             cold.mutable_replay_cache_hits
             + replay.mutable_replay_cache_hits
+        ),
+        mutable_scc_cache_requests=(
+            cold.mutable_scc_cache_requests
+            + replay.mutable_scc_cache_requests
+        ),
+        mutable_scc_cache_hits=(
+            cold.mutable_scc_cache_hits + replay.mutable_scc_cache_hits
+        ),
+        mutable_scc_cache_entries=(
+            cold.mutable_scc_cache_entries + replay.mutable_scc_cache_entries
+        ),
+        mutable_scc_cache_evictions=(
+            cold.mutable_scc_cache_evictions
+            + replay.mutable_scc_cache_evictions
         ),
     )
     promoted_components = sorted({
@@ -1320,6 +1415,7 @@ def _run_typed_pass(
     mutable_replay_requests = 0
     mutable_replay_cache_hits = 0
     mutable_replay_cache: dict[Hashable, _MutableInfluenceResult] = {}
+    mutable_scc_cache = _MutableSCCCache.for_unit_count(len(units))
     decomposition: SCCDecomposition[str] = decompose_scc(tuple[str]())
     active_roots = set(roots)
     callback_root_arguments: Mapping[
@@ -1474,6 +1570,9 @@ def _run_typed_pass(
             call_memory_result_relations=memory_results,
             call_memory_preservation=call_memory_preservation,
         )
+        mutable_scc_requests_before = mutable_scc_cache.requests
+        mutable_scc_hits_before = mutable_scc_cache.hits
+        mutable_scc_evictions_before = mutable_scc_cache.evictions
         cached_mutable = mutable_replay_cache.get(mutable_key)
         mutable_cache_hit = cached_mutable is not None
         if cached_mutable is None:
@@ -1495,6 +1594,7 @@ def _run_typed_pass(
                 call_memory_preservation=call_memory_preservation,
                 global_slot_invariants=global_slot_invariants,
                 writable_image_ranges=writable_image_ranges,
+                scc_cache=mutable_scc_cache,
             )
             mutable_replay_cache[mutable_key] = mutable_result
         else:
@@ -1509,6 +1609,14 @@ def _run_typed_pass(
             "join_evaluations": mutable_result.join_evaluations,
             "budget_exhausted": mutable_result.exhausted,
             "cache_hit": mutable_cache_hit,
+            "scc_cache_requests": (
+                mutable_scc_cache.requests - mutable_scc_requests_before
+            ),
+            "scc_cache_hits": mutable_scc_cache.hits - mutable_scc_hits_before,
+            "scc_cache_entries": mutable_scc_cache.entry_count,
+            "scc_cache_evictions": (
+                mutable_scc_cache.evictions - mutable_scc_evictions_before
+            ),
         })
         operation_outputs = _derive_operation_outputs(
             operation_provenance=operation_provenance,
@@ -1701,6 +1809,10 @@ def _run_typed_pass(
                 contextual_probes,
                 mutable_replay_requests,
                 mutable_replay_cache_hits,
+                mutable_scc_cache.requests,
+                mutable_scc_cache.hits,
+                mutable_scc_cache.entry_count,
+                mutable_scc_cache.evictions,
             )
         call_site_effects = next_call_site_effects
 
@@ -1728,6 +1840,10 @@ def _run_typed_pass(
         contextual_probes,
         mutable_replay_requests,
         mutable_replay_cache_hits,
+        mutable_scc_cache.requests,
+        mutable_scc_cache.hits,
+        mutable_scc_cache.entry_count,
+        mutable_scc_cache.evictions,
     )
 
 
@@ -2175,6 +2291,72 @@ def _mutable_influence_input_key(
     )
 
 
+def _mutable_scc_input_key(
+    *,
+    component: tuple[str, ...],
+    states: Mapping[str, _MutableState],
+    normal_successors: Mapping[str, set[str]],
+    call_targets: Mapping[str, tuple[_MutableCallTarget, ...]],
+    checked_nonimage_stack_units: frozenset[str],
+    call_preserved_registers: Mapping[int, frozenset[str]],
+    call_stack_cleanup: Mapping[int, int],
+    call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
+    call_memory_result_relations: Mapping[
+        int, Sequence[Mapping[str, Any]]
+    ],
+    call_memory_preservation: Mapping[str, bool],
+    finite_value_budget: int,
+) -> Hashable:
+    """Return exactly the changing inputs consumed by one SCC transfer.
+
+    Unit semantics, image geometry, and writable ranges are immutable for the
+    lifetime of the pass-scoped cache.  Dynamic call facts are projected to
+    only the target addresses consumed by this component, so an unrelated
+    callee refinement does not invalidate every SCC.
+    """
+
+    local_control = []
+    target_addresses: set[int] = set()
+    for source in component:
+        source_call_targets = tuple(call_targets.get(source, ()))
+        target_addresses.update(
+            target.target_address
+            for target in source_call_targets
+            if target.target_address is not None
+        )
+        local_control.append((
+            source,
+            tuple(sorted(normal_successors.get(source, ()))),
+            source_call_targets,
+            source in checked_nonimage_stack_units,
+            call_memory_preservation.get(source, True),
+        ))
+    call_facts = tuple(
+        (
+            address,
+            tuple(sorted(call_preserved_registers.get(address, frozenset()))),
+            call_stack_cleanup.get(address),
+            _freeze_value(call_result_relations.get(address, {})),
+            _freeze_value(call_memory_result_relations.get(address, ())),
+        )
+        for address in sorted(target_addresses)
+    )
+    return (
+        "mutable-influence-scc-v1",
+        component,
+        tuple(
+            (unit_id, states[unit_id])
+            for unit_id in component
+            if unit_id in states
+        ),
+        tuple(local_control),
+        call_facts,
+        finite_value_budget,
+    )
+
+
 def _analyze_mutable_slot_influence(
     *,
     units: Sequence[Mapping[str, Any]],
@@ -2198,6 +2380,7 @@ def _analyze_mutable_slot_influence(
     call_memory_preservation: Mapping[str, bool],
     global_slot_invariants: Sequence[GlobalSlotInvariant],
     writable_image_ranges: Sequence[tuple[int, int]],
+    scc_cache: _MutableSCCCache | None = None,
 ) -> _MutableInfluenceResult:
     """Replay slot influence from empty root memories over reachable edges.
 
@@ -2206,6 +2389,14 @@ def _analyze_mutable_slot_influence(
     makes a later exact image load potentially mutable.
     """
 
+    cache = (
+        _MutableSCCCache.for_unit_count(len(units))
+        if scc_cache is None
+        else scc_cache
+    )
+    cache_requests_before = cache.requests
+    cache_hits_before = cache.hits
+    cache_evictions_before = cache.evictions
     by_id = {_unit_id(unit): unit for unit in units}
     normal_successors: dict[str, set[str]] = {
         source: set(targets)
@@ -2295,7 +2486,12 @@ def _analyze_mutable_slot_influence(
             continue
         members = frozenset(component)
 
-        def propagate(target: str, incoming: _MutableState) -> None:
+        def propagate(
+            target: str,
+            incoming: _MutableState,
+            *,
+            enqueue_internal: bool,
+        ) -> None:
             nonlocal join_evaluations
             target_component = component_by_unit[target]
             if target_component < component_index:
@@ -2315,9 +2511,34 @@ def _analyze_mutable_slot_influence(
             if previous == joined:
                 return
             states[target] = joined
-            if target in members and target not in in_queue:
+            if (
+                enqueue_internal
+                and target in members
+                and target not in in_queue
+            ):
                 queue.append(target)
                 in_queue.add(target)
+
+        cache_key = _mutable_scc_input_key(
+            component=component,
+            states=states,
+            normal_successors=normal_successors,
+            call_targets=call_targets,
+            checked_nonimage_stack_units=checked_nonimage_stack_units,
+            call_preserved_registers=call_preserved_registers,
+            call_stack_cleanup=call_stack_cleanup,
+            call_result_relations=call_result_relations,
+            call_memory_result_relations=call_memory_result_relations,
+            call_memory_preservation=call_memory_preservation,
+            finite_value_budget=finite_value_budget,
+        )
+        cached_summary = cache.get(cache_key)
+        if cached_summary is not None:
+            states.update(cached_summary.states)
+            outputs.update(cached_summary.outputs)
+            for _source, target, incoming in cached_summary.outgoing:
+                propagate(target, incoming, enqueue_internal=False)
+            continue
 
         while queue:
             if transfer_evaluations >= evaluation_budget:
@@ -2349,9 +2570,13 @@ def _analyze_mutable_slot_influence(
             transfer_evaluations += 1
             outputs[source] = output
             for target in sorted(normal_successors.get(source, ())):
-                propagate(target, output)
+                if target in members:
+                    propagate(target, output, enqueue_internal=True)
             for call_target in source_call_targets:
-                if not call_target.target_unit_id:
+                if (
+                    not call_target.target_unit_id
+                    or call_target.target_unit_id not in members
+                ):
                     continue
                 propagate(
                     call_target.target_unit_id,
@@ -2368,9 +2593,58 @@ def _analyze_mutable_slot_influence(
                             source in checked_nonimage_stack_units
                         ),
                     ),
+                    enqueue_internal=True,
                 )
         if exhausted:
             break
+
+        outgoing: list[tuple[str, str, _MutableState]] = []
+        for source in component:
+            if source not in states or source not in outputs:
+                continue
+            output = outputs[source]
+            for target in sorted(normal_successors.get(source, ())):
+                if target not in members:
+                    outgoing.append((source, target, output))
+            for call_target in call_targets.get(source, ()):
+                target = call_target.target_unit_id
+                if not target or target in members:
+                    continue
+                outgoing.append((
+                    source,
+                    target,
+                    _mutable_call_entry_state(
+                        by_id[source],
+                        states[source],
+                        event_index=call_target.event_index,
+                        unit_id=source,
+                        image_base=image_base,
+                        image_size=image_size,
+                        maximum=finite_value_budget,
+                        writable_image_ranges=writable_image_ranges,
+                        checked_nonimage_stack=(
+                            source in checked_nonimage_stack_units
+                        ),
+                    ),
+                ))
+        for _source, target, incoming in outgoing:
+            propagate(target, incoming, enqueue_internal=False)
+        cache.put(
+            cache_key,
+            _MutableSCCSummary(
+                states=tuple(
+                    (unit_id, states[unit_id])
+                    for unit_id in component
+                    if unit_id in states
+                ),
+                outputs=tuple(
+                    (unit_id, outputs[unit_id])
+                    for unit_id in component
+                    if unit_id in outputs
+                ),
+                outgoing=tuple(outgoing),
+            ),
+        )
 
     result: dict[str, _MutableExitInfluence] = {}
     for row in indirect_exits:
@@ -2433,6 +2707,10 @@ def _analyze_mutable_slot_influence(
         transfer_evaluations=transfer_evaluations,
         join_evaluations=join_evaluations,
         exhausted=exhausted,
+        scc_cache_requests=cache.requests - cache_requests_before,
+        scc_cache_hits=cache.hits - cache_hits_before,
+        scc_cache_entries=cache.entry_count,
+        scc_cache_evictions=cache.evictions - cache_evictions_before,
     )
 
 
