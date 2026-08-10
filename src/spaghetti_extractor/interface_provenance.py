@@ -409,6 +409,7 @@ def recover_external_interface_targets(
     ] | None = None,
     recovered_known_slots: dict[_MemoryLocation, _Value] | None = None,
     checked_stack_entry_offsets: Mapping[str, Sequence[int]] | None = None,
+    checked_nonimage_stack_units: frozenset[str] = frozenset(),
     allow_global_slot_promotion: bool = True,
     collect_path_recovery_proposals: bool = False,
     preserved_register_hypotheses: Sequence[Mapping[str, Any]] = (),
@@ -478,6 +479,8 @@ def recover_external_interface_targets(
     by_id = {str(unit["id"]): unit for unit in units}
     if len(by_id) != len(units):
         raise ValueError("interface provenance requires unique unit IDs")
+    if not checked_nonimage_stack_units <= frozenset(by_id):
+        raise ValueError("checked non-image stack unit is unknown")
     inventory = _ProfileInventory(
         profiles,
         callable_external_profiles=callable_external_profiles,
@@ -573,6 +576,7 @@ def recover_external_interface_targets(
             static_slot_budget=static_slot_budget,
             stack_slot_budget=stack_slot_budget,
             checked_stack_entry_offsets=stack_entry_offsets,
+            checked_nonimage_stack_units=checked_nonimage_stack_units,
             collect_path_recovery_proposals=collect_path_recovery_proposals,
             preserved_register_hypotheses=parsed_call_hypotheses,
             path_context_depth=path_context_depth,
@@ -1276,6 +1280,7 @@ def _run_dataflow(
     static_slot_budget: int,
     stack_slot_budget: int,
     checked_stack_entry_offsets: Mapping[str, frozenset[int]],
+    checked_nonimage_stack_units: frozenset[str],
     collect_path_recovery_proposals: bool,
     preserved_register_hypotheses: Mapping[
         CallSiteId, Mapping[str, PreservedRegisterHypothesis]
@@ -1351,6 +1356,9 @@ def _run_dataflow(
             finite_value_budget=finite_value_budget,
             static_slot_budget=static_slot_budget,
             stack_slot_budget=stack_slot_budget,
+            checked_nonimage_stack=(
+                source_id in checked_nonimage_stack_units
+            ),
         )
         transfer_cache[key] = result
         evaluations += 1
@@ -2273,6 +2281,7 @@ def _transfer_unit(
     finite_value_budget: int,
     static_slot_budget: int,
     stack_slot_budget: int,
+    checked_nonimage_stack: bool,
 ) -> _UnitTransfer:
     events = _events(unit)
     call_entries: dict[int, _State] = {}
@@ -2541,11 +2550,18 @@ def _transfer_unit(
                 budget=finite_value_budget,
             )
             if addresses is None or len(addresses) != 1:
-                _invalidate_unknown_memory_write(
-                    output,
-                    proposals=proposals,
-                    taints=taints,
-                )
+                if (
+                    checked_nonimage_stack
+                    and affine_register_offset(event.get("address"), "esp")
+                    is not None
+                ):
+                    _invalidate_checked_stack_write(output, addresses)
+                else:
+                    _invalidate_unknown_memory_write(
+                        output,
+                        proposals=proposals,
+                        taints=taints,
+                    )
                 issues.append({
                     "code": "memory_write_address_not_singleton",
                     "unit_id": unit_id,
@@ -2653,6 +2669,15 @@ def _invalidate_unknown_memory_write(
     state.memory.clear()
     state.stack.clear()
     state.memory_invalidated = True
+
+
+def _invalidate_checked_stack_write(
+    state: _State,
+    _addresses: _Value,
+) -> None:
+    """Preserve image facts but forget the unresolved abstract stack update."""
+
+    state.stack.clear()
 
 
 def _indirect_import_identity(

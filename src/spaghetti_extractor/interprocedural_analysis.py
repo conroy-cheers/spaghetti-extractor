@@ -1271,6 +1271,7 @@ def _run_typed_pass(
             initial_known_slots=checked_global_slots,
             initial_root_argument_origins=callback_root_arguments,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
+            checked_nonimage_stack_units=checked_nonimage_stack_units,
             collect_path_recovery_proposals=allow_bootstrap,
             preserved_register_hypotheses=[
                 hypothesis.as_json()

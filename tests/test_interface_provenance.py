@@ -1408,6 +1408,71 @@ class InterfaceProvenanceTests(unittest.TestCase):
             [{"kind": "static", "address": SLOT}],
         )
 
+    def test_checked_stack_write_preserves_static_interface_fact(self) -> None:
+        stack_write = {
+            "kind": "write",
+            "width": 4,
+            "address": add(reg("esp"), const(8)),
+            "value": reg("edx"),
+        }
+        units = [
+            factory_unit(),
+            unit("left", 0x1120),
+            unit("right", 0x1130, writes=[{
+                "register": "esp",
+                "value": sub(reg("esp"), const(4)),
+            }]),
+            unit(
+                "stack-write",
+                0x1150,
+                memory=[stack_write],
+                ordered=[stack_write],
+            ),
+            unit("object", 0x1200, writes=[{
+                "register": "eax",
+                "value": load(const(SLOT)),
+            }]),
+            unit("vtable", 0x1300, writes=[{
+                "register": "ecx",
+                "value": load(reg("eax")),
+            }]),
+            indirect_call(),
+        ]
+        direct = [
+            edge("factory", "left"),
+            edge("factory", "right"),
+            edge("left", "stack-write"),
+            edge("right", "stack-write"),
+            edge("stack-write", "object"),
+            edge("object", "vtable"),
+            edge("vtable", "call"),
+        ]
+
+        unchecked = self._run(units, direct, roots=["factory"])
+        checked = self._run(
+            units,
+            direct,
+            roots=["factory"],
+            checked_nonimage_stack_units=frozenset({"stack-write"}),
+        )
+
+        self.assertEqual(unchecked["resolutions"][0]["status"], "incomplete")
+        self.assertEqual(checked["resolutions"][0]["status"], "recovered")
+
+        non_affine_write = units[3]["semantics"]["ordered_events"][0]
+        non_affine_write["address"] = reg("edx")
+        units[3]["semantics"]["memory_events"][0]["address"] = reg("edx")
+        still_unresolved = self._run(
+            units,
+            direct,
+            roots=["factory"],
+            checked_nonimage_stack_units=frozenset({"stack-write"}),
+        )
+        self.assertEqual(
+            still_unresolved["resolutions"][0]["status"],
+            "incomplete",
+        )
+
     def test_symbolic_write_may_alias_and_invalidates_static_slot(self) -> None:
         units = [
             factory_unit(),
@@ -3784,6 +3849,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
         initial_root_argument_origins: dict[str, dict[int, object]] | None = None,
         recovered_known_slots: dict[object, object] | None = None,
         checked_stack_entry_offsets: dict[str, list[int]] | None = None,
+        checked_nonimage_stack_units: frozenset[str] = frozenset(),
         allow_global_slot_promotion: bool = True,
         collect_path_recovery_proposals: bool = False,
         preserved_register_hypotheses: list[dict[str, object]] | None = None,
@@ -3842,6 +3908,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             initial_root_argument_origins=initial_root_argument_origins,
             recovered_known_slots=recovered_known_slots,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
+            checked_nonimage_stack_units=checked_nonimage_stack_units,
             allow_global_slot_promotion=allow_global_slot_promotion,
             collect_path_recovery_proposals=collect_path_recovery_proposals,
             preserved_register_hypotheses=(
