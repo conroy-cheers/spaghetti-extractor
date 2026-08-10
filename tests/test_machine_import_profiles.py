@@ -38,7 +38,7 @@ _RUNTIME_PROFILE_ARITIES = {
     ("kernel32.dll", "GetOEMCP"): 0,
     ("kernel32.dll", "GetStartupInfoA"): 1,
     ("kernel32.dll", "GetStdHandle"): 1,
-    ("kernel32.dll", "GetStringTypeA"): 4,
+    ("kernel32.dll", "GetStringTypeA"): 5,
     ("kernel32.dll", "GetStringTypeW"): 4,
     ("kernel32.dll", "GetVersion"): 0,
     ("kernel32.dll", "GlobalFree"): 1,
@@ -206,11 +206,33 @@ class MachineImportProfileTests(unittest.TestCase):
             and identity.value == "GetStringTypeA"
         )
         self.assertEqual(
-            string_type_a["memory_footprints"][0]["size"]["unit_bytes"], 1
+            string_type_a["memory_footprints"][0],
+            {
+                "access": "read",
+                "base_argument": 2,
+                "offset": 0,
+                "size": {
+                    "kind": "argument_or_bounded_terminated",
+                    "length_argument": 3,
+                    "terminated_value": 4294967295,
+                    "source_argument": 2,
+                    "source_offset": 0,
+                    "unit_bytes": 1,
+                    "sentinel": [0],
+                    "max_units": 1048576,
+                },
+                "nullable": False,
+            },
         )
         self.assertEqual(
-            string_type_a["memory_footprints"][1]["size"],
-            {"kind": "argument", "argument": 2, "scale": 2},
+            string_type_a["memory_footprints"][1],
+            {
+                "access": "write",
+                "base_argument": 4,
+                "offset": 0,
+                "size": {"kind": "argument", "argument": 3, "scale": 2},
+                "nullable": False,
+            },
         )
 
         string_type_w = next(
