@@ -43,6 +43,7 @@ from .authority_bindings_v2 import AuthorityDataError, BinaryBinding, EventBindi
 from .checked_memory_access_v2 import (
     prepare_checked_memory_access_facts_v2,
     seal_checked_memory_access_facts_v2,
+    validate_prepared_memory_access_facts_v2,
 )
 from .checked_memory_address_domain_v2 import (
     prepare_checked_memory_address_domains_v2,
@@ -1467,6 +1468,19 @@ def _run_typed_pass(
         input_memory_access_facts = _freeze_value(
             list(prepared_memory_access_facts)
         )
+        if prepared_memory_access_facts and binary_binding is None:
+            raise ValueError(
+                "prepared memory-access facts require an exact binary binding"
+            )
+        validated_memory_access_facts = (
+            validate_prepared_memory_access_facts_v2(
+                prepared_memory_access_facts,
+                units=units,
+                binary=binary_binding,
+            )
+            if binary_binding is not None
+            else {}
+        )
         summaries = derive_internal_call_preservation_summaries(
             units=units,
             roots=current_roots,
@@ -1533,7 +1547,9 @@ def _run_typed_pass(
                 internal_call_result_relations=results,
                 internal_call_memory_result_relations=memory_results,
                 internal_call_memory_preservation=memory_preservation,
+                prepared_memory_access_facts=validated_memory_access_facts,
                 image_base=image_base,
+                image_size=image_size,
                 finite_value_budget=finite_value_budget,
                 static_data_reader=static_data_reader,
                 bootstrap_unknown_call_preserved_registers=(

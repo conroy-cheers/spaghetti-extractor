@@ -21,6 +21,7 @@ from .callback_contracts import (
     parse_callback_result,
     parse_callback_source,
 )
+from .analysis.scc_worklist import strongly_connected_components
 from .call_arguments import (
     CallArgumentRecovery,
     recover_pe32_local_stack_argument_prefix,
@@ -66,7 +67,10 @@ from .external_operation_profiles import (
 from .import_abi import SelectedImportABI
 from .machine_abi import MachineCallABI, resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity, MachineImportProfileError
-from .checked_memory_access_v2 import MEMORY_ACCESS_PROPOSAL_V2_FORMAT
+from .checked_memory_access_v2 import (
+    MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+    PreparedMemoryAccessFact,
+)
 from .checked_memory_address_domain_v2 import (
     CONTEXTUAL_MEMORY_COVERAGE_V1_FORMAT,
     MEMORY_ADDRESS_DOMAIN_PROPOSAL_V2_FORMAT,
@@ -311,6 +315,7 @@ class _RunResult:
     resolutions: list[dict[str, Any]]
     path_recovery_proposals: list[dict[str, Any]]
     contextual_memory_address_domain_proposals: list[dict[str, Any]]
+    loop_memory_access_proposals: list[dict[str, Any]]
     proposed_slots: dict[_MemoryLocation, _Value]
     tainted_slots: set[_MemoryLocation]
     issues: list[dict[str, Any]]
@@ -328,6 +333,31 @@ class _RunResult:
     context_truncated_calls: int
     context_dropped_states: int
     contextual_recovery_required: bool
+
+
+@dataclass(frozen=True)
+class _LoopBaseOrigin:
+    kind: str
+    identity: tuple[Any, ...]
+    extent: int | None
+    offset: int
+    dependencies: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _CheckedWriteRange:
+    address_space: str
+    identity: tuple[Any, ...]
+    minimum: int
+    maximum: int
+    point_kind: str | None = None
+    point_key: tuple[Any, ...] = ()
+
+
+@dataclass(frozen=True)
+class _CheckedWriteFootprint:
+    fact_id: str
+    ranges: tuple[_CheckedWriteRange, ...]
 
 
 @dataclass(frozen=True, order=True)
@@ -533,12 +563,16 @@ def recover_external_interface_targets(
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
     image_base: int,
+    image_size: int | None = None,
     internal_call_stack_cleanup: Mapping[int, int] | None = None,
     internal_call_result_relations: Mapping[
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ] | None = None,
     internal_call_memory_preservation: Mapping[int, bool] | None = None,
     internal_call_memory_result_relations: Mapping[int, Any] | None = None,
+    prepared_memory_access_facts: Mapping[
+        str, PreparedMemoryAccessFact
+    ] | None = None,
     finite_value_budget: int = 32,
     static_slot_budget: int = 256,
     stack_slot_budget: int = 256,
@@ -684,6 +718,14 @@ def recover_external_interface_targets(
             evidence.target_address, evidence.cleanup_bytes
         )
     recovered_calls = _recovered_call_inventory(recovered_indirect_edges)
+    checked_write_footprints = _checked_write_footprints(
+        prepared_memory_access_facts or {},
+        by_id=by_id,
+        recovered_calls=recovered_calls,
+        import_abis=effective_import_abis,
+        image_base=image_base,
+        image_size=image_size,
+    )
     roots_set = {str(root) for root in roots if str(root) in by_id}
     known_slots = dict(initial_known_slots or {})
     if len(known_slots) > static_slot_budget or any(
@@ -735,6 +777,7 @@ def recover_external_interface_targets(
             ),
             internal_call_dependency_ids=internal_call_dependency_ids,
             recovered_calls=recovered_calls,
+            checked_write_footprints=checked_write_footprints,
             bootstrap_unknown_call_preserved_registers=(
                 bootstrap_unknown_call_preserved_registers
             ),
@@ -827,13 +870,16 @@ def recover_external_interface_targets(
         and "resolved_export" in row.get("origin_kinds", [])
         for row in final.resolutions
     )
-    memory_access_proposals = _memory_access_proposals(
-        by_id=by_id,
-        states=final.states,
-        inventory=inventory,
-        known_slots=known_slots,
-        checked_stack_entry_offsets=stack_entry_offsets,
-        finite_value_budget=finite_value_budget,
+    memory_access_proposals = _merge_memory_access_proposals(
+        _memory_access_proposals(
+            by_id=by_id,
+            states=final.states,
+            inventory=inventory,
+            known_slots=known_slots,
+            checked_stack_entry_offsets=stack_entry_offsets,
+            finite_value_budget=finite_value_budget,
+        ),
+        final.loop_memory_access_proposals,
     )
     memory_address_domain_proposals = (
         final.contextual_memory_address_domain_proposals
@@ -1101,6 +1147,606 @@ def _memory_access_proposals(
                 "authority_dependencies": list(value_dependencies(origins)),
             })
     return result
+
+
+def _merge_memory_access_proposals(
+    primary: Sequence[Mapping[str, Any]],
+    loop_ranges: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Prefer ordinary finite facts and fill only unresolved loop events."""
+
+    result: dict[tuple[str, int], dict[str, Any]] = {}
+    for rows in (primary, loop_ranges):
+        for raw in rows:
+            unit_id = raw.get("unit_id")
+            event_index = _integer(raw.get("event_index"))
+            if not isinstance(unit_id, str) or event_index is None:
+                continue
+            result.setdefault((unit_id, event_index), copy.deepcopy(dict(raw)))
+    return [result[key] for key in sorted(result)]
+
+
+def _loop_memory_access_proposals(
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    states: Mapping[str, _State],
+    outgoing: Mapping[str, set[_Edge]],
+    transfer_unit: Callable[[str], _UnitTransfer],
+    inventory: "_ProfileInventory",
+    known_slots: Mapping[_MemoryLocation, _Value],
+    finite_value_budget: int,
+    static_slot_budget: int,
+    stack_slot_budget: int,
+) -> list[dict[str, Any]]:
+    """Recover bounded allocation-relative accesses in natural loops.
+
+    The ordinary finite-value lattice intentionally gives up when a pointer
+    visits more addresses than its alternative budget. This replay instead
+    uses one exact loop-entry contribution and the exact backedge guard to
+    derive a closed offset span without enumerating iterations. Any merge,
+    unsupported update, unresolved bound, wraparound, or out-of-allocation
+    span suppresses the proposal.
+    """
+
+    adjacency = {
+        unit_id: {
+            edge.target_id
+            for edge in outgoing.get(unit_id, ())
+            if edge.kind == "direct" and edge.target_id in by_id
+        }
+        for unit_id in by_id
+    }
+    direct_incoming: dict[str, list[tuple[str, _Edge]]] = defaultdict(list)
+    for source, edges in outgoing.items():
+        for edge in edges:
+            if edge.kind == "direct" and edge.target_id in by_id:
+                direct_incoming[edge.target_id].append((source, edge))
+
+    candidates: dict[tuple[str, int], dict[str, dict[str, Any]]] = defaultdict(dict)
+    for members in strongly_connected_components(adjacency):
+        member_set = frozenset(members)
+        if not _direct_component_is_cyclic(members, adjacency):
+            continue
+        incoming = sorted(
+            [
+                (source, edge)
+                for target in members
+                for source, edge in direct_incoming.get(target, ())
+                if source not in member_set and source in states
+            ],
+            key=lambda item: (
+                item[0], item[1].target_id, item[1].guard_json or ""
+            ),
+        )
+        headers = {edge.target_id for _source, edge in incoming}
+        if len(headers) != 1 or not incoming:
+            continue
+        header = next(iter(headers))
+        latches = sorted(
+            source
+            for source in members
+            if source != header and header in adjacency.get(source, set())
+        )
+        if len(latches) != 1:
+            continue
+        latch = latches[0]
+        order = _single_direct_loop_order(
+            header, latch, member_set, adjacency
+        )
+        if order is None or set(order) != member_set:
+            continue
+        backedges = [
+            edge
+            for edge in outgoing.get(latch, ())
+            if edge.kind == "direct"
+            and edge.target_id == header
+            and edge.guard_json is not None
+        ]
+        if len(backedges) != 1:
+            continue
+        entry = _loop_entry_state(
+            incoming=incoming,
+            by_id=by_id,
+            transfer_unit=transfer_unit,
+            inventory=inventory,
+            known_slots=known_slots,
+            finite_value_budget=finite_value_budget,
+            static_slot_budget=static_slot_budget,
+            stack_slot_budget=stack_slot_budget,
+        )
+        if entry is None:
+            continue
+        comparison = _loop_backedge_comparison(
+            json.loads(str(backedges[0].guard_json)),
+            order=order,
+            by_id=by_id,
+            latch=latch,
+        )
+        if comparison is None:
+            continue
+        iterations = _loop_iteration_count(
+            comparison,
+            order=order,
+            by_id=by_id,
+            entry=entry,
+            inventory=inventory,
+            known_slots=known_slots,
+            finite_value_budget=finite_value_budget,
+        )
+        if iterations is None:
+            continue
+        iteration_count, comparison_dependencies = iterations
+
+        for register in _REGISTERS:
+            entry_bases = _bounded_loop_base_origins(
+                entry.registers.get(register)
+            )
+            deltas = _positive_loop_register_deltas(
+                order, by_id=by_id, register=register
+            )
+            if entry_bases is None or deltas is None:
+                continue
+            before_by_unit, step = deltas
+            for unit_id in order:
+                events = _mapping(by_id[unit_id].get("semantics")).get(
+                    "memory_events"
+                )
+                if not isinstance(events, list):
+                    continue
+                for event_index, raw_event in enumerate(events):
+                    event = _mapping(raw_event)
+                    kind = event.get("kind")
+                    width = _integer(event.get("width"))
+                    event_delta = affine_register_offset(
+                        event.get("address"), register
+                    )
+                    if (
+                        kind not in {"read", "write", "read_write"}
+                        or width is None
+                        or not 0 < width <= 4096
+                        or event_delta is None
+                    ):
+                        continue
+                    origins: list[_Origin] = []
+                    for base in entry_bases:
+                        minimum = (
+                            base.offset
+                            + before_by_unit[unit_id]
+                            + event_delta
+                        )
+                        maximum = minimum + (iteration_count - 1) * step
+                        if (
+                            minimum < 0
+                            or maximum < minimum
+                            or maximum + width > (1 << 32)
+                            or (
+                                base.extent is not None
+                                and maximum + width > base.extent
+                            )
+                        ):
+                            origins = []
+                            break
+                        if base.kind == "dynamic":
+                            assert base.extent is not None
+                            origins.append(_Origin(
+                                "dynamic_span",
+                                (
+                                    *base.identity,
+                                    base.extent,
+                                    minimum,
+                                    maximum,
+                                ),
+                                base.dependencies,
+                            ))
+                        elif base.kind == "absolute":
+                            origins.append(_Origin(
+                                "absolute_span",
+                                (minimum, maximum),
+                                base.dependencies,
+                            ))
+                        else:
+                            origins = []
+                            break
+                    if not origins:
+                        continue
+                    dependencies = tuple(sorted(
+                        set(comparison_dependencies).union(*(
+                            set(base.dependencies) for base in entry_bases
+                        ))
+                    ))
+                    origins = [
+                        _Origin(origin.kind, origin.key, dependencies)
+                        for origin in origins
+                    ]
+                    proposal = {
+                        "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+                        "status": "complete",
+                        "unit_id": unit_id,
+                        "event_index": event_index,
+                        "memory_kind": kind,
+                        "width_bytes": width,
+                        "address_expression": copy.deepcopy(
+                            event.get("address")
+                        ),
+                        "address_origins": _origins_json(
+                            frozenset(origins)
+                        ),
+                        "authority_dependencies": list(dependencies),
+                    }
+                    key = (unit_id, event_index)
+                    digest = json.dumps(
+                        proposal,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=True,
+                    )
+                    candidates[key][digest] = proposal
+
+    return [
+        next(iter(rows.values()))
+        for key, rows in sorted(candidates.items())
+        if len(rows) == 1
+    ]
+
+
+def _loop_entry_state(
+    *,
+    incoming: Sequence[tuple[str, _Edge]],
+    by_id: Mapping[str, Mapping[str, Any]],
+    transfer_unit: Callable[[str], _UnitTransfer],
+    inventory: "_ProfileInventory",
+    known_slots: Mapping[_MemoryLocation, _Value],
+    finite_value_budget: int,
+    static_slot_budget: int,
+    stack_slot_budget: int,
+) -> _State | None:
+    entry: _State | None = None
+    target = incoming[0][1].target_id
+    for source, edge in incoming:
+        if edge.target_id != target:
+            return None
+        contribution = transfer_unit(source)[0][0]
+        if edge.guard_json is not None:
+            guard = _guard_in_post_state(
+                by_id[source], json.loads(edge.guard_json)
+            )
+            contribution = _refine_state_for_guard(
+                contribution,
+                guard,
+                inventory=inventory,
+                known_slots=known_slots,
+                finite_value_budget=finite_value_budget,
+            )
+            if contribution is None:
+                continue
+        if edge.authority_dependency is not None:
+            contribution = _with_control_dependencies(
+                contribution, (edge.authority_dependency,)
+            )
+        if entry is None:
+            entry = contribution
+            continue
+        temporary = {target: entry}
+        _join_state(
+            temporary,
+            target,
+            contribution,
+            finite_value_budget,
+            static_slot_budget,
+            stack_slot_budget,
+        )
+        entry = temporary[target]
+    return entry
+
+
+def _loop_backedge_comparison(
+    guard: Mapping[str, Any],
+    *,
+    order: Sequence[str],
+    by_id: Mapping[str, Mapping[str, Any]],
+    latch: str,
+) -> tuple[str, Any, Any, str] | None:
+    flag_values: dict[str, tuple[Any, str]] = {}
+    for unit_id in reversed(order):
+        writes = _mapping(by_id[unit_id].get("semantics")).get("flag_writes")
+        if not isinstance(writes, list):
+            continue
+        for raw in writes:
+            row = _mapping(raw)
+            flag = row.get("flag")
+            if isinstance(flag, str) and flag not in flag_values:
+                flag_values[flag] = (row.get("value"), unit_id)
+
+    producers: set[str] = set()
+
+    def replace(value: Any) -> Any:
+        if isinstance(value, list):
+            return [replace(child) for child in value]
+        if not isinstance(value, Mapping):
+            return copy.deepcopy(value)
+        if value.get("op") == "flag" and isinstance(value.get("name"), str):
+            replacement = flag_values.get(str(value["name"]))
+            if replacement is not None:
+                producers.add(replacement[1])
+                return replace(replacement[0])
+        return {str(key): replace(child) for key, child in value.items()}
+
+    normalized = replace(guard)
+    comparison = _decode_loop_comparison(normalized)
+    if comparison is None:
+        return None
+    producer = next(iter(producers)) if len(producers) == 1 else latch
+    if producer not in order:
+        return None
+    return (*comparison, producer)
+
+
+def _decode_loop_comparison(
+    expression: Any, *, polarity: bool = True
+) -> tuple[str, Any, Any] | None:
+    row = _mapping(expression)
+    op = str(row.get("op") or "").lower()
+    args = row.get("args")
+    if (
+        op in {"not", "logical_not"}
+        and isinstance(args, list)
+        and len(args) == 1
+    ):
+        return _decode_loop_comparison(args[0], polarity=not polarity)
+    direct = _comparison_operands(row, polarity=polarity)
+    if direct is not None:
+        return direct
+    if op != "xor_bool" or not isinstance(args, list) or len(args) != 2:
+        return None
+    for sign, overflow in (args, reversed(args)):
+        sign_row = _mapping(sign)
+        sign_args = sign_row.get("args")
+        overflow_row = _mapping(overflow)
+        overflow_args = overflow_row.get("args")
+        if (
+            sign_row.get("op") != "msb"
+            or not isinstance(sign_args, list)
+            or len(sign_args) != 2
+            or sign_args[0] != 32
+            or overflow_row.get("op") != "sub_overflow"
+            or not isinstance(overflow_args, list)
+            or len(overflow_args) != 4
+            or overflow_args[0] != 32
+        ):
+            continue
+        subtraction = _mapping(sign_args[1])
+        operands = _binary_operands(subtraction)
+        if (
+            subtraction.get("op") not in {"sub", "sub32"}
+            or operands is None
+            or overflow_args[1] != operands[0]
+            or overflow_args[2] != operands[1]
+            or overflow_args[3] != subtraction
+        ):
+            continue
+        return (
+            "slt" if polarity else "sge",
+            copy.deepcopy(operands[0]),
+            copy.deepcopy(operands[1]),
+        )
+    return None
+
+
+def _loop_iteration_count(
+    comparison: tuple[str, Any, Any, str],
+    *,
+    order: Sequence[str],
+    by_id: Mapping[str, Mapping[str, Any]],
+    entry: _State,
+    inventory: "_ProfileInventory",
+    known_slots: Mapping[_MemoryLocation, _Value],
+    finite_value_budget: int,
+) -> tuple[int, tuple[str, ...]] | None:
+    relation, left_expression, right_expression, producer = comparison
+    if relation not in {"ult", "slt"}:
+        return None
+    candidates: set[tuple[int, tuple[str, ...]]] = set()
+    for register in _REGISTERS:
+        left_delta = affine_register_offset(left_expression, register)
+        deltas = _positive_loop_register_deltas(
+            order, by_id=by_id, register=register
+        )
+        if left_delta is None or deltas is None:
+            continue
+        before_by_unit, step = deltas
+        entry_exact = _single_exact_origin(entry.registers.get(register))
+        right = _evaluate(
+            right_expression,
+            entry,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=finite_value_budget,
+        )
+        right_exact = _single_exact_origin(right)
+        dependencies: tuple[str, ...] = ()
+        if entry_exact is not None and right_exact is not None:
+            first = entry_exact + before_by_unit[producer] + left_delta
+            bound = right_exact
+        else:
+            left_dynamic = _single_bounded_dynamic_origin(
+                entry.registers.get(register)
+            )
+            right_dynamic = _single_bounded_dynamic_origin(right)
+            if (
+                left_dynamic is None
+                or right_dynamic is None
+                or left_dynamic[:2] != right_dynamic[:2]
+            ):
+                continue
+            first = (
+                left_dynamic[2]
+                + before_by_unit[producer]
+                + left_delta
+            )
+            bound = right_dynamic[2]
+            dependencies = tuple(sorted(
+                set(left_dynamic[3]) | set(right_dynamic[3])
+            ))
+        if min(first, bound) < 0 or max(first, bound) >= (1 << 32):
+            continue
+        if relation == "slt" and max(first, bound) >= 0x8000_0000:
+            continue
+        count = (
+            1
+            if not _compare_u32(first, bound, relation)
+            else (bound - first + step - 1) // step + 1
+        )
+        final = first + (count - 1) * step
+        if (
+            count <= 0
+            or final >= (1 << 32)
+            or (relation == "slt" and final >= 0x8000_0000)
+            or _compare_u32(final, bound, relation)
+            or (
+                count > 1
+                and not _compare_u32(final - step, bound, relation)
+            )
+        ):
+            continue
+        candidates.add((count, dependencies))
+    if not candidates:
+        return None
+    counts = {count for count, _dependencies in candidates}
+    if len(counts) != 1:
+        return None
+    count = next(iter(counts))
+    dependencies = tuple(sorted({
+        dependency
+        for candidate_count, values in candidates
+        if candidate_count == count
+        for dependency in values
+    }))
+    return count, dependencies
+
+
+def _positive_loop_register_deltas(
+    order: Sequence[str],
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    register: str,
+) -> tuple[dict[str, int], int] | None:
+    before: dict[str, int] = {}
+    total = 0
+    written = False
+    for unit_id in order:
+        before[unit_id] = total
+        raw_writes = _mapping(by_id[unit_id].get("semantics")).get(
+            "register_writes"
+        )
+        writes = [
+            row
+            for row in raw_writes or ()
+            if isinstance(row, Mapping) and row.get("register") == register
+        ]
+        if not writes:
+            continue
+        if len(writes) != 1:
+            return None
+        delta = affine_register_offset(writes[0].get("value"), register)
+        if delta is None:
+            return None
+        total += delta
+        written = True
+    return (before, total) if written and 0 < total < 0x8000_0000 else None
+
+
+def _single_exact_origin(value: _Value) -> int | None:
+    if value is None or len(value) != 1:
+        return None
+    origin = next(iter(value))
+    concrete = origin_concrete_value(origin)
+    return concrete if origin.kind == "exact" else None
+
+
+def _single_bounded_dynamic_origin(
+    value: _Value,
+) -> tuple[tuple[Any, ...], int, int, tuple[str, ...]] | None:
+    if value is None or len(value) != 1:
+        return None
+    origin = next(iter(value))
+    if origin.kind == "dynamic_range" and len(origin.key) == 6:
+        extent, offset = origin.key[5], 0
+    elif origin.kind == "dynamic_location" and len(origin.key) == 7:
+        extent, offset = origin.key[5], origin.key[6]
+    else:
+        return None
+    if (
+        not isinstance(extent, int)
+        or isinstance(extent, bool)
+        or not 0 < extent <= 0xFFFFFFFF
+        or not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or not 0 <= offset < extent
+    ):
+        return None
+    return tuple(origin.key[:5]), extent, offset, origin.dependencies
+
+
+def _bounded_loop_base_origins(
+    value: _Value,
+) -> tuple[_LoopBaseOrigin, ...] | None:
+    """Normalize every finite loop-pointer base without dropping alternatives."""
+
+    if value is None or not value:
+        return None
+    result: list[_LoopBaseOrigin] = []
+    for origin in sorted(value):
+        if origin.kind == "exact" and len(origin.key) == 1:
+            concrete = origin_concrete_value(origin)
+            if concrete is None:
+                return None
+            result.append(_LoopBaseOrigin(
+                "absolute",
+                (),
+                None,
+                concrete,
+                origin.dependencies,
+            ))
+            continue
+        dynamic = _single_bounded_dynamic_origin(frozenset({origin}))
+        if dynamic is None:
+            return None
+        identity, extent, offset, dependencies = dynamic
+        result.append(_LoopBaseOrigin(
+            "dynamic",
+            identity,
+            extent,
+            offset,
+            dependencies,
+        ))
+    return tuple(result)
+
+
+def _single_direct_loop_order(
+    header: str,
+    latch: str,
+    members: frozenset[str],
+    adjacency: Mapping[str, set[str]],
+) -> list[str] | None:
+    order: list[str] = []
+    current = header
+    while current not in order:
+        order.append(current)
+        if current == latch:
+            return order
+        successors = sorted(adjacency.get(current, set()) & members)
+        if len(successors) != 1:
+            return None
+        current = successors[0]
+    return None
+
+
+def _direct_component_is_cyclic(
+    members: Sequence[str], adjacency: Mapping[str, set[str]]
+) -> bool:
+    return len(members) > 1 or (
+        len(members) == 1 and members[0] in adjacency.get(members[0], set())
+    )
 
 
 class _ProfileInventory:
@@ -1469,6 +2115,9 @@ def _run_dataflow(
     internal_call_memory_result_relations: _InternalCallMemoryResults,
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    checked_write_footprints: Mapping[
+        tuple[str, int], _CheckedWriteFootprint
+    ],
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
     image_base: int,
     known_slots: Mapping[_MemoryLocation, _Value],
@@ -1519,6 +2168,7 @@ def _run_dataflow(
         local_environment=_transfer_local_environment_key(
             known_slots=known_slots,
             event_known_slots=event_known_slots,
+            checked_write_footprints=checked_write_footprints,
             finite_value_budget=finite_value_budget,
             static_slot_budget=static_slot_budget,
             stack_slot_budget=stack_slot_budget,
@@ -1588,6 +2238,7 @@ def _run_dataflow(
             ),
             internal_call_dependency_ids=internal_call_dependency_ids,
             recovered_calls=recovered_calls,
+            checked_write_footprints=checked_write_footprints,
             bootstrap_unknown_call_preserved_registers=(
                 bootstrap_unknown_call_preserved_registers
             ),
@@ -1810,6 +2461,17 @@ def _run_dataflow(
         path_recovery_proposals,
         contextual.memory_address_domain_proposals,
     )
+    loop_memory_access_proposals = _loop_memory_access_proposals(
+        by_id=by_id,
+        states=input_states,
+        outgoing=outgoing,
+        transfer_unit=transfer_unit,
+        inventory=inventory,
+        known_slots=known_slots,
+        finite_value_budget=finite_value_budget,
+        static_slot_budget=static_slot_budget,
+        stack_slot_budget=stack_slot_budget,
+    )
     return _RunResult(
         states=input_states,
         resolutions=resolutions,
@@ -1817,6 +2479,7 @@ def _run_dataflow(
         contextual_memory_address_domain_proposals=(
             contextual.memory_address_domain_proposals
         ),
+        loop_memory_access_proposals=loop_memory_access_proposals,
         proposed_slots=proposed_slots,
         tainted_slots=tainted_slots,
         issues=_deduplicate(issues),
@@ -2885,10 +3548,309 @@ def _attach_contextual_memory_read_sites(
     return result
 
 
+def _checked_write_footprints(
+    facts: Mapping[str, PreparedMemoryAccessFact],
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    image_base: int,
+    image_size: int | None,
+) -> dict[tuple[str, int], _CheckedWriteFootprint]:
+    """Reduce exact-event facts to conservative byte ranges.
+
+    Facts with any unsupported alternative are ignored as a whole. This keeps
+    the transfer fail-closed: a partial alternative inventory can never justify
+    preserving state across a write.
+    """
+
+    result: dict[tuple[str, int], _CheckedWriteFootprint] = {}
+    for fact in facts.values():
+        if fact.memory_kind not in {"write", "read_write"}:
+            continue
+        ranges: list[_CheckedWriteRange] = []
+        complete = True
+        for raw in fact.address_origins:
+            try:
+                origin = parse_value_origin(
+                    raw.to_value(), context="prepared write-footprint origin"
+                )
+            except ValueError:
+                complete = False
+                break
+            checked = _checked_write_origin_range(
+                origin,
+                width=fact.width_bytes,
+                by_id=by_id,
+                recovered_calls=recovered_calls,
+                import_abis=import_abis,
+                image_base=image_base,
+                image_size=image_size,
+            )
+            if checked is None:
+                complete = False
+                break
+            ranges.append(checked)
+        if not complete or not ranges:
+            continue
+        key = (fact.binding.unit.unit_id, fact.binding.event_index)
+        if key in result:
+            raise ValueError("prepared write footprints duplicate one event")
+        result[key] = _CheckedWriteFootprint(
+            fact.fact_id,
+            tuple(sorted(
+                set(ranges),
+                key=lambda item: (
+                    item.address_space,
+                    repr(item.identity),
+                    item.minimum,
+                    item.maximum,
+                    item.point_kind or "",
+                    repr(item.point_key),
+                ),
+            )),
+        )
+    return result
+
+
+def _checked_write_origin_range(
+    origin: _Origin,
+    *,
+    width: int,
+    by_id: Mapping[str, Mapping[str, Any]],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    image_base: int,
+    image_size: int | None,
+) -> _CheckedWriteRange | None:
+    if not 0 < width <= 4096:
+        return None
+    if origin.kind == "stack_location" and len(origin.key) == 1:
+        offset = origin.key[0]
+        if (
+            isinstance(offset, int)
+            and not isinstance(offset, bool)
+            and -(1 << 31) <= offset < (1 << 31)
+            and offset + width <= (1 << 31)
+        ):
+            return _CheckedWriteRange(
+                "stack",
+                (),
+                offset,
+                offset + width - 1,
+                "stack_location",
+                (offset,),
+            )
+        return None
+    concrete = origin_concrete_value(origin)
+    if concrete is not None:
+        return (
+            _CheckedWriteRange(
+                "image",
+                (),
+                concrete,
+                concrete + width - 1,
+                "exact",
+                (concrete,),
+            )
+            if _range_inside_image(
+                concrete,
+                concrete + width - 1,
+                image_base=image_base,
+                image_size=image_size,
+            )
+            else None
+        )
+    if origin.kind == "absolute_span" and len(origin.key) == 2:
+        minimum, maximum_start = origin.key
+        if (
+            isinstance(minimum, int)
+            and not isinstance(minimum, bool)
+            and isinstance(maximum_start, int)
+            and not isinstance(maximum_start, bool)
+            and 0 <= minimum <= maximum_start < (1 << 32)
+            and maximum_start + width <= (1 << 32)
+            and _range_inside_image(
+                minimum,
+                maximum_start + width - 1,
+                image_base=image_base,
+                image_size=image_size,
+            )
+        ):
+            return _CheckedWriteRange(
+                "image",
+                (),
+                minimum,
+                maximum_start + width - 1,
+                "exact" if minimum == maximum_start else None,
+                (minimum,) if minimum == maximum_start else (),
+            )
+        return None
+    dynamic = _checked_dynamic_write_range(
+        origin,
+        width=width,
+        by_id=by_id,
+        recovered_calls=recovered_calls,
+        import_abis=import_abis,
+    )
+    if dynamic is None:
+        return None
+    identity, minimum, maximum, point_key = dynamic
+    return _CheckedWriteRange(
+        "dynamic",
+        identity,
+        minimum,
+        maximum,
+        "dynamic_location" if point_key is not None else None,
+        () if point_key is None else point_key,
+    )
+
+
+def _checked_dynamic_write_range(
+    origin: _Origin,
+    *,
+    width: int,
+    by_id: Mapping[str, Mapping[str, Any]],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+) -> tuple[tuple[Any, ...], int, int, tuple[Any, ...] | None] | None:
+    key = origin.key
+    if origin.kind == "dynamic_range" and len(key) in {5, 6}:
+        supplied_extent = key[5] if len(key) == 6 else None
+        minimum = maximum_start = 0
+    elif origin.kind == "dynamic_location" and len(key) in {6, 7}:
+        supplied_extent = key[5] if len(key) == 7 else None
+        minimum = maximum_start = key[-1]
+    elif origin.kind == "dynamic_span" and len(key) == 8:
+        supplied_extent = key[5]
+        minimum, maximum_start = key[6:]
+    else:
+        return None
+    producer, event_index, dll, identity_kind, identity_value = key[:5]
+    if (
+        not isinstance(producer, str)
+        or not isinstance(event_index, int)
+        or isinstance(event_index, bool)
+        or not isinstance(dll, str)
+        or identity_kind not in {"symbol", "ordinal"}
+        or (identity_kind == "symbol" and not isinstance(identity_value, str))
+        or (identity_kind == "ordinal" and not isinstance(identity_value, int))
+        or not isinstance(minimum, int)
+        or isinstance(minimum, bool)
+        or not isinstance(maximum_start, int)
+        or isinstance(maximum_start, bool)
+        or minimum < 0
+        or maximum_start < minimum
+        or maximum_start + width > (1 << 32)
+        or (
+            supplied_extent is not None
+            and (
+                not isinstance(supplied_extent, int)
+                or isinstance(supplied_extent, bool)
+                or not 0 < supplied_extent <= 0xFFFFFFFF
+            )
+        )
+    ):
+        return None
+    expected = MachineImportIdentity(
+        dll.lower(), str(identity_kind), identity_value
+    )
+    unit = by_id.get(producer)
+    events = _events(unit or {})
+    if not 0 <= event_index < len(events):
+        return None
+    direct_identity = _event_import_identity(events[event_index])
+    if direct_identity is None:
+        recovered = recovered_calls.get((producer, event_index))
+        identities = _recovered_external_identities(recovered)
+        if identities != frozenset({expected}):
+            return None
+    elif direct_identity != expected:
+        return None
+    selected = import_abis.get(expected)
+    if selected is None:
+        return None
+    contract = selected.contract
+    relations = (
+        contract.get("result_register_relations")
+        if isinstance(contract, Mapping)
+        else None
+    )
+    reviewed_bounds = [
+        int(relation.get("minimum_size"))
+        for relation in relations or ()
+        if isinstance(relation, Mapping)
+        and relation.get("relation") == "dynamic_range_base"
+        and isinstance(relation.get("minimum_size"), int)
+        and not isinstance(relation.get("minimum_size"), bool)
+        and 0 <= int(relation["minimum_size"]) <= 0xFFFFFFFF
+    ]
+    reviewed_extent = min(reviewed_bounds) if reviewed_bounds else 0
+    effective_extent = max(
+        reviewed_extent,
+        0 if supplied_extent is None else int(supplied_extent),
+    )
+    if maximum_start + width > effective_extent:
+        return None
+    if minimum != maximum_start:
+        point_key = None
+    elif origin.kind == "dynamic_range":
+        point_key = _dynamic_memory_location(origin).key
+    elif origin.kind == "dynamic_location":
+        point_key = origin.key
+    else:
+        point_key = (*key[:6], minimum)
+    return (
+        tuple(key[:5]),
+        minimum,
+        maximum_start + width - 1,
+        tuple(point_key) if point_key is not None else None,
+    )
+
+
+def _recovered_external_identities(
+    recovered: Mapping[str, Any] | None,
+) -> frozenset[MachineImportIdentity]:
+    result: set[MachineImportIdentity] = set()
+    targets = recovered.get("external_targets") if recovered else None
+    for raw in targets if isinstance(targets, list) else ():
+        target = _mapping(raw)
+        identity = _mapping(target.get("import"))
+        dll = identity.get("dll")
+        symbol = identity.get("symbol")
+        ordinal = _integer(identity.get("ordinal"))
+        if not isinstance(dll, str):
+            continue
+        if isinstance(symbol, str) and symbol:
+            result.add(MachineImportIdentity(dll.lower(), "symbol", symbol))
+        elif ordinal is not None:
+            result.add(MachineImportIdentity(dll.lower(), "ordinal", ordinal))
+    return frozenset(result)
+
+
+def _range_inside_image(
+    minimum: int,
+    maximum: int,
+    *,
+    image_base: int,
+    image_size: int | None,
+) -> bool:
+    return (
+        isinstance(image_size, int)
+        and not isinstance(image_size, bool)
+        and 0 <= image_base < (1 << 32)
+        and 0 < image_size <= (1 << 32) - image_base
+        and image_base <= minimum <= maximum < image_base + image_size
+    )
+
+
 def _transfer_local_environment_key(
     *,
     known_slots: Mapping[_MemoryLocation, _Value],
     event_known_slots: _EventKnownSlots,
+    checked_write_footprints: Mapping[
+        tuple[str, int], _CheckedWriteFootprint
+    ],
     finite_value_budget: int,
     static_slot_budget: int,
     stack_slot_budget: int,
@@ -2910,6 +3872,27 @@ def _transfer_local_environment_key(
                 ),
             )
             for unit_id, slots in sorted(event_known_slots.items())
+        ),
+        tuple(
+            (
+                unit_id,
+                event_index,
+                footprint.fact_id,
+                tuple(
+                    (
+                        item.address_space,
+                        item.identity,
+                        item.minimum,
+                        item.maximum,
+                        item.point_kind,
+                        item.point_key,
+                    )
+                    for item in footprint.ranges
+                ),
+            )
+            for (unit_id, event_index), footprint in sorted(
+                checked_write_footprints.items()
+            )
         ),
         finite_value_budget,
         static_slot_budget,
@@ -3176,6 +4159,9 @@ def _transfer_unit(
     internal_call_memory_result_relations: _InternalCallMemoryResults,
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    checked_write_footprints: Mapping[
+        tuple[str, int], _CheckedWriteFootprint
+    ],
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
     preserved_register_hypotheses: Mapping[
         CallSiteId, Mapping[str, PreservedRegisterHypothesis]
@@ -3477,6 +4463,34 @@ def _transfer_unit(
                 budget=finite_value_budget,
             )
             if addresses is None or len(addresses) != 1:
+                checked_footprint = checked_write_footprints.get(
+                    (unit_id, memory_event_index)
+                )
+                if checked_footprint is not None:
+                    value_state = _with_expression_event_known_slots(
+                        input_state,
+                        unit_id=unit_id,
+                        expression=event.get("value"),
+                        event_known_slots=event_known_slots,
+                    )
+                    value = _evaluate(
+                        event.get("value"),
+                        value_state,
+                        inventory=inventory,
+                        known_slots=known_slots,
+                        budget=finite_value_budget,
+                    )
+                    value = with_value_dependencies(
+                        value, (checked_footprint.fact_id,)
+                    )
+                    _apply_checked_write_footprint(
+                        output,
+                        checked_footprint,
+                        value=value,
+                        proposals=proposals,
+                        taints=taints,
+                    )
+                    continue
                 if (
                     checked_nonimage_stack
                     and affine_register_offset(event.get("address"), "esp")
@@ -3602,6 +4616,145 @@ def _invalidate_unknown_memory_write(
     state.memory.clear()
     state.stack.clear()
     state.memory_invalidated = True
+
+
+def _apply_checked_write_footprint(
+    state: _State,
+    footprint: _CheckedWriteFootprint,
+    *,
+    value: _Value,
+    proposals: dict[_MemoryLocation, _Value],
+    taints: set[_MemoryLocation],
+) -> None:
+    """Forget only facts that one checked bounded write may overlap."""
+
+    stack_ranges = tuple(
+        item for item in footprint.ranges if item.address_space == "stack"
+    )
+    if stack_ranges:
+        state.stack = {
+            offset: cell
+            for offset, cell in state.stack.items()
+            if not any(
+                _ranges_overlap(offset, offset + 3, item.minimum, item.maximum)
+                for item in stack_ranges
+            )
+        }
+
+    removed = {
+        location
+        for location in state.memory
+        if _memory_location_may_overlap_footprint(location, footprint)
+    }
+    point_memory = {
+        _checked_point_memory_location(item)
+        for item in footprint.ranges
+        if item.point_kind not in {None, "stack_location"}
+    }
+    if None in point_memory:
+        point_memory = set()
+    point_stack = {
+        int(item.point_key[0])
+        for item in footprint.ranges
+        if item.point_kind == "stack_location"
+    }
+    all_points = (
+        len(point_memory) + len(point_stack) == len(footprint.ranges)
+    )
+    for location in removed:
+        state.memory.pop(location, None)
+        proposals.pop(location, None)
+    if not all_points or value is None:
+        taints.update(removed)
+        return
+    taints.update(removed - point_memory)
+    for offset in point_stack:
+        state.stack[offset] = _StackCell(value, ())
+    for location in point_memory:
+        assert location is not None
+        state.memory[location] = value
+        taints.discard(location)
+        if all(_persistent_origin(origin) for origin in value):
+            proposals[location] = value
+        else:
+            taints.add(location)
+
+
+def _checked_point_memory_location(
+    item: _CheckedWriteRange,
+) -> _MemoryLocation | None:
+    if item.point_kind == "exact" and len(item.point_key) == 1:
+        value = item.point_key[0]
+        return (
+            int(value) & 0xFFFFFFFF
+            if isinstance(value, int) and not isinstance(value, bool)
+            else None
+        )
+    if item.point_kind == "dynamic_location" and item.point_key:
+        return _Origin("dynamic_location", item.point_key)
+    return None
+
+
+def _memory_location_may_overlap_footprint(
+    location: _MemoryLocation,
+    footprint: _CheckedWriteFootprint,
+) -> bool:
+    if isinstance(location, int):
+        return any(
+            item.address_space == "image"
+            and _ranges_overlap(
+                location & 0xFFFFFFFF,
+                (location & 0xFFFFFFFF) + 3,
+                item.minimum,
+                item.maximum,
+            )
+            for item in footprint.ranges
+        )
+    if location.kind in {"dynamic_range", "dynamic_location"}:
+        dynamic = _dynamic_location_interval(location)
+        if dynamic is None:
+            return True
+        identity, minimum, maximum = dynamic
+        return any(
+            item.address_space == "dynamic"
+            and item.identity == identity
+            and _ranges_overlap(
+                minimum, maximum, item.minimum, item.maximum
+            )
+            for item in footprint.ranges
+        )
+    # Canonical affine locations have no checked disjointness witness. Other
+    # proof-level address classes are likewise forgotten rather than silently
+    # retained across a potentially aliasing concrete write.
+    return any(item.address_space != "stack" for item in footprint.ranges)
+
+
+def _dynamic_location_interval(
+    location: _Origin,
+) -> tuple[tuple[Any, ...], int, int] | None:
+    if location.kind == "dynamic_range" and len(location.key) in {5, 6}:
+        offset = 0
+    elif location.kind == "dynamic_location" and len(location.key) in {6, 7}:
+        offset = location.key[-1]
+    else:
+        return None
+    if (
+        not isinstance(offset, int)
+        or isinstance(offset, bool)
+        or not 0 <= offset < (1 << 32)
+        or offset + 4 > (1 << 32)
+    ):
+        return None
+    return tuple(location.key[:5]), offset, offset + 3
+
+
+def _ranges_overlap(
+    left_minimum: int,
+    left_maximum: int,
+    right_minimum: int,
+    right_maximum: int,
+) -> bool:
+    return left_minimum <= right_maximum and right_minimum <= left_maximum
 
 
 def _invalidate_checked_stack_write(

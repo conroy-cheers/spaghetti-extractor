@@ -11,6 +11,12 @@ from spaghetti_extractor.call_frame_hypotheses import (
     hypothesis_id as call_frame_hypothesis_id,
 )
 from spaghetti_extractor.call_site_effects import CallSiteId
+from spaghetti_extractor.authority_bindings_v2 import BinaryBinding
+from spaghetti_extractor.checked_memory_access_v2 import (
+    MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+    prepare_checked_memory_access_facts_v2,
+    validate_prepared_memory_access_facts_v2,
+)
 from spaghetti_extractor.external_interface_profiles import (
     EXTERNAL_INTERFACE_PROFILE_FORMAT,
     ExternalInterfaceProfile,
@@ -29,6 +35,7 @@ from spaghetti_extractor.interface_provenance import (
 from spaghetti_extractor.provenance_domain import ValueOrigin
 from spaghetti_extractor.machine_abi import resolve_machine_call_abi
 from spaghetti_extractor.machine_import_profiles import MachineImportIdentity
+from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
 
 
 IMAGE_BASE = 0x400000
@@ -2087,6 +2094,469 @@ class InterfaceProvenanceTests(unittest.TestCase):
         }
         self.assertIn(SLOT, proposal_addresses)
         self.assertNotIn(CHILD_SLOT, proposal_addresses)
+
+    def test_counted_loop_exports_bounded_dynamic_write_span(self) -> None:
+        identity = MachineImportIdentity(
+            "kernel32.dll", "symbol", "HeapAlloc"
+        )
+        selected = self._selected_abi(
+            identity,
+            argument_words=0,
+            contract={
+                "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "nullable": False,
+                    "minimum_size": 8192,
+                }],
+            },
+        )
+        allocation = {
+            "kind": "external_call",
+            "dll": "kernel32.dll",
+            "symbol": "HeapAlloc",
+            "ordinal": None,
+            "return_rva": 0x1001,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        subtraction = sub(reg("eax"), const(1024))
+        backedge = {
+            "op": "xor_bool",
+            "args": [
+                {"op": "msb", "args": [32, subtraction]},
+                {
+                    "op": "sub_overflow",
+                    "args": [32, reg("eax"), const(1024), subtraction],
+                },
+            ],
+        }
+        write = {
+            "kind": "write",
+            "width": 4,
+            "address": sub(reg("esi"), const(8)),
+            "value": const(0),
+        }
+        units = [
+            unit(
+                "allocate",
+                0x1000,
+                events=[allocation],
+                ordered=[allocation],
+            ),
+            unit(
+                "setup",
+                0x1010,
+                writes=[
+                    {"register": "esi", "value": reg("eax")},
+                    {"register": "eax", "value": const(0)},
+                ],
+            ),
+            unit("header", 0x1020),
+            unit(
+                "step",
+                0x1030,
+                writes=[
+                    {
+                        "register": "esi",
+                        "value": add(reg("esi"), const(8)),
+                    },
+                    {
+                        "register": "eax",
+                        "value": add(reg("eax"), const(1)),
+                    },
+                ],
+            ),
+            unit("write", 0x1040, memory=[write]),
+            unit("exit", 0x1050),
+        ]
+        direct = [
+            edge("allocate", "setup"),
+            edge("setup", "header"),
+            edge("header", "step"),
+            edge("step", "write"),
+            {
+                "source_unit_id": "write",
+                "target_unit_id": "header",
+                "guard": backedge,
+            },
+            {
+                "source_unit_id": "write",
+                "target_unit_id": "exit",
+                "guard": {"op": "not", "args": [backedge]},
+            },
+        ]
+        result = self._run(
+            units,
+            direct,
+            roots=["allocate"],
+            extra_import_abis={identity: selected},
+            indirect_exits=[],
+            allow_global_slot_promotion=False,
+        )
+
+        proposal = next(
+            row
+            for row in result["memory_access_proposals"]
+            if row["unit_id"] == "write"
+        )
+        self.assertEqual(proposal["event_index"], 0)
+        self.assertEqual(proposal["address_origins"], [{
+            "kind": "dynamic_span",
+            "key": [
+                "allocate",
+                0,
+                "kernel32.dll",
+                "symbol",
+                "HeapAlloc",
+                8192,
+                0,
+                8184,
+            ],
+        }])
+
+        static_setup = unit(
+            "static-setup",
+            0x1060,
+            writes=[
+                {
+                    "register": "esi",
+                    "value": const(IMAGE_BASE + 0x3000),
+                },
+                {"register": "eax", "value": const(0)},
+            ],
+        )
+        alternatives = self._run(
+            [*units, static_setup],
+            [*direct, edge("static-setup", "header")],
+            roots=["allocate", "static-setup"],
+            extra_import_abis={identity: selected},
+            indirect_exits=[],
+            allow_global_slot_promotion=False,
+        )
+        alternative_proposal = next(
+            row
+            for row in alternatives["memory_access_proposals"]
+            if row["unit_id"] == "write"
+        )
+        self.assertEqual(alternative_proposal["address_origins"], [
+            {
+                "kind": "absolute_span",
+                "key": [IMAGE_BASE + 0x3000, IMAGE_BASE + 0x4FF8],
+            },
+            {
+                "kind": "dynamic_span",
+                "key": [
+                    "allocate",
+                    0,
+                    "kernel32.dll",
+                    "symbol",
+                    "HeapAlloc",
+                    8192,
+                    0,
+                    8184,
+                ],
+            },
+        ])
+
+        undersized = self._selected_abi(
+            identity,
+            argument_words=0,
+            contract={
+                "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "nullable": False,
+                    "minimum_size": 8187,
+                }],
+            },
+        )
+        rejected = self._run(
+            units,
+            direct,
+            roots=["allocate"],
+            extra_import_abis={identity: undersized},
+            indirect_exits=[],
+            allow_global_slot_promotion=False,
+        )
+        self.assertFalse(any(
+            row["unit_id"] == "write"
+            for row in rejected["memory_access_proposals"]
+        ))
+
+    def test_checked_dynamic_span_preserves_disjoint_memory_fact(self) -> None:
+        identity = MachineImportIdentity(
+            "kernel32.dll", "symbol", "HeapAlloc"
+        )
+        selected = self._selected_abi(
+            identity,
+            argument_words=0,
+            contract={
+                "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "nullable": False,
+                    "minimum_size": 64,
+                }],
+            },
+        )
+        allocation = {
+            "kind": "external_call",
+            "dll": "kernel32.dll",
+            "symbol": "HeapAlloc",
+            "ordinal": None,
+            "return_rva": 0x1001,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        target = IMAGE_BASE + 0x2000
+        store = {
+            "kind": "write",
+            "width": 4,
+            "address": add(reg("ebp"), const(16)),
+            "value": const(target),
+        }
+        unknown_write = {
+            "kind": "write",
+            "width": 4,
+            "address": {"op": "unknown"},
+            "value": const(0),
+        }
+        call_event = {
+            "kind": "indirect_call",
+            "return_rva": 0x1051,
+            "target": reg("eax"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        units = [
+            unit("allocate", 0x1000, events=[allocation], ordered=[allocation]),
+            unit(
+                "setup",
+                0x1010,
+                writes=[{"register": "ebp", "value": reg("eax")}],
+            ),
+            unit("store", 0x1020, memory=[store]),
+            unit("dynamic-write", 0x1030, memory=[unknown_write]),
+            unit(
+                "load",
+                0x1040,
+                writes=[{
+                    "register": "eax",
+                    "value": load(add(reg("ebp"), const(16))),
+                }],
+            ),
+            unit("call", 0x1050, events=[call_event], ordered=[call_event]),
+            unit("target", 0x2000),
+        ]
+        direct = [
+            edge("allocate", "setup"),
+            edge("setup", "store"),
+            edge("store", "dynamic-write"),
+            edge("dynamic-write", "load"),
+            edge("load", "call"),
+        ]
+        exit_row = {
+            "id": "exit:checked-dynamic-write",
+            "source_unit_id": "call",
+            "source_rva": 0x1050,
+            "source_event_index": 0,
+            "kind": "indirect_call",
+            "target_expression": reg("eax"),
+        }
+        common = {
+            "units": units,
+            "direct": direct,
+            "roots": ["allocate"],
+            "extra_import_abis": {identity: selected},
+            "indirect_exits": [exit_row],
+            "allow_global_slot_promotion": False,
+            "image_size": 0x100000,
+        }
+        unbounded = self._run(**common)
+        self.assertEqual(unbounded["resolutions"][0]["status"], "incomplete")
+
+        for row in units:
+            row["source"]["instruction_bytes_sha256"] = "e" * 64
+        binary = BinaryBinding("a" * 64, machine_ir_sha256(units))
+        def checked_span(minimum: int, maximum: int) -> dict[str, object]:
+            prepared = prepare_checked_memory_access_facts_v2([{
+                "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+                "status": "complete",
+                "unit_id": "dynamic-write",
+                "event_index": 0,
+                "memory_kind": "write",
+                "width_bytes": 4,
+                "address_expression": unknown_write["address"],
+                "address_origins": [{
+                    "kind": "dynamic_span",
+                    "key": [
+                        "allocate",
+                        0,
+                        "kernel32.dll",
+                        "symbol",
+                        "HeapAlloc",
+                        64,
+                        minimum,
+                        maximum,
+                    ],
+                }],
+                "authority_dependencies": [],
+            }],
+                units=units,
+                binary=binary,
+            )
+            return validate_prepared_memory_access_facts_v2(
+                prepared,
+                units=units,
+                binary=binary,
+            )
+
+        bounded = self._run(
+            **common,
+            prepared_memory_access_facts=checked_span(24, 60),
+        )
+        self.assertEqual(bounded["resolutions"][0]["status"], "recovered")
+        self.assertEqual(bounded["resolutions"][0]["target_rvas"], [0x2000])
+
+        overlapping = self._run(
+            **common,
+            prepared_memory_access_facts=checked_span(12, 24),
+        )
+        self.assertEqual(
+            overlapping["resolutions"][0]["status"], "incomplete"
+        )
+
+    def test_checked_point_alternatives_apply_one_weak_update(self) -> None:
+        identity = MachineImportIdentity(
+            "kernel32.dll", "symbol", "HeapAlloc"
+        )
+        selected = self._selected_abi(
+            identity,
+            argument_words=0,
+            contract={
+                "result_register_relations": [{
+                    "register": "eax",
+                    "relation": "dynamic_range_base",
+                    "nullable": False,
+                    "minimum_size": 64,
+                }],
+            },
+        )
+        allocation = {
+            "kind": "external_call",
+            "dll": "kernel32.dll",
+            "symbol": "HeapAlloc",
+            "ordinal": None,
+            "return_rva": 0x1001,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        static_base = IMAGE_BASE + 0x3000
+        target = IMAGE_BASE + 0x2000
+        store = {
+            "kind": "write",
+            "width": 4,
+            "address": add(reg("ebp"), const(16)),
+            "value": const(target),
+        }
+        call_event = {
+            "kind": "indirect_call",
+            "return_rva": 0x1041,
+            "target": reg("eax"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        units = [
+            unit("allocate", 0x1000, events=[allocation], ordered=[allocation]),
+            unit(
+                "dynamic-setup",
+                0x1010,
+                writes=[{"register": "ebp", "value": reg("eax")}],
+            ),
+            unit(
+                "static-setup",
+                0x1011,
+                writes=[{"register": "ebp", "value": const(static_base)}],
+            ),
+            unit("store", 0x1020, memory=[store]),
+            unit(
+                "load",
+                0x1030,
+                writes=[{
+                    "register": "eax",
+                    "value": load(add(reg("ebp"), const(16))),
+                }],
+            ),
+            unit("call", 0x1040, events=[call_event], ordered=[call_event]),
+            unit("target", 0x2000),
+        ]
+        direct = [
+            edge("allocate", "dynamic-setup"),
+            edge("dynamic-setup", "store"),
+            edge("static-setup", "store"),
+            edge("store", "load"),
+            edge("load", "call"),
+        ]
+        exit_row = {
+            "id": "exit:checked-point-alternatives",
+            "source_unit_id": "call",
+            "source_rva": 0x1040,
+            "source_event_index": 0,
+            "kind": "indirect_call",
+            "target_expression": reg("eax"),
+        }
+        common = {
+            "units": units,
+            "direct": direct,
+            "roots": ["allocate", "static-setup"],
+            "extra_import_abis": {identity: selected},
+            "indirect_exits": [exit_row],
+            "allow_global_slot_promotion": False,
+            "image_size": 0x100000,
+        }
+        unchecked = self._run(**common)
+        self.assertEqual(unchecked["resolutions"][0]["status"], "incomplete")
+
+        for row in units:
+            row["source"]["instruction_bytes_sha256"] = "e" * 64
+        binary = BinaryBinding("a" * 64, machine_ir_sha256(units))
+        prepared = prepare_checked_memory_access_facts_v2(
+            [{
+                "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+                "status": "complete",
+                "unit_id": "store",
+                "event_index": 0,
+                "memory_kind": "write",
+                "width_bytes": 4,
+                "address_expression": store["address"],
+                "address_origins": [
+                    {
+                        "kind": "dynamic_location",
+                        "key": [
+                            "allocate",
+                            0,
+                            "kernel32.dll",
+                            "symbol",
+                            "HeapAlloc",
+                            64,
+                            16,
+                        ],
+                    },
+                    {"kind": "exact", "key": [static_base + 16]},
+                ],
+                "authority_dependencies": [],
+            }],
+            units=units,
+            binary=binary,
+        )
+        checked = self._run(
+            **common,
+            prepared_memory_access_facts=(
+                validate_prepared_memory_access_facts_v2(
+                    prepared,
+                    units=units,
+                    binary=binary,
+                )
+            ),
+        )
+        self.assertEqual(checked["resolutions"][0]["status"], "recovered")
+        self.assertEqual(checked["resolutions"][0]["target_rvas"], [0x2000])
 
     def test_unprofiled_method_slot_is_incomplete(self) -> None:
         call = indirect_call()
@@ -4579,6 +5049,8 @@ class InterfaceProvenanceTests(unittest.TestCase):
             CallSiteId, dict[object, object]
         ] | None = None,
         initial_root_argument_origins: dict[str, dict[int, object]] | None = None,
+        prepared_memory_access_facts: dict[str, object] | None = None,
+        image_size: int | None = None,
         recovered_known_slots: dict[object, object] | None = None,
         checked_stack_entry_offsets: dict[str, list[int]] | None = None,
         checked_nonimage_stack_units: frozenset[str] = frozenset(),
@@ -4637,6 +5109,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
                 internal_call_memory_result_relations or {}
             ),
             image_base=IMAGE_BASE,
+            image_size=image_size,
             stack_slot_budget=stack_slot_budget,
             static_data_reader=static_data_reader,
             bootstrap_unknown_call_preserved_registers=(
@@ -4645,6 +5118,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             initial_known_slots=initial_known_slots,
             initial_event_known_slots=initial_event_known_slots,
             initial_root_argument_origins=initial_root_argument_origins,
+            prepared_memory_access_facts=prepared_memory_access_facts,
             recovered_known_slots=recovered_known_slots,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
             checked_nonimage_stack_units=checked_nonimage_stack_units,

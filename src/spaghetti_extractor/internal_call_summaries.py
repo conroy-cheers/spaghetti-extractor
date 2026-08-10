@@ -218,9 +218,15 @@ def derive_internal_call_preservation_summaries(
             binary=binary_binding,
         )
     )
+    recovered_external_calls = _recovered_external_call_sites(
+        recovered_indirect_targets,
+        indirect_exits=indirect_exits,
+        by_id=by_id,
+    )
     write_footprints = _memory_write_footprints(
         prepared_by_event,
         by_id=by_id,
+        recovered_external_calls=recovered_external_calls,
         import_abis=import_abis,
         image_base=image_base,
         image_size=image_size,
@@ -1887,10 +1893,73 @@ def _external_tail_return_state(
     )
 
 
+def _recovered_external_call_sites(
+    recoveries: Sequence[Mapping[str, Any]],
+    *,
+    indirect_exits: Sequence[Mapping[str, Any]],
+    by_id: Mapping[str, Mapping[str, Any]],
+) -> dict[tuple[str, int], Mapping[str, Any]]:
+    """Bind recovered external alternatives to exact indirect-call events."""
+
+    by_recovery_id = {
+        str(row["id"]): row
+        for row in recoveries
+        if row.get("status") == "recovered"
+        and isinstance(row.get("id"), str)
+    }
+    result: dict[tuple[str, int], Mapping[str, Any]] = {}
+    for exit_record in indirect_exits:
+        if exit_record.get("kind") != "indirect_call":
+            continue
+        source = exit_record.get("source_unit_id")
+        event_index = _integer(exit_record.get("source_event_index"))
+        recovery = by_recovery_id.get(str(exit_record.get("id") or ""))
+        if (
+            not isinstance(source, str)
+            or event_index is None
+            or recovery is None
+            or recovery.get("source_unit_id") != source
+            or _integer(recovery.get("source_event_index")) != event_index
+            or not recovery.get("external_targets")
+        ):
+            continue
+        events = _events(by_id.get(source, {}))
+        if (
+            not 0 <= event_index < len(events)
+            or events[event_index].get("kind") != "indirect_call"
+        ):
+            continue
+        result[(source, event_index)] = recovery
+    return result
+
+
+def _recovered_external_identities(
+    recovery: Mapping[str, Any] | None,
+) -> frozenset[MachineImportIdentity]:
+    result: set[MachineImportIdentity] = set()
+    targets = recovery.get("external_targets") if recovery else None
+    for raw in targets if isinstance(targets, list) else ():
+        target = _mapping(raw)
+        imported = _mapping(target.get("import"))
+        dll = imported.get("dll")
+        symbol = imported.get("symbol")
+        ordinal = _integer(imported.get("ordinal"))
+        if not isinstance(dll, str):
+            continue
+        if isinstance(symbol, str) and symbol:
+            result.add(MachineImportIdentity(dll.lower(), "symbol", symbol))
+        elif ordinal is not None:
+            result.add(MachineImportIdentity(dll.lower(), "ordinal", ordinal))
+    return frozenset(result)
+
+
 def _memory_write_footprints(
     facts: Mapping[str, PreparedMemoryAccessFact],
     *,
     by_id: Mapping[str, Mapping[str, Any]],
+    recovered_external_calls: Mapping[
+        tuple[str, int], Mapping[str, Any]
+    ],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     image_base: int | None,
     image_size: int | None,
@@ -1931,6 +2000,7 @@ def _memory_write_footprints(
                 origin,
                 width=fact.width_bytes,
                 by_id=by_id,
+                recovered_external_calls=recovered_external_calls,
                 import_abis=import_abis,
                 image_base=image_base,
                 image_size=image_size,
@@ -1970,6 +2040,9 @@ def _origin_is_checked_non_stack(
     *,
     width: int,
     by_id: Mapping[str, Mapping[str, Any]],
+    recovered_external_calls: Mapping[
+        tuple[str, int], Mapping[str, Any]
+    ],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     image_base: int,
     image_size: int,
@@ -1982,15 +2055,38 @@ def _origin_is_checked_non_stack(
             image_base=image_base,
             image_size=image_size,
         )
-    if origin.kind not in {"dynamic_range", "dynamic_location"}:
+    if origin.kind == "absolute_span" and len(origin.key) == 2:
+        minimum, maximum_start = origin.key
+        return (
+            isinstance(minimum, int)
+            and not isinstance(minimum, bool)
+            and isinstance(maximum_start, int)
+            and not isinstance(maximum_start, bool)
+            and 0 <= minimum <= maximum_start < (1 << 32)
+            and maximum_start + width <= (1 << 32)
+            and _span_inside_image(
+                minimum,
+                maximum_start - minimum + width,
+                image_base=image_base,
+                image_size=image_size,
+            )
+        )
+    if origin.kind not in {
+        "dynamic_range",
+        "dynamic_location",
+        "dynamic_span",
+    }:
         return False
     key = origin.key
     if origin.kind == "dynamic_range" and len(key) in {5, 6}:
         extent_lower_bound = key[5] if len(key) == 6 else None
-        offset = 0
+        minimum_offset = maximum_offset = 0
     elif origin.kind == "dynamic_location" and len(key) in {6, 7}:
         extent_lower_bound = key[5] if len(key) == 7 else None
-        offset = key[-1]
+        minimum_offset = maximum_offset = key[-1]
+    elif origin.kind == "dynamic_span" and len(key) == 8:
+        extent_lower_bound = key[5]
+        minimum_offset, maximum_offset = key[6:]
     else:
         return False
     producer, event_index, dll, identity_kind, identity_value = key[:5]
@@ -2002,10 +2098,13 @@ def _origin_is_checked_non_stack(
         or identity_kind not in {"symbol", "ordinal"}
         or (identity_kind == "symbol" and not isinstance(identity_value, str))
         or (identity_kind == "ordinal" and not isinstance(identity_value, int))
-        or not isinstance(offset, int)
-        or isinstance(offset, bool)
-        or offset < 0
-        or offset + width > (1 << 32)
+        or not isinstance(minimum_offset, int)
+        or isinstance(minimum_offset, bool)
+        or not isinstance(maximum_offset, int)
+        or isinstance(maximum_offset, bool)
+        or minimum_offset < 0
+        or maximum_offset < minimum_offset
+        or maximum_offset + width > (1 << 32)
         or (
             extent_lower_bound is not None
             and (
@@ -2024,6 +2123,12 @@ def _origin_is_checked_non_stack(
     expected_identity = MachineImportIdentity(
         str(dll).lower(), str(identity_kind), identity_value
     )
+    if identity is None:
+        identities = _recovered_external_identities(
+            recovered_external_calls.get((producer, event_index))
+        )
+        if identities == frozenset({expected_identity}):
+            identity = expected_identity
     selected = import_abis.get(expected_identity)
     if identity != expected_identity or selected is None:
         return False
@@ -2049,7 +2154,7 @@ def _origin_is_checked_non_stack(
         reviewed_minimum,
         0 if extent_lower_bound is None else int(extent_lower_bound),
     )
-    return offset + width <= effective_extent
+    return maximum_offset + width <= effective_extent
 
 
 def _valid_image_range(image_base: int, image_size: int) -> bool:
@@ -2071,7 +2176,7 @@ def _span_inside_image(
     image_size: int,
 ) -> bool:
     return (
-        0 < width <= 4096
+        0 < width <= image_size
         and image_base <= address
         and address + width <= image_base + image_size
     )

@@ -18,6 +18,15 @@ PROVENANCE_KINDS = frozenset({
     "stack_location",
     "dynamic_range",
     "dynamic_location",
+    # Event-address witness for every byte start in one checked inclusive
+    # offset interval of a bounded dynamic allocation. It is emitted only by
+    # the natural-loop footprint replay and is not a runtime value type.
+    "dynamic_span",
+    # Event-address witness for every byte start in one checked inclusive
+    # absolute-address interval. Consumers must independently establish that
+    # the whole interval belongs to an allowed mapped range. Like
+    # ``dynamic_span``, this is a footprint witness rather than a runtime value.
+    "absolute_span",
     "import",
     "resource",
     "resource_view",

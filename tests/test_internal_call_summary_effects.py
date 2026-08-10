@@ -404,10 +404,13 @@ class InternalCallSummaryEffectTests(unittest.TestCase):
             "symbol",
             "HeapAlloc",
         ]
-        for name, suffix, preserved in (
-            ("bounded", [64, 16], True),
-            ("unbounded", [16], False),
-            ("out-of-range", [16, 16], False),
+        for name, kind, suffix, preserved in (
+            ("bounded", "dynamic_location", [64, 16], True),
+            ("unbounded", "dynamic_location", [16], False),
+            ("out-of-range", "dynamic_location", [16, 16], False),
+            ("bounded-span", "dynamic_span", [64, 8, 56], True),
+            ("span-past-extent", "dynamic_span", [64, 8, 61], False),
+            ("reversed-span", "dynamic_span", [64, 56, 8], False),
         ):
             with self.subTest(name=name):
                 units = fixture()
@@ -415,7 +418,7 @@ class InternalCallSummaryEffectTests(unittest.TestCase):
                     units,
                     unit_id="dynamic-write",
                     address_origin={
-                        "kind": "dynamic_location",
+                        "kind": kind,
                         "key": [*origin_prefix, *suffix],
                     },
                 )
@@ -436,6 +439,208 @@ class InternalCallSummaryEffectTests(unittest.TestCase):
                     "ebp" in result["summaries"][0]["preserved_registers"],
                     preserved,
                 )
+
+    def test_absolute_loop_span_must_fit_inside_the_image(self) -> None:
+        units = [
+            unit(
+                "save",
+                0x1000,
+                outcome="fallthrough",
+                writes=[{
+                    "register": "esp",
+                    "value": sub(reg("esp"), const(4)),
+                }],
+                memory=[{
+                    "kind": "write",
+                    "width": 4,
+                    "address": sub(reg("esp"), const(4)),
+                    "value": reg("ebp"),
+                }],
+            ),
+            unit(
+                "image-write",
+                0x1001,
+                outcome="fallthrough",
+                memory=[{
+                    "kind": "write",
+                    "width": 4,
+                    "address": reg("eax"),
+                    "value": const(0),
+                }],
+            ),
+            unit(
+                "restore",
+                0x1002,
+                outcome="fallthrough",
+                writes=[
+                    {"register": "ebp", "value": load(reg("esp"))},
+                    {
+                        "register": "esp",
+                        "value": add(reg("esp"), const(4)),
+                    },
+                ],
+            ),
+            unit("return", 0x1003, outcome="return"),
+        ]
+        direct = [
+            edge("save", "image-write"),
+            edge("image-write", "restore"),
+            edge("restore", "return"),
+        ]
+        for name, key, preserved in (
+            ("inside", [0x401000, 0x401FFC], True),
+            ("multi-page-inside", [0x401000, 0x403FFC], True),
+            ("past-end", [0x4FFFFC, 0x500000], False),
+            ("reversed", [0x402000, 0x401000], False),
+        ):
+            with self.subTest(name=name):
+                binary, prepared = memory_fact(
+                    units,
+                    unit_id="image-write",
+                    address_origin={"kind": "absolute_span", "key": key},
+                )
+                result = derive_internal_call_preservation_summaries(
+                    units=units,
+                    roots=["save"],
+                    direct_edges=direct,
+                    internal_call_edges=[],
+                    recovered_indirect_targets=[],
+                    indirect_exits=[],
+                    import_abis={},
+                    prepared_memory_access_facts=prepared,
+                    binary_binding=binary,
+                    image_base=0x400000,
+                    image_size=0x100000,
+                )
+                self.assertEqual(
+                    "ebp" in result["summaries"][0]["preserved_registers"],
+                    preserved,
+                )
+
+    def test_dynamic_span_accepts_exact_recovered_external_allocator(
+        self,
+    ) -> None:
+        identity = MachineImportIdentity(
+            "kernel32.dll", "symbol", "HeapAlloc"
+        )
+        indirect_event = {
+            "kind": "indirect_call",
+            "target": reg("edi"),
+            "return_rva": 0x2001,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        units = [
+            unit(
+                "producer",
+                0x2000,
+                outcome="fallthrough",
+                events=[indirect_event],
+            ),
+            unit(
+                "save",
+                0x1000,
+                outcome="fallthrough",
+                writes=[{
+                    "register": "esp",
+                    "value": sub(reg("esp"), const(4)),
+                }],
+                memory=[{
+                    "kind": "write",
+                    "width": 4,
+                    "address": sub(reg("esp"), const(4)),
+                    "value": reg("ebp"),
+                }],
+            ),
+            unit(
+                "dynamic-write",
+                0x1001,
+                outcome="fallthrough",
+                memory=[{
+                    "kind": "write",
+                    "width": 4,
+                    "address": reg("eax"),
+                    "value": const(0),
+                }],
+            ),
+            unit(
+                "restore",
+                0x1002,
+                outcome="fallthrough",
+                writes=[
+                    {"register": "ebp", "value": load(reg("esp"))},
+                    {
+                        "register": "esp",
+                        "value": add(reg("esp"), const(4)),
+                    },
+                ],
+            ),
+            unit("return", 0x1003, outcome="return"),
+        ]
+        direct = [
+            edge("save", "dynamic-write"),
+            edge("dynamic-write", "restore"),
+            edge("restore", "return"),
+        ]
+        binary, prepared = memory_fact(
+            units,
+            unit_id="dynamic-write",
+            address_origin={
+                "kind": "dynamic_span",
+                "key": [
+                    "producer",
+                    0,
+                    "kernel32.dll",
+                    "symbol",
+                    "HeapAlloc",
+                    64,
+                    8,
+                    56,
+                ],
+            },
+        )
+        exit_record = {
+            "id": "exit:allocator",
+            "source_unit_id": "producer",
+            "source_event_index": 0,
+            "kind": "indirect_call",
+        }
+
+        def recovery(symbol: str) -> dict[str, object]:
+            return {
+                "id": "exit:allocator",
+                "status": "recovered",
+                "source_unit_id": "producer",
+                "source_event_index": 0,
+                "external_targets": [{
+                    "import": {
+                        "dll": "kernel32.dll",
+                        "symbol": symbol,
+                    },
+                }],
+                "target_unit_ids": [],
+            }
+
+        def run(symbol: str) -> dict[str, object]:
+            return derive_internal_call_preservation_summaries(
+                units=units,
+                roots=["save"],
+                direct_edges=direct,
+                internal_call_edges=[],
+                recovered_indirect_targets=[recovery(symbol)],
+                indirect_exits=[exit_record],
+                import_abis={identity: selected_allocator(identity)},
+                prepared_memory_access_facts=prepared,
+                binary_binding=binary,
+                image_base=0x400000,
+                image_size=0x100000,
+            )
+
+        accepted = run("HeapAlloc")
+        self.assertIn("ebp", accepted["summaries"][0]["preserved_registers"])
+        rejected = run("HeapFree")
+        self.assertNotIn(
+            "ebp", rejected["summaries"][0]["preserved_registers"]
+        )
 
     def test_partial_call_families_compose_without_closing_behavior(self) -> None:
         abi = resolve_machine_call_abi("pe32-cdecl-v1")
