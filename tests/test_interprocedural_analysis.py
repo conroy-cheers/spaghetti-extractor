@@ -526,11 +526,16 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(
             memory_results[address],
-            {
-                ValueOrigin("exact", (SLOT,)): frozenset({
-                    ValueOrigin("resource", ("fixture-resource",))
-                })
-            },
+            ({
+                "location": {"kind": "exact", "key": [SLOT]},
+                "value": {
+                    "kind": "typed_origins",
+                    "origins": [{
+                        "kind": "resource",
+                        "key": ["fixture-resource"],
+                    }],
+                },
+            },),
         )
 
     def _run(

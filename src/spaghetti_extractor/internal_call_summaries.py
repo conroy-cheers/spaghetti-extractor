@@ -45,6 +45,13 @@ class _RegisterOrigin:
 
 
 @dataclass(frozen=True)
+class _InputStackWord:
+    """One four-byte word from the callee-entry stack frame."""
+
+    offset: int
+
+
+@dataclass(frozen=True)
 class _StackAddress:
     offset: int
     register_terms: tuple[tuple[str, int], ...] = ()
@@ -86,6 +93,7 @@ class _TypedOrigins:
 
 _Value = (
     _RegisterOrigin
+    | _InputStackWord
     | _StackAddress
     | _Exact
     | _ExternalResult
@@ -100,6 +108,8 @@ class _State:
     registers: dict[str, _Value]
     stack_words: dict[int, _Value]
     memory_words: dict[ValueOrigin, _Value] = field(default_factory=dict)
+    input_stack_valid: bool = True
+    input_stack_kills: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1261,7 +1271,7 @@ def _unit_call_frame(
     summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
-    input_registers: Mapping[str, _Value] | None = None,
+    input_state: _State | None = None,
 ) -> _CallFrame | None:
     events = _events(unit)
     calls = [
@@ -1310,7 +1320,7 @@ def _unit_call_frame(
         if target is None:
             return _incomplete_call_frame("internal_call_target_unresolved")
         return _summary_call_frame(
-            summaries.get(target), input_registers=input_registers
+            summaries.get(target), input_state=input_state
         )
     if kind != "indirect_call":
         return _incomplete_call_frame("call_kind_unsupported")
@@ -1321,14 +1331,14 @@ def _unit_call_frame(
         recovery=recovery,
         summaries=summaries,
         import_abis=import_abis,
-        input_registers=input_registers,
+        input_state=input_state,
     )
 
 
 def _summary_call_frame(
     summary: Mapping[str, Any] | None,
     *,
-    input_registers: Mapping[str, _Value] | None = None,
+    input_state: _State | None = None,
 ) -> _CallFrame:
     if summary is None:
         return _incomplete_call_frame("nested_call_summary_unavailable")
@@ -1351,7 +1361,7 @@ def _summary_call_frame(
         stack_cleanup=stack_cleanup,
         result_registers=(
             _summary_result_registers(
-                summary, input_registers=input_registers
+                summary, input_state=input_state
             )
             if may_return
             else {}
@@ -1359,7 +1369,7 @@ def _summary_call_frame(
         result_memory=(
             _summary_result_memory(
                 summary,
-                input_registers=input_registers,
+                input_state=input_state,
             )
             if may_return
             else {}
@@ -1372,7 +1382,7 @@ def _recovered_indirect_call_frame(
     recovery: Mapping[str, Any],
     summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
-    input_registers: Mapping[str, _Value] | None = None,
+    input_state: _State | None = None,
 ) -> _CallFrame:
     raw_external = recovery.get("external_targets", [])
     raw_internal = recovery.get("target_unit_ids", [])
@@ -1425,7 +1435,7 @@ def _recovered_indirect_call_frame(
             )
         else:
             alternatives.append(_summary_call_frame(
-                summaries.get(raw_target), input_registers=input_registers
+                summaries.get(raw_target), input_state=input_state
             ))
     if not alternatives:
         return _incomplete_call_frame("indirect_call_target_inventory_invalid")
@@ -1590,6 +1600,8 @@ def _external_tail_return_state(
         registers=registers,
         stack_words=dict(output.stack_words),
         memory_words=dict(output.memory_words),
+        input_stack_valid=output.input_stack_valid,
+        input_stack_kills=output.input_stack_kills,
     )
 
 
@@ -1623,7 +1635,7 @@ def _transfer(
             summaries=summaries,
             import_abis=import_abis,
             call_site_effects=call_site_effects,
-            input_registers=pre_call.registers,
+            input_state=pre_call,
         )
         if frame is None:
             return _unknown_state(), {"call_inventory_missing"}
@@ -1646,16 +1658,24 @@ def _transfer(
             evaluated_esp=output_registers["esp"],
             semantics=_mapping(unit.get("semantics")),
         )
-        output_stack, output_memory = _apply_call_memory_frame(
+        (
+            output_stack,
+            output_memory,
+            input_stack_valid,
+            input_stack_kills,
+        ) = _apply_call_memory_frame(
             event=event,
             pre_call=pre_call,
             frame=frame,
+            maximum_stack_ranges=max_stack_words,
         )
         return (
             _State(
                 registers=output_registers,
                 stack_words=output_stack,
                 memory_words=output_memory,
+                input_stack_valid=input_stack_valid,
+                input_stack_kills=input_stack_kills,
             ),
             set(frame.blocker_codes) | stack_blockers,
         )
@@ -1678,10 +1698,14 @@ def _transfer(
 
     stack_words = dict(state.stack_words)
     memory_words = dict(state.memory_words)
+    input_stack_valid = state.input_stack_valid
+    input_stack_kills = state.input_stack_kills
     memory_events = semantics.get("memory_events")
     if not isinstance(memory_events, list):
         stack_words.clear()
         memory_words.clear()
+        input_stack_valid = False
+        input_stack_kills = ()
     else:
         for raw in memory_events:
             event = _mapping(raw)
@@ -1695,6 +1719,15 @@ def _transfer(
                 and width is not None
             ):
                 _invalidate_overlapping(stack_words, address.offset, width)
+                input_stack_kills = _add_killed_stack_range(
+                    input_stack_kills,
+                    address.offset,
+                    width,
+                    maximum=max_stack_words,
+                )
+                if input_stack_kills is None:
+                    input_stack_valid = False
+                    input_stack_kills = ()
                 value = _evaluate(event.get("value"), state)
                 if width == 4 and value is not None:
                     stack_words[address.offset] = value
@@ -1714,6 +1747,8 @@ def _transfer(
             else:
                 stack_words.clear()
                 memory_words.clear()
+                input_stack_valid = False
+                input_stack_kills = ()
     schedule = _mapping(semantics.get("instruction_effect_schedule"))
     blockers = schedule.get("blockers")
     if isinstance(blockers, list):
@@ -1729,6 +1764,8 @@ def _transfer(
                 registers = {register: None for register in _REGISTERS}
                 stack_words.clear()
                 memory_words.clear()
+                input_stack_valid = False
+                input_stack_kills = ()
                 continue
             instruction = _mapping(instructions[index])
             written = instruction.get("registers_written")
@@ -1745,6 +1782,8 @@ def _transfer(
             ):
                 stack_words.clear()
                 memory_words.clear()
+                input_stack_valid = False
+                input_stack_kills = ()
     if len(stack_words) > max_stack_words:
         stack_words.clear()
     if len(memory_words) > max_memory_words:
@@ -1753,6 +1792,8 @@ def _transfer(
         registers=registers,
         stack_words=stack_words,
         memory_words=memory_words,
+        input_stack_valid=input_stack_valid,
+        input_stack_kills=input_stack_kills,
     ), stack_blockers
 
 
@@ -1850,6 +1891,8 @@ def _selected_import_result_registers(
 def _serialize_summary_value(value: _Value) -> dict[str, Any] | None:
     if isinstance(value, _RegisterOrigin):
         return {"kind": "input_register", "register": value.register}
+    if isinstance(value, _InputStackWord):
+        return {"kind": "input_stack_word", "offset": value.offset}
     if isinstance(value, _StackAddress):
         return {
             "kind": "stack_address",
@@ -1890,6 +1933,15 @@ def _parse_summary_value(value: Any) -> _Value:
     kind = row.get("kind")
     if kind == "input_register" and row.get("register") in _REGISTERS:
         return _RegisterOrigin(str(row["register"]))
+    if kind == "input_stack_word":
+        offset = _integer(row.get("offset"))
+        return (
+            _InputStackWord(offset)
+            if set(row) == {"kind", "offset"}
+            and offset is not None
+            and 4 <= offset <= 0xFFFFFFFF
+            else None
+        )
     if kind == "stack_address":
         offset = _integer(row.get("offset"))
         raw_terms = row.get("register_terms", [])
@@ -1974,7 +2026,7 @@ def _typed_origin_sort_key(origin: ValueOrigin) -> tuple[str, str, tuple[str, ..
 def _summary_result_registers(
     summary: Mapping[str, Any] | None,
     *,
-    input_registers: Mapping[str, _Value] | None = None,
+    input_state: _State | None = None,
 ) -> dict[str, _Value]:
     if summary is None:
         return {}
@@ -1987,7 +2039,7 @@ def _summary_result_registers(
         if register not in _REGISTERS:
             continue
         value = _instantiate_summary_value(
-            raw, input_registers=input_registers
+            raw, input_state=input_state
         )
         if value is not None:
             result[register] = value
@@ -1997,7 +2049,7 @@ def _summary_result_registers(
 def _summary_result_memory(
     summary: Mapping[str, Any] | None,
     *,
-    input_registers: Mapping[str, _Value] | None = None,
+    input_state: _State | None = None,
 ) -> dict[ValueOrigin, _Value]:
     if summary is None:
         return {}
@@ -2018,11 +2070,11 @@ def _summary_result_memory(
             return {}
         instantiated_location = _instantiate_summary_location(
             location,
-            input_registers=input_registers,
+            input_state=input_state,
         )
         value = _instantiate_summary_value(
             row.get("value"),
-            input_registers=input_registers,
+            input_state=input_state,
         )
         if instantiated_location is None or value is None:
             return {}
@@ -2035,19 +2087,19 @@ def _summary_result_memory(
 def _instantiate_summary_location(
     location: ValueOrigin,
     *,
-    input_registers: Mapping[str, _Value] | None,
+    input_state: _State | None,
 ) -> ValueOrigin | None:
     if location.kind != "stack_location":
         return location
-    if len(location.key) != 1 or input_registers is None:
+    if len(location.key) != 1 or input_state is None:
         return None
     offset = _integer(location.key[0])
     if offset is None:
         return None
     instantiated = _add_stack_cleanup(
-        input_registers.get("esp"),
+        input_state.registers.get("esp"),
         _StackTransform(offset - 4),
-        input_registers,
+        input_state.registers,
     )
     if not isinstance(instantiated, _StackAddress) or instantiated.register_terms:
         return None
@@ -2061,7 +2113,7 @@ def _instantiate_summary_location(
 def _instantiate_summary_value(
     raw: Any,
     *,
-    input_registers: Mapping[str, _Value] | None,
+    input_state: _State | None,
 ) -> _Value:
     """Instantiate one callee-input-relative result at a concrete call site."""
 
@@ -2070,12 +2122,28 @@ def _instantiate_summary_value(
     if kind == "input_register":
         source = row.get("register")
         return (
-            input_registers.get(str(source))
-            if input_registers is not None and source in _REGISTERS
+            input_state.registers.get(str(source))
+            if input_state is not None and source in _REGISTERS
             else None
         )
+    if kind == "input_stack_word":
+        offset = _integer(row.get("offset"))
+        if (
+            input_state is None
+            or offset is None
+            or not 4 <= offset <= 0xFFFFFFFF
+        ):
+            return None
+        address = _add_stack_cleanup(
+            input_state.registers.get("esp"),
+            _StackTransform(offset - 4),
+            input_state.registers,
+        )
+        if not isinstance(address, _StackAddress) or address.register_terms:
+            return None
+        return _read_stack_word(input_state, address.offset)
     if kind == "stack_address":
-        if input_registers is None:
+        if input_state is None:
             return None
         offset = _integer(row.get("offset"))
         raw_terms = row.get("register_terms", [])
@@ -2093,9 +2161,9 @@ def _instantiate_summary_value(
         # pre-call register state.  Summary offset zero denotes callee-entry
         # ESP, hence the caller-relative constant is offset - 4.
         return _add_stack_cleanup(
-            input_registers.get("esp"),
+            input_state.registers.get("esp"),
             _StackTransform(offset - 4, _normalize_register_terms(terms)),
-            input_registers,
+            input_state.registers,
         )
     if kind == "typed_origins":
         parsed = _parse_summary_value(raw)
@@ -2105,7 +2173,7 @@ def _instantiate_summary_value(
         for origin in parsed.origins:
             instantiated = _instantiate_summary_location(
                 origin,
-                input_registers=input_registers,
+                input_state=input_state,
             )
             if instantiated is None:
                 return None
@@ -2219,6 +2287,8 @@ def _event_state(event: Mapping[str, Any], state: _State) -> _State:
         registers=registers,
         stack_words=dict(state.stack_words),
         memory_words=dict(state.memory_words),
+        input_stack_valid=state.input_stack_valid,
+        input_stack_kills=state.input_stack_kills,
     )
 
 
@@ -2278,15 +2348,25 @@ def _apply_call_memory_frame(
     event: Mapping[str, Any],
     pre_call: _State,
     frame: _CallFrame,
-) -> tuple[dict[int, _Value], dict[ValueOrigin, _Value]]:
+    maximum_stack_ranges: int,
+) -> tuple[
+    dict[int, _Value],
+    dict[ValueOrigin, _Value],
+    bool,
+    tuple[tuple[int, int], ...],
+]:
     stack_words = _stack_words_preserved_across_call(
         event=event,
         pre_call=pre_call,
     )
     if not frame.memory_frame_complete:
         memory_words: dict[ValueOrigin, _Value] = {}
+        input_stack_valid = False
+        input_stack_kills: tuple[tuple[int, int], ...] = ()
     elif frame.memory_preserved:
         memory_words = dict(pre_call.memory_words)
+        input_stack_valid = pre_call.input_stack_valid
+        input_stack_kills = pre_call.input_stack_kills
     else:
         memory_words = {
             location: value
@@ -2296,14 +2376,29 @@ def _apply_call_memory_frame(
                 for span in frame.memory_writes
             )
         }
+        input_stack_valid = pre_call.input_stack_valid
+        input_stack_kills = pre_call.input_stack_kills
         for span in frame.memory_writes:
             if span.base.kind != "stack_location" or len(span.base.key) != 1:
                 continue
             offset = _integer(span.base.key[0])
             if offset is None or span.size is None:
                 stack_words.clear()
+                input_stack_valid = False
+                input_stack_kills = ()
             else:
                 _invalidate_overlapping(stack_words, offset, span.size)
+                updated_kills = _add_killed_stack_range(
+                    input_stack_kills,
+                    offset,
+                    span.size,
+                    maximum=maximum_stack_ranges,
+                )
+                if updated_kills is None:
+                    input_stack_valid = False
+                    input_stack_kills = ()
+                else:
+                    input_stack_kills = updated_kills
 
     for location, value in frame.result_memory.items():
         if value is None:
@@ -2314,7 +2409,7 @@ def _apply_call_memory_frame(
                 stack_words[offset] = value
             continue
         memory_words[location] = value
-    return stack_words, memory_words
+    return stack_words, memory_words, input_stack_valid, input_stack_kills
 
 
 def _locations_provably_disjoint(
@@ -2416,13 +2511,59 @@ def _evaluate(expression: Any, state: _State) -> _Value:
             return None
         address = _evaluate(expression.get("address"), state)
         if isinstance(address, _StackAddress) and not address.register_terms:
-            return state.stack_words.get(address.offset)
+            return _read_stack_word(state, address.offset)
         if isinstance(address, _Exact):
             return state.memory_words.get(
                 ValueOrigin("exact", (address.value & 0xFFFFFFFF,))
             )
         return None
     return None
+
+
+def _read_stack_word(state: _State, offset: int) -> _Value:
+    if offset in state.stack_words:
+        return state.stack_words[offset]
+    if (
+        not state.input_stack_valid
+        or offset < 4
+        or any(
+            start < offset + 4 and offset < end
+            for start, end in state.input_stack_kills
+        )
+    ):
+        return None
+    return _InputStackWord(offset)
+
+
+def _add_killed_stack_range(
+    ranges: tuple[tuple[int, int], ...],
+    start: int,
+    width: int,
+    *,
+    maximum: int,
+) -> tuple[tuple[int, int], ...] | None:
+    """Add one known stack overwrite to the entry-word invalidation set."""
+
+    if width <= 0:
+        return ranges
+    pending_start = start
+    pending_end = start + width
+    merged: list[tuple[int, int]] = []
+    inserted = False
+    for old_start, old_end in ranges:
+        if old_end < pending_start:
+            merged.append((old_start, old_end))
+        elif pending_end < old_start:
+            if not inserted:
+                merged.append((pending_start, pending_end))
+                inserted = True
+            merged.append((old_start, old_end))
+        else:
+            pending_start = min(pending_start, old_start)
+            pending_end = max(pending_end, old_end)
+    if not inserted:
+        merged.append((pending_start, pending_end))
+    return tuple(merged) if len(merged) <= maximum else None
 
 
 def _normalize_register_terms(
@@ -2487,10 +2628,27 @@ def _join_states(
         )
         if joined is not None:
             memory_words[location] = joined
+    input_stack_valid = left.input_stack_valid and right.input_stack_valid
+    input_stack_kills: tuple[tuple[int, int], ...] = ()
+    if input_stack_valid:
+        for start, end in (*left.input_stack_kills, *right.input_stack_kills):
+            updated = _add_killed_stack_range(
+                input_stack_kills,
+                start,
+                end - start,
+                maximum=max_value_alternatives,
+            )
+            if updated is None:
+                input_stack_valid = False
+                input_stack_kills = ()
+                break
+            input_stack_kills = updated
     return _State(
         registers=registers,
         stack_words=stack_words,
         memory_words=memory_words,
+        input_stack_valid=input_stack_valid,
+        input_stack_kills=input_stack_kills,
     )
 
 
@@ -2510,6 +2668,7 @@ def _unknown_state() -> _State:
     return _State(
         registers={register: None for register in _REGISTERS},
         stack_words={},
+        input_stack_valid=False,
     )
 
 

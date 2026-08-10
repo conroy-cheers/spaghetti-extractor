@@ -30,6 +30,10 @@ def add(left: object, right: object) -> dict[str, object]:
     return {"op": "add32", "args": [left, right]}
 
 
+def sub(left: object, right: object) -> dict[str, object]:
+    return {"op": "sub32", "args": [left, right]}
+
+
 def load(address: object) -> dict[str, object]:
     return {"op": "load", "address": address, "width": 4}
 
@@ -151,6 +155,121 @@ def memory_effect(
 
 
 class InternalCallSummaryEffectTests(unittest.TestCase):
+    def test_input_stack_word_written_to_global_composes_at_call_site(self) -> None:
+        slot = 0x434960
+        result = derive_internal_call_preservation_summaries(
+            units=[
+                unit(
+                    "factory",
+                    0x1000,
+                    outcome="fallthrough",
+                    events=[external_call("Create")],
+                ),
+                unit(
+                    "push-result",
+                    0x1001,
+                    outcome="fallthrough",
+                    writes=[{
+                        "register": "esp",
+                        "value": sub(reg("esp"), const(4)),
+                    }],
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": sub(reg("esp"), const(4)),
+                        "value": reg("eax"),
+                    }],
+                ),
+                unit(
+                    "call-store",
+                    0x1002,
+                    outcome="fallthrough",
+                    events=[internal_call(0x2000)],
+                ),
+                unit("root-return", 0x1003, outcome="return"),
+                unit(
+                    "store-argument",
+                    0x2000,
+                    outcome="return",
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": const(slot),
+                        "value": load(add(reg("esp"), const(4))),
+                    }],
+                ),
+            ],
+            roots=["factory"],
+            direct_edges=[
+                edge("factory", "push-result"),
+                edge("push-result", "call-store"),
+                edge("call-store", "root-return"),
+            ],
+            internal_call_edges=[{
+                "source_unit_id": "call-store",
+                "source_event_index": 0,
+                "target_unit_id": "store-argument",
+                "status": "resolved",
+            }],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+            call_site_effects=[effect("factory", "surface")],
+        )
+
+        summaries = {
+            row["target_unit_id"]: row for row in result["summaries"]
+        }
+        callee_value = summaries["store-argument"]["result_memory_origins"][
+            "locations"
+        ][0]["value"]
+        self.assertEqual(callee_value, {"kind": "input_stack_word", "offset": 4})
+        root_value = summaries["factory"]["result_memory_origins"][
+            "locations"
+        ][0]["value"]
+        self.assertEqual(root_value["kind"], "typed_origins")
+        self.assertEqual(root_value["origins"][0]["key"], ["surface"])
+
+    def test_known_stack_overwrite_kills_input_stack_relation(self) -> None:
+        slot = 0x434960
+        result = derive_internal_call_preservation_summaries(
+            units=[
+                unit(
+                    "overwrite",
+                    0x2000,
+                    outcome="fallthrough",
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": add(reg("esp"), const(4)),
+                        "value": const(0),
+                    }],
+                ),
+                unit(
+                    "store",
+                    0x2001,
+                    outcome="return",
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": const(slot),
+                        "value": load(add(reg("esp"), const(4))),
+                    }],
+                ),
+            ],
+            roots=["overwrite"],
+            direct_edges=[edge("overwrite", "store")],
+            internal_call_edges=[],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+        )
+
+        value = result["summaries"][0]["result_memory_origins"]["locations"][0][
+            "value"
+        ]
+        self.assertEqual(value, {"kind": "exact", "value": 0})
+
     def test_typed_external_result_survives_wrapper_summary(self) -> None:
         result = derive_internal_call_preservation_summaries(
             units=[

@@ -68,6 +68,7 @@ from .provenance_domain import (
     origin_concrete_value,
     origins_json,
     parse_finite_value,
+    parse_value_origin,
     value_dependencies,
     with_origin_dependencies,
     with_value_dependencies,
@@ -82,6 +83,8 @@ _CALL_KINDS = frozenset({"external_call", "indirect_call", "internal_call"})
 _Origin = ValueOrigin
 _Value = FiniteValue
 _MemoryLocation = int | _Origin
+_MemoryResultRelation = tuple[_Origin, Mapping[str, Any]]
+_InternalCallMemoryResults = Mapping[int, Sequence[_MemoryResultRelation]]
 
 
 @dataclass
@@ -393,9 +396,7 @@ def recover_external_interface_targets(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ] | None = None,
     internal_call_memory_preservation: Mapping[int, bool] | None = None,
-    internal_call_memory_result_relations: Mapping[
-        int, Mapping[_Origin, _Value]
-    ] | None = None,
+    internal_call_memory_result_relations: Mapping[int, Any] | None = None,
     finite_value_budget: int = 32,
     static_slot_budget: int = 256,
     stack_slot_budget: int = 256,
@@ -1146,25 +1147,49 @@ class _ProfileInventory:
 
 
 def _normalize_internal_call_memory_results(
-    values: Mapping[int, Mapping[_Origin, _Value]],
+    values: Mapping[int, Any],
     *,
     finite_value_budget: int,
-) -> dict[int, dict[_Origin, _Value]]:
+) -> dict[int, tuple[_MemoryResultRelation, ...]]:
     """Validate bounded caller-visible memory outputs from call summaries."""
 
-    result: dict[int, dict[_Origin, _Value]] = {}
+    result: dict[int, tuple[_MemoryResultRelation, ...]] = {}
     for target, raw_outputs in values.items():
         if (
             not isinstance(target, int)
             or isinstance(target, bool)
             or not 0 <= target <= 0xFFFFFFFF
-            or not isinstance(raw_outputs, Mapping)
         ):
             raise ValueError("internal-call memory-result relation is invalid")
-        outputs: dict[_Origin, _Value] = {}
-        for location, origins in raw_outputs.items():
+        rows: list[tuple[_Origin, Any]]
+        if isinstance(raw_outputs, Mapping):
+            rows = list(raw_outputs.items())
+        elif isinstance(raw_outputs, Sequence) and not isinstance(
+            raw_outputs, (str, bytes)
+        ):
+            rows = []
+            for index, raw in enumerate(raw_outputs):
+                if not isinstance(raw, Mapping) or set(raw) != {"location", "value"}:
+                    raise ValueError("internal-call memory-result row is invalid")
+                try:
+                    location = parse_value_origin(
+                        raw.get("location"),
+                        context=f"internal-call memory-result {target:#x}:{index}",
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        "internal-call memory-result location is invalid"
+                    ) from exc
+                rows.append((location, raw.get("value")))
+        else:
+            raise ValueError("internal-call memory-result relation is invalid")
+
+        outputs: list[_MemoryResultRelation] = []
+        seen_locations: set[_Origin] = set()
+        for location, raw_value in rows:
             if (
                 not isinstance(location, _Origin)
+                or location in seen_locations
                 or location.kind
                 not in {
                     "exact",
@@ -1173,21 +1198,56 @@ def _normalize_internal_call_memory_results(
                     "dynamic_location",
                     "symbolic_affine",
                 }
-                or origins is None
-                or not isinstance(origins, frozenset)
-                or not origins
-                or len(origins) > finite_value_budget
-                or any(
-                    not isinstance(origin, _Origin)
-                    or not _persistent_origin(origin)
-                    for origin in origins
-                )
             ):
-                raise ValueError(
-                    "internal-call memory-result output is invalid"
-                )
-            outputs[location] = origins
-        result[target] = outputs
+                raise ValueError("internal-call memory-result output is invalid")
+            seen_locations.add(location)
+            if isinstance(raw_value, frozenset):
+                if (
+                    not raw_value
+                    or len(raw_value) > finite_value_budget
+                    or any(
+                        not isinstance(origin, _Origin)
+                        or not _persistent_origin(origin)
+                        for origin in raw_value
+                    )
+                ):
+                    raise ValueError("internal-call memory-result output is invalid")
+                value = {
+                    "kind": "typed_origins",
+                    "origins": origins_json(raw_value),
+                }
+            elif isinstance(raw_value, Mapping):
+                value = copy.deepcopy(dict(raw_value))
+                kind = value.get("kind")
+                if kind == "typed_origins":
+                    if _typed_summary_origins(
+                        value, budget=finite_value_budget
+                    ) is None:
+                        raise ValueError(
+                            "internal-call memory-result output is invalid"
+                        )
+                elif kind == "input_stack_word":
+                    offset = _integer(value.get("offset"))
+                    if (
+                        set(value) != {"kind", "offset"}
+                        or offset is None
+                        or not 4 <= offset <= 0xFFFFFFFF
+                    ):
+                        raise ValueError(
+                            "internal-call memory-result output is invalid"
+                        )
+                    value = {"kind": "input_stack_word", "offset": offset}
+                else:
+                    raise ValueError(
+                        "internal-call memory-result output is invalid"
+                    )
+            else:
+                raise ValueError("internal-call memory-result output is invalid")
+            outputs.append((location, value))
+        result[target] = tuple(sorted(
+            outputs,
+            key=lambda row: (row[0].kind, repr(row[0].key), row[0].dependencies),
+        ))
     return result
 
 
@@ -1205,9 +1265,7 @@ def _run_dataflow(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
-    internal_call_memory_result_relations: Mapping[
-        int, Mapping[_Origin, _Value]
-    ],
+    internal_call_memory_result_relations: _InternalCallMemoryResults,
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
@@ -2203,9 +2261,7 @@ def _transfer_unit(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
-    internal_call_memory_result_relations: Mapping[
-        int, Mapping[_Origin, _Value]
-    ],
+    internal_call_memory_result_relations: _InternalCallMemoryResults,
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
@@ -3051,6 +3107,13 @@ def _internal_call_result_outputs(
                     break
                 origins.update(value)
                 continue
+            if kind == "input_stack_word":
+                value = _input_stack_summary_value(row, pre_call=pre_call)
+                if value is None:
+                    malformed = True
+                    break
+                origins.update(value)
+                continue
             if kind == "stack_address":
                 value = _instantiate_stack_summary_value(
                     row,
@@ -3216,9 +3279,7 @@ def _internal_target_call_facts(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
-    internal_call_memory_result_relations: Mapping[
-        int, Mapping[_Origin, _Value]
-    ],
+    internal_call_memory_result_relations: _InternalCallMemoryResults,
     dependencies: frozenset[str],
     budget: int,
     issues: list[dict[str, Any]],
@@ -3240,7 +3301,11 @@ def _internal_target_call_facts(
     )
     _merge_output_effects(
         outputs,
-        internal_call_memory_result_relations.get(target_address, {}),
+        _internal_call_memory_result_outputs(
+            internal_call_memory_result_relations.get(target_address, ()),
+            pre_call=pre_call,
+            budget=budget,
+        ),
         budget=budget,
         issues=issues,
         unit_id=producer_unit_id,
@@ -3255,6 +3320,68 @@ def _internal_target_call_facts(
             internal_call_memory_preservation.get(target_address)
         ),
         dependencies=dependencies,
+    )
+
+
+def _internal_call_memory_result_outputs(
+    relations: Sequence[_MemoryResultRelation],
+    *,
+    pre_call: _State,
+    budget: int,
+) -> dict[_Origin, _Value]:
+    outputs: dict[_Origin, _Value] = {}
+    for location, row in relations:
+        instantiated_location = _instantiate_internal_summary_location(
+            location, pre_call=pre_call
+        )
+        if instantiated_location is None:
+            continue
+        kind = row.get("kind")
+        if kind == "typed_origins":
+            value = _typed_summary_origins(row, budget=budget)
+        elif kind == "input_stack_word":
+            value = _input_stack_summary_value(row, pre_call=pre_call)
+        else:
+            value = None
+        if value is not None:
+            outputs[instantiated_location] = value
+    return outputs
+
+
+def _input_stack_summary_value(
+    row: Mapping[str, Any], *, pre_call: _State
+) -> _Value:
+    offset = _integer(row.get("offset"))
+    call_offsets = _stack_offsets(pre_call.registers.get("esp"))
+    if (
+        set(row) != {"kind", "offset"}
+        or row.get("kind") != "input_stack_word"
+        or offset is None
+        or not 4 <= offset <= 0xFFFFFFFF
+        or call_offsets is None
+        or len(call_offsets) != 1
+    ):
+        return None
+    caller_offset = next(iter(call_offsets)) + offset - 4
+    cell = pre_call.stack.get(caller_offset)
+    return None if cell is None else cell.value
+
+
+def _instantiate_internal_summary_location(
+    location: _Origin, *, pre_call: _State
+) -> _Origin | None:
+    if location.kind != "stack_location":
+        return location
+    if len(location.key) != 1:
+        return None
+    offset = _integer(location.key[0])
+    call_offsets = _stack_offsets(pre_call.registers.get("esp"))
+    if offset is None or call_offsets is None or len(call_offsets) != 1:
+        return None
+    return _Origin(
+        "stack_location",
+        (next(iter(call_offsets)) + offset - 4,),
+        location.dependencies,
     )
 
 
@@ -3447,9 +3574,7 @@ def _call_contract(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
-    internal_call_memory_result_relations: Mapping[
-        int, Mapping[_Origin, _Value]
-    ],
+    internal_call_memory_result_relations: _InternalCallMemoryResults,
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     image_base: int,
@@ -4836,9 +4961,7 @@ def _origin_call_facts(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
-    internal_call_memory_result_relations: Mapping[
-        int, Mapping[_Origin, _Value]
-    ],
+    internal_call_memory_result_relations: _InternalCallMemoryResults,
     dependencies: frozenset[str] = frozenset(),
     budget: int,
     issues: list[dict[str, Any]],
@@ -4909,9 +5032,7 @@ def _recovered_call_facts(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
-    internal_call_memory_result_relations: Mapping[
-        int, Mapping[_Origin, _Value]
-    ],
+    internal_call_memory_result_relations: _InternalCallMemoryResults,
     image_base: int,
     known_slots: Mapping[int, _Value],
     budget: int,

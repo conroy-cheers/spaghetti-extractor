@@ -86,6 +86,77 @@ class InternalCallResultConsumerTests(unittest.TestCase):
         )
         self.assertEqual(effect["dependencies"], [call_dependency])
 
+    def test_input_stack_word_memory_result_uses_checked_caller_cell(self) -> None:
+        summary_dependency = "callback-entry:surface"
+        interface = next(iter(self.interface_value))
+        typed_interface = ValueOrigin(
+            interface.kind,
+            interface.key,
+            (summary_dependency,),
+        )
+        result = self._run_case(
+            "direct",
+            stack_argument=True,
+            initial_interface_value=frozenset({typed_interface}),
+            memory_relations=({
+                "location": {
+                    "kind": "exact",
+                    "key": [fixtures.CHILD_SLOT],
+                },
+                "value": {"kind": "input_stack_word", "offset": 4},
+            },),
+        )
+
+        resolution = self._resolution(result, "exit:memory-dispatch")
+        self.assertEqual(resolution["status"], "recovered", result)
+        self.assertIn(summary_dependency, resolution["analysis_dependencies"])
+        output = next(
+            row
+            for row in self._effect(result, "invoke")["result_frame"]["outputs"]
+            if row["location"] == {
+                "kind": "exact",
+                "key": [fixtures.CHILD_SLOT],
+            }
+        )
+        self.assertEqual(
+            output["origins"][0]["authority_dependencies"],
+            [summary_dependency],
+        )
+
+    def test_input_stack_word_without_caller_cell_remains_incomplete(self) -> None:
+        result = self._run_case(
+            "direct",
+            memory_relations=({
+                "location": {
+                    "kind": "exact",
+                    "key": [fixtures.CHILD_SLOT],
+                },
+                "value": {"kind": "input_stack_word", "offset": 4},
+            },),
+        )
+
+        self.assertEqual(
+            self._resolution(result, "exit:memory-dispatch")["status"],
+            "incomplete",
+            result,
+        )
+
+    def test_malformed_input_stack_word_relation_is_rejected(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, "internal-call memory-result output is invalid"
+        ):
+            self._run_case(
+                "direct",
+                stack_argument=True,
+                memory_relations=({
+                    "location": {
+                        "kind": "exact",
+                        "key": [fixtures.CHILD_SLOT],
+                    },
+                    "value": {"kind": "input_stack_word", "offset": 0},
+                },),
+            )
+
     def test_malformed_or_over_budget_typed_origins_fail_closed(self) -> None:
         interface_json = next(iter(self.interface_value)).as_json()
         cases = {
@@ -166,14 +237,36 @@ class InternalCallResultConsumerTests(unittest.TestCase):
         preserved_registers: frozenset[str] = frozenset({
             "ebp", "ebx", "edi", "esi",
         }),
+        stack_argument: bool = False,
+        initial_interface_value: frozenset[ValueOrigin] | None = None,
+        memory_relations: object | None = None,
     ) -> dict[str, object]:
         call = self._call(mode)
+        invoke_memory: list[dict[str, object]] = []
+        invoke_ordered: list[dict[str, object]] = [call]
+        if stack_argument:
+            stack_address = fixtures.sub(fixtures.reg("esp"), fixtures.const(4))
+            write = {
+                "kind": "write",
+                "width": 4,
+                "address": stack_address,
+                "value": fixtures.reg("eax"),
+            }
+            call["register_inputs"]["esp"] = stack_address
+            invoke_memory = [write]
+            invoke_ordered = [write, call]
         units = [
             fixtures.unit("seed", 0x1000, writes=[
                 {"register": "eax", "value": fixtures.load(fixtures.const(fixtures.SLOT))},
                 {"register": "ecx", "value": fixtures.load(fixtures.const(fixtures.SLOT))},
             ]),
-            fixtures.unit("invoke", 0x1100, events=[call], ordered=[call]),
+            fixtures.unit(
+                "invoke",
+                0x1100,
+                memory=invoke_memory,
+                events=[call],
+                ordered=invoke_ordered,
+            ),
             fixtures.unit("callee", CALLEE_RVA),
             fixtures.unit("register-vtable", 0x1200, writes=[{
                 "register": "ecx",
@@ -257,15 +350,21 @@ class InternalCallResultConsumerTests(unittest.TestCase):
             },
             internal_call_memory_preservation={CALLEE_ADDRESS: True},
             internal_call_memory_result_relations={
-                CALLEE_ADDRESS: {
-                    ValueOrigin("exact", (fixtures.CHILD_SLOT,)): (
-                        self.interface_value
-                    ),
-                },
+                CALLEE_ADDRESS: (
+                    memory_relations
+                    if memory_relations is not None
+                    else {
+                        ValueOrigin("exact", (fixtures.CHILD_SLOT,)): (
+                            self.interface_value
+                        ),
+                    }
+                ),
             },
             image_base=fixtures.IMAGE_BASE,
             finite_value_budget=finite_value_budget,
-            initial_known_slots={fixtures.SLOT: self.interface_value},
+            initial_known_slots={
+                fixtures.SLOT: initial_interface_value or self.interface_value
+            },
             allow_global_slot_promotion=False,
         )
 

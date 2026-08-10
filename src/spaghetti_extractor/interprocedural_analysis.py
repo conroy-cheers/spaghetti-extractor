@@ -2751,12 +2751,12 @@ def _call_summary_inputs(
     dict[int, frozenset[str]],
     dict[int, int],
     dict[int, dict[str, list[Mapping[str, Any]]]],
-    dict[int, dict[ValueOrigin, FiniteValue]],
+    dict[int, tuple[Mapping[str, Any], ...]],
 ]:
     preserved: dict[int, frozenset[str]] = {}
     cleanup: dict[int, int] = {}
     results: dict[int, dict[str, list[Mapping[str, Any]]]] = {}
-    memory_results: dict[int, dict[ValueOrigin, FiniteValue]] = {}
+    memory_results: dict[int, tuple[Mapping[str, Any], ...]] = {}
     for raw in summaries.get("summaries", []):
         if not isinstance(raw, Mapping):
             continue
@@ -2832,32 +2832,58 @@ def _call_summary_inputs(
 
 def _summary_memory_results(
     rows: Sequence[Any], *, finite_value_budget: int
-) -> dict[ValueOrigin, FiniteValue]:
-    result: dict[ValueOrigin, FiniteValue] = {}
+) -> tuple[Mapping[str, Any], ...]:
+    result: list[Mapping[str, Any]] = []
+    locations: set[ValueOrigin] = set()
     for index, raw in enumerate(rows):
         if not isinstance(raw, Mapping) or set(raw) != {"location", "value"}:
-            return {}
+            return ()
         value = raw.get("value")
-        if not isinstance(value, Mapping) or set(value) != {"kind", "origins"}:
-            return {}
-        if value.get("kind") != "typed_origins":
+        if not isinstance(value, Mapping):
+            return ()
+        kind = value.get("kind")
+        if kind not in {"typed_origins", "input_stack_word"}:
             continue
         try:
             location = parse_value_origin(
                 raw.get("location"),
                 context=f"call summary memory result {index} location",
             )
-            origins = parse_finite_value(
-                value.get("origins"),
-                finite_value_budget=finite_value_budget,
-                context=f"call summary memory result {index} origins",
-            )
         except ValueError:
-            return {}
-        if location in result:
-            return {}
-        result[location] = origins
-    return result
+            return ()
+        if location in locations:
+            return ()
+        locations.add(location)
+        if kind == "typed_origins":
+            if set(value) != {"kind", "origins"}:
+                return ()
+            try:
+                origins = parse_finite_value(
+                    value.get("origins"),
+                    finite_value_budget=finite_value_budget,
+                    context=f"call summary memory result {index} origins",
+                )
+            except ValueError:
+                return ()
+            normalized_value: Mapping[str, Any] = {
+                "kind": "typed_origins",
+                "origins": [origin.as_json() for origin in sorted(origins)],
+            }
+        else:
+            offset = value.get("offset")
+            if (
+                set(value) != {"kind", "offset"}
+                or not isinstance(offset, int)
+                or isinstance(offset, bool)
+                or not 4 <= offset <= 0xFFFFFFFF
+            ):
+                return ()
+            normalized_value = {"kind": "input_stack_word", "offset": offset}
+        result.append({
+            "location": location.as_json(),
+            "value": normalized_value,
+        })
+    return tuple(result)
 
 
 def _call_summary_memory_preservation(
