@@ -10,7 +10,7 @@ from __future__ import annotations
 import copy
 import heapq
 import json
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -319,6 +319,9 @@ class _RunResult:
     evaluations: int
     transfer_requests: int
     transfer_cache_hits: int
+    cross_run_transfer_cache_hits: int
+    transfer_cache_entries: int
+    transfer_cache_evictions: int
     budget_exceeded: int
     context_states: int
     context_evaluations: int
@@ -393,6 +396,128 @@ _UnitTransfer = tuple[
 ]
 
 
+@dataclass(frozen=True)
+class _TransferCacheEntry:
+    generation: int
+    transfer: _UnitTransfer
+
+
+class InterfaceTransferCache:
+    """Bounded in-memory cache for one immutable provenance-analysis pass.
+
+    The cache is deliberately not serialized and carries no authority.  Its
+    owner must scope it to one binary, machine-IR inventory, profile set, and
+    static-data reader.  Exact local and call-environment keys below prevent
+    evolving fixed-point inputs from reusing stale transfers within that
+    scope.
+    """
+
+    def __init__(self, *, capacity: int) -> None:
+        if (
+            not isinstance(capacity, int)
+            or isinstance(capacity, bool)
+            or capacity <= 0
+        ):
+            raise ValueError("interface transfer-cache capacity must be positive")
+        self.capacity = capacity
+        self._entries: OrderedDict[
+            tuple[int, str, tuple[Any, ...]], _TransferCacheEntry
+        ] = OrderedDict()
+        self._environment_ids: dict[tuple[Any, ...], int] = {}
+        self._generation = 0
+        self._local_environment_id: int | None = None
+        self._call_environment_id: int | None = None
+        self.run_hits = 0
+        self.run_cross_run_hits = 0
+        self.run_evictions = 0
+
+    @classmethod
+    def for_unit_count(cls, unit_count: int) -> "InterfaceTransferCache":
+        if (
+            not isinstance(unit_count, int)
+            or isinstance(unit_count, bool)
+            or unit_count <= 0
+        ):
+            raise ValueError("interface transfer cache requires a positive unit count")
+        return cls(capacity=max(4096, min(131072, unit_count * 16)))
+
+    @property
+    def entries(self) -> int:
+        return len(self._entries)
+
+    def begin_run(
+        self,
+        *,
+        local_environment: tuple[Any, ...],
+        call_environment: tuple[Any, ...],
+    ) -> None:
+        self._generation += 1
+        self._local_environment_id = self._environment_id(
+            ("local-environment-v1", local_environment)
+        )
+        self._call_environment_id = self._environment_id(
+            ("call-environment-v1", local_environment, call_environment)
+        )
+        self.run_hits = 0
+        self.run_cross_run_hits = 0
+        self.run_evictions = 0
+
+    def get(
+        self,
+        *,
+        unit_id: str,
+        state_key: tuple[Any, ...],
+        call_sensitive: bool,
+    ) -> _UnitTransfer | None:
+        environment_id = self._selected_environment_id(call_sensitive)
+        key = (environment_id, unit_id, state_key)
+        entry = self._entries.get(key)
+        if entry is None:
+            return None
+        self._entries.move_to_end(key)
+        self.run_hits += 1
+        if entry.generation != self._generation:
+            self.run_cross_run_hits += 1
+            self._entries[key] = _TransferCacheEntry(
+                self._generation, entry.transfer
+            )
+        return entry.transfer
+
+    def put(
+        self,
+        *,
+        unit_id: str,
+        state_key: tuple[Any, ...],
+        call_sensitive: bool,
+        transfer: _UnitTransfer,
+    ) -> None:
+        environment_id = self._selected_environment_id(call_sensitive)
+        key = (environment_id, unit_id, state_key)
+        self._entries[key] = _TransferCacheEntry(self._generation, transfer)
+        self._entries.move_to_end(key)
+        while len(self._entries) > self.capacity:
+            self._entries.popitem(last=False)
+            self.run_evictions += 1
+
+    def _environment_id(self, key: tuple[Any, ...]) -> int:
+        existing = self._environment_ids.get(key)
+        if existing is not None:
+            return existing
+        identity = len(self._environment_ids)
+        self._environment_ids[key] = identity
+        return identity
+
+    def _selected_environment_id(self, call_sensitive: bool) -> int:
+        selected = (
+            self._call_environment_id
+            if call_sensitive
+            else self._local_environment_id
+        )
+        if selected is None:
+            raise RuntimeError("interface transfer cache used before begin_run")
+        return selected
+
+
 def recover_external_interface_targets(
     *,
     units: Sequence[Mapping[str, Any]],
@@ -436,6 +561,7 @@ def recover_external_interface_targets(
     preserved_register_hypotheses: Sequence[Mapping[str, Any]] = (),
     path_context_depth: int = 1,
     path_context_budget: int = 64,
+    transfer_cache: InterfaceTransferCache | None = None,
 ) -> dict[str, Any]:
     """Recover finite external method targets from typed interface origins."""
 
@@ -581,6 +707,11 @@ def recover_external_interface_targets(
         finite_value_budget=finite_value_budget,
     )
     rejected_tainted_slots: set[_MemoryLocation] = set()
+    effective_transfer_cache = (
+        transfer_cache
+        if transfer_cache is not None
+        else InterfaceTransferCache.for_unit_count(max(1, len(by_id)))
+    )
     final: _RunResult | None = None
     converged = False
     rounds = 0
@@ -622,6 +753,7 @@ def recover_external_interface_targets(
             preserved_register_hypotheses=parsed_call_hypotheses,
             path_context_depth=path_context_depth,
             path_context_budget=path_context_budget,
+            transfer_cache=effective_transfer_cache,
         )
         proposed = {
             address: origins
@@ -848,6 +980,11 @@ def recover_external_interface_targets(
             "transfer_evaluations": final.evaluations,
             "transfer_requests": final.transfer_requests,
             "transfer_cache_hits": final.transfer_cache_hits,
+            "cross_run_transfer_cache_hits": (
+                final.cross_run_transfer_cache_hits
+            ),
+            "transfer_cache_entries": final.transfer_cache_entries,
+            "transfer_cache_evictions": final.transfer_cache_evictions,
             "indirect_exits": len(final.resolutions),
             "recovered_method_exits": recovered_interface,
             "recovered_operation_exits": recovered_operation,
@@ -1350,6 +1487,7 @@ def _run_dataflow(
     ],
     path_context_depth: int,
     path_context_budget: int,
+    transfer_cache: InterfaceTransferCache,
 ) -> _RunResult:
     input_states = {
         root: _initial_root_state(
@@ -1370,9 +1508,41 @@ def _run_dataflow(
     call_site_effects: list[CallSiteEffect] = []
     evaluations = 0
     transfer_requests = 0
-    transfer_cache_hits = 0
     budget_exceeded = 0
-    transfer_cache: dict[tuple[str, tuple[Any, ...]], _UnitTransfer] = {}
+    observed_transfer_keys: set[tuple[str, tuple[Any, ...]]] = set()
+    call_sensitive_units = frozenset(
+        unit_id
+        for unit_id, unit in by_id.items()
+        if any(event.get("kind") in _CALL_KINDS for event in _events(unit))
+    )
+    transfer_cache.begin_run(
+        local_environment=_transfer_local_environment_key(
+            known_slots=known_slots,
+            event_known_slots=event_known_slots,
+            finite_value_budget=finite_value_budget,
+            static_slot_budget=static_slot_budget,
+            stack_slot_budget=stack_slot_budget,
+        ),
+        call_environment=_transfer_call_environment_key(
+            internal_call_preserved_registers=(
+                internal_call_preserved_registers
+            ),
+            internal_call_stack_cleanup=internal_call_stack_cleanup,
+            internal_call_result_relations=internal_call_result_relations,
+            internal_call_memory_preservation=(
+                internal_call_memory_preservation
+            ),
+            internal_call_memory_result_relations=(
+                internal_call_memory_result_relations
+            ),
+            internal_call_dependency_ids=internal_call_dependency_ids,
+            recovered_calls=recovered_calls,
+            bootstrap_unknown_call_preserved_registers=(
+                bootstrap_unknown_call_preserved_registers
+            ),
+            preserved_register_hypotheses=preserved_register_hypotheses,
+        ),
+    )
     exits_by_source: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
     for exit_record in indirect_exits:
         source = exit_record.get("source_unit_id")
@@ -1381,17 +1551,25 @@ def _run_dataflow(
     path_recoveries: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
 
     def transfer_state(source_id: str, input_state: _State) -> _UnitTransfer:
-        nonlocal evaluations, transfer_requests, transfer_cache_hits, budget_exceeded
+        nonlocal evaluations, transfer_requests, budget_exceeded
         transfer_requests += 1
         checked_state = _with_checked_stack_entry(
             input_state,
             unit_id=source_id,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
         )
-        key = (source_id, _state_cache_key(checked_state))
-        cached = transfer_cache.get(key)
+        state_key = _state_cache_key(checked_state)
+        request_key = (source_id, state_key)
+        first_request = request_key not in observed_transfer_keys
+        observed_transfer_keys.add(request_key)
+        cached = transfer_cache.get(
+            unit_id=source_id,
+            state_key=state_key,
+            call_sensitive=source_id in call_sensitive_units,
+        )
         if cached is not None:
-            transfer_cache_hits += 1
+            if first_request:
+                budget_exceeded += cached[-1]
             return cached
         result = _transfer_unit(
             unit_id=source_id,
@@ -1424,9 +1602,15 @@ def _run_dataflow(
             ),
             event_known_slots=event_known_slots,
         )
-        transfer_cache[key] = result
+        transfer_cache.put(
+            unit_id=source_id,
+            state_key=state_key,
+            call_sensitive=source_id in call_sensitive_units,
+            transfer=result,
+        )
         evaluations += 1
-        budget_exceeded += result[-1]
+        if first_request:
+            budget_exceeded += result[-1]
         return result
 
     def transfer_unit(source_id: str) -> _UnitTransfer:
@@ -1646,7 +1830,10 @@ def _run_dataflow(
         ),
         evaluations=evaluations,
         transfer_requests=transfer_requests,
-        transfer_cache_hits=transfer_cache_hits,
+        transfer_cache_hits=transfer_cache.run_hits,
+        cross_run_transfer_cache_hits=transfer_cache.run_cross_run_hits,
+        transfer_cache_entries=transfer_cache.entries,
+        transfer_cache_evictions=transfer_cache.run_evictions,
         budget_exceeded=budget_exceeded,
         context_states=contextual.context_states,
         context_evaluations=contextual.evaluations,
@@ -2696,6 +2883,125 @@ def _attach_contextual_memory_read_sites(
                 )
         result.append(row)
     return result
+
+
+def _transfer_local_environment_key(
+    *,
+    known_slots: Mapping[_MemoryLocation, _Value],
+    event_known_slots: _EventKnownSlots,
+    finite_value_budget: int,
+    static_slot_budget: int,
+    stack_slot_budget: int,
+) -> tuple[Any, ...]:
+    return (
+        tuple(sorted(
+            (
+                _memory_location_cache_key(location),
+                _value_cache_key(value),
+            )
+            for location, value in known_slots.items()
+        )),
+        tuple(
+            (
+                unit_id,
+                tuple(
+                    (address, _value_cache_key(value))
+                    for address, value in sorted(slots.items())
+                ),
+            )
+            for unit_id, slots in sorted(event_known_slots.items())
+        ),
+        finite_value_budget,
+        static_slot_budget,
+        stack_slot_budget,
+    )
+
+
+def _transfer_call_environment_key(
+    *,
+    internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_stack_cleanup: Mapping[int, int],
+    internal_call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
+    internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_result_relations: _InternalCallMemoryResults,
+    internal_call_dependency_ids: Mapping[
+        tuple[str, int], frozenset[str]
+    ],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
+    preserved_register_hypotheses: Mapping[
+        CallSiteId, Mapping[str, PreservedRegisterHypothesis]
+    ],
+) -> tuple[Any, ...]:
+    return _freeze_transfer_cache_value((
+        internal_call_preserved_registers,
+        internal_call_stack_cleanup,
+        internal_call_result_relations,
+        internal_call_memory_preservation,
+        internal_call_memory_result_relations,
+        internal_call_dependency_ids,
+        recovered_calls,
+        bootstrap_unknown_call_preserved_registers,
+        preserved_register_hypotheses,
+    ))
+
+
+def _freeze_transfer_cache_value(value: Any) -> tuple[Any, ...]:
+    """Return an exact, hashable key for evolving transfer dependencies."""
+
+    if value is None:
+        return ("none",)
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, int):
+        return ("int", value)
+    if isinstance(value, str):
+        return ("str", value)
+    if isinstance(value, ValueOrigin):
+        return (
+            "value-origin",
+            value.kind,
+            _freeze_transfer_cache_value(value.key),
+            value.dependencies,
+        )
+    if isinstance(value, CallSiteId):
+        return ("call-site", value.unit_id, value.event_index)
+    if isinstance(value, PreservedRegisterHypothesis):
+        return (
+            "preserved-register-hypothesis",
+            value.id,
+            value.unit_id,
+            value.event_index,
+            value.transfer_kind,
+            value.register,
+            value.proposal_source,
+            value.proof_authority,
+        )
+    if isinstance(value, Mapping):
+        items = [
+            (
+                _freeze_transfer_cache_value(key),
+                _freeze_transfer_cache_value(item),
+            )
+            for key, item in value.items()
+        ]
+        return ("mapping", *sorted(items))
+    if isinstance(value, (set, frozenset)):
+        return (
+            "set",
+            *sorted(_freeze_transfer_cache_value(item) for item in value),
+        )
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return (
+            "sequence",
+            *(_freeze_transfer_cache_value(item) for item in value),
+        )
+    raise TypeError(
+        "unsupported interface transfer-cache dependency "
+        f"{type(value).__qualname__}"
+    )
 
 
 def _state_cache_key(state: _State) -> tuple[Any, ...]:

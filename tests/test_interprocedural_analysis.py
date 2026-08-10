@@ -794,6 +794,30 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertEqual(result.fixed_point["contextual_probes"], 1)
         self.assertEqual(result.fixed_point["discovery_contextual_probes"], 1)
 
+    def test_fixed_point_reuses_one_transfer_cache_per_pass(self) -> None:
+        caches: list[object] = []
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            caches.append(kwargs["transfer_cache"])
+            requested = kwargs.get("run_contextual_recovery") is True
+            return {
+                "resolutions": [],
+                "contextual_recovery": {
+                    "required": True,
+                    "executed": requested,
+                },
+            }
+
+        self._run(
+            units=[unit("root", 0x1000)],
+            roots=["root"],
+            resolver=resolver,
+            proposal_only=True,
+        )
+
+        self.assertEqual(len(caches), 2)
+        self.assertIs(caches[0], caches[1])
+
     def test_pass_without_contextual_frontier_performs_no_probe(self) -> None:
         requests: list[bool] = []
 

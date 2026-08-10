@@ -186,6 +186,15 @@ their blocker inventories are cacheable and inspectable. Policy enforcement is
 kept in a separate closure gate; an incomplete analysis must not discard hours
 of extraction work, but it also must never become an executable candidate.
 
+Within one immutable interprocedural pass, unit transfers are retained in a
+bounded in-memory cache across fixed-point evaluations. Ordinary units are
+keyed by their exact abstract input and local slot environment. Call-bearing
+units additionally include the complete call-summary, recovered-target, and
+hypothesis environment, so an evolving call contract invalidates only
+call-sensitive transfers. The cache is created afresh for each discovery,
+cold, or inductive pass, is never serialized, and carries no authority; all
+accepted artifacts still come from the final converged proposal graph.
+
 Generated files belong under Nix outputs or ignored `build/` workspaces. Authored
 intent and source belong in target bundles. Private binaries belong under the
 ignored `private/` tree and must never be copied into source or target data.

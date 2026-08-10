@@ -60,6 +60,7 @@ from .indirect_target_dependency_v2 import (
     has_value_independent_target_set_v2,
 )
 from .interface_provenance import (
+    InterfaceTransferCache,
     callback_root_argument_origins,
     recover_external_interface_targets,
 )
@@ -1307,6 +1308,9 @@ def _run_typed_pass(
         image_base=image_base,
         finite_value_budget=finite_value_budget,
     )
+    interface_transfer_cache = InterfaceTransferCache.for_unit_count(
+        max(1, len(units))
+    )
     _progress(progress, "pass_started", {
         "pass_kind": pass_kind,
         "units": len(units),
@@ -1414,6 +1418,7 @@ def _run_typed_pass(
                     hypothesis.as_json()
                     for hypothesis in call_frame_hypotheses
                 ],
+                transfer_cache=interface_transfer_cache,
             )
 
         operation_provenance = derive_operation_provenance(

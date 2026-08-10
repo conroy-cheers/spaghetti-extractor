@@ -21,6 +21,7 @@ from spaghetti_extractor.control_analysis_v2 import exact_control_inventory_v2
 from spaghetti_extractor.import_abi import SelectedImportABI
 from spaghetti_extractor.interface_provenance import (
     INTERFACE_PROVENANCE_FORMAT,
+    InterfaceTransferCache,
     _guard_constraint,
     callback_root_argument_origins,
     recover_external_interface_targets,
@@ -362,6 +363,90 @@ class InterfaceProvenanceTests(unittest.TestCase):
         protocol = resolution["external_targets"][0]["external_protocol"]
         self.assertEqual((protocol["interface_id"], protocol["method"]), ("IThing", "Release"))
         self.assertEqual(result["counts"]["static_interface_slots"], 1)
+
+    def test_shared_transfer_cache_reuses_unchanged_local_transfers(self) -> None:
+        units = [
+            unit("root", 0x1100, writes=[{
+                "register": "eax", "value": const(7),
+            }]),
+            unit("leaf", 0x1200, writes=[{
+                "register": "ebx", "value": reg("eax"),
+            }]),
+        ]
+        cache = InterfaceTransferCache(capacity=16)
+        first = self._run(
+            units,
+            [edge("root", "leaf")],
+            roots=["root"],
+            indirect_exits=[],
+            transfer_cache=cache,
+        )
+        second = self._run(
+            units,
+            [edge("root", "leaf")],
+            roots=["root"],
+            indirect_exits=[],
+            bootstrap_unknown_call_preserved_registers=frozenset({"ebx"}),
+            transfer_cache=cache,
+        )
+
+        self.assertEqual(first["resolutions"], second["resolutions"])
+        self.assertEqual(first["issues"], second["issues"])
+        self.assertEqual(first["call_site_effects"], second["call_site_effects"])
+        self.assertEqual(second["counts"]["transfer_evaluations"], 0)
+        self.assertEqual(
+            second["counts"]["cross_run_transfer_cache_hits"], 2
+        )
+
+    def test_shared_transfer_cache_invalidates_call_environment_changes(self) -> None:
+        cache = InterfaceTransferCache(capacity=16)
+        units = [ordinary_indirect_call("root", 0x1100)]
+        self._run(
+            units,
+            [],
+            roots=["root"],
+            indirect_exits=[],
+            bootstrap_unknown_call_preserved_registers=frozenset({"ebx"}),
+            transfer_cache=cache,
+        )
+        changed = self._run(
+            units,
+            [],
+            roots=["root"],
+            indirect_exits=[],
+            bootstrap_unknown_call_preserved_registers=frozenset({"esi"}),
+            transfer_cache=cache,
+        )
+        unchanged = self._run(
+            units,
+            [],
+            roots=["root"],
+            indirect_exits=[],
+            bootstrap_unknown_call_preserved_registers=frozenset({"esi"}),
+            transfer_cache=cache,
+        )
+
+        self.assertGreater(changed["counts"]["transfer_evaluations"], 0)
+        self.assertEqual(
+            changed["counts"]["cross_run_transfer_cache_hits"], 0
+        )
+        self.assertEqual(unchanged["counts"]["transfer_evaluations"], 0)
+        self.assertEqual(
+            unchanged["counts"]["cross_run_transfer_cache_hits"], 1
+        )
+
+    def test_shared_transfer_cache_is_bounded(self) -> None:
+        cache = InterfaceTransferCache(capacity=1)
+        result = self._run(
+            [unit("root", 0x1100), unit("leaf", 0x1200)],
+            [edge("root", "leaf")],
+            roots=["root"],
+            indirect_exits=[],
+            transfer_cache=cache,
+        )
+
+        self.assertEqual(result["counts"]["transfer_cache_entries"], 1)
+        self.assertGreater(result["counts"]["transfer_cache_evictions"], 0)
 
     def test_receiver_only_method_preserves_factory_interface_slot(self) -> None:
         units = [
@@ -4468,6 +4553,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
         preserved_register_hypotheses: list[dict[str, object]] | None = None,
         path_context_depth: int = 1,
         path_context_budget: int = 64,
+        transfer_cache: InterfaceTransferCache | None = None,
     ) -> dict[str, object]:
         identity = MachineImportIdentity("example.dll", "symbol", "CreateThing")
         abi = resolve_machine_call_abi("pe32-stdcall-v1")
@@ -4488,14 +4574,18 @@ class InterfaceProvenanceTests(unittest.TestCase):
             direct_edges=direct,
             internal_call_edges=internal_edges or [],
             recovered_indirect_edges=recovered_indirect_edges or [],
-            indirect_exits=indirect_exits or [{
-                "id": "exit:call",
-                "source_unit_id": "call",
-                "source_rva": 0x1400,
-                "source_event_index": 0,
-                "kind": "indirect_call",
-                "target_expression": load(reg("ecx")),
-            }],
+            indirect_exits=(
+                [{
+                    "id": "exit:call",
+                    "source_unit_id": "call",
+                    "source_rva": 0x1400,
+                    "source_event_index": 0,
+                    "kind": "indirect_call",
+                    "target_expression": load(reg("ecx")),
+                }]
+                if indirect_exits is None
+                else indirect_exits
+            ),
             profiles=[self.profile],
             imports=imports or [],
             import_abis=import_abis,
@@ -4531,6 +4621,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             ),
             path_context_depth=path_context_depth,
             path_context_budget=path_context_budget,
+            transfer_cache=transfer_cache,
         )
 
     def _run_selected_import_memory_case(
