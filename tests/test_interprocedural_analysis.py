@@ -13,10 +13,15 @@ from spaghetti_extractor.call_site_effects import (
     CallSiteId,
 )
 from spaghetti_extractor.interprocedural_analysis import (
+    _Influence,
+    _MutableCallTarget,
+    _MutableCell,
+    _MutableState,
     _call_summary_inputs,
     _call_summary_memory_preservation,
     _call_site_memory_preservation,
     _requires_inductive_replay,
+    _transfer_mutable_state,
     analyze_interprocedural_control,
 )
 from spaghetti_extractor.indirect_target_dependency_v2 import (
@@ -272,6 +277,7 @@ def slot_invariant(
     initializer_rva: int,
     *values: int,
     tainted: bool = False,
+    slot_address: int = SLOT,
 ) -> GlobalSlotInvariant:
     binary = BinaryBinding("a" * 64, "b" * 64)
     binding = UnitBinding(
@@ -284,7 +290,7 @@ def slot_invariant(
     )
     return GlobalSlotInvariant(
         binding=binding,
-        slot_rva=SLOT - IMAGE_BASE,
+        slot_rva=slot_address - IMAGE_BASE,
         width_bytes=4,
         invariant_kind="finite_set",
         alternatives=FiniteAlternatives.of(
@@ -537,6 +543,96 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 },
             },),
         )
+
+    def test_mixed_internal_external_call_keeps_opaque_memory_alternative(self) -> None:
+        source_rva = SLOT + 4 - IMAGE_BASE
+        destination_rva = SLOT - IMAGE_BASE
+        state = _MutableState(
+            registers=tuple((register, _Influence()) for register in REGISTERS),
+            memory=((
+                destination_rva,
+                _MutableCell(_Influence(slot_rvas=frozenset({destination_rva}))),
+            ),),
+            stack=((
+                0,
+                _MutableCell(_Influence(slot_rvas=frozenset({source_rva}))),
+            ),),
+            esp_offset=0,
+        )
+        helper_address = IMAGE_BASE + 0x2000
+        output = _transfer_mutable_state(
+            unit("call", 0x1000, calls=(0x2000,)),
+            state,
+            unit_id="call",
+            image_base=IMAGE_BASE,
+            image_size=0x100000,
+            maximum=8,
+            checked_nonimage_stack=True,
+            call_targets=(
+                _MutableCallTarget(0, "helper", helper_address),
+                _MutableCallTarget(0, "", None),
+            ),
+            call_preserved_registers={},
+            call_stack_cleanup={helper_address: 0},
+            call_result_relations={},
+            call_memory_result_relations={
+                helper_address: ({
+                    "location": {"kind": "exact", "key": [SLOT]},
+                    "value": {"kind": "input_stack_word", "offset": 4},
+                },),
+            },
+            calls_preserve_memory=False,
+            writable_image_ranges=((SLOT, SLOT + 8),),
+        )
+
+        destination = dict(output.memory)[destination_rva]
+        self.assertTrue(destination.tainted)
+        self.assertEqual(
+            destination.value.slot_rvas,
+            frozenset({destination_rva, source_rva}),
+        )
+
+    def test_partial_stack_overwrite_taints_overlapping_argument_word(self) -> None:
+        source_rva = SLOT - IMAGE_BASE
+        state = _MutableState(
+            registers=tuple((register, _Influence()) for register in REGISTERS),
+            stack=((
+                0,
+                _MutableCell(_Influence(slot_rvas=frozenset({source_rva}))),
+            ),),
+            esp_offset=0,
+        )
+        overwrite = unit(
+            "overwrite",
+            0x1000,
+            memory=({
+                "kind": "write",
+                "width": 1,
+                "address": {
+                    "op": "add32",
+                    "args": [reg("esp"), const(1)],
+                },
+                "value": const(0),
+            },),
+        )
+        output = _transfer_mutable_state(
+            overwrite,
+            state,
+            unit_id="overwrite",
+            image_base=IMAGE_BASE,
+            image_size=0x100000,
+            maximum=8,
+            checked_nonimage_stack=True,
+            call_targets=(),
+            call_preserved_registers={},
+            call_stack_cleanup={},
+            call_result_relations={},
+            call_memory_result_relations={},
+            calls_preserve_memory=True,
+            writable_image_ranges=(),
+        )
+
+        self.assertTrue(dict(output.stack)[0].tainted)
 
     def _run(
         self,
@@ -1702,6 +1798,237 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 "role": "mutable_slot_invariant",
                 "content_id": invariant.content_id,
             }],
+        )
+
+    def test_call_summary_carries_writable_stack_argument_to_continuation(self) -> None:
+        source_slot = SLOT + 4
+        continuation_exit = indirect_exit("exit:continuation:0", "continuation")
+        callee_exit = indirect_exit("exit:helper:0", "helper")
+
+        call = unit(
+            "call",
+            0x1000,
+            calls=(0x2000,),
+            memory=(
+                {"kind": "read", "width": 4, "address": const(source_slot)},
+                stack_write(-4, load(const(source_slot))),
+            ),
+        )
+        call["semantics"]["external_events"][0]["register_inputs"]["esp"] = {
+            "op": "add32",
+            "args": [reg("esp"), const(-4)],
+        }
+        call["semantics"]["ordered_events"][-1]["register_inputs"]["esp"] = {
+            "op": "add32",
+            "args": [reg("esp"), const(-4)],
+        }
+        helper = unit(
+            "helper",
+            0x2000,
+            writes=({"register": "eax", "value": load(const(SLOT))},),
+            memory=(slot_read(),),
+        )
+
+        def summaries(**kwargs: Any) -> dict[str, object]:
+            result = summary_adapter(**kwargs)
+            if not any(
+                row["target_rva"] == 0x2000 for row in result["summaries"]
+            ):
+                result["summaries"].append(summary_row("helper", 0x2000))
+            for row in result["summaries"]:
+                if row["target_rva"] != 0x2000:
+                    continue
+                row["memory_effects"] = {
+                    "status": "complete",
+                    "local_sites": [{"kind": "write"}],
+                    "delegated_dependencies": [],
+                }
+                row["result_memory_origins"] = {
+                    "status": "complete",
+                    "locations": [{
+                        "location": {"kind": "exact", "key": [SLOT]},
+                        "value": {"kind": "input_stack_word", "offset": 4},
+                    }],
+                }
+            return result
+
+        result = self._run(
+            units=[
+                call,
+                unit(
+                    "continuation",
+                    0x1020,
+                    writes=({"register": "eax", "value": load(const(SLOT))},),
+                    memory=(slot_read(),),
+                ),
+                helper,
+                unit("target", 0x3000),
+            ],
+            roots=["call"],
+            direct=[edge("call", "continuation")],
+            calls=[call_edge("call", "helper")],
+            exits=[continuation_exit, callee_exit],
+            checked_stack_units=["call"],
+            writable_image_ranges=[(SLOT, source_slot + 4)],
+            summary_resolver=summaries,
+            resolver=lambda **_kwargs: {
+                "resolutions": [
+                    recovered(continuation_exit, "target"),
+                    recovered(callee_exit, "target"),
+                ]
+            },
+        )
+        unchecked = self._run(
+            units=[
+                call,
+                unit(
+                    "continuation",
+                    0x1020,
+                    writes=({"register": "eax", "value": load(const(SLOT))},),
+                    memory=(slot_read(),),
+                ),
+                helper,
+                unit("target", 0x3000),
+            ],
+            roots=["call"],
+            direct=[edge("call", "continuation")],
+            calls=[call_edge("call", "helper")],
+            exits=[continuation_exit, callee_exit],
+            writable_image_ranges=[(SLOT, source_slot + 4)],
+            summary_resolver=summaries,
+            resolver=lambda **_kwargs: {
+                "resolutions": [
+                    recovered(continuation_exit, "target"),
+                    recovered(callee_exit, "target"),
+                ]
+            },
+        )
+
+        by_id = {row["id"]: row for row in result.recovered_targets}
+        self.assertEqual(
+            {
+                row["slot_rva"]
+                for row in by_id[continuation_exit["id"]][
+                    "mutable_slot_dependencies"
+                ]
+            },
+            {SLOT - IMAGE_BASE, source_slot - IMAGE_BASE},
+        )
+        self.assertEqual(
+            {
+                row["slot_rva"]
+                for row in by_id[callee_exit["id"]]["mutable_slot_dependencies"]
+            },
+            {SLOT - IMAGE_BASE},
+        )
+        unchecked_by_id = {
+            row["id"]: row for row in unchecked.recovered_targets
+        }
+        self.assertEqual(
+            {
+                row["slot_rva"]
+                for row in unchecked_by_id[continuation_exit["id"]][
+                    "mutable_slot_dependencies"
+                ]
+            },
+            {SLOT - IMAGE_BASE},
+        )
+        self.assertEqual(
+            unchecked_by_id[continuation_exit["id"]]["failure"]["code"],
+            "mutable_slot_tainted",
+        )
+
+    def test_checked_call_summary_stack_copy_closes_both_slot_dependencies(self) -> None:
+        source_slot = SLOT + 4
+        exit_row = indirect_exit("exit:continuation:0", "continuation")
+        call = unit(
+            "call",
+            0x1000,
+            calls=(0x2000,),
+            memory=(
+                {"kind": "read", "width": 4, "address": const(source_slot)},
+                stack_write(-4, load(const(source_slot))),
+            ),
+        )
+        call["semantics"]["external_events"][0]["register_inputs"]["esp"] = {
+            "op": "add32",
+            "args": [reg("esp"), const(-4)],
+        }
+        call["semantics"]["ordered_events"][-1]["register_inputs"]["esp"] = {
+            "op": "add32",
+            "args": [reg("esp"), const(-4)],
+        }
+
+        def summaries(**kwargs: Any) -> dict[str, object]:
+            result = summary_adapter(**kwargs)
+            if not any(
+                row["target_rva"] == 0x2000 for row in result["summaries"]
+            ):
+                result["summaries"].append(summary_row("helper", 0x2000))
+            for row in result["summaries"]:
+                if row["target_rva"] == 0x2000:
+                    row["memory_effects"] = {
+                        "status": "complete",
+                        "local_sites": [{"kind": "write"}],
+                        "delegated_dependencies": [],
+                    }
+                    row["result_memory_origins"] = {
+                        "status": "complete",
+                        "locations": [{
+                            "location": {"kind": "exact", "key": [SLOT]},
+                            "value": {
+                                "kind": "input_stack_word",
+                                "offset": 4,
+                            },
+                        }],
+                    }
+            return result
+
+        result = self._run(
+            units=[
+                call,
+                unit(
+                    "continuation",
+                    0x1020,
+                    writes=({"register": "eax", "value": load(const(SLOT))},),
+                    memory=(slot_read(),),
+                ),
+                unit("helper", 0x2000),
+                unit("target", 0x3000),
+            ],
+            roots=["call"],
+            direct=[edge("call", "continuation")],
+            calls=[call_edge("call", "helper")],
+            exits=[exit_row],
+            checked_stack_units=["call"],
+            writable_image_ranges=[(SLOT, source_slot + 4)],
+            globals=[
+                slot_invariant(
+                    "call",
+                    0x1000,
+                    IMAGE_BASE + 0x3000,
+                    slot_address=SLOT,
+                ),
+                slot_invariant(
+                    "call",
+                    0x1000,
+                    IMAGE_BASE + 0x3000,
+                    slot_address=source_slot,
+                ),
+            ],
+            summary_resolver=summaries,
+            resolver=lambda **_kwargs: {
+                "resolutions": [recovered(exit_row, "target")]
+            },
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        self.assertEqual(
+            {
+                row["slot_rva"]
+                for row in result.recovered_targets[0]["mutable_slot_dependencies"]
+            },
+            {SLOT - IMAGE_BASE, source_slot - IMAGE_BASE},
         )
 
     def test_finite_branch_join_preserves_mutable_slot_dependency(self) -> None:

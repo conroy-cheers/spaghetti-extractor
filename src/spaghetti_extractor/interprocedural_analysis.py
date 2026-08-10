@@ -126,7 +126,16 @@ class _MutableCell:
 class _MutableState:
     registers: tuple[tuple[str, _Influence], ...]
     memory: tuple[tuple[int, _MutableCell], ...] = ()
+    stack: tuple[tuple[int, _MutableCell], ...] = ()
+    esp_offset: int | None = 0
     unknown_write: bool = False
+
+
+@dataclass(frozen=True, order=True)
+class _MutableCallTarget:
+    event_index: int
+    target_unit_id: str
+    target_address: int | None
 
 
 @dataclass(frozen=True)
@@ -1250,8 +1259,13 @@ def _run_typed_pass(
             image_size=image_size,
             finite_value_budget=finite_value_budget,
             checked_nonimage_stack_units=checked_nonimage_stack_units,
+            call_preserved_registers=preserved,
+            call_stack_cleanup=cleanup,
+            call_result_relations=results,
+            call_memory_result_relations=memory_results,
             call_memory_preservation=call_memory_preservation,
             global_slot_invariants=global_slot_invariants,
+            writable_image_ranges=writable_image_ranges,
         )
         next_selected = _prefer_indirect_recoveries(
             static_recoveries,
@@ -1523,6 +1537,87 @@ def _global_slot_known_values(
     return result
 
 
+def _mutable_call_targets(
+    *,
+    internal_call_edges: Sequence[Mapping[str, Any]],
+    recovered_indirect_edges: Sequence[Mapping[str, Any]],
+    by_id: Mapping[str, Mapping[str, Any]],
+    image_base: int,
+) -> Mapping[str, tuple[_MutableCallTarget, ...]]:
+    """Index checked internal callees without conflating them with returns."""
+
+    result: dict[str, set[_MutableCallTarget]] = defaultdict(set)
+
+    def add(source: Any, event_index: Any, target: Any) -> None:
+        if (
+            not isinstance(source, str)
+            or source not in by_id
+            or not isinstance(event_index, int)
+            or isinstance(event_index, bool)
+            or event_index < 0
+            or not isinstance(target, str)
+            or target not in by_id
+        ):
+            return
+        target_rva = _unit_rva(by_id[target])
+        if target_rva is None:
+            return
+        result[source].add(_MutableCallTarget(
+            event_index=event_index,
+            target_unit_id=target,
+            target_address=(image_base + target_rva) & 0xFFFF_FFFF,
+        ))
+
+    def add_opaque(source: Any, event_index: Any) -> None:
+        if (
+            isinstance(source, str)
+            and source in by_id
+            and isinstance(event_index, int)
+            and not isinstance(event_index, bool)
+            and event_index >= 0
+        ):
+            result[source].add(_MutableCallTarget(
+                event_index=event_index,
+                target_unit_id="",
+                target_address=None,
+            ))
+
+    for edge in internal_call_edges:
+        if edge.get("status") not in {None, "resolved"}:
+            continue
+        add(
+            edge.get("source_unit_id"),
+            edge.get("source_event_index"),
+            edge.get("target_unit_id", edge.get("resolved_unit_id")),
+        )
+    for recovery in recovered_indirect_edges:
+        if (
+            recovery.get("status") != "recovered"
+            or recovery.get("kind") != "indirect_call"
+        ):
+            continue
+        for target in recovery.get("target_unit_ids", ()):
+            add(
+                recovery.get("source_unit_id"),
+                recovery.get("source_event_index"),
+                target,
+            )
+        external_targets = recovery.get("external_targets", ())
+        if (
+            isinstance(external_targets, Sequence)
+            and not isinstance(external_targets, (str, bytes))
+            and external_targets
+        ):
+            add_opaque(
+                recovery.get("source_unit_id"),
+                recovery.get("source_event_index"),
+            )
+    return {
+        source: tuple(sorted(targets))
+        for source, targets in sorted(result.items())
+    }
+
+
 def _analyze_mutable_slot_influence(
     *,
     units: Sequence[Mapping[str, Any]],
@@ -1535,8 +1630,17 @@ def _analyze_mutable_slot_influence(
     image_size: int,
     finite_value_budget: int,
     checked_nonimage_stack_units: frozenset[str],
+    call_preserved_registers: Mapping[int, frozenset[str]],
+    call_stack_cleanup: Mapping[int, int],
+    call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
+    call_memory_result_relations: Mapping[
+        int, Sequence[Mapping[str, Any]]
+    ],
     call_memory_preservation: Mapping[str, bool],
     global_slot_invariants: Sequence[GlobalSlotInvariant],
+    writable_image_ranges: Sequence[tuple[int, int]],
 ) -> Mapping[str, _MutableExitInfluence]:
     """Replay slot influence from empty root memories over reachable edges.
 
@@ -1546,21 +1650,26 @@ def _analyze_mutable_slot_influence(
     """
 
     by_id = {_unit_id(unit): unit for unit in units}
-    successors: dict[str, set[str]] = {
+    normal_successors: dict[str, set[str]] = {
         source: set(targets)
         for source, targets in _normal_edges(direct_edges, by_id).items()
     }
-    for source, targets in _explicit_call_edges(
-        internal_call_edges, by_id
-    ).items():
-        successors.setdefault(source, set()).update(targets)
+    call_targets = _mutable_call_targets(
+        internal_call_edges=internal_call_edges,
+        recovered_indirect_edges=recovered_indirect_edges,
+        by_id=by_id,
+        image_base=image_base,
+    )
     for recovery in recovered_indirect_edges:
-        if recovery.get("status") != "recovered":
+        if (
+            recovery.get("status") != "recovered"
+            or recovery.get("kind") != "indirect_jump"
+        ):
             continue
         source = recovery.get("source_unit_id")
         if not isinstance(source, str) or source not in by_id:
             continue
-        successors.setdefault(source, set()).update(
+        normal_successors.setdefault(source, set()).update(
             target
             for target in recovery.get("target_unit_ids", ())
             if isinstance(target, str) and target in by_id
@@ -1586,7 +1695,13 @@ def _analyze_mutable_slot_influence(
         )
     )
     states: dict[str, _MutableState] = {
-        root: _MutableState(unknown_registers, initial_memory)
+        root: _MutableState(
+            registers=tuple(
+                (register, _Influence() if register == "esp" else influence)
+                for register, influence in unknown_registers
+            ),
+            memory=initial_memory,
+        )
         for root in roots
         if root in by_id
     }
@@ -1608,16 +1723,50 @@ def _analyze_mutable_slot_influence(
             image_size=image_size,
             maximum=finite_value_budget,
             checked_nonimage_stack=(source in checked_nonimage_stack_units),
+            call_targets=call_targets.get(source, ()),
+            call_preserved_registers=call_preserved_registers,
+            call_stack_cleanup=call_stack_cleanup,
+            call_result_relations=call_result_relations,
+            call_memory_result_relations=call_memory_result_relations,
             calls_preserve_memory=call_memory_preservation.get(source, True),
+            writable_image_ranges=writable_image_ranges,
         )
         evaluations += 1
-        for target in sorted(successors.get(source, ())):
+        for target in sorted(normal_successors.get(source, ())):
             previous = states.get(target)
             joined = (
                 output
                 if previous is None
                 else _join_mutable_states(
                     previous, output, maximum=finite_value_budget
+                )
+            )
+            if previous != joined:
+                states[target] = joined
+                if target not in in_queue:
+                    queue.append(target)
+                    in_queue.add(target)
+        for call_target in call_targets.get(source, ()):
+            if not call_target.target_unit_id:
+                continue
+            call_entry = _mutable_call_entry_state(
+                by_id[source],
+                states[source],
+                event_index=call_target.event_index,
+                unit_id=source,
+                image_base=image_base,
+                image_size=image_size,
+                maximum=finite_value_budget,
+                writable_image_ranges=writable_image_ranges,
+                checked_nonimage_stack=(source in checked_nonimage_stack_units),
+            )
+            target = call_target.target_unit_id
+            previous = states.get(target)
+            joined = (
+                call_entry
+                if previous is None
+                else _join_mutable_states(
+                    previous, call_entry, maximum=finite_value_budget
                 )
             )
             if previous != joined:
@@ -1644,7 +1793,13 @@ def _analyze_mutable_slot_influence(
             image_size=image_size,
             maximum=finite_value_budget,
             checked_nonimage_stack=(source in checked_nonimage_stack_units),
+            call_targets=call_targets.get(source, ()),
+            call_preserved_registers=call_preserved_registers,
+            call_stack_cleanup=call_stack_cleanup,
+            call_result_relations=call_result_relations,
+            call_memory_result_relations=call_memory_result_relations,
             calls_preserve_memory=call_memory_preservation.get(source, True),
+            writable_image_ranges=writable_image_ranges,
         )
         influence = _expression_influence(
             row.get("target_expression"),
@@ -1654,6 +1809,7 @@ def _analyze_mutable_slot_influence(
             image_base=image_base,
             image_size=image_size,
             maximum=finite_value_budget,
+            writable_image_ranges=writable_image_ranges,
         )
         result[identity] = _MutableExitInfluence(
             tuple(sorted(influence.slot_rvas)),
@@ -1673,10 +1829,23 @@ def _transfer_mutable_state(
     image_size: int,
     maximum: int,
     checked_nonimage_stack: bool,
+    call_targets: Sequence[_MutableCallTarget],
+    call_preserved_registers: Mapping[int, frozenset[str]],
+    call_stack_cleanup: Mapping[int, int],
+    call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
+    call_memory_result_relations: Mapping[
+        int, Sequence[Mapping[str, Any]]
+    ],
     calls_preserve_memory: bool,
+    writable_image_ranges: Sequence[tuple[int, int]],
 ) -> _MutableState:
-    registers = dict(state.registers)
+    input_registers = dict(state.registers)
+    registers = dict(input_registers)
     memory = dict(state.memory)
+    stack = dict(state.stack)
+    esp_offset = state.esp_offset
     unknown_write = state.unknown_write
     semantics = unit.get("semantics")
     semantics = semantics if isinstance(semantics, Mapping) else {}
@@ -1698,11 +1867,14 @@ def _transfer_mutable_state(
                     raw.get("value"),
                     registers=registers,
                     memory=memory,
+                    stack=stack,
+                    esp_offset=state.esp_offset,
                     unknown_write=unknown_write,
                     read_sites=read_sites,
                     image_base=image_base,
                     image_size=image_size,
                     maximum=maximum,
+                    writable_image_ranges=writable_image_ranges,
                 )
 
     raw_events = semantics.get("ordered_events")
@@ -1715,26 +1887,49 @@ def _transfer_mutable_state(
                 "read_write",
             }:
                 continue
-            if raw.get("width") not in {4, 32}:
+            width_bytes = _mutable_width_bytes(raw.get("width"))
+            if width_bytes is None:
                 continue
             address_expression = raw.get("address")
+            if width_bytes != 4:
+                if _invalidate_mutable_partial_write(
+                    address_expression,
+                    width_bytes=width_bytes,
+                    memory=memory,
+                    stack=stack,
+                    esp_offset=state.esp_offset,
+                    checked_nonimage_stack=checked_nonimage_stack,
+                    image_base=image_base,
+                    image_size=image_size,
+                ):
+                    unknown_write = True
+                continue
             address = constant_u32(address_expression)
             value = _expression_influence_parts(
                 raw.get("value"),
                 registers=registers,
                 memory=memory,
+                stack=stack,
+                esp_offset=state.esp_offset,
                 unknown_write=unknown_write,
                 read_sites=read_sites,
                 image_base=image_base,
                 image_size=image_size,
                 maximum=maximum,
+                writable_image_ranges=writable_image_ranges,
             )
             if address is None:
+                stack_offset = affine_register_offset(address_expression, "esp")
                 if (
                     checked_nonimage_stack
-                    and affine_register_offset(address_expression, "esp")
-                    is not None
+                    and stack_offset is not None
+                    and state.esp_offset is not None
                 ):
+                    _write_mutable_stack_cell(
+                        stack,
+                        state.esp_offset + stack_offset,
+                        value,
+                    )
                     continue
                 unknown_write = True
                 memory = {
@@ -1744,6 +1939,14 @@ def _transfer_mutable_state(
                         tainted=True,
                     )
                     for slot, cell in memory.items()
+                }
+                stack = {
+                    offset: _MutableCell(
+                        cell.value,
+                        initialized=cell.initialized,
+                        tainted=True,
+                    )
+                    for offset, cell in stack.items()
                 }
                 continue
             slot_rva = _image_slot_rva(
@@ -1759,6 +1962,33 @@ def _transfer_mutable_state(
                 tainted=value.unsafe or value.overflow,
             )
 
+    stack_delta = semantics.get("stack_delta")
+    net_bytes = (
+        stack_delta.get("net_bytes")
+        if isinstance(stack_delta, Mapping)
+        and stack_delta.get("status") == "derived"
+        else None
+    )
+    if (
+        state.esp_offset is not None
+        and isinstance(net_bytes, int)
+        and not isinstance(net_bytes, bool)
+    ):
+        esp_offset = state.esp_offset + net_bytes
+    elif not any(
+        isinstance(raw, Mapping) and raw.get("register") == "esp"
+        for raw in raw_writes
+    ):
+        esp_offset = state.esp_offset
+    else:
+        esp_offset = None
+
+    call_events = {
+        target.event_index for target in call_targets
+    }
+    pre_call_memory = tuple(sorted(memory.items()))
+    pre_call_stack = tuple(sorted(stack.items()))
+    pre_call_unknown_write = unknown_write
     if not calls_preserve_memory:
         unknown_write = True
         memory = {
@@ -1769,11 +1999,706 @@ def _transfer_mutable_state(
             )
             for slot, cell in memory.items()
         }
+        stack = {
+            offset: _MutableCell(
+                cell.value,
+                initialized=cell.initialized,
+                tainted=True,
+            )
+            for offset, cell in stack.items()
+        }
+
+    if call_targets and len(call_events) == 1:
+        event_index = next(iter(call_events))
+        pre_call = _mutable_call_input_state(
+            unit,
+            _MutableState(
+                registers=tuple(sorted(input_registers.items())),
+                memory=pre_call_memory,
+                stack=pre_call_stack,
+                esp_offset=state.esp_offset,
+                unknown_write=pre_call_unknown_write,
+            ),
+            event_index=event_index,
+            unit_id=unit_id,
+            image_base=image_base,
+            image_size=image_size,
+            maximum=maximum,
+            writable_image_ranges=writable_image_ranges,
+            checked_nonimage_stack=checked_nonimage_stack,
+            apply_local_writes=False,
+        )
+        alternatives: list[_MutableState] = []
+        for target in call_targets:
+            target_registers = dict(registers)
+            target_memory = dict(memory)
+            target_stack = dict(stack)
+            target_address = target.target_address
+            preserved = (
+                call_preserved_registers.get(target_address, frozenset())
+                if target_address is not None
+                else frozenset()
+            )
+            pre_registers = dict(pre_call.registers)
+            for register in preserved:
+                if register in pre_registers:
+                    target_registers[register] = pre_registers[register]
+            result_relations = (
+                call_result_relations.get(target_address, {})
+                if target_address is not None
+                else {}
+            )
+            for register, rows in result_relations.items():
+                if register not in _REGISTER_UNIVERSE:
+                    continue
+                target_registers[register] = _mutable_summary_values_influence(
+                    rows,
+                    pre_call=pre_call,
+                    maximum=maximum,
+                )
+            memory_relations = (
+                call_memory_result_relations.get(target_address, ())
+                if target_address is not None
+                else ()
+            )
+            for row in memory_relations:
+                _apply_mutable_memory_summary(
+                    row,
+                    pre_call=pre_call,
+                    memory=target_memory,
+                    image_base=image_base,
+                    image_size=image_size,
+                    maximum=maximum,
+                )
+            cleanup = (
+                call_stack_cleanup.get(target_address)
+                if target_address is not None
+                else None
+            )
+            target_esp = (
+                pre_call.esp_offset + cleanup
+                if pre_call.esp_offset is not None
+                and isinstance(cleanup, int)
+                and not isinstance(cleanup, bool)
+                else None
+            )
+            target_unknown_write = unknown_write
+            if _bound_mutable_stack(
+                target_stack, esp_offset=target_esp, maximum=maximum
+            ):
+                _mark_mutable_overflow(
+                    target_registers, target_memory, maximum=maximum
+                )
+                target_unknown_write = True
+            alternatives.append(_MutableState(
+                registers=tuple(sorted(target_registers.items())),
+                memory=tuple(sorted(target_memory.items())),
+                stack=tuple(sorted(target_stack.items())),
+                esp_offset=target_esp,
+                unknown_write=target_unknown_write,
+            ))
+        output = alternatives[0]
+        for alternative in alternatives[1:]:
+            output = _join_mutable_states(
+                output, alternative, maximum=maximum
+            )
+        return output
+    if call_targets:
+        registers = {
+            register: _Influence(unsafe=True)
+            for register in _REGISTER_UNIVERSE
+        }
+        esp_offset = None
+
+    if _bound_mutable_stack(
+        stack, esp_offset=esp_offset, maximum=maximum
+    ):
+        _mark_mutable_overflow(registers, memory, maximum=maximum)
+        unknown_write = True
 
     return _MutableState(
-        tuple(sorted(registers.items())),
-        tuple(sorted(memory.items())),
-        unknown_write,
+        registers=tuple(sorted(registers.items())),
+        memory=tuple(sorted(memory.items())),
+        stack=tuple(sorted(stack.items())),
+        esp_offset=esp_offset,
+        unknown_write=unknown_write,
+    )
+
+
+def _mutable_width_bytes(value: Any) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return None
+    return 4 if value == 32 else value
+
+
+def _invalidate_mutable_partial_write(
+    address_expression: Any,
+    *,
+    width_bytes: int,
+    memory: dict[int, _MutableCell],
+    stack: dict[int, _MutableCell],
+    esp_offset: int | None,
+    checked_nonimage_stack: bool,
+    image_base: int,
+    image_size: int,
+) -> bool:
+    address = constant_u32(address_expression)
+    if address is not None:
+        start_rva = address - image_base
+        end_rva = start_rva + width_bytes
+        if 0 <= start_rva < image_size and end_rva <= image_size:
+            for slot, cell in tuple(memory.items()):
+                if slot < end_rva and start_rva < slot + 4:
+                    memory[slot] = _MutableCell(
+                        cell.value,
+                        initialized=cell.initialized,
+                        tainted=True,
+                    )
+        return False
+    relative = affine_register_offset(address_expression, "esp")
+    if (
+        checked_nonimage_stack
+        and relative is not None
+        and esp_offset is not None
+    ):
+        start = esp_offset + relative
+        end = start + width_bytes
+        for offset, cell in tuple(stack.items()):
+            if offset < end and start < offset + 4:
+                stack[offset] = _MutableCell(
+                    cell.value,
+                    initialized=cell.initialized,
+                    tainted=True,
+                )
+        return False
+    for slot, cell in tuple(memory.items()):
+        memory[slot] = _MutableCell(
+            cell.value,
+            initialized=cell.initialized,
+            tainted=True,
+        )
+    for offset, cell in tuple(stack.items()):
+        stack[offset] = _MutableCell(
+            cell.value,
+            initialized=cell.initialized,
+            tainted=True,
+        )
+    return True
+
+
+def _write_mutable_stack_cell(
+    stack: dict[int, _MutableCell], offset: int, value: _Influence
+) -> None:
+    for existing_offset, cell in tuple(stack.items()):
+        if (
+            existing_offset != offset
+            and existing_offset < offset + 4
+            and offset < existing_offset + 4
+        ):
+            stack[existing_offset] = _MutableCell(
+                cell.value,
+                initialized=cell.initialized,
+                tainted=True,
+            )
+    if value.slot_rvas or value.read_sites or value.unsafe or value.overflow:
+        stack[offset] = _MutableCell(
+            value,
+            initialized=True,
+            tainted=value.unsafe or value.overflow,
+        )
+    else:
+        # A checked non-influential overwrite kills any older dependency at
+        # this exact word without growing the finite stack domain.
+        stack.pop(offset, None)
+
+
+def _bound_mutable_stack(
+    stack: dict[int, _MutableCell], *, esp_offset: int | None, maximum: int
+) -> bool:
+    if len(stack) <= maximum:
+        return False
+    origin = 0 if esp_offset is None else esp_offset
+    retained = sorted(stack, key=lambda offset: (abs(offset - origin), offset))[
+        :maximum
+    ]
+    selected = {offset: stack[offset] for offset in retained}
+    stack.clear()
+    stack.update(selected)
+    return True
+
+
+def _mark_mutable_overflow(
+    registers: dict[str, _Influence],
+    memory: dict[int, _MutableCell],
+    *,
+    maximum: int,
+) -> None:
+    overflow = _Influence(unsafe=True, overflow=True)
+    for register in _REGISTER_UNIVERSE:
+        registers[register] = registers.get(
+            register, _Influence(unsafe=True)
+        ).join(overflow, maximum=maximum)
+    for slot, cell in tuple(memory.items()):
+        memory[slot] = _MutableCell(
+            cell.value.join(overflow, maximum=maximum),
+            initialized=cell.initialized,
+            tainted=True,
+        )
+
+
+def _mutable_state_before_call_event(
+    unit: Mapping[str, Any],
+    state: _MutableState,
+    *,
+    event_index: int,
+    unit_id: str,
+    image_base: int,
+    image_size: int,
+    maximum: int,
+    writable_image_ranges: Sequence[tuple[int, int]],
+    checked_nonimage_stack: bool,
+) -> _MutableState:
+    """Replay only ordered writes which occur before one call event."""
+
+    semantics = unit.get("semantics")
+    semantics = semantics if isinstance(semantics, Mapping) else {}
+    events = _events(unit)
+    if not 0 <= event_index < len(events):
+        return _unknown_mutable_state(state)
+    ordered = semantics.get("ordered_events")
+    if not isinstance(ordered, Sequence) or isinstance(ordered, (str, bytes)):
+        return _unknown_mutable_state(state)
+    registers = dict(state.registers)
+    memory = dict(state.memory)
+    stack = dict(state.stack)
+    unknown_write = state.unknown_write
+    read_sites = _mutable_read_sites(
+        unit_id=unit_id,
+        semantics=semantics,
+        image_base=image_base,
+        image_size=image_size,
+    )
+    next_external_index = 0
+    found = False
+    for raw in ordered:
+        if not isinstance(raw, Mapping):
+            return _unknown_mutable_state(state)
+        if (
+            next_external_index < len(events)
+            and _same_mutable_call_event(raw, events[next_external_index])
+        ):
+            if next_external_index == event_index:
+                found = True
+                break
+            next_external_index += 1
+            continue
+        if raw.get("kind") not in {"write", "read_write"}:
+            continue
+        width_bytes = _mutable_width_bytes(raw.get("width"))
+        if width_bytes is None:
+            continue
+        address_expression = raw.get("address")
+        if width_bytes != 4:
+            if _invalidate_mutable_partial_write(
+                address_expression,
+                width_bytes=width_bytes,
+                memory=memory,
+                stack=stack,
+                esp_offset=state.esp_offset,
+                checked_nonimage_stack=checked_nonimage_stack,
+                image_base=image_base,
+                image_size=image_size,
+            ):
+                unknown_write = True
+            continue
+        value = _expression_influence_parts(
+            raw.get("value"),
+            registers=registers,
+            memory=memory,
+            stack=stack,
+            esp_offset=state.esp_offset,
+            unknown_write=unknown_write,
+            read_sites=read_sites,
+            image_base=image_base,
+            image_size=image_size,
+            maximum=maximum,
+            writable_image_ranges=writable_image_ranges,
+        )
+        address = constant_u32(address_expression)
+        if address is not None:
+            slot_rva = _image_slot_rva(
+                address,
+                image_base=image_base,
+                image_size=image_size,
+            )
+            if slot_rva is not None:
+                memory[slot_rva] = _MutableCell(
+                    value,
+                    initialized=True,
+                    tainted=value.unsafe or value.overflow,
+                )
+            continue
+        relative = affine_register_offset(address_expression, "esp")
+        if (
+            checked_nonimage_stack
+            and relative is not None
+            and state.esp_offset is not None
+        ):
+            _write_mutable_stack_cell(
+                stack,
+                state.esp_offset + relative,
+                value,
+            )
+            continue
+        unknown_write = True
+        memory = {
+            slot: _MutableCell(
+                cell.value,
+                initialized=cell.initialized,
+                tainted=True,
+            )
+            for slot, cell in memory.items()
+        }
+        stack = {
+            offset: _MutableCell(
+                cell.value,
+                initialized=cell.initialized,
+                tainted=True,
+            )
+            for offset, cell in stack.items()
+        }
+    if not found:
+        return _unknown_mutable_state(state)
+    if _bound_mutable_stack(
+        stack, esp_offset=state.esp_offset, maximum=maximum
+    ):
+        _mark_mutable_overflow(registers, memory, maximum=maximum)
+        unknown_write = True
+    return _MutableState(
+        registers=tuple(sorted(registers.items())),
+        memory=tuple(sorted(memory.items())),
+        stack=tuple(sorted(stack.items())),
+        esp_offset=state.esp_offset,
+        unknown_write=unknown_write,
+    )
+
+
+def _same_mutable_call_event(
+    ordered: Mapping[str, Any], selected: Mapping[str, Any]
+) -> bool:
+    if ordered.get("kind") != selected.get("kind"):
+        return False
+    for key in ("instruction_rva", "target_rva", "return_rva"):
+        expected = selected.get(key)
+        if expected is not None and ordered.get(key) != expected:
+            return False
+    return True
+
+
+def _mutable_call_input_state(
+    unit: Mapping[str, Any],
+    state: _MutableState,
+    *,
+    event_index: int,
+    unit_id: str,
+    image_base: int,
+    image_size: int,
+    maximum: int,
+    writable_image_ranges: Sequence[tuple[int, int]],
+    checked_nonimage_stack: bool,
+    apply_local_writes: bool,
+) -> _MutableState:
+    events = _events(unit)
+    if not 0 <= event_index < len(events):
+        return _unknown_mutable_state(state)
+    event = events[event_index]
+    raw_inputs = event.get("register_inputs")
+    if not isinstance(raw_inputs, Mapping):
+        return _unknown_mutable_state(state)
+    input_registers = dict(state.registers)
+    working = (
+        _mutable_state_before_call_event(
+            unit,
+            state,
+            event_index=event_index,
+            unit_id=unit_id,
+            image_base=image_base,
+            image_size=image_size,
+            maximum=maximum,
+            writable_image_ranges=writable_image_ranges,
+            checked_nonimage_stack=checked_nonimage_stack,
+        )
+        if apply_local_writes
+        else state
+    )
+    memory = dict(working.memory)
+    stack = dict(working.stack)
+    read_sites = _mutable_read_sites(
+        unit_id=unit_id,
+        semantics=(
+            unit.get("semantics")
+            if isinstance(unit.get("semantics"), Mapping)
+            else {}
+        ),
+        image_base=image_base,
+        image_size=image_size,
+    )
+    registers: dict[str, _Influence] = {}
+    for register in _REGISTER_UNIVERSE:
+        expression = raw_inputs.get(register)
+        registers[register] = _expression_influence_parts(
+            expression,
+            registers=input_registers,
+            memory=memory,
+            stack=stack,
+            esp_offset=working.esp_offset,
+            unknown_write=working.unknown_write,
+            read_sites=read_sites,
+            image_base=image_base,
+            image_size=image_size,
+            maximum=maximum,
+            writable_image_ranges=writable_image_ranges,
+        )
+    esp_expression = raw_inputs.get("esp")
+    relative_esp = affine_register_offset(esp_expression, "esp")
+    esp_offset = (
+        working.esp_offset + relative_esp
+        if working.esp_offset is not None and relative_esp is not None
+        else None
+    )
+    if esp_offset is not None:
+        registers["esp"] = _Influence()
+    return _MutableState(
+        registers=tuple(sorted(registers.items())),
+        memory=working.memory,
+        stack=working.stack,
+        esp_offset=esp_offset,
+        unknown_write=working.unknown_write,
+    )
+
+
+def _mutable_call_entry_state(
+    unit: Mapping[str, Any],
+    state: _MutableState,
+    *,
+    event_index: int,
+    unit_id: str,
+    image_base: int,
+    image_size: int,
+    maximum: int,
+    writable_image_ranges: Sequence[tuple[int, int]],
+    checked_nonimage_stack: bool,
+) -> _MutableState:
+    pre_call = _mutable_call_input_state(
+        unit,
+        state,
+        event_index=event_index,
+        unit_id=unit_id,
+        image_base=image_base,
+        image_size=image_size,
+        maximum=maximum,
+        writable_image_ranges=writable_image_ranges,
+        checked_nonimage_stack=checked_nonimage_stack,
+        apply_local_writes=True,
+    )
+    if pre_call.esp_offset is None:
+        return _unknown_mutable_state(pre_call)
+    callee_base = pre_call.esp_offset - 4
+    # Callee facts are frame-relative.  Discard free stack below the call-time
+    # top and normalize retained arguments/caller-frame cells so callers at
+    # different concrete depths can meet at one function entry.
+    stack = {
+        offset - callee_base: cell
+        for offset, cell in pre_call.stack
+        if offset >= pre_call.esp_offset
+    }
+    registers = dict(pre_call.registers)
+    registers["esp"] = _Influence()
+    return _MutableState(
+        registers=tuple(sorted(registers.items())),
+        memory=pre_call.memory,
+        stack=tuple(sorted(stack.items())),
+        esp_offset=0,
+        unknown_write=pre_call.unknown_write,
+    )
+
+
+def _unknown_mutable_state(state: _MutableState) -> _MutableState:
+    return _MutableState(
+        registers=tuple(
+            (register, _Influence(unsafe=True))
+            for register in sorted(_REGISTER_UNIVERSE)
+        ),
+        memory=tuple(
+            (
+                slot,
+                _MutableCell(
+                    cell.value,
+                    initialized=cell.initialized,
+                    tainted=True,
+                ),
+            )
+            for slot, cell in state.memory
+        ),
+        stack=tuple(
+            (
+                offset,
+                _MutableCell(
+                    cell.value,
+                    initialized=cell.initialized,
+                    tainted=True,
+                ),
+            )
+            for offset, cell in state.stack
+        ),
+        esp_offset=None,
+        unknown_write=True,
+    )
+
+
+def _mutable_summary_values_influence(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    pre_call: _MutableState,
+    maximum: int,
+) -> _Influence:
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return _Influence(unsafe=True)
+    result = _Influence()
+    observed = False
+    for row in rows:
+        if not isinstance(row, Mapping):
+            return _Influence(unsafe=True)
+        observed = True
+        result = result.join(
+            _mutable_summary_value_influence(
+                row, pre_call=pre_call, maximum=maximum
+            ),
+            maximum=maximum,
+        )
+    return result if observed else _Influence(unsafe=True)
+
+
+def _mutable_summary_value_influence(
+    row: Mapping[str, Any],
+    *,
+    pre_call: _MutableState,
+    maximum: int,
+) -> _Influence:
+    kind = row.get("kind")
+    if kind == "exact":
+        value = row.get("value")
+        return (
+            _Influence()
+            if set(row) == {"kind", "value"}
+            and isinstance(value, int)
+            and not isinstance(value, bool)
+            else _Influence(unsafe=True)
+        )
+    if kind == "typed_origins":
+        try:
+            origins = parse_finite_value(
+                row.get("origins"),
+                finite_value_budget=maximum,
+                context="mutable call-summary origins",
+            )
+        except ValueError:
+            return _Influence(unsafe=True)
+        return (
+            _Influence()
+            if set(row) == {"kind", "origins"} and origins
+            else _Influence(unsafe=True)
+        )
+    if kind in {"external_result", "internal_contract_result"}:
+        # These values are not derived from mutable caller slots.  Their full
+        # shape is checked by the summary producer and provenance consumer.
+        return _Influence()
+    if kind == "input_register":
+        register = row.get("register")
+        return (
+            dict(pre_call.registers).get(register, _Influence(unsafe=True))
+            if set(row) == {"kind", "register"}
+            and register in _REGISTER_UNIVERSE
+            else _Influence(unsafe=True)
+        )
+    if kind == "input_stack_word":
+        offset = row.get("offset")
+        if (
+            set(row) != {"kind", "offset"}
+            or not isinstance(offset, int)
+            or isinstance(offset, bool)
+            or offset < 4
+            or pre_call.esp_offset is None
+        ):
+            return _Influence(unsafe=True)
+        cell = dict(pre_call.stack).get(pre_call.esp_offset + offset - 4)
+        if cell is None:
+            return _Influence(unsafe=True)
+        return cell.value.join(
+            _Influence(unsafe=cell.tainted or not cell.initialized),
+            maximum=maximum,
+        )
+    if kind == "stack_address":
+        raw_terms = row.get("register_terms", ())
+        if not isinstance(raw_terms, Sequence) or isinstance(
+            raw_terms, (str, bytes)
+        ):
+            return _Influence(unsafe=True)
+        result = _Influence()
+        registers = dict(pre_call.registers)
+        for term in raw_terms:
+            if not isinstance(term, Mapping):
+                return _Influence(unsafe=True)
+            register = term.get("register")
+            if register not in _REGISTER_UNIVERSE:
+                return _Influence(unsafe=True)
+            result = result.join(
+                registers.get(register, _Influence(unsafe=True)),
+                maximum=maximum,
+            )
+        return result
+    return _Influence(unsafe=True)
+
+
+def _apply_mutable_memory_summary(
+    row: Mapping[str, Any],
+    *,
+    pre_call: _MutableState,
+    memory: dict[int, _MutableCell],
+    image_base: int,
+    image_size: int,
+    maximum: int,
+) -> None:
+    if not isinstance(row, Mapping) or set(row) != {"location", "value"}:
+        return
+    location = row.get("location")
+    value = row.get("value")
+    if not isinstance(location, Mapping) or not isinstance(value, Mapping):
+        return
+    if location.get("kind") != "exact":
+        return
+    key = location.get("key")
+    if (
+        not isinstance(key, list)
+        or len(key) != 1
+        or not isinstance(key[0], int)
+        or isinstance(key[0], bool)
+    ):
+        return
+    slot_rva = _image_slot_rva(
+        key[0] & 0xFFFF_FFFF,
+        image_base=image_base,
+        image_size=image_size,
+    )
+    if slot_rva is None:
+        return
+    influence = _mutable_summary_value_influence(
+        value, pre_call=pre_call, maximum=maximum
+    )
+    memory[slot_rva] = _MutableCell(
+        influence,
+        initialized=True,
+        tainted=influence.unsafe or influence.overflow,
     )
 
 
@@ -1805,10 +2730,39 @@ def _join_mutable_states(
             )
         else:
             memory[slot] = left_cell.join(right_cell, maximum=maximum)
+    left_stack = dict(left.stack)
+    right_stack = dict(right.stack)
+    stack: dict[int, _MutableCell] = {}
+    for offset in sorted(left_stack.keys() | right_stack.keys()):
+        left_cell = left_stack.get(offset)
+        right_cell = right_stack.get(offset)
+        if left_cell is None or right_cell is None:
+            cell = left_cell if left_cell is not None else right_cell
+            assert cell is not None
+            stack[offset] = _MutableCell(
+                cell.value,
+                initialized=False,
+                tainted=True,
+            )
+        else:
+            stack[offset] = left_cell.join(right_cell, maximum=maximum)
+    esp_offset = (
+        left.esp_offset
+        if left.esp_offset == right.esp_offset
+        else None
+    )
+    unknown_write = left.unknown_write or right.unknown_write
+    if _bound_mutable_stack(
+        stack, esp_offset=esp_offset, maximum=maximum
+    ):
+        _mark_mutable_overflow(registers, memory, maximum=maximum)
+        unknown_write = True
     return _MutableState(
-        tuple(registers.items()),
-        tuple(memory.items()),
-        left.unknown_write or right.unknown_write,
+        registers=tuple(registers.items()),
+        memory=tuple(memory.items()),
+        stack=tuple(stack.items()),
+        esp_offset=esp_offset,
+        unknown_write=unknown_write,
     )
 
 
@@ -1857,11 +2811,14 @@ def _expression_influence(
     image_base: int,
     image_size: int,
     maximum: int,
+    writable_image_ranges: Sequence[tuple[int, int]],
 ) -> _Influence:
     return _expression_influence_parts(
         expression,
         registers=dict(state.registers),
         memory=dict(state.memory),
+        stack=dict(state.stack),
+        esp_offset=state.esp_offset,
         unknown_write=state.unknown_write,
         read_sites=_mutable_read_sites(
             unit_id=unit_id,
@@ -1876,6 +2833,7 @@ def _expression_influence(
         image_base=image_base,
         image_size=image_size,
         maximum=maximum,
+        writable_image_ranges=writable_image_ranges,
     )
 
 
@@ -1884,11 +2842,14 @@ def _expression_influence_parts(
     *,
     registers: Mapping[str, _Influence],
     memory: Mapping[int, _MutableCell],
+    stack: Mapping[int, _MutableCell],
+    esp_offset: int | None,
     unknown_write: bool,
     read_sites: Mapping[int, frozenset[tuple[int, str, int]]],
     image_base: int,
     image_size: int,
     maximum: int,
+    writable_image_ranges: Sequence[tuple[int, int]],
 ) -> _Influence:
     if not isinstance(expression, Mapping):
         return _Influence(unsafe=True)
@@ -1901,15 +2862,29 @@ def _expression_influence_parts(
     if op in {"load", "read32", "mem32"}:
         address_expression = expression.get("address")
         address = constant_u32(address_expression)
+        stack_relative = affine_register_offset(address_expression, "esp")
+        if address is None and stack_relative is not None:
+            if esp_offset is None:
+                return _Influence(unsafe=True)
+            cell = stack.get(esp_offset + stack_relative)
+            if cell is None:
+                return _Influence(unsafe=True)
+            return cell.value.join(
+                _Influence(unsafe=cell.tainted or not cell.initialized),
+                maximum=maximum,
+            )
         address_influence = _expression_influence_parts(
             address_expression,
             registers=registers,
             memory=memory,
+            stack=stack,
+            esp_offset=esp_offset,
             unknown_write=unknown_write,
             read_sites=read_sites,
             image_base=image_base,
             image_size=image_size,
             maximum=maximum,
+            writable_image_ranges=writable_image_ranges,
         )
         if address is None:
             # An unresolved address is one primary provenance frontier.  It
@@ -1930,15 +2905,19 @@ def _expression_influence_parts(
         site_witnesses = read_sites.get(slot_rva, frozenset())
         cell = memory.get(slot_rva)
         if cell is None:
+            writable = any(
+                start <= address and address + 4 <= end
+                for start, end in writable_image_ranges
+            )
             return address_influence.join(
                 _Influence(
                     slot_rvas=(
                         frozenset({slot_rva})
-                        if unknown_write
+                        if unknown_write or writable
                         else frozenset()
                     ),
                     read_sites=site_witnesses,
-                    unsafe=unknown_write,
+                    unsafe=unknown_write or writable,
                 ),
                 maximum=maximum,
             )
@@ -1947,8 +2926,7 @@ def _expression_influence_parts(
                 slot_rvas=frozenset({slot_rva}) | cell.value.slot_rvas,
                 read_sites=site_witnesses | cell.value.read_sites,
                 unsafe=(
-                    unknown_write
-                    or cell.tainted
+                    cell.tainted
                     or not cell.initialized
                     or cell.value.unsafe
                 ),
@@ -1976,11 +2954,14 @@ def _expression_influence_parts(
                     child,
                     registers=registers,
                     memory=memory,
+                    stack=stack,
+                    esp_offset=esp_offset,
                     unknown_write=unknown_write,
                     read_sites=read_sites,
                     image_base=image_base,
                     image_size=image_size,
                     maximum=maximum,
+                    writable_image_ranges=writable_image_ranges,
                 ),
                 maximum=maximum,
             )
