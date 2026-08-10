@@ -12,6 +12,9 @@ from spaghetti_extractor.call_site_effects import (
     CallSiteEffect,
     CallSiteId,
 )
+from spaghetti_extractor.authority_dependencies_v2 import (
+    call_frame_dependency_id,
+)
 from spaghetti_extractor.interprocedural_analysis import (
     _Influence,
     _MutableCallTarget,
@@ -871,6 +874,37 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             {},
             {"memory_access_proposals": [proposal]},
             available_dependencies={"exit:bounded-table"},
+        )
+
+        self.assertEqual(rejected["memory_access_proposals"], [])
+        self.assertEqual(accepted["memory_access_proposals"], [proposal])
+
+    def test_inductive_memory_fact_resolves_call_frame_to_callee_summary(
+        self,
+    ) -> None:
+        proposal = {
+            "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+            "status": "complete",
+            "unit_id": "read:cursor",
+            "event_index": 0,
+            "memory_kind": "read",
+            "width_bytes": 4,
+            "address_expression": reg("esi"),
+            "address_origins": [{"kind": "exact", "key": [SLOT]}],
+            "authority_dependencies": [
+                call_frame_dependency_id("caller", 0, "callee")
+            ],
+        }
+
+        rejected = _merge_inductive_operation_provenance(
+            {},
+            {"memory_access_proposals": [proposal]},
+            available_dependencies={"call-summary:other"},
+        )
+        accepted = _merge_inductive_operation_provenance(
+            {},
+            {"memory_access_proposals": [proposal]},
+            available_dependencies={"call-summary:callee"},
         )
 
         self.assertEqual(rejected["memory_access_proposals"], [])

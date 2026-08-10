@@ -31,6 +31,10 @@ from .analysis.interprocedural_lattice import (
 from .analysis.scc_worklist import SCCDecomposition, SCCWorklist, decompose_scc
 from .analysis_schema_v2 import interprocedural_authority_signature_v2
 from .address_expression_v2 import affine_register_offset, constant_u32
+from .authority_dependencies_v2 import (
+    canonical_authority_dependencies,
+    parse_call_frame_dependency,
+)
 from .external_capabilities import CallableExternalProfile
 from .external_interface_profiles import ExternalInterfaceProfile
 from .external_operation_profiles import ExternalOperationProfile
@@ -958,7 +962,8 @@ def _merge_inductive_event_rows(
         if (
             not isinstance(dependencies, list)
             or any(not isinstance(value, str) for value in dependencies)
-            or not set(dependencies) <= available_dependencies
+            or not set(canonical_authority_dependencies(dependencies))
+            <= available_dependencies
             or not isinstance(unit_id, str)
             or not isinstance(event_index, int)
             or isinstance(event_index, bool)
@@ -4024,23 +4029,8 @@ def _derive_dependency_edges(
 
 
 def _call_frame_dependency_target(value: Any) -> str | None:
-    if not isinstance(value, str) or not value.startswith("call-frame:"):
-        return None
-    try:
-        payload = json.loads(value.removeprefix("call-frame:"))
-    except (TypeError, ValueError, json.JSONDecodeError):
-        return None
-    if (
-        not isinstance(payload, list)
-        or len(payload) != 3
-        or not isinstance(payload[0], str)
-        or not isinstance(payload[1], int)
-        or isinstance(payload[1], bool)
-        or payload[1] < 0
-        or not isinstance(payload[2], str)
-    ):
-        return None
-    return payload[2]
+    parsed = parse_call_frame_dependency(value)
+    return None if parsed is None else parsed[2]
 
 
 def _call_targets_by_source(

@@ -112,7 +112,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `hybrid_authority_v2.py` | Immutable v2 authority records, exact bindings, finite alternatives, dependencies, and bundle closure. |
 | `machine_ir_authority_v2.py` | Stable exact unit/event binding kernel shared by machine-IR extraction and downstream authority replay. |
 | `analysis_schema_v2.py`, `artifact_identity_v2.py`, `artifact_projection_v2.py` | Shared v2 wire formats, canonical content identities, and independently cached artifact projections. |
-| `authority_bindings_v2.py`, `authority_record_core_v2.py` | Exact binary/unit/event bindings and common immutable authority-record validation. |
+| `authority_bindings_v2.py`, `authority_dependencies_v2.py`, `authority_record_core_v2.py` | Exact binary/unit/event bindings, canonical proof-dependency identities, and common immutable authority-record validation. |
 | `address_expression_v2.py` | Normalized address-expression IR used by provenance and target certificates. |
 | `checked_memory_access_v2.py` | Exact event-bound finite memory-address facts emitted by cold interprocedural replay. |
 | `checked_memory_address_domain_v2.py` | Exhaustive bounded-context address-domain certificates for one exact memory event; these authorize conditional mutable-slot reads without turning ordinary provenance observations into coverage claims. |

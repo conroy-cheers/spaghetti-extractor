@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any, Iterable, Mapping, Sequence
 
 from .hybrid_authority_v2 import (
@@ -33,6 +32,7 @@ from .authority_bindings_v2 import (
     IndirectExitBinding,
     match_indirect_recovery_v2,
 )
+from .authority_dependencies_v2 import call_frame_dependency_id
 from .machine_ir_authority_v2 import (
     MACHINE_IR_AUTHORITY_BINDINGS_FORMAT,
     MachineIRAuthorityV2Error,
@@ -280,7 +280,7 @@ def build_hybrid_authority_v2(
                 )
                 add(frame)
                 for target in callees:
-                    call_frames_by_dependency[_call_frame_dependency_id(
+                    call_frames_by_dependency[call_frame_dependency_id(
                         binding.unit.unit_id,
                         binding.event_index,
                         target.unit_id,
@@ -777,17 +777,6 @@ def _matching_recovery(
         else _missing(code, f"indirect exit {binding.exit_id} has no recovery fact")
     )
     return None, (issue,)
-
-
-def _call_frame_dependency_id(
-    source_unit_id: str, event_index: int, target_unit_id: str
-) -> str:
-    payload = json.dumps(
-        [source_unit_id, event_index, target_unit_id],
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
-    return f"call-frame:{payload}"
 
 
 def _checked_call_frame_dependencies(

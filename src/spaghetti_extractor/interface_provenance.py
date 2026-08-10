@@ -32,6 +32,9 @@ from .call_site_effects import (
     CallSiteId,
     CallWriteSpan,
 )
+from .authority_dependencies_v2 import (
+    call_frame_dependency_id,
+)
 from .call_frame_hypotheses import (
     PreservedRegisterHypothesis,
     hypothesis_id as call_frame_hypothesis_id,
@@ -486,7 +489,7 @@ def recover_external_interface_targets(
             key = (source, event_index)
             internal_call_dependency_ids[key] = (
                 internal_call_dependency_ids.get(key, frozenset())
-                | {_call_frame_dependency_id(source, event_index, target)}
+                | {call_frame_dependency_id(source, event_index, target)}
             )
     stack_entry_offsets = _normalize_checked_stack_entry_offsets(
         checked_stack_entry_offsets or {},
@@ -4599,7 +4602,7 @@ def _call_contract(
             return facts, issues, argument_recoveries
         recovered = recovered_calls.get((unit_id, event_index))
         call_dependencies = frozenset(
-            _call_frame_dependency_id(unit_id, event_index, target)
+            call_frame_dependency_id(unit_id, event_index, target)
             for target in (
                 recovered.get("target_unit_ids", ())
                 if isinstance(recovered, Mapping)
@@ -5685,7 +5688,7 @@ def _recovered_call_facts(
         recovery_id, str
     ) and recovery_id else frozenset()
     dependencies |= frozenset(
-        _call_frame_dependency_id(
+        call_frame_dependency_id(
             str(recovery.get("source_unit_id") or "unknown"),
             _integer(recovery.get("source_event_index")) or 0,
             target,
@@ -9358,17 +9361,6 @@ def _origins_json(origins: _Value) -> list[dict[str, Any]]:
     if origins is None:
         return []
     return [origin.as_json() for origin in sorted(origins)]
-
-
-def _call_frame_dependency_id(
-    source_unit_id: str, event_index: int, target_unit_id: str
-) -> str:
-    payload = json.dumps(
-        [source_unit_id, event_index, target_unit_id],
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
-    return f"call-frame:{payload}"
 
 
 def _deduplicate(values: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
