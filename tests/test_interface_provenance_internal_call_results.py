@@ -141,6 +141,72 @@ class InternalCallResultConsumerTests(unittest.TestCase):
             result,
         )
 
+    def test_parametric_memory_location_uses_exact_call_argument(self) -> None:
+        interface = next(iter(self.interface_value))
+        result = self._run_case(
+            "direct",
+            stack_argument=True,
+            initial_interface_value=frozenset({ValueOrigin("exact", (3,))}),
+            memory_relations=({
+                "location": {
+                    "kind": "parametric_location",
+                    "key": [
+                        fixtures.CHILD_SLOT - 12,
+                        [["input_stack_word", 4, 4]],
+                    ],
+                },
+                "value": {
+                    "kind": "typed_origins",
+                    "origins": origins_json(frozenset({interface})),
+                },
+            },),
+        )
+
+        self.assertEqual(
+            self._resolution(result, "exit:memory-dispatch")["status"],
+            "recovered",
+            result,
+        )
+        output = next(
+            row
+            for row in self._effect(result, "invoke")["result_frame"]["outputs"]
+            if row["location"] == {
+                "kind": "exact",
+                "key": [fixtures.CHILD_SLOT],
+            }
+        )
+        self.assertEqual(output["origins"], origins_json(self.interface_value))
+
+    def test_parametric_memory_location_rejects_ambiguous_call_argument(self) -> None:
+        interface = next(iter(self.interface_value))
+        result = self._run_case(
+            "direct",
+            stack_argument=True,
+            initial_interface_value=frozenset({
+                ValueOrigin("exact", (2,)),
+                ValueOrigin("exact", (3,)),
+            }),
+            memory_relations=({
+                "location": {
+                    "kind": "parametric_location",
+                    "key": [
+                        fixtures.CHILD_SLOT - 12,
+                        [["input_stack_word", 4, 4]],
+                    ],
+                },
+                "value": {
+                    "kind": "typed_origins",
+                    "origins": origins_json(frozenset({interface})),
+                },
+            },),
+        )
+
+        self.assertEqual(
+            self._resolution(result, "exit:memory-dispatch")["status"],
+            "incomplete",
+            result,
+        )
+
     def test_malformed_input_stack_word_relation_is_rejected(self) -> None:
         with self.assertRaisesRegex(
             ValueError, "internal-call memory-result output is invalid"

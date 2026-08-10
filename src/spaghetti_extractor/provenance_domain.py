@@ -46,6 +46,10 @@ PROVENANCE_KINDS = frozenset({
     # and address equality inside a checked replay, but is never itself a
     # callable-target or persistent-global fact.
     "symbolic_affine",
+    # Callee-summary-only address expression over input registers and input
+    # stack words. The summary consumer must instantiate it at one exact call
+    # site before it may become a concrete memory fact.
+    "parametric_location",
     # Compatibility spellings used while the interface-specific analysis is
     # migrated onto the operation vocabulary.
     "interface_object",

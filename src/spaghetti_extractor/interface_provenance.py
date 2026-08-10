@@ -2043,6 +2043,7 @@ def _normalize_internal_call_memory_results(
                     "stack_location",
                     "dynamic_range",
                     "dynamic_location",
+                    "parametric_location",
                     "symbolic_affine",
                 }
             ):
@@ -5500,6 +5501,7 @@ def _internal_target_call_facts(
         _internal_call_memory_result_outputs(
             internal_call_memory_result_relations.get(target_address, ()),
             pre_call=pre_call,
+            inventory=inventory,
             budget=budget,
         ),
         budget=budget,
@@ -5523,12 +5525,16 @@ def _internal_call_memory_result_outputs(
     relations: Sequence[_MemoryResultRelation],
     *,
     pre_call: _State,
+    inventory: _ProfileInventory,
     budget: int,
 ) -> dict[_Origin, _Value]:
     outputs: dict[_Origin, _Value] = {}
     for location, row in relations:
         instantiated_location = _instantiate_internal_summary_location(
-            location, pre_call=pre_call
+            location,
+            pre_call=pre_call,
+            inventory=inventory,
+            budget=budget,
         )
         if instantiated_location is None:
             continue
@@ -5564,8 +5570,27 @@ def _input_stack_summary_value(
 
 
 def _instantiate_internal_summary_location(
-    location: _Origin, *, pre_call: _State
+    location: _Origin,
+    *,
+    pre_call: _State,
+    inventory: _ProfileInventory,
+    budget: int,
 ) -> _Origin | None:
+    if location.kind == "parametric_location":
+        value = _instantiate_parametric_location(
+            location,
+            pre_call=pre_call,
+            inventory=inventory,
+            budget=budget,
+        )
+        if value is None or len(value) != 1:
+            return None
+        instantiated = next(iter(value))
+        return (
+            _dynamic_memory_location(instantiated)
+            if instantiated.kind in {"dynamic_range", "dynamic_location"}
+            else instantiated
+        )
     if location.kind != "stack_location":
         return location
     if len(location.key) != 1:
@@ -5579,6 +5604,58 @@ def _instantiate_internal_summary_location(
         (next(iter(call_offsets)) + offset - 4,),
         location.dependencies,
     )
+
+
+def _instantiate_parametric_location(
+    location: _Origin,
+    *,
+    pre_call: _State,
+    inventory: _ProfileInventory,
+    budget: int,
+) -> _Value:
+    if len(location.key) != 2:
+        return None
+    constant = _integer(location.key[0])
+    raw_terms = location.key[1]
+    if constant is None or not isinstance(raw_terms, tuple) or not raw_terms:
+        return None
+    result: _Value = frozenset({_Origin("exact", (constant & 0xFFFFFFFF,))})
+    for raw in raw_terms:
+        if not isinstance(raw, tuple) or len(raw) != 3:
+            return None
+        source_kind, source, coefficient = raw
+        coefficient = _integer(coefficient)
+        if coefficient is None or coefficient == 0:
+            return None
+        if source_kind == "input_register" and source in _REGISTERS:
+            value = pre_call.registers.get(str(source))
+        elif (
+            source_kind == "input_stack_word"
+            and isinstance(source, int)
+            and not isinstance(source, bool)
+            and source >= 4
+        ):
+            value = _input_stack_summary_value(
+                {"kind": "input_stack_word", "offset": source},
+                pre_call=pre_call,
+            )
+        else:
+            return None
+        scaled = _multiply_values(
+            value,
+            frozenset({_Origin("exact", (coefficient & 0xFFFFFFFF,))}),
+            budget=budget,
+        )
+        result = _add_values(
+            result,
+            scaled,
+            subtract=False,
+            budget=budget,
+            inventory=inventory,
+        )
+        if result is None:
+            return None
+    return with_value_dependencies(result, location.dependencies)
 
 
 def _instantiate_stack_summary_value(

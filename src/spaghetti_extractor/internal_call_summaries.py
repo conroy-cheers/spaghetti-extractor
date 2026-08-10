@@ -60,6 +60,23 @@ class _InputStackWord:
     offset: int
 
 
+@dataclass(frozen=True, order=True)
+class _ParametricTerm:
+    """One coefficient over a callee-entry input value."""
+
+    source_kind: str
+    source: str | int
+    coefficient: int
+
+
+@dataclass(frozen=True)
+class _ParametricWord:
+    """A 32-bit affine word over input registers and stack words."""
+
+    constant: int
+    terms: tuple[_ParametricTerm, ...]
+
+
 @dataclass(frozen=True)
 class _StackAddress:
     offset: int
@@ -104,6 +121,7 @@ class _TypedOrigins:
 _Value = (
     _RegisterOrigin
     | _InputStackWord
+    | _ParametricWord
     | _StackAddress
     | _Exact
     | _ExternalResult
@@ -2313,8 +2331,22 @@ def _transfer(
                 value = _evaluate(event.get("value"), state)
                 if width == 4 and value is not None:
                     stack_words[address.offset] = value
-            elif isinstance(address, _Exact) and width is not None:
-                location = ValueOrigin("exact", (address.value & 0xFFFFFFFF,))
+            elif (
+                (location := _summary_memory_location(address)) is not None
+                and width is not None
+                and (
+                    location.kind != "parametric_location"
+                    or (unit_id, event_index) not in memory_write_footprints
+                )
+            ):
+                if location.kind == "parametric_location":
+                    # The address relation is useful as a returned memory
+                    # effect, but by itself does not prove separation from the
+                    # callee's stack. Preserve no stack-frame evidence unless a
+                    # checked spatial footprint selected the branch below.
+                    stack_words.clear()
+                    input_stack_valid = False
+                    input_stack_kills = ()
                 memory_words = {
                     existing: value
                     for existing, value in memory_words.items()
@@ -2557,6 +2589,12 @@ def _serialize_summary_value(value: _Value) -> dict[str, Any] | None:
         return {"kind": "input_register", "register": value.register}
     if isinstance(value, _InputStackWord):
         return {"kind": "input_stack_word", "offset": value.offset}
+    if isinstance(value, _ParametricWord):
+        return {
+            "kind": "parametric_word",
+            "constant": value.constant,
+            "terms": [_parametric_term_json(term) for term in value.terms],
+        }
     if isinstance(value, _StackAddress):
         return {
             "kind": "stack_address",
@@ -2609,6 +2647,8 @@ def _parse_summary_value(value: Any) -> _Value:
             and 4 <= offset <= 0xFFFFFFFF
             else None
         )
+    if kind == "parametric_word":
+        return _parse_parametric_word(row)
     if kind == "stack_address":
         offset = _integer(row.get("offset"))
         raw_terms = row.get("register_terms", [])
@@ -2765,6 +2805,13 @@ def _instantiate_summary_location(
     *,
     input_state: _State | None,
 ) -> ValueOrigin | None:
+    if location.kind == "parametric_location":
+        parametric = _parametric_word_from_location(location)
+        if parametric is None or input_state is None:
+            return None
+        return _summary_memory_location(
+            _instantiate_parametric_word(parametric, input_state=input_state)
+        )
     if location.kind != "stack_location":
         return location
     if len(location.key) != 1 or input_state is None:
@@ -2840,6 +2887,13 @@ def _instantiate_summary_value(
             input_state.registers.get("esp"),
             _StackTransform(offset - 4, _normalize_register_terms(terms)),
             input_state.registers,
+        )
+    if kind == "parametric_word":
+        parsed = _parse_parametric_word(row)
+        return (
+            None
+            if parsed is None or input_state is None
+            else _instantiate_parametric_word(parsed, input_state=input_state)
         )
     if kind == "typed_origins":
         parsed = _parse_summary_value(raw)
@@ -3115,6 +3169,17 @@ def _locations_provably_disjoint(
             and right is not None
             and (left + 4 <= right or right + span.size <= left)
         )
+    if location.kind == span.base.kind == "parametric_location":
+        left = _parametric_word_from_location(location)
+        right = _parametric_word_from_location(span.base)
+        if left is None or right is None or left.terms != right.terms:
+            return False
+        return not _ranges_overlap_u32(
+            left.constant,
+            4,
+            right.constant,
+            span.size,
+        )
     return False
 
 
@@ -3180,7 +3245,15 @@ def _evaluate(expression: Any, state: _State) -> _Value:
                 left.value + right.offset,
                 right.register_terms,
             )
-        return None
+        return _combine_parametric_words(left, right, subtract=subtract)
+    if op in {"mul", "mul32"}:
+        operands = _binary_operands(expression)
+        if operands is None:
+            return None
+        return _multiply_parametric_words(
+            _evaluate(operands[0], state),
+            _evaluate(operands[1], state),
+        )
     if op in {"load", "read32", "mem32"}:
         width = expression.get("width", expression.get("width_bits", 4))
         if width not in {4, 32, None}:
@@ -3192,8 +3265,227 @@ def _evaluate(expression: Any, state: _State) -> _Value:
             return state.memory_words.get(
                 ValueOrigin("exact", (address.value & 0xFFFFFFFF,))
             )
+        location = _summary_memory_location(address)
+        if location is not None:
+            return state.memory_words.get(location)
         return None
     return None
+
+
+def _summary_memory_location(value: _Value) -> ValueOrigin | None:
+    """Normalize one summary word into a serializable memory location."""
+
+    if isinstance(value, _Exact):
+        return ValueOrigin("exact", (value.value & 0xFFFFFFFF,))
+    parametric = _as_parametric_word(value)
+    if parametric is not None:
+        if not parametric.terms:
+            return ValueOrigin("exact", (parametric.constant,))
+        return ValueOrigin(
+            "parametric_location",
+            (
+                parametric.constant,
+                tuple(
+                    (
+                        term.source_kind,
+                        term.source,
+                        term.coefficient,
+                    )
+                    for term in parametric.terms
+                ),
+            ),
+        )
+    if isinstance(value, _ExternalResult):
+        key: tuple[Any, ...] = (
+            value.producer_unit_id,
+            value.event_index,
+            value.dll,
+            value.identity_kind,
+            value.identity_value,
+        )
+        if value.extent_lower_bound is not None:
+            key = (*key, value.extent_lower_bound)
+        return ValueOrigin("dynamic_location", (*key, 0))
+    if isinstance(value, _TypedOrigins) and len(value.origins) == 1:
+        origin = value.origins[0]
+        if origin.kind == "dynamic_range":
+            return ValueOrigin(
+                "dynamic_location", (*origin.key, 0), origin.dependencies
+            )
+        if origin.kind in {"exact", "dynamic_location", "stack_location"}:
+            return origin
+    return None
+
+
+def _as_parametric_word(value: _Value) -> _ParametricWord | None:
+    if isinstance(value, _ParametricWord):
+        return value
+    if isinstance(value, _RegisterOrigin):
+        return _make_parametric_word(
+            0, (_ParametricTerm("input_register", value.register, 1),)
+        )
+    if isinstance(value, _InputStackWord):
+        return _make_parametric_word(
+            0, (_ParametricTerm("input_stack_word", value.offset, 1),)
+        )
+    if isinstance(value, _Exact):
+        return _ParametricWord(value.value & 0xFFFFFFFF, ())
+    return None
+
+
+def _make_parametric_word(
+    constant: int, terms: Iterable[_ParametricTerm]
+) -> _ParametricWord:
+    combined: dict[tuple[str, str | int], int] = defaultdict(int)
+    for term in terms:
+        identity = (term.source_kind, term.source)
+        combined[identity] = (
+            combined[identity] + term.coefficient
+        ) & 0xFFFFFFFF
+    normalized = tuple(
+        _ParametricTerm(kind, source, coefficient)
+        for (kind, source), coefficient in sorted(
+            combined.items(), key=lambda item: (item[0][0], str(item[0][1]))
+        )
+        if coefficient
+    )
+    return _ParametricWord(constant & 0xFFFFFFFF, normalized)
+
+
+def _combine_parametric_words(
+    left: _Value, right: _Value, *, subtract: bool
+) -> _Value:
+    lhs = _as_parametric_word(left)
+    rhs = _as_parametric_word(right)
+    if lhs is None or rhs is None:
+        return None
+    sign = -1 if subtract else 1
+    result = _make_parametric_word(
+        lhs.constant + sign * rhs.constant,
+        (
+            *lhs.terms,
+            *(
+                _ParametricTerm(
+                    term.source_kind,
+                    term.source,
+                    sign * term.coefficient,
+                )
+                for term in rhs.terms
+            ),
+        ),
+    )
+    return _Exact(result.constant) if not result.terms else result
+
+
+def _multiply_parametric_words(left: _Value, right: _Value) -> _Value:
+    if isinstance(left, _Exact):
+        factor = left.value
+        parametric = _as_parametric_word(right)
+    elif isinstance(right, _Exact):
+        factor = right.value
+        parametric = _as_parametric_word(left)
+    else:
+        return None
+    if parametric is None:
+        return None
+    result = _make_parametric_word(
+        parametric.constant * factor,
+        (
+            _ParametricTerm(
+                term.source_kind,
+                term.source,
+                term.coefficient * factor,
+            )
+            for term in parametric.terms
+        ),
+    )
+    return _Exact(result.constant) if not result.terms else result
+
+
+def _parametric_term_json(term: _ParametricTerm) -> dict[str, Any]:
+    return {
+        "source_kind": term.source_kind,
+        "source": term.source,
+        "coefficient": term.coefficient,
+    }
+
+
+def _parse_parametric_word(row: Mapping[str, Any]) -> _ParametricWord | None:
+    if set(row) != {"kind", "constant", "terms"}:
+        return None
+    constant = _integer(row.get("constant"))
+    raw_terms = row.get("terms")
+    if constant is None or not isinstance(raw_terms, list) or not raw_terms:
+        return None
+    terms: list[_ParametricTerm] = []
+    for raw in raw_terms:
+        term = _mapping(raw)
+        if set(term) != {"source_kind", "source", "coefficient"}:
+            return None
+        source_kind = term.get("source_kind")
+        source = term.get("source")
+        coefficient = _integer(term.get("coefficient"))
+        if (
+            source_kind == "input_register"
+            and source not in _REGISTERS
+        ) or (
+            source_kind == "input_stack_word"
+            and (
+                not isinstance(source, int)
+                or isinstance(source, bool)
+                or source < 4
+            )
+        ) or source_kind not in {"input_register", "input_stack_word"} or (
+            coefficient is None or coefficient == 0
+        ):
+            return None
+        terms.append(_ParametricTerm(str(source_kind), source, coefficient))
+    result = _make_parametric_word(constant, terms)
+    return result if result.terms and len(result.terms) == len(terms) else None
+
+
+def _parametric_word_from_location(
+    location: ValueOrigin,
+) -> _ParametricWord | None:
+    if location.kind != "parametric_location" or len(location.key) != 2:
+        return None
+    constant = _integer(location.key[0])
+    raw_terms = location.key[1]
+    if constant is None or not isinstance(raw_terms, tuple) or not raw_terms:
+        return None
+    terms = []
+    for raw in raw_terms:
+        if not isinstance(raw, tuple) or len(raw) != 3:
+            return None
+        terms.append({
+            "source_kind": raw[0],
+            "source": raw[1],
+            "coefficient": raw[2],
+        })
+    return _parse_parametric_word({
+        "kind": "parametric_word",
+        "constant": constant,
+        "terms": terms,
+    })
+
+
+def _instantiate_parametric_word(
+    value: _ParametricWord, *, input_state: _State
+) -> _Value:
+    result: _Value = _Exact(value.constant)
+    for term in value.terms:
+        if term.source_kind == "input_register":
+            source = input_state.registers.get(str(term.source))
+        else:
+            source = _instantiate_summary_value(
+                {"kind": "input_stack_word", "offset": int(term.source)},
+                input_state=input_state,
+            )
+        scaled = _multiply_parametric_words(source, _Exact(term.coefficient))
+        result = _combine_parametric_words(result, scaled, subtract=False)
+        if result is None:
+            return None
+    return result
 
 
 def _read_stack_word(state: _State, offset: int) -> _Value:

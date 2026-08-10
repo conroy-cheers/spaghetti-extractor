@@ -42,6 +42,10 @@ def sub(left: object, right: object) -> dict[str, object]:
     return {"op": "sub32", "args": [left, right]}
 
 
+def mul(left: object, right: object) -> dict[str, object]:
+    return {"op": "mul32", "args": [left, right]}
+
+
 def load(address: object) -> dict[str, object]:
     return {"op": "load", "address": address, "width": 4}
 
@@ -787,6 +791,95 @@ class InternalCallSummaryEffectTests(unittest.TestCase):
         ][0]["value"]
         self.assertEqual(root_value["kind"], "typed_origins")
         self.assertEqual(root_value["origins"][0]["key"], ["surface"])
+
+    def test_indexed_input_location_composes_to_exact_caller_slot(self) -> None:
+        base = 0x430000
+        result = derive_internal_call_preservation_summaries(
+            units=[
+                unit(
+                    "reserve-index",
+                    0x1000,
+                    outcome="fallthrough",
+                    writes=[{
+                        "register": "esp",
+                        "value": sub(reg("esp"), const(4)),
+                    }],
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": sub(reg("esp"), const(4)),
+                        "value": const(3),
+                    }],
+                ),
+                unit(
+                    "call-store",
+                    0x1001,
+                    outcome="fallthrough",
+                    events=[internal_call(0x2000)],
+                ),
+                unit("root-return", 0x1002, outcome="return"),
+                unit(
+                    "load-index",
+                    0x2000,
+                    outcome="fallthrough",
+                    writes=[{
+                        "register": "ebx",
+                        "value": load(add(reg("esp"), const(4))),
+                    }],
+                ),
+                unit(
+                    "store-indexed",
+                    0x2001,
+                    outcome="return",
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": add(
+                            const(base), mul(reg("ebx"), const(4))
+                        ),
+                        "value": const(0xDEADBEEF),
+                    }],
+                ),
+            ],
+            roots=["reserve-index"],
+            direct_edges=[
+                edge("reserve-index", "call-store"),
+                edge("call-store", "root-return"),
+                edge("load-index", "store-indexed"),
+            ],
+            internal_call_edges=[{
+                "source_unit_id": "call-store",
+                "source_event_index": 0,
+                "target_unit_id": "load-index",
+                "status": "resolved",
+            }],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+        )
+
+        summaries = {
+            row["target_unit_id"]: row for row in result["summaries"]
+        }
+        callee_location = summaries["load-index"]["result_memory_origins"][
+            "locations"
+        ][0]["location"]
+        self.assertEqual(callee_location, {
+            "kind": "parametric_location",
+            "key": [base, (("input_stack_word", 4, 4),)],
+        })
+        root_locations = summaries["reserve-index"]["result_memory_origins"][
+            "locations"
+        ]
+        exact = next(
+            row
+            for row in root_locations
+            if row["location"] == {"kind": "exact", "key": [base + 12]}
+        )
+        self.assertEqual(exact["value"], {
+            "kind": "exact",
+            "value": 0xDEADBEEF,
+        })
 
     def test_known_stack_overwrite_kills_input_stack_relation(self) -> None:
         slot = 0x434960
