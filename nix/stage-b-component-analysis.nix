@@ -939,6 +939,14 @@ let
                       "recovered_targets", []
                   ),
                   call_site_effects=operation.get("call_site_effects", []),
+                  checked_memory_access_facts=operation.get(
+                      "checked_memory_access_facts", []
+                  ),
+                  interprocedural_authority_sha256=(
+                      interprocedural.get("fixed_point", {}).get(
+                          "authority_artifact_sha256"
+                      )
+                  ),
                   finite_offset_budget=analysis_finite_value_budget,
               )
 

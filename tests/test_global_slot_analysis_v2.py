@@ -269,6 +269,7 @@ def _call_effect(
     *,
     output_address: int | None = None,
     memory_complete: bool = True,
+    transfer_kind: str = "external_call",
 ) -> dict[str, object]:
     outputs = []
     writes = []
@@ -289,7 +290,7 @@ def _call_effect(
         "format": "stage-a-call-site-effect-v2",
         "unit_id": unit_id,
         "event_index": 0,
-        "transfer_kind": "external_call",
+        "transfer_kind": transfer_kind,
         "status": "complete" if memory_complete else "incomplete",
         "register_frame": {
             "status": "complete",
@@ -313,6 +314,70 @@ def _call_effect(
 
 
 class GlobalSlotAnalysisV2Tests(unittest.TestCase):
+    def test_internal_call_summary_does_not_precede_callee_entry(self) -> None:
+        caller = _unit(
+            "caller",
+            0x1000,
+            [],
+            direct_targets=[0x1010],
+            external_events=[{
+                "kind": "internal_call",
+                "instruction_rva": 0x1000,
+                "target_rva": 0x2000,
+                "return_rva": 0x1010,
+            }],
+        )
+        continuation = _unit("continuation", 0x1010, [_read()])
+        callee = _unit("callee", 0x2000, [_read()])
+        units = [caller, continuation, callee]
+        result = _analyze(
+            units,
+            _graph(
+                units,
+                edges=[
+                    ("caller", "callee"),
+                    ("caller", "continuation"),
+                ],
+            ),
+            launch_initial_values={SLOT: 0x401020},
+            call_site_effects=[_call_effect(
+                "caller",
+                memory_complete=False,
+                transfer_kind="internal_call",
+            )],
+        )
+
+        reads = {
+            row["site"]["unit_id"]: row
+            for row in result["global_slot_evidence"][0]["read_inventory"]
+        }
+        self.assertFalse(reads["callee"]["state"]["tainted"])
+        self.assertEqual(reads["callee"]["status"], "complete")
+        self.assertTrue(reads["continuation"]["state"]["tainted"])
+        self.assertEqual(reads["continuation"]["status"], "incomplete")
+
+    def test_missing_call_effect_is_unknown_post_call_memory(self) -> None:
+        call = _unit(
+            "call",
+            0x1000,
+            [],
+            direct_targets=[0x1010],
+            external_events=[{
+                "kind": "external_call",
+                "instruction_rva": 0x1000,
+                "return_rva": 0x1010,
+            }],
+        )
+        use = _unit("use", 0x1010, [_read()])
+        result = _analyze(
+            [call, use],
+            _graph([call, use], edges=[("call", "use")]),
+            launch_initial_values={SLOT: 0x401020},
+        )
+
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("global_slot_unknown_write_taint", _codes(result))
+
     def test_relevant_read_issue_is_scoped_to_its_candidate_slot(self) -> None:
         second_slot = SLOT + 4
         units = [_unit(
@@ -602,6 +667,34 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
             launch_initial_values={SLOT: 0},
             checked_access_facts=facts,
         )
+        stack = derive_stack_range_analysis_v2(
+            units=units,
+            graph=_graph(units),
+            launch_assumptions={
+                "assumptions": {
+                    "initial_stack": {
+                        "contract": "private-non-image-stack-range-v2",
+                        "mapped_separately_from_image": True,
+                        "minimum_accessible_bytes_below": 0x1000,
+                        "minimum_accessible_bytes_above": 0x1000,
+                    }
+                }
+            },
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_ir_sha256(units),
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            checked_memory_access_facts=facts,
+            interprocedural_authority_sha256=INTERPROCEDURAL_SHA256,
+        )
+        with_spatial_fact = _analyze(
+            units,
+            _graph(units),
+            launch_initial_values={SLOT: 0},
+            checked_access_facts=facts,
+            checked_spatial_facts=stack["checked_spatial_facts"],
+            range_binding=stack["binding"],
+        )
 
         self.assertEqual(without_fact["status"], "complete")
         self.assertEqual(with_fact["status"], "complete")
@@ -612,6 +705,15 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
         self.assertEqual(
             aliasing[0]["reason"],
             "checked_non_image_origin_lacks_spatial_witness",
+        )
+        self.assertEqual(
+            with_spatial_fact["global_slot_evidence"][0][
+                "reachable_write_inventory"
+            ]["aliasing_writes"],
+            [],
+        )
+        self.assertEqual(
+            with_spatial_fact["counts"]["checked_memory_spatial_facts"], 1
         )
 
     def test_exact_machine_address_precedes_weaker_origin_evidence(self) -> None:

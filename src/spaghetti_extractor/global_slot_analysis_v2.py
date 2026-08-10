@@ -48,7 +48,10 @@ from .checked_memory_address_domain_v2 import (
     validate_checked_memory_address_domains_v2,
 )
 from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
-from .stack_range_analysis_v2 import CHECKED_STACK_SPATIAL_FACT_V2_FORMAT
+from .stack_range_analysis_v2 import (
+    CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT,
+    CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
+)
 
 
 GLOBAL_SLOT_ANALYSIS_V2_FORMAT = "stage-a-global-slot-analysis-v2"
@@ -288,6 +291,7 @@ def analyze_global_slots_v2(
     spatial_facts, spatial_issues = _normalize_spatial_facts(
         checked_memory_spatial_facts,
         units=normalized_units,
+        access_facts=access_facts,
         image_base=image_base,
         size_of_image=size_of_image,
         authority_binding=range_authority_binding,
@@ -1701,6 +1705,7 @@ def _normalize_spatial_facts(
     facts: Sequence[Mapping[str, Any]],
     *,
     units: Mapping[str, Mapping[str, Any]],
+    access_facts: Mapping[str, CheckedMemoryAccessFact],
     image_base: int,
     size_of_image: int,
     authority_binding: Mapping[str, Any] | None,
@@ -1709,7 +1714,7 @@ def _normalize_spatial_facts(
     issues: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     seen_events: set[tuple[str, int]] = set()
-    expected_fields = {
+    esp_fields = {
         "format",
         "status",
         "unit_id",
@@ -1727,15 +1732,42 @@ def _normalize_spatial_facts(
         "id",
         "fact_sha256",
     }
+    origin_fields = {
+        "format",
+        "status",
+        "unit_id",
+        "event_index",
+        "memory_kind",
+        "width_bytes",
+        "address_expression",
+        "memory_access_fact_id",
+        "memory_access_fact_sha256",
+        "address_origins",
+        "frame_base_offsets",
+        "minimum_start_offset",
+        "maximum_start_offset",
+        "stack_contract",
+        "disjoint_from_image",
+        "authority_binding",
+        "id",
+        "fact_sha256",
+    }
     for index, raw in enumerate(facts):
         try:
-            if not isinstance(raw, Mapping) or set(raw) != expected_fields:
+            if not isinstance(raw, Mapping):
+                raise ValueError("spatial fact has noncanonical fields")
+            fields = frozenset(raw)
+            if fields not in {frozenset(esp_fields), frozenset(origin_fields)}:
                 raise ValueError("spatial fact has noncanonical fields")
             identity = raw.get("id")
             unit_id = raw.get("unit_id")
             event_index = raw.get("event_index")
+            fact_format = raw.get("format")
             if (
-                raw.get("format") != CHECKED_STACK_SPATIAL_FACT_V2_FORMAT
+                fact_format not in {
+                    CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
+                    CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT,
+                }
                 or raw.get("status") != "complete"
                 or not isinstance(identity, str)
                 or not identity
@@ -1753,9 +1785,6 @@ def _normalize_spatial_facts(
                 raise ValueError("spatial fact references an unknown event")
             event = events[event_index]
             width = raw.get("width_bytes")
-            address_offset = affine_register_offset(
-                raw.get("address_expression"), "esp"
-            )
             if (
                 not isinstance(event, Mapping)
                 or raw.get("memory_kind") != event.get("kind")
@@ -1764,21 +1793,22 @@ def _normalize_spatial_facts(
                 or not isinstance(width, int)
                 or isinstance(width, bool)
                 or not 0 < width <= 4096
-                or address_offset is None
-                or raw.get("address_esp_offset") != address_offset
             ):
                 raise ValueError("spatial fact contradicts its exact memory event")
-            offsets = raw.get("entry_esp_offsets")
-            if (
-                not isinstance(offsets, list)
-                or not offsets
-                or any(
-                    not isinstance(value, int) or isinstance(value, bool)
-                    for value in offsets
+            if fact_format == CHECKED_STACK_SPATIAL_FACT_V2_FORMAT:
+                if set(raw) != esp_fields:
+                    raise ValueError("ESP spatial fact has noncanonical fields")
+                starts = _esp_spatial_starts(raw)
+                id_prefix = "checked-stack-spatial-v2:"
+            else:
+                if set(raw) != origin_fields:
+                    raise ValueError("origin spatial fact has noncanonical fields")
+                starts = _origin_spatial_starts(
+                    raw,
+                    event_node=f"event:{unit_id}:{event_index}",
+                    access_facts=access_facts,
                 )
-                or offsets != sorted(set(offsets))
-            ):
-                raise ValueError("spatial fact entry offsets are not finite canonical data")
+                id_prefix = "checked-stack-origin-spatial-v2:"
             contract = raw.get("stack_contract")
             if not isinstance(contract, Mapping) or set(contract) != {
                 "lower_bound", "upper_bound_exclusive"
@@ -1794,7 +1824,6 @@ def _normalize_spatial_facts(
                 or lower >= upper
             ):
                 raise ValueError("spatial fact stack bounds are invalid")
-            starts = [int(value) + address_offset for value in offsets]
             if (
                 raw.get("minimum_start_offset") != min(starts)
                 or raw.get("maximum_start_offset") != max(starts)
@@ -1817,9 +1846,7 @@ def _normalize_spatial_facts(
                 for key, value in raw.items()
                 if key not in {"id", "fact_sha256"}
             }
-            expected_id = (
-                "checked-stack-spatial-v2:" + canonical_sha256(core)
-            )
+            expected_id = id_prefix + canonical_sha256(core)
             payload = {**core, "id": expected_id}
             if (
                 identity != expected_id
@@ -1842,6 +1869,77 @@ def _normalize_spatial_facts(
             str(row["unit_id"]), int(row["event_index"]), str(row["id"])
         ),
     ), _deduplicate_issues(issues)
+
+
+def _esp_spatial_starts(raw: Mapping[str, Any]) -> list[int]:
+    address_offset = affine_register_offset(
+        raw.get("address_expression"), "esp"
+    )
+    offsets = raw.get("entry_esp_offsets")
+    if (
+        address_offset is None
+        or raw.get("address_esp_offset") != address_offset
+        or not isinstance(offsets, list)
+        or not offsets
+        or any(
+            not isinstance(value, int) or isinstance(value, bool)
+            for value in offsets
+        )
+        or offsets != sorted(set(offsets))
+    ):
+        raise ValueError(
+            "spatial fact entry offsets are not finite canonical data"
+        )
+    return [int(value) + address_offset for value in offsets]
+
+
+def _origin_spatial_starts(
+    raw: Mapping[str, Any],
+    *,
+    event_node: str,
+    access_facts: Mapping[str, CheckedMemoryAccessFact],
+) -> list[int]:
+    access_fact = access_facts.get(event_node)
+    if access_fact is None:
+        raise ValueError("origin spatial fact lacks a checked memory-access fact")
+    payload = access_fact.to_payload()
+    if (
+        raw.get("memory_access_fact_id") != access_fact.fact_id
+        or raw.get("memory_access_fact_sha256") != payload["fact_sha256"]
+        or raw.get("address_origins")
+        != [origin.to_value() for origin in access_fact.address_origins]
+    ):
+        raise ValueError("origin spatial fact has a stale access-fact binding")
+    origin_offsets: list[int] = []
+    for origin in access_fact.address_origins:
+        value = origin.to_value()
+        key = value.get("key") if isinstance(value, Mapping) else None
+        if (
+            not isinstance(value, Mapping)
+            or value.get("kind") != "stack_location"
+            or not isinstance(key, list)
+            or len(key) != 1
+            or not isinstance(key[0], int)
+            or isinstance(key[0], bool)
+        ):
+            raise ValueError("origin spatial fact has a non-stack origin")
+        origin_offsets.append(int(key[0]))
+    frame_offsets = raw.get("frame_base_offsets")
+    if (
+        not isinstance(frame_offsets, list)
+        or not frame_offsets
+        or any(
+            not isinstance(value, int) or isinstance(value, bool)
+            for value in frame_offsets
+        )
+        or frame_offsets != sorted(set(frame_offsets))
+    ):
+        raise ValueError("origin spatial fact frame bases are not canonical")
+    return [
+        int(frame_base) + origin_offset
+        for frame_base in frame_offsets
+        for origin_offset in sorted(set(origin_offsets))
+    ]
 
 
 def _events(
@@ -1878,6 +1976,7 @@ def _events(
                 raw=copy.deepcopy(dict(raw)),
                 order_key=(int(instruction_rva), 0, event_index),
             )
+    covered_call_sites: set[CallSiteId] = set()
     for site, effect in sorted(
         call_site_effects.items(),
         key=lambda item: (item[0].unit_id, item[0].event_index),
@@ -1886,6 +1985,7 @@ def _events(
             continue
         unit = units[site.unit_id]
         external_event = unit["semantics"]["external_events"][site.event_index]
+        covered_call_sites.add(site)
         instruction_rva = external_event.get("instruction_rva")
         if not _u32(instruction_rva):
             instruction_rva = unit["source"]["original"]["rva_start"]
@@ -1909,6 +2009,9 @@ def _events(
                 "value": None,
                 "instruction_rva": instruction_rva,
                 "source": "incomplete_interprocedural_call_memory_frame",
+                "call_site_unit_id": site.unit_id,
+                "call_event_index": site.event_index,
+                "transfer_kind": effect.transfer_kind,
                 "interprocedural_authority_sha256": (
                     interprocedural_authority_sha256
                 ),
@@ -1948,6 +2051,9 @@ def _events(
                     "value": None,
                     "instruction_rva": instruction_rva,
                     "source": "interprocedural_call_memory_frame",
+                    "call_site_unit_id": site.unit_id,
+                    "call_event_index": site.event_index,
+                    "transfer_kind": effect.transfer_kind,
                     "interprocedural_authority_sha256": (
                         interprocedural_authority_sha256
                     ),
@@ -1985,6 +2091,9 @@ def _events(
                 "value_origins": origins,
                 "instruction_rva": instruction_rva,
                 "source": "interprocedural_call_result_frame",
+                "call_site_unit_id": site.unit_id,
+                "call_event_index": site.event_index,
+                "transfer_kind": effect.transfer_kind,
                 "interprocedural_authority_sha256": (
                     interprocedural_authority_sha256
                 ),
@@ -1999,6 +2108,57 @@ def _events(
                 raw=raw,
                 order_key=(instruction_rva, 2, output_index),
             )
+
+    # A missing call-site effect is an unknown post-call memory transition.
+    # Omitting it would silently treat an uncontracted call as preserving all
+    # mutable state.
+    for unit_id in sorted(reachable):
+        external_events = units[unit_id]["semantics"].get("external_events", ())
+        if not isinstance(external_events, Sequence) or isinstance(
+            external_events, (str, bytes)
+        ):
+            continue
+        for event_index, raw_event in enumerate(external_events):
+            if (
+                not isinstance(raw_event, Mapping)
+                or raw_event.get("kind")
+                not in {"external_call", "indirect_call", "internal_call"}
+            ):
+                continue
+            site = CallSiteId(unit_id, event_index)
+            if site in covered_call_sites:
+                continue
+            instruction_rva = raw_event.get("instruction_rva")
+            if not _u32(instruction_rva):
+                instruction_rva = units[unit_id]["source"]["original"][
+                    "rva_start"
+                ]
+            assert isinstance(instruction_rva, int)
+            node_id = _call_unknown_memory_write_node(unit_id, event_index)
+            raw = {
+                "kind": "write",
+                "width": None,
+                "address": None,
+                "value": None,
+                "instruction_rva": instruction_rva,
+                "source": "missing_interprocedural_call_memory_frame",
+                "call_site_unit_id": unit_id,
+                "call_event_index": event_index,
+                "transfer_kind": str(raw_event.get("kind")),
+                "interprocedural_authority_sha256": (
+                    interprocedural_authority_sha256
+                ),
+            }
+            result[node_id] = _Event(
+                node_id=node_id,
+                site=_Site(unit_id, event_index, instruction_rva),
+                kind="write",
+                width=None,
+                address=None,
+                value=None,
+                raw=raw,
+                order_key=(instruction_rva, 1, 0),
+            )
     return result
 
 
@@ -2012,25 +2172,60 @@ def _event_graph(
 ) -> dict[str, Any]:
     edges: dict[str, set[str]] = {"super": set()}
     predecessors: dict[str, set[str]] = {"super": set()}
+    by_rva = {
+        int(unit["source"]["original"]["rva_start"]): unit_id
+        for unit_id, unit in units.items()
+    }
+    call_routing: dict[str, tuple[tuple[str, ...], str]] = {}
     for unit_id in sorted(reachable):
         entry = _entry_node(unit_id)
         exit_node = _exit_node(unit_id)
-        nodes = [
+        unit_events = sorted(
+            (
+                event
+                for event in events.values()
+                if event.site.unit_id == unit_id
+            ),
+            key=lambda event: (event.order_key, event.node_id),
+        )
+        ordinary_nodes = [
             event.node_id
-            for event in sorted(
-                (
-                    event
-                    for event in events.values()
-                    if event.site.unit_id == unit_id
-                ),
-                key=lambda event: (event.order_key, event.node_id),
-            )
+            for event in unit_events
+            if not _is_call_summary_event(event)
         ]
-        chain = [entry, *nodes, exit_node]
+        summary_nodes = [
+            event.node_id
+            for event in unit_events
+            if _is_call_summary_event(event)
+        ]
+        routing = _internal_call_routing(
+            unit=units[unit_id],
+            successor_ids=successors.get(unit_id, ()),
+            by_rva=by_rva,
+            reachable=reachable,
+        )
+        chain = [entry, *ordinary_nodes, *summary_nodes, exit_node]
         for node in chain:
             edges.setdefault(node, set())
             predecessors.setdefault(node, set())
-        for source, target in zip(chain, chain[1:]):
+        if routing is None:
+            pairs = zip(chain, chain[1:])
+        else:
+            pre_call = ordinary_nodes[-1] if ordinary_nodes else entry
+            summary_chain = [pre_call, *summary_nodes, exit_node]
+            pairs = zip(summary_chain, summary_chain[1:])
+            target_ids, continuation_id = routing
+            call_routing[unit_id] = (target_ids, continuation_id)
+            for target_id in target_ids:
+                target = _entry_node(target_id)
+                edges[pre_call].add(target)
+                predecessors.setdefault(target, set()).add(pre_call)
+            # Ordinary events still execute in sequence before the call edge.
+            ordinary_chain = [entry, *ordinary_nodes]
+            for source, target in zip(ordinary_chain, ordinary_chain[1:]):
+                edges[source].add(target)
+                predecessors[target].add(source)
+        for source, target in pairs:
             edges[source].add(target)
             predecessors[target].add(source)
     for root in roots:
@@ -2038,6 +2233,15 @@ def _event_graph(
             edges["super"].add(_entry_node(root))
             predecessors[_entry_node(root)].add("super")
     for source in sorted(reachable):
+        routing = call_routing.get(source)
+        if routing is not None:
+            _target_ids, continuation_id = routing
+            if continuation_id in reachable:
+                edges[_exit_node(source)].add(_entry_node(continuation_id))
+                predecessors[_entry_node(continuation_id)].add(
+                    _exit_node(source)
+                )
+            continue
         for target in successors.get(source, ()):
             if target in reachable:
                 edges[_exit_node(source)].add(_entry_node(target))
@@ -2059,6 +2263,55 @@ def _event_graph(
             for node in sorted(seen)
         },
     }
+
+
+def _is_call_summary_event(event: _Event) -> bool:
+    return event.raw.get("source") in {
+        "incomplete_interprocedural_call_memory_frame",
+        "interprocedural_call_memory_frame",
+        "interprocedural_call_result_frame",
+        "missing_interprocedural_call_memory_frame",
+    }
+
+
+def _internal_call_routing(
+    *,
+    unit: Mapping[str, Any],
+    successor_ids: Sequence[str],
+    by_rva: Mapping[int, str],
+    reachable: frozenset[str],
+) -> tuple[tuple[str, ...], str] | None:
+    """Split a call edge from its post-call summary/continuation edge."""
+
+    external_events = unit["semantics"].get("external_events", ())
+    if not isinstance(external_events, Sequence) or isinstance(
+        external_events, (str, bytes)
+    ):
+        return None
+    call_events = [
+        event
+        for event in external_events
+        if isinstance(event, Mapping)
+        and event.get("kind") in {"internal_call", "indirect_call"}
+    ]
+    if len(call_events) != 1:
+        return None
+    event = call_events[0]
+    continuation = by_rva.get(event.get("return_rva"))
+    if continuation is None or continuation not in successor_ids:
+        return None
+    if event.get("kind") == "internal_call":
+        target = by_rva.get(event.get("target_rva"))
+        targets = () if target is None else (target,)
+    else:
+        targets = tuple(sorted(
+            target
+            for target in successor_ids
+            if target != continuation and target in reachable
+        ))
+    if not targets or any(target not in successor_ids for target in targets):
+        return None
+    return tuple(sorted(set(targets))), continuation
 
 
 def _common_dominating_write(

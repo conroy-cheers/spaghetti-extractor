@@ -299,6 +299,10 @@ def build_global_slot_authority_v2(
                     call_summaries=stack_call_summaries,
                     indirect_recoveries=stack_indirect_recoveries,
                     call_site_effects=stack_call_site_effects,
+                    checked_memory_access_facts=raw_access_facts,
+                    interprocedural_authority_sha256=(
+                        interprocedural_sha256
+                    ),
                     finite_offset_budget=stack_finite_offset_budget,
                 )
                 expected_spatial = sorted(

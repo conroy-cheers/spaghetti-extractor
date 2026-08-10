@@ -4,7 +4,15 @@ import copy
 import unittest
 
 from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
+from spaghetti_extractor.authority_bindings_v2 import BinaryBinding
+from spaghetti_extractor.checked_memory_access_v2 import (
+    MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+    prepare_checked_memory_access_facts_v2,
+    seal_checked_memory_access_facts_v2,
+)
+from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
 from spaghetti_extractor.stack_range_analysis_v2 import (
+    CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT,
     CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
     STACK_RANGE_ANALYSIS_V2_FORMAT,
     derive_stack_range_analysis_v2,
@@ -17,6 +25,7 @@ PE_SHA = "a" * 64
 MACHINE_SHA = "b" * 64
 IMAGE_BASE = 0x400000
 IMAGE_SIZE = 0x10000
+INTERPROCEDURAL_SHA = "c" * 64
 
 
 def _reg(name: str) -> dict[str, object]:
@@ -29,6 +38,41 @@ def _const(value: int) -> dict[str, object]:
 
 def _add(value: int) -> dict[str, object]:
     return {"op": "add32", "args": [_reg("esp"), _const(value)]}
+
+
+def _add_register(name: str, value: int) -> dict[str, object]:
+    return {"op": "add32", "args": [_reg(name), _const(value)]}
+
+
+def _checked_stack_access(
+    units: list[dict[str, object]],
+    *,
+    unit_id: str,
+    event_index: int,
+    offset: int,
+) -> list[dict[str, object]]:
+    unit = next(row for row in units if row["id"] == unit_id)
+    event = unit["semantics"]["memory_events"][event_index]
+    proposal = {
+        "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+        "status": "complete",
+        "unit_id": unit_id,
+        "event_index": event_index,
+        "memory_kind": event["kind"],
+        "width_bytes": event["width"],
+        "address_expression": copy.deepcopy(event["address"]),
+        "address_origins": [{"kind": "stack_location", "key": [offset]}],
+        "authority_dependencies": [],
+    }
+    prepared = prepare_checked_memory_access_facts_v2(
+        [proposal],
+        units=units,
+        binary=BinaryBinding(PE_SHA, machine_ir_sha256(units)),
+    )
+    return list(seal_checked_memory_access_facts_v2(
+        prepared,
+        interprocedural_authority_sha256=INTERPROCEDURAL_SHA,
+    ))
 
 
 def _unit(
@@ -451,6 +495,91 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
             },
         )
         self.assertNotIn("continuation", conflicting["entry_offsets"])
+
+    def test_checked_stack_origin_uses_active_callee_frame_base(self) -> None:
+        call = {
+            "kind": "internal_call",
+            "target_rva": 0x2000,
+            "register_inputs": {"esp": _add(-4)},
+        }
+        units = [
+            _unit(
+                "caller",
+                0x1000,
+                target_rvas=[0x1010],
+                stack_delta=None,
+                external_events=[call],
+            ),
+            _unit("continuation", 0x1010),
+            _unit("callee", 0x2000, target_rvas=[0x2010], stack_delta=-8),
+            _unit("callee-body", 0x2010, memory_offsets=[0]),
+        ]
+        units[-1]["semantics"]["memory_events"][0]["address"] = (
+            _add_register("ebp", -12)
+        )
+        access_facts = _checked_stack_access(
+            units,
+            unit_id="callee-body",
+            event_index=0,
+            offset=12,
+        )
+        machine_sha = machine_ir_sha256(units)
+
+        result = derive_stack_range_analysis_v2(
+            units=units,
+            graph=_graph("caller"),
+            launch_assumptions=_launch(),
+            pe_sha256=PE_SHA,
+            machine_ir_sha256=machine_sha,
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            checked_memory_access_facts=access_facts,
+            interprocedural_authority_sha256=INTERPROCEDURAL_SHA,
+        )
+
+        self.assertEqual(result["entry_offsets"]["callee-body"], [-16])
+        self.assertEqual(result["frame_base_offsets"]["callee-body"], [-8])
+        fact = next(
+            row
+            for row in result["checked_spatial_facts"]
+            if row["unit_id"] == "callee-body"
+        )
+        self.assertEqual(
+            fact["format"], CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT
+        )
+        self.assertEqual(fact["frame_base_offsets"], [-8])
+        self.assertEqual(
+            (fact["minimum_start_offset"], fact["maximum_start_offset"]),
+            (4, 4),
+        )
+
+        replayed = validate_stack_range_analysis_v2(
+            result,
+            units=units,
+            graph=_graph("caller"),
+            launch_assumptions=_launch(),
+            pe_sha256=PE_SHA,
+            machine_ir_sha256=machine_sha,
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            checked_memory_access_facts=access_facts,
+            interprocedural_authority_sha256=INTERPROCEDURAL_SHA,
+        )
+        self.assertIn("event:callee-body:0", replayed)
+
+        with self.assertRaisesRegex(
+            ValueError, "interprocedural authority"
+        ):
+            derive_stack_range_analysis_v2(
+                units=units,
+                graph=_graph("caller"),
+                launch_assumptions=_launch(),
+                pe_sha256=PE_SHA,
+                machine_ir_sha256=machine_sha,
+                image_base=IMAGE_BASE,
+                size_of_image=IMAGE_SIZE,
+                checked_memory_access_facts=access_facts,
+            )
 
     def test_stack_window_overflow_fails_closed(self) -> None:
         units = [_unit("entry", 0x1000, memory_offsets=[-0x2000])]

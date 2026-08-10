@@ -19,7 +19,12 @@ from typing import Any, Mapping, Sequence
 from .analysis_schema_v2 import CHECKED_MEMORY_RANGE_FACT_V2_FORMAT
 from .address_expression_v2 import affine_register_offset
 from .artifact_identity_v2 import canonical_sha256
+from .authority_bindings_v2 import BinaryBinding
 from .call_site_effects import CallSiteEffect, CallSiteId, parse_call_site_effects
+from .checked_memory_access_v2 import (
+    CheckedMemoryAccessFact,
+    validate_checked_memory_access_facts_v2,
+)
 from .control_analysis_v2 import exact_control_inventory_v2
 
 
@@ -27,8 +32,12 @@ STACK_RANGE_ANALYSIS_V2_FORMAT = "spaghetti-extractor-stack-range-analysis-v2"
 CHECKED_STACK_SPATIAL_FACT_V2_FORMAT = (
     "stage-a-checked-stack-spatial-fact-v2"
 )
+CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT = (
+    "stage-a-checked-stack-origin-spatial-fact-v2"
+)
 _STACK_BASE = {"op": "reg", "name": "esp", "width": 32}
 _UINT32 = 1 << 32
+_StackState = tuple[int, int]  # (launch-relative ESP, active frame base)
 
 
 def derive_stack_range_analysis_v2(
@@ -43,6 +52,8 @@ def derive_stack_range_analysis_v2(
     call_summaries: Mapping[str, Any] | None = None,
     indirect_recoveries: Sequence[Mapping[str, Any]] = (),
     call_site_effects: Sequence[Mapping[str, Any]] = (),
+    checked_memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    interprocedural_authority_sha256: str | None = None,
     finite_offset_budget: int = 256,
 ) -> dict[str, Any]:
     """Derive checked ESP-relative ranges and reproduce them from empty state."""
@@ -61,6 +72,13 @@ def derive_stack_range_analysis_v2(
     effects_sha256 = canonical_sha256([
         effect.as_json() for effect in effects.values()
     ])
+    access_facts = _checked_memory_access_facts(
+        checked_memory_access_facts,
+        units=normalized_units,
+        pe_sha256=pe_sha256,
+        machine_ir_sha256=machine_ir_sha256,
+        interprocedural_authority_sha256=interprocedural_authority_sha256,
+    )
     exact = exact_control_inventory_v2(tuple(normalized_units.values()))
     first = _run(
         units=normalized_units,
@@ -116,6 +134,8 @@ def derive_stack_range_analysis_v2(
     spatial_facts = _spatial_facts(
         units=normalized_units,
         entry_offsets=first["entry_offsets"],
+        frame_base_offsets=first["frame_base_offsets"],
+        checked_memory_access_facts=access_facts,
         binding=binding,
         stack_contract=stack_contract,
         image_base=image_base,
@@ -143,6 +163,7 @@ def derive_stack_range_analysis_v2(
             "frontiers": len(first["frontiers"]),
         },
         "entry_offsets": first["entry_offsets"],
+        "frame_base_offsets": first["frame_base_offsets"],
         "checked_range_facts": facts,
         "checked_spatial_facts": spatial_facts,
         "frontiers": first["frontiers"],
@@ -201,8 +222,8 @@ def _run(
         if isinstance(row.get("source_unit_id"), str)
     }
 
-    entry: dict[str, frozenset[int]] = {
-        root: frozenset({0}) for root in roots if root in units
+    entry: dict[str, frozenset[_StackState]] = {
+        root: frozenset({(0, 0)}) for root in roots if root in units
     }
     pending = deque(sorted(entry))
     queued = set(pending)
@@ -217,11 +238,11 @@ def _run(
         queued.discard(unit_id)
         evaluations += 1
         unit = units[unit_id]
-        offsets = entry[unit_id]
+        states = entry[unit_id]
         transitions, transition_frontiers = _successor_offsets(
             unit_id=unit_id,
             unit=unit,
-            offsets=offsets,
+            states=states,
             normal_targets=normal.get(unit_id, set()),
             call_edges=calls.get(unit_id, ()),
             by_rva=by_rva,
@@ -237,9 +258,16 @@ def _run(
         for target, values in sorted(transitions.items()):
             target_was_incomplete = target in incomplete_entry_units
             bounded = {
-                value
-                for value in values
-                if -stack_contract["bytes_below"] <= value <= stack_contract["bytes_above"]
+                state
+                for state in values
+                if (
+                    -stack_contract["bytes_below"]
+                    <= state[0]
+                    <= stack_contract["bytes_above"]
+                    and -stack_contract["bytes_below"]
+                    <= state[1]
+                    <= stack_contract["bytes_above"]
+                )
             }
             if len(bounded) != len(values):
                 frontiers.append({
@@ -283,9 +311,17 @@ def _run(
         })
 
     checked_entry = {
-        unit_id: values
-        for unit_id, values in entry.items()
+        unit_id: states
+        for unit_id, states in entry.items()
         if unit_id not in incomplete_entry_units
+    }
+    entry_offsets = {
+        unit_id: sorted({state[0] for state in states})
+        for unit_id, states in checked_entry.items()
+    }
+    frame_base_offsets = {
+        unit_id: sorted({state[1] for state in states})
+        for unit_id, states in checked_entry.items()
     }
     access_spans: dict[str, tuple[int, int]] = {}
     for unit_id in sorted(checked_entry):
@@ -296,7 +332,7 @@ def _run(
         if all(
             -stack_contract["bytes_below"] <= base + lower
             and base + upper <= stack_contract["bytes_above"]
-            for base in checked_entry[unit_id]
+            for base in entry_offsets[unit_id]
         ):
             access_spans[unit_id] = span
         else:
@@ -313,10 +349,8 @@ def _run(
         if issue.get("status") == "violated"
     ]
     return {
-        "entry_offsets": {
-            unit_id: sorted(values)
-            for unit_id, values in sorted(checked_entry.items())
-        },
+        "entry_offsets": dict(sorted(entry_offsets.items())),
+        "frame_base_offsets": dict(sorted(frame_base_offsets.items())),
         "access_spans": access_spans,
         "frontiers": sorted(
             _deduplicate(frontiers),
@@ -334,14 +368,14 @@ def _successor_offsets(
     *,
     unit_id: str,
     unit: Mapping[str, Any],
-    offsets: frozenset[int],
+    states: frozenset[_StackState],
     normal_targets: set[str],
     call_edges: Sequence[Mapping[str, Any]],
     by_rva: Mapping[int, str],
     summaries: Mapping[int, Mapping[str, Any]],
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     recovery: Mapping[str, Any] | None,
-) -> tuple[dict[str, set[int]], list[dict[str, Any]]]:
+) -> tuple[dict[str, set[_StackState]], list[dict[str, Any]]]:
     semantics = unit["semantics"]
     events = semantics.get("external_events", [])
     call_events = [
@@ -350,7 +384,7 @@ def _successor_offsets(
         if isinstance(event, Mapping)
         and event.get("kind") in {"internal_call", "external_call", "indirect_call"}
     ] if isinstance(events, list) else []
-    transitions: dict[str, set[int]] = defaultdict(set)
+    transitions: dict[str, set[_StackState]] = defaultdict(set)
     frontiers: list[dict[str, Any]] = []
 
     if not call_events:
@@ -363,11 +397,17 @@ def _successor_offsets(
             })
         elif delta is not None:
             for target in normal_targets:
-                transitions[target].update(value + delta for value in offsets)
+                transitions[target].update(
+                    (esp + delta, frame_base)
+                    for esp, frame_base in states
+                )
             if recovery is not None and recovery.get("kind") == "indirect_jump":
                 for target in recovery.get("target_unit_ids", ()):
                     if isinstance(target, str):
-                        transitions[target].update(value + delta for value in offsets)
+                        transitions[target].update(
+                            (esp + delta, frame_base)
+                            for esp, frame_base in states
+                        )
         return transitions, frontiers
 
     if len(call_events) != 1:
@@ -396,7 +436,13 @@ def _successor_offsets(
         target_rva = event.get("target_rva")
         target = by_rva.get(target_rva) if isinstance(target_rva, int) else None
         if target is not None:
-            transitions[target].update(value + event_esp - 4 for value in offsets)
+            callee_entries = {
+                esp + event_esp - 4 for esp, _frame_base in states
+            }
+            transitions[target].update(
+                (callee_entry, callee_entry)
+                for callee_entry in callee_entries
+            )
         cleanup = _call_effect_cleanup(effect)
         if effect is None:
             cleanup = _internal_cleanup(target_rva, summaries)
@@ -411,7 +457,8 @@ def _successor_offsets(
         else:
             for target_id in normal_targets:
                 transitions[target_id].update(
-                    value + event_esp + cleanup for value in offsets
+                    (esp + event_esp + cleanup, frame_base)
+                    for esp, frame_base in states
                 )
         return transitions, frontiers
 
@@ -435,7 +482,8 @@ def _successor_offsets(
         else:
             for target_id in normal_targets:
                 transitions[target_id].update(
-                    value + event_esp + cleanup for value in offsets
+                    (esp + event_esp + cleanup, frame_base)
+                    for esp, frame_base in states
                 )
         return transitions, frontiers
 
@@ -446,7 +494,13 @@ def _successor_offsets(
     if effect is None:
         cleanup = recovery_cleanup
     for target in target_units:
-        transitions[target].update(value + event_esp - 4 for value in offsets)
+        callee_entries = {
+            esp + event_esp - 4 for esp, _frame_base in states
+        }
+        transitions[target].update(
+            (callee_entry, callee_entry)
+            for callee_entry in callee_entries
+        )
     if cleanup is None:
         frontiers.append({
             "status": "incomplete",
@@ -457,7 +511,8 @@ def _successor_offsets(
     else:
         for target_id in normal_targets:
             transitions[target_id].update(
-                value + event_esp + cleanup for value in offsets
+                (esp + event_esp + cleanup, frame_base)
+                for esp, frame_base in states
             )
     return transitions, frontiers
 
@@ -492,6 +547,8 @@ def _spatial_facts(
     *,
     units: Mapping[str, Mapping[str, Any]],
     entry_offsets: Mapping[str, Sequence[int]],
+    frame_base_offsets: Mapping[str, Sequence[int]],
+    checked_memory_access_facts: Mapping[str, CheckedMemoryAccessFact],
     binding: Mapping[str, Any],
     stack_contract: Mapping[str, int],
     image_base: int,
@@ -511,31 +568,88 @@ def _spatial_facts(
                 continue
             memory_kind = raw.get("kind")
             width = raw.get("width")
-            address_offset = _affine_esp_offset(raw.get("address"))
             if (
                 memory_kind not in {"read", "write", "read_write"}
                 or not isinstance(width, int)
                 or isinstance(width, bool)
                 or not 0 < width <= 4096
-                or address_offset is None
             ):
                 continue
-            starts = [int(base) + address_offset for base in offsets]
+            address_offset = _affine_esp_offset(raw.get("address"))
+            if address_offset is not None:
+                starts = [int(base) + address_offset for base in offsets]
+                if not starts or any(
+                    start < lower_bound or start + width > upper_bound
+                    for start in starts
+                ):
+                    continue
+                core = {
+                    "format": CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
+                    "status": "complete",
+                    "unit_id": unit_id,
+                    "event_index": event_index,
+                    "memory_kind": memory_kind,
+                    "width_bytes": width,
+                    "address_expression": copy.deepcopy(raw.get("address")),
+                    "entry_esp_offsets": sorted(
+                        set(int(value) for value in offsets)
+                    ),
+                    "address_esp_offset": address_offset,
+                    "minimum_start_offset": min(starts),
+                    "maximum_start_offset": max(starts),
+                    "stack_contract": {
+                        "lower_bound": lower_bound,
+                        "upper_bound_exclusive": upper_bound,
+                    },
+                    "disjoint_from_image": {
+                        "image_base": image_base,
+                        "size_of_image": size_of_image,
+                    },
+                    "authority_binding": copy.deepcopy(dict(binding)),
+                }
+                result.append(_seal_spatial_fact(
+                    core, prefix="checked-stack-spatial-v2:"
+                ))
+                continue
+
+            event_node = f"event:{unit_id}:{event_index}"
+            access_fact = checked_memory_access_facts.get(event_node)
+            origin_offsets = (
+                None
+                if access_fact is None
+                else _stack_origin_offsets(access_fact)
+            )
+            frame_offsets = frame_base_offsets.get(unit_id, ())
+            if origin_offsets is None or not frame_offsets:
+                continue
+            starts = [
+                int(frame_base) + int(origin_offset)
+                for frame_base in frame_offsets
+                for origin_offset in origin_offsets
+            ]
             if not starts or any(
                 start < lower_bound or start + width > upper_bound
                 for start in starts
             ):
                 continue
             core = {
-                "format": CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
+                "format": CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT,
                 "status": "complete",
                 "unit_id": unit_id,
                 "event_index": event_index,
                 "memory_kind": memory_kind,
                 "width_bytes": width,
                 "address_expression": copy.deepcopy(raw.get("address")),
-                "entry_esp_offsets": sorted(set(int(value) for value in offsets)),
-                "address_esp_offset": address_offset,
+                "memory_access_fact_id": access_fact.fact_id,
+                "memory_access_fact_sha256": access_fact.to_payload()[
+                    "fact_sha256"
+                ],
+                "address_origins": [
+                    origin.to_value() for origin in access_fact.address_origins
+                ],
+                "frame_base_offsets": sorted(
+                    set(int(value) for value in frame_offsets)
+                ),
                 "minimum_start_offset": min(starts),
                 "maximum_start_offset": max(starts),
                 "stack_contract": {
@@ -548,18 +662,43 @@ def _spatial_facts(
                 },
                 "authority_binding": copy.deepcopy(dict(binding)),
             }
-            identity = "checked-stack-spatial-v2:" + canonical_sha256(core)
-            payload = {**core, "id": identity}
-            result.append({
-                **payload,
-                "fact_sha256": canonical_sha256(payload),
-            })
+            result.append(_seal_spatial_fact(
+                core, prefix="checked-stack-origin-spatial-v2:"
+            ))
     return sorted(
         result,
         key=lambda row: (
             str(row["unit_id"]), int(row["event_index"]), str(row["id"])
         ),
     )
+
+
+def _seal_spatial_fact(
+    core: Mapping[str, Any], *, prefix: str
+) -> dict[str, Any]:
+    identity = prefix + canonical_sha256(core)
+    payload = {**copy.deepcopy(dict(core)), "id": identity}
+    return {**payload, "fact_sha256": canonical_sha256(payload)}
+
+
+def _stack_origin_offsets(
+    fact: CheckedMemoryAccessFact,
+) -> tuple[int, ...] | None:
+    offsets: set[int] = set()
+    for raw in fact.address_origins:
+        origin = raw.to_value()
+        key = origin.get("key") if isinstance(origin, Mapping) else None
+        if (
+            not isinstance(origin, Mapping)
+            or origin.get("kind") != "stack_location"
+            or not isinstance(key, list)
+            or len(key) != 1
+            or not isinstance(key[0], int)
+            or isinstance(key[0], bool)
+        ):
+            return None
+        offsets.add(int(key[0]))
+    return tuple(sorted(offsets)) if offsets else None
 
 
 def validate_checked_stack_range_facts_v2(
@@ -641,6 +780,8 @@ def validate_stack_range_analysis_v2(
     call_summaries: Mapping[str, Any] | None = None,
     indirect_recoveries: Sequence[Mapping[str, Any]] = (),
     call_site_effects: Sequence[Mapping[str, Any]] = (),
+    checked_memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    interprocedural_authority_sha256: str | None = None,
     finite_offset_budget: int = 256,
 ) -> dict[str, Mapping[str, Any]]:
     """Replay the complete stack analysis and index exact spatial facts.
@@ -661,6 +802,10 @@ def validate_stack_range_analysis_v2(
         call_summaries=call_summaries,
         indirect_recoveries=indirect_recoveries,
         call_site_effects=call_site_effects,
+        checked_memory_access_facts=checked_memory_access_facts,
+        interprocedural_authority_sha256=(
+            interprocedural_authority_sha256
+        ),
         finite_offset_budget=finite_offset_budget,
     )
     if dict(analysis) != expected:
@@ -787,6 +932,31 @@ def _checked_call_site_effects(
         effects.items(),
         key=lambda item: (item[0].unit_id, item[0].event_index),
     ))
+
+
+def _checked_memory_access_facts(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    units: Mapping[str, Mapping[str, Any]],
+    pe_sha256: str,
+    machine_ir_sha256: str,
+    interprocedural_authority_sha256: str | None,
+) -> dict[str, CheckedMemoryAccessFact]:
+    if not rows:
+        return {}
+    if interprocedural_authority_sha256 is None:
+        raise ValueError(
+            "checked memory-access facts require interprocedural authority"
+        )
+    return validate_checked_memory_access_facts_v2(
+        rows,
+        units=list(units.values()),
+        binary=BinaryBinding(
+            pe_sha256=pe_sha256,
+            machine_ir_sha256=machine_ir_sha256,
+        ),
+        interprocedural_authority_sha256=interprocedural_authority_sha256,
+    )
 
 
 def _call_effect_cleanup(effect: CallSiteEffect | None) -> int | None:
@@ -941,6 +1111,7 @@ def _deduplicate(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT",
     "CHECKED_STACK_SPATIAL_FACT_V2_FORMAT",
     "STACK_RANGE_ANALYSIS_V2_FORMAT",
     "derive_stack_range_analysis_v2",
