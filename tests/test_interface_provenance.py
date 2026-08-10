@@ -1075,7 +1075,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(result["fixed_point"]["initial_known_slots"], 0)
         self.assertEqual(result["fixed_point"]["initial_event_known_slots"], 1)
 
-    def test_event_slot_fact_fails_closed_when_unit_scope_can_alias(self) -> None:
+    def test_event_slot_fact_is_scoped_to_its_load_expression(self) -> None:
         units = [
             unit(
                 "dispatch",
@@ -1114,11 +1114,102 @@ class InterfaceProvenanceTests(unittest.TestCase):
             allow_global_slot_promotion=False,
         )
 
-        self.assertEqual(result["resolutions"][0]["status"], "incomplete")
-        self.assertIn(
-            "event_known_slot_unit_scope_not_isolated",
-            {issue["code"] for issue in result["issues"]},
+        self.assertEqual(result["resolutions"][0]["status"], "recovered")
+        self.assertEqual(
+            result["resolutions"][0]["analysis_dependencies"], [dependency]
         )
+
+    def test_event_slot_fact_rejects_ambiguous_repeated_read(self) -> None:
+        read = {"kind": "read", "width": 4, "address": const(SLOT)}
+        units = [
+            unit("dispatch", 0x1100, memory=[read, read]),
+            unit("target", 0x1800),
+        ]
+        dependency = "hybrid-authority-v2:global_slot_invariant:" + "d" * 64
+        result = self._run(
+            units,
+            [],
+            roots=["dispatch"],
+            indirect_exits=[{
+                "id": "exit:dispatch",
+                "source_unit_id": "dispatch",
+                "source_rva": 0x1100,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(const(SLOT)),
+            }],
+            initial_event_known_slots={
+                CallSiteId("dispatch", 0): {
+                    SLOT: frozenset({
+                        ValueOrigin(
+                            "exact",
+                            (IMAGE_BASE + 0x1800,),
+                            (dependency,),
+                        )
+                    })
+                }
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "incomplete")
+        issue = next(
+            row
+            for row in result["issues"]
+            if row["code"]
+            == "event_known_slot_expression_binding_ambiguous"
+        )
+        self.assertEqual(issue["matching_event_indices"], [0, 1])
+        self.assertEqual(issue["supplied_event_indices"], [0])
+
+    def test_event_slot_fact_survives_later_stack_writes_via_register(self) -> None:
+        esp4 = sub(reg("esp"), const(4))
+        esp8 = sub(esp4, const(4))
+        dispatch = unit(
+            "dispatch",
+            0x1100,
+            writes=[{"register": "eax", "value": load(const(SLOT))}],
+            memory=[
+                {"kind": "read", "width": 4, "address": const(SLOT)},
+                {"kind": "write", "width": 4, "address": esp4,
+                 "value": const(1)},
+                {"kind": "write", "width": 4, "address": esp8,
+                 "value": const(2)},
+            ],
+        )
+        units = [dispatch, unit("call", 0x1200), unit("target", 0x1800)]
+        dependency = "hybrid-authority-v2:global_slot_invariant:" + "e" * 64
+        result = self._run(
+            units,
+            [edge("dispatch", "call")],
+            roots=["dispatch"],
+            indirect_exits=[{
+                "id": "exit:call",
+                "source_unit_id": "call",
+                "source_rva": 0x1200,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": reg("eax"),
+            }],
+            initial_event_known_slots={
+                CallSiteId("dispatch", 0): {
+                    SLOT: frozenset({
+                        ValueOrigin(
+                            "exact",
+                            (IMAGE_BASE + 0x1800,),
+                            (dependency,),
+                        )
+                    })
+                }
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        resolution = result["resolutions"][0]
+        self.assertEqual(resolution["status"], "recovered", resolution)
+        self.assertEqual(resolution["target_rvas"], [0x1800])
+        self.assertEqual(resolution["analysis_dependencies"], [dependency])
+        self.assertEqual(result["counts"]["static_interface_slots"], 0)
 
     def test_dynamic_allocator_result_carries_interface_field_provenance(self) -> None:
         allocator = {

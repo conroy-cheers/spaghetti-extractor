@@ -83,6 +83,7 @@ _CALL_KINDS = frozenset({"external_call", "indirect_call", "internal_call"})
 _Origin = ValueOrigin
 _Value = FiniteValue
 _MemoryLocation = int | _Origin
+_EventKnownSlots = Mapping[str, Mapping[int, _Value]]
 _MemoryResultRelation = tuple[_Origin, Mapping[str, Any]]
 _InternalCallMemoryResults = Mapping[int, Sequence[_MemoryResultRelation]]
 
@@ -1289,7 +1290,7 @@ def _run_dataflow(
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
     image_base: int,
     known_slots: Mapping[_MemoryLocation, _Value],
-    event_known_slots: Mapping[str, Mapping[_MemoryLocation, _Value]],
+    event_known_slots: _EventKnownSlots,
     root_argument_origins: Mapping[str, Mapping[int, _Value]],
     finite_value_budget: int,
     static_slot_budget: int,
@@ -1340,11 +1341,6 @@ def _run_dataflow(
             unit_id=source_id,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
         )
-        checked_state = _with_event_known_slots(
-            checked_state,
-            unit_id=source_id,
-            event_known_slots=event_known_slots,
-        )
         key = (source_id, _state_cache_key(checked_state))
         cached = transfer_cache.get(key)
         if cached is not None:
@@ -1379,6 +1375,7 @@ def _run_dataflow(
             checked_nonimage_stack=(
                 source_id in checked_nonimage_stack_units
             ),
+            event_known_slots=event_known_slots,
         )
         transfer_cache[key] = result
         evaluations += 1
@@ -1396,11 +1393,6 @@ def _run_dataflow(
                 input_states[source_id],
                 unit_id=source_id,
                 checked_stack_entry_offsets=checked_stack_entry_offsets,
-            )
-            checked_state = _with_event_known_slots(
-                checked_state,
-                unit_id=source_id,
-                event_known_slots=event_known_slots,
             )
             for proposal in _resolve_exits(
                 exits_by_source[source_id],
@@ -1653,19 +1645,21 @@ def _normalize_event_known_slots(
     by_id: Mapping[str, Mapping[str, Any]],
     finite_value_budget: int,
 ) -> tuple[
-    dict[str, dict[_MemoryLocation, _Value]],
+    dict[str, dict[int, _Value]],
     list[dict[str, Any]],
 ]:
-    """Lower exact read-bound facts to conservative unit-local overlays.
+    """Bind exact read facts to expressions without promoting them to memory.
 
-    The current transfer adapter evaluates one normalized expression summary
-    per machine-IR unit.  A read-bound fact is therefore usable only when no
-    other memory event in that unit can alias the same slot.  Unsupported
-    multi-access units remain incomplete instead of widening an event fact to
-    a root-wide memory invariant.
+    Machine-IR summaries can contain the same load expression for more than
+    one read event.  A unit/address binding is therefore usable only when every
+    matching exact read has equivalent checked evidence.  Other reads and
+    writes in the unit do not affect the binding: consumers apply it only while
+    evaluating an expression that contains that exact load.
     """
 
-    result: dict[str, dict[_MemoryLocation, _Value]] = defaultdict(dict)
+    supplied: dict[str, dict[int, dict[int, _Value]]] = defaultdict(
+        lambda: defaultdict(dict)
+    )
     issues: list[dict[str, Any]] = []
     for site, raw_slots in sorted(
         values.items(), key=lambda item: (item[0].unit_id, item[0].event_index)
@@ -1701,22 +1695,43 @@ def _normalize_event_known_slots(
                 or any(not _persistent_origin(origin) for origin in origins)
             ):
                 raise ValueError("event-known slot value is invalid")
-            if not _event_slot_isolated(
-                memory_events,
-                event_index=site.event_index,
-                address=location,
-            ):
+            supplied[site.unit_id][location][site.event_index] = origins
+
+    result: dict[str, dict[int, _Value]] = defaultdict(dict)
+    for unit_id, by_address in sorted(supplied.items()):
+        memory_events = _mapping(by_id[unit_id].get("semantics")).get(
+            "memory_events"
+        )
+        assert isinstance(memory_events, list)
+        for address, by_event in sorted(by_address.items()):
+            matching_events = {
+                index
+                for index, raw in enumerate(memory_events)
+                if _exact_read_event_address(raw) == address
+            }
+            supplied_events = set(by_event)
+            if matching_events != supplied_events:
                 issues.append({
-                    "code": "event_known_slot_unit_scope_not_isolated",
-                    "unit_id": site.unit_id,
-                    "event_index": site.event_index,
-                    "address": location,
+                    "code": "event_known_slot_expression_binding_ambiguous",
+                    "unit_id": unit_id,
+                    "address": address,
+                    "matching_event_indices": sorted(matching_events),
+                    "supplied_event_indices": sorted(supplied_events),
+                    "missing_event_indices": sorted(
+                        matching_events - supplied_events
+                    ),
                 })
                 continue
-            previous = result[site.unit_id].get(location)
-            if previous is not None and previous != origins:
-                raise ValueError("event-known slot facts contradict within one unit")
-            result[site.unit_id][location] = origins
+            merged = _merge_equivalent_event_values(by_event.values())
+            if merged is None:
+                issues.append({
+                    "code": "event_known_slot_expression_values_conflict",
+                    "unit_id": unit_id,
+                    "address": address,
+                    "event_indices": sorted(supplied_events),
+                })
+                continue
+            result[unit_id][address] = merged
     return {
         unit_id: dict(sorted(slots.items(), key=lambda item: repr(item[0])))
         for unit_id, slots in sorted(result.items())
@@ -1724,22 +1739,35 @@ def _normalize_event_known_slots(
     }, issues
 
 
-def _event_slot_isolated(
-    memory_events: Sequence[Any], *, event_index: int, address: int
-) -> bool:
-    for index, raw in enumerate(memory_events):
-        if index == event_index:
-            continue
-        event = _mapping(raw)
-        if event.get("kind") not in {"read", "write", "read_write"}:
-            continue
-        other_address = _constant_u32_expression(event.get("address"))
-        width = _integer(event.get("width"))
-        if other_address is None or width is None or width <= 0:
-            return False
-        if other_address < address + 4 and address < other_address + width:
-            return False
-    return True
+def _exact_read_event_address(value: Any) -> int | None:
+    event = _mapping(value)
+    if (
+        event.get("kind") not in {"read", "read_write"}
+        or _integer(event.get("width")) != 4
+    ):
+        return None
+    return _constant_u32_expression(event.get("address"))
+
+
+def _merge_equivalent_event_values(values: Iterable[_Value]) -> _Value:
+    rows = list(values)
+    if not rows or any(value is None or not value for value in rows):
+        return None
+    semantic_keys = {
+        frozenset((origin.kind, origin.key) for origin in value or ())
+        for value in rows
+    }
+    if len(semantic_keys) != 1:
+        return None
+    by_key: dict[tuple[str, tuple[Any, ...]], set[str]] = defaultdict(set)
+    for value in rows:
+        assert value is not None
+        for origin in value:
+            by_key[(origin.kind, origin.key)].update(origin.dependencies)
+    return frozenset(
+        _Origin(kind, key, tuple(sorted(dependencies)))
+        for (kind, key), dependencies in by_key.items()
+    )
 
 
 def _constant_u32_expression(value: Any) -> int | None:
@@ -1750,21 +1778,53 @@ def _constant_u32_expression(value: Any) -> int | None:
     return None if concrete is None else concrete & 0xFFFF_FFFF
 
 
-def _with_event_known_slots(
+def _with_expression_event_known_slots(
     state: _State,
     *,
     unit_id: str,
-    event_known_slots: Mapping[str, Mapping[_MemoryLocation, _Value]],
+    expression: Any,
+    event_known_slots: _EventKnownSlots,
 ) -> _State:
     slots = event_known_slots.get(unit_id)
     if not slots:
         return state
+    referenced = _exact_load_addresses(expression)
+    selected = {
+        address: value
+        for address, value in slots.items()
+        if address in referenced
+    }
+    if not selected:
+        return state
     return _State(
         dict(state.registers),
-        {**state.memory, **slots},
+        {**state.memory, **selected},
         dict(state.stack),
         state.memory_invalidated,
     )
+
+
+def _exact_load_addresses(expression: Any) -> frozenset[int]:
+    result: set[int] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, Mapping):
+            op = str(value.get("op") or "").lower()
+            width = value.get("width", value.get("width_bits", 4))
+            if op in {"load", "read32", "mem32"} and width in {4, 32, None}:
+                address = _constant_u32_expression(value.get("address"))
+                if address is not None:
+                    result.add(address)
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, Sequence) and not isinstance(
+            value, (str, bytes)
+        ):
+            for child in value:
+                visit(child)
+
+    visit(expression)
+    return frozenset(result)
 
 
 def _context_target_exit_ids(
@@ -1801,7 +1861,7 @@ def _run_contextual_target_discovery(
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     known_slots: Mapping[_MemoryLocation, _Value],
-    event_known_slots: Mapping[str, Mapping[_MemoryLocation, _Value]],
+    event_known_slots: _EventKnownSlots,
     root_argument_origins: Mapping[str, Mapping[int, _Value]],
     image_base: int,
     finite_value_budget: int,
@@ -1970,11 +2030,6 @@ def _run_contextual_target_discovery(
             state,
             unit_id=source_id,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
-        )
-        checked = _with_event_known_slots(
-            checked,
-            unit_id=source_id,
-            event_known_slots=event_known_slots,
         )
         for resolution in _resolve_exits(
             exits,
@@ -2437,6 +2492,7 @@ def _transfer_unit(
     static_slot_budget: int,
     stack_slot_budget: int,
     checked_nonimage_stack: bool,
+    event_known_slots: _EventKnownSlots,
 ) -> _UnitTransfer:
     events = _events(unit)
     call_entries: dict[int, _State] = {}
@@ -2452,6 +2508,7 @@ def _transfer_unit(
                 known_slots=known_slots,
                 budget=finite_value_budget,
                 stack_slot_budget=stack_slot_budget,
+                event_known_slots=event_known_slots,
             )
     calls = [
         (index, event)
@@ -2486,6 +2543,12 @@ def _transfer_unit(
             )
         event_index, event = calls[0]
         pre_call = call_entries[event_index]
+        target_state = _with_expression_event_known_slots(
+            pre_call,
+            unit_id=unit_id,
+            expression=event.get("target"),
+            event_known_slots=event_known_slots,
+        )
         facts, call_issues, call_argument_recoveries = _call_contract(
             unit_id=unit_id,
             unit=unit,
@@ -2493,6 +2556,7 @@ def _transfer_unit(
             event=event,
             state=input_state,
             pre_call=pre_call,
+            target_state=target_state,
             inventory=inventory,
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
@@ -2678,9 +2742,15 @@ def _transfer_unit(
         register = write.get("register")
         if not isinstance(register, str) or register not in output.registers:
             continue
+        expression_state = _with_expression_event_known_slots(
+            input_state,
+            unit_id=unit_id,
+            expression=write.get("value"),
+            event_known_slots=event_known_slots,
+        )
         value = _evaluate(
             write.get("value"),
-            input_state,
+            expression_state,
             inventory=inventory,
             known_slots=known_slots,
             budget=finite_value_budget,
@@ -2697,9 +2767,15 @@ def _transfer_unit(
             event = _mapping(raw)
             if event.get("kind") != "write" or event.get("width") != 4:
                 continue
+            address_state = _with_expression_event_known_slots(
+                input_state,
+                unit_id=unit_id,
+                expression=event.get("address"),
+                event_known_slots=event_known_slots,
+            )
             addresses = _evaluate(
                 event.get("address"),
-                input_state,
+                address_state,
                 inventory=inventory,
                 known_slots=known_slots,
                 budget=finite_value_budget,
@@ -2724,9 +2800,15 @@ def _transfer_unit(
                 })
                 continue
             address = next(iter(addresses))
+            value_state = _with_expression_event_known_slots(
+                input_state,
+                unit_id=unit_id,
+                expression=event.get("value"),
+                event_known_slots=event_known_slots,
+            )
             value = _evaluate(
                 event.get("value"),
-                input_state,
+                value_state,
                 inventory=inventory,
                 known_slots=known_slots,
                 budget=finite_value_budget,
@@ -3746,6 +3828,7 @@ def _call_contract(
     event: Mapping[str, Any],
     state: _State,
     pre_call: _State,
+    target_state: _State,
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
@@ -3770,7 +3853,7 @@ def _call_contract(
         if kind == "external_call"
         else _indirect_import_identity(
             event,
-            pre_call,
+            target_state,
             inventory=inventory,
             known_slots=known_slots,
             budget=budget,
@@ -4031,7 +4114,7 @@ def _call_contract(
 
     targets = _evaluate(
         event.get("target"),
-        pre_call,
+        target_state,
         inventory=inventory,
         known_slots=known_slots,
         budget=budget,
@@ -6291,7 +6374,7 @@ def _resolve_exits(
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     known_slots: Mapping[Any, _Value],
-    event_known_slots: Mapping[str, Mapping[_MemoryLocation, _Value]],
+    event_known_slots: _EventKnownSlots,
     finite_value_budget: int,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
@@ -6299,18 +6382,19 @@ def _resolve_exits(
         source = str(exit_record.get("source_unit_id") or "")
         identity = str(exit_record.get("id") or _stable_id(exit_record))
         state = states.get(source)
-        if state is not None:
-            state = _with_event_known_slots(
-                state,
-                unit_id=source,
-                event_known_slots=event_known_slots,
-            )
         target = exit_record.get("target_expression")
         event_index = _integer(exit_record.get("source_event_index"))
         if state is not None and source in by_id and event_index is not None:
             events = _events(by_id[source])
             if 0 <= event_index < len(events):
                 target = events[event_index].get("target")
+        if state is not None:
+            state = _with_expression_event_known_slots(
+                state,
+                unit_id=source,
+                expression=target,
+                event_known_slots=event_known_slots,
+            )
         origins = (
             None
             if state is None
@@ -7537,13 +7621,19 @@ def _event_state(
     known_slots: Mapping[int, _Value],
     budget: int,
     stack_slot_budget: int,
+    event_known_slots: _EventKnownSlots,
 ) -> _State:
     raw = event.get("register_inputs")
     registers = (
         {
             register: _evaluate(
                 raw.get(register),
-                state,
+                _with_expression_event_known_slots(
+                    state,
+                    unit_id=unit_id,
+                    expression=raw.get(register),
+                    event_known_slots=event_known_slots,
+                ),
                 inventory=inventory,
                 known_slots=known_slots,
                 budget=budget,
@@ -7577,9 +7667,15 @@ def _event_state(
             continue
         if kind != "write" or ordered_event.get("width") != 4:
             continue
+        address_state = _with_expression_event_known_slots(
+            state,
+            unit_id=unit_id,
+            expression=ordered_event.get("address"),
+            event_known_slots=event_known_slots,
+        )
         addresses = _evaluate(
             ordered_event.get("address"),
-            state,
+            address_state,
             inventory=inventory,
             known_slots=known_slots,
             budget=budget,
@@ -7587,9 +7683,15 @@ def _event_state(
         if addresses is None or len(addresses) != 1:
             continue
         address = next(iter(addresses))
+        value_state = _with_expression_event_known_slots(
+            state,
+            unit_id=unit_id,
+            expression=ordered_event.get("value"),
+            event_known_slots=event_known_slots,
+        )
         value = _evaluate(
             ordered_event.get("value"),
-            state,
+            value_state,
             inventory=inventory,
             known_slots=known_slots,
             budget=budget,
