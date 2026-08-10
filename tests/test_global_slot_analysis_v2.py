@@ -24,6 +24,9 @@ from spaghetti_extractor.checked_memory_address_domain_v2 import (
     seal_checked_memory_address_domains_v2,
 )
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
+from spaghetti_extractor.launch_memory_ranges_v2 import (
+    derive_launch_memory_range_analysis_v2,
+)
 from spaghetti_extractor.stack_range_analysis_v2 import (
     derive_stack_range_analysis_v2,
 )
@@ -128,6 +131,8 @@ def _analyze(
     checked_spatial_facts: list[dict[str, object]] | None = None,
     call_site_effects: list[dict[str, object]] | None = None,
     range_binding: dict[str, object] | None = None,
+    launch_memory_ranges: dict[str, object] | None = None,
+    launch_assumptions: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     machine_sha = machine_ir_sha256(units)
     return analyze_global_slots_v2(
@@ -164,6 +169,8 @@ def _analyze(
         checked_memory_spatial_facts=(
             [] if checked_spatial_facts is None else checked_spatial_facts
         ),
+        launch_memory_range_analysis=launch_memory_ranges,
+        launch_assumptions=launch_assumptions,
         pe_sha256=PE_SHA256,
         machine_ir_sha256=machine_sha,
         interprocedural_authority_sha256=INTERPROCEDURAL_SHA256,
@@ -644,6 +651,67 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
         )
         self.assertEqual(rejected["status"], "violated")
         self.assertIn("checked_memory_spatial_fact_invalid", _codes(rejected))
+
+    def test_checked_fs_launch_range_excludes_image_slot(self) -> None:
+        fs_address = {"op": "fs_base", "width": 32}
+        units = [_unit(
+            "entry",
+            0x1000,
+            [_write(_const(7), address=fs_address)],
+        )]
+        graph = _graph(units)
+        launch = {
+            "assumptions": {
+                "fs": {
+                    "contract": "pe32-user-thread-fs-v1",
+                    "teb_fields": "profiled-accesses-only",
+                    "range_contract": (
+                        "private-non-image-thread-environment-range-v1"
+                    ),
+                    "mapped_separately_from_image": True,
+                    "minimum_accessible_bytes": 0x1000,
+                }
+            }
+        }
+        ranges = derive_launch_memory_range_analysis_v2(
+            units=units,
+            launch_assumptions=launch,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_ir_sha256(units),
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        result = _analyze(
+            units,
+            graph,
+            launch_initial_values={SLOT: 0},
+            launch_memory_ranges=ranges,
+            launch_assumptions=launch,
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertEqual(result["counts"]["checked_memory_spatial_facts"], 1)
+        self.assertEqual(
+            result["global_slot_evidence"][0]["reachable_write_inventory"][
+                "aliasing_writes"
+            ],
+            [],
+        )
+
+        corrupted = copy.deepcopy(ranges)
+        corrupted["checked_spatial_facts"][0]["address_base_offset"] = 4
+        rejected = _analyze(
+            units,
+            graph,
+            launch_initial_values={SLOT: 0},
+            launch_memory_ranges=corrupted,
+            launch_assumptions=launch,
+        )
+        self.assertEqual(rejected["status"], "violated")
+        self.assertIn(
+            "launch_memory_spatial_analysis_invalid", _codes(rejected)
+        )
 
     def test_checked_stack_origin_requires_spatial_range_witness(self) -> None:
         units = [_unit(

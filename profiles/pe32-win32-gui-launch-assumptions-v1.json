@@ -10,6 +10,9 @@
     },
     "fs": {
       "contract": "pe32-user-thread-fs-v1",
+      "mapped_separately_from_image": true,
+      "minimum_accessible_bytes": 4096,
+      "range_contract": "private-non-image-thread-environment-range-v1",
       "teb_fields": "profiled-accesses-only"
     },
     "iat": {

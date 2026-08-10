@@ -34,6 +34,11 @@ from .machine_ir_authority_v2 import (
     recompute_unit_binding,
 )
 from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
+from .launch_memory_ranges_v2 import (
+    CHECKED_LAUNCH_SPATIAL_FACT_V2_FORMAT,
+    derive_launch_memory_range_analysis_v2,
+    validate_launch_memory_range_analysis_v2,
+)
 from .mutable_slot_candidates_v2 import (
     derive_dependency_scoped_slot_inventory_v2,
 )
@@ -119,6 +124,14 @@ def replay_global_slot_authority_v2(
     call_summaries = interprocedural.get("call_summaries")
     if not isinstance(call_summaries, Mapping):
         call_summaries = {}
+    launch_memory_ranges = derive_launch_memory_range_analysis_v2(
+        units=units,
+        launch_assumptions=launch_assumptions,
+        pe_sha256=original_binary.sha256,
+        machine_ir_sha256=machine_ir_sha256,
+        image_base=original_binary.image_base,
+        size_of_image=original_binary.size_of_image,
+    )
     expected = analyze_global_slots_v2(
         units=units,
         graph=graph,
@@ -128,6 +141,8 @@ def replay_global_slot_authority_v2(
         checked_memory_spatial_facts=stack_range_analysis.get(
             "checked_spatial_facts", []
         ),
+        launch_memory_range_analysis=launch_memory_ranges,
+        launch_assumptions=launch_assumptions,
         range_authority_binding=stack_range_analysis.get("binding"),
         relevant_read_dependencies=relevant_reads,
         launch_initial_values=launch_initial_values,
@@ -156,6 +171,8 @@ def replay_global_slot_authority_v2(
         stack_indirect_recoveries=recoveries,
         stack_call_site_effects=call_site_effects,
         stack_finite_offset_budget=finite_value_budget,
+        launch_memory_range_analysis=launch_memory_ranges,
+        launch_memory_assumptions=launch_assumptions,
     )
     if dict(submitted_analysis) == expected:
         return authority
@@ -188,6 +205,8 @@ def build_global_slot_authority_v2(
     stack_indirect_recoveries: Sequence[Mapping[str, Any]] = (),
     stack_call_site_effects: Sequence[Mapping[str, Any]] = (),
     stack_finite_offset_budget: int = 256,
+    launch_memory_range_analysis: Mapping[str, Any] | None = None,
+    launch_memory_assumptions: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build only facts that complete cold replay can authorize."""
 
@@ -276,46 +295,103 @@ def build_global_slot_authority_v2(
             "checked_memory_spatial_inventory_corrupt",
         ))
     elif raw_spatial_facts:
-        if (
-            not isinstance(stack_range_analysis, Mapping)
-            or not isinstance(stack_graph, Mapping)
-            or not isinstance(stack_launch_assumptions, Mapping)
-        ):
-            issues.append(_issue(
-                "violated",
+        stack_spatial = [
+            row
+            for row in raw_spatial_facts
+            if row.get("format") != CHECKED_LAUNCH_SPATIAL_FACT_V2_FORMAT
+        ]
+        launch_spatial = [
+            row
+            for row in raw_spatial_facts
+            if row.get("format") == CHECKED_LAUNCH_SPATIAL_FACT_V2_FORMAT
+        ]
+        expected_spatial: list[dict[str, Any]] = []
+        if stack_spatial:
+            if (
+                not isinstance(stack_range_analysis, Mapping)
+                or not isinstance(stack_graph, Mapping)
+                or not isinstance(stack_launch_assumptions, Mapping)
+            ):
+                issues.append(_issue(
+                    "violated",
+                    "checked_memory_spatial_replay_inputs_missing",
+                ))
+            else:
+                try:
+                    replayed = validate_stack_range_analysis_v2(
+                        stack_range_analysis,
+                        units=units,
+                        graph=stack_graph,
+                        launch_assumptions=stack_launch_assumptions,
+                        pe_sha256=pe_sha256,
+                        machine_ir_sha256=machine_ir_sha256,
+                        image_base=image_base,
+                        size_of_image=size_of_image,
+                        call_summaries=stack_call_summaries,
+                        indirect_recoveries=stack_indirect_recoveries,
+                        call_site_effects=stack_call_site_effects,
+                        checked_memory_access_facts=raw_access_facts,
+                        interprocedural_authority_sha256=(
+                            interprocedural_sha256
+                        ),
+                        finite_offset_budget=stack_finite_offset_budget,
+                    )
+                    expected_spatial.extend(dict(row) for row in replayed.values())
+                except (TypeError, ValueError) as exc:
+                    issues.append(_issue(
+                        "violated",
+                        "checked_memory_spatial_binding_invalid",
+                        detail=str(exc),
+                    ))
+        if launch_spatial:
+            if (
+                not isinstance(launch_memory_range_analysis, Mapping)
+                or not isinstance(launch_memory_assumptions, Mapping)
+            ):
+                issues.append(_issue(
+                    "violated",
+                    "launch_memory_spatial_replay_inputs_missing",
+                ))
+            else:
+                try:
+                    replayed_launch = validate_launch_memory_range_analysis_v2(
+                        launch_memory_range_analysis,
+                        units=units,
+                        launch_assumptions=launch_memory_assumptions,
+                        pe_sha256=pe_sha256,
+                        machine_ir_sha256=machine_ir_sha256,
+                        image_base=image_base,
+                        size_of_image=size_of_image,
+                    )
+                    expected_spatial.extend(
+                        dict(row) for row in replayed_launch.values()
+                    )
+                except (TypeError, ValueError) as exc:
+                    issues.append(_issue(
+                        "violated",
+                        "launch_memory_spatial_binding_invalid",
+                        detail=str(exc),
+                    ))
+        if not any(
+            row.get("code") in {
                 "checked_memory_spatial_replay_inputs_missing",
-            ))
-        else:
+                "checked_memory_spatial_binding_invalid",
+                "launch_memory_spatial_replay_inputs_missing",
+                "launch_memory_spatial_binding_invalid",
+            }
+            for row in issues
+        ):
             try:
-                replayed = validate_stack_range_analysis_v2(
-                    stack_range_analysis,
-                    units=units,
-                    graph=stack_graph,
-                    launch_assumptions=stack_launch_assumptions,
-                    pe_sha256=pe_sha256,
-                    machine_ir_sha256=machine_ir_sha256,
-                    image_base=image_base,
-                    size_of_image=size_of_image,
-                    call_summaries=stack_call_summaries,
-                    indirect_recoveries=stack_indirect_recoveries,
-                    call_site_effects=stack_call_site_effects,
-                    checked_memory_access_facts=raw_access_facts,
-                    interprocedural_authority_sha256=(
-                        interprocedural_sha256
-                    ),
-                    finite_offset_budget=stack_finite_offset_budget,
-                )
-                expected_spatial = sorted(
-                    (dict(row) for row in replayed.values()),
+                expected_spatial.sort(
                     key=lambda row: (
                         str(row.get("unit_id")),
                         int(row.get("event_index", -1)),
                         str(row.get("id")),
-                    ),
+                    )
                 )
                 if raw_spatial_facts != expected_spatial:
                     raise ValueError(
-                        "global-slot spatial inventory differs from stack replay"
+                        "global-slot spatial inventory differs from exact replay"
                     )
             except (TypeError, ValueError) as exc:
                 issues.append(_issue(
@@ -529,7 +605,7 @@ def build_global_slot_authority_v2(
         "issues": sorted(issues, key=lambda row: (row["status"], row["code"])),
         "constraints": {
             "cold_replay_required": True,
-            "checked_spatial_facts_require_full_stack_replay": True,
+            "checked_spatial_facts_require_exact_source_replay": True,
             "inductive_facts_require_final_complete_rooted_graph": True,
             "tainted_slots_exported": False,
             "incomplete_evidence_exported": False,
@@ -621,7 +697,7 @@ def _violated_replay_authority(
         "issues": [_issue("violated", code, **details)],
         "constraints": {
             "cold_replay_required": True,
-            "checked_spatial_facts_require_full_stack_replay": True,
+            "checked_spatial_facts_require_exact_source_replay": True,
             "inductive_facts_require_final_complete_rooted_graph": True,
             "tainted_slots_exported": False,
             "incomplete_evidence_exported": False,

@@ -22,6 +22,9 @@ from spaghetti_extractor.global_slot_image_v2 import (
     validate_global_slot_invariant_binding_v2,
 )
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
+from spaghetti_extractor.launch_memory_ranges_v2 import (
+    derive_launch_memory_range_analysis_v2,
+)
 from spaghetti_extractor.stage_binary import _parse_stage_a_pe
 from spaghetti_extractor.stack_range_analysis_v2 import (
     derive_stack_range_analysis_v2,
@@ -90,6 +93,7 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
                 }),
                 _write(_const(0x401020), address=_const(slot)),
                 _read(_const(slot)),
+                _write(_const(0), address={"op": "fs_base", "width": 32}),
             ],
         )]
         graph = _graph(units)
@@ -100,7 +104,16 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
                     "mapped_separately_from_image": True,
                     "minimum_accessible_bytes_below": 0x1000,
                     "minimum_accessible_bytes_above": 0x1000,
-                }
+                },
+                "fs": {
+                    "contract": "pe32-user-thread-fs-v1",
+                    "teb_fields": "profiled-accesses-only",
+                    "range_contract": (
+                        "private-non-image-thread-environment-range-v1"
+                    ),
+                    "mapped_separately_from_image": True,
+                    "minimum_accessible_bytes": 0x1000,
+                },
             }
         }
         recovery = {
@@ -129,6 +142,14 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
             "call_summaries": {},
             "operation_provenance": {"checked_memory_access_facts": []},
         }
+        launch_memory_ranges = derive_launch_memory_range_analysis_v2(
+            units=units,
+            launch_assumptions=launch,
+            pe_sha256=binary.sha256,
+            machine_ir_sha256=machine_sha,
+            image_base=binary.image_base,
+            size_of_image=binary.size_of_image,
+        )
         relevant_reads = [{
             "slot_rva": 0x2000,
             "exit_id": recovery["id"],
@@ -143,6 +164,8 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
             image_base=binary.image_base,
             size_of_image=binary.size_of_image,
             checked_memory_spatial_facts=stack["checked_spatial_facts"],
+            launch_memory_range_analysis=launch_memory_ranges,
+            launch_assumptions=launch,
             range_authority_binding=stack["binding"],
             relevant_read_dependencies=relevant_reads,
             launch_initial_values={slot: 0x401000},
@@ -214,6 +237,14 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
             "call_summaries": {},
             "operation_provenance": {"checked_memory_access_facts": []},
         }
+        launch_memory_ranges = derive_launch_memory_range_analysis_v2(
+            units=units,
+            launch_assumptions=launch,
+            pe_sha256=binary.sha256,
+            machine_ir_sha256=machine_sha,
+            image_base=binary.image_base,
+            size_of_image=binary.size_of_image,
+        )
         analysis = analyze_global_slots_v2(
             units=units,
             graph=graph,
@@ -221,6 +252,8 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
             image_base=binary.image_base,
             size_of_image=binary.size_of_image,
             checked_memory_spatial_facts=stack["checked_spatial_facts"],
+            launch_memory_range_analysis=launch_memory_ranges,
+            launch_assumptions=launch,
             range_authority_binding=stack["binding"],
             relevant_read_dependencies=proposal_dependencies,
             launch_initial_values={slot: 0x401000},

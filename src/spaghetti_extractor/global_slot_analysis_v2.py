@@ -48,6 +48,9 @@ from .checked_memory_address_domain_v2 import (
     validate_checked_memory_address_domains_v2,
 )
 from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
+from .launch_memory_ranges_v2 import (
+    validate_launch_memory_range_analysis_v2,
+)
 from .stack_range_analysis_v2 import (
     CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT,
     CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
@@ -129,6 +132,8 @@ def analyze_global_slots_v2(
     checked_memory_address_domains: Sequence[Mapping[str, Any]] = (),
     call_site_effects: Sequence[Mapping[str, Any]] = (),
     checked_memory_spatial_facts: Sequence[Mapping[str, Any]] = (),
+    launch_memory_range_analysis: Mapping[str, Any] | None = None,
+    launch_assumptions: Mapping[str, Any] | None = None,
     memory_range_invariant_analysis: Mapping[str, Any] | None = None,
     pe_sha256: str | None = None,
     machine_ir_sha256: str | None = None,
@@ -296,10 +301,51 @@ def analyze_global_slots_v2(
         size_of_image=size_of_image,
         authority_binding=range_authority_binding,
     )
+    launch_spatial_facts: list[dict[str, Any]] = []
+    if launch_memory_range_analysis is not None:
+        if (
+            not isinstance(launch_assumptions, Mapping)
+            or not _digest(pe_sha256)
+            or not _digest(machine_ir_sha256)
+        ):
+            spatial_issues.append(_issue(
+                "violated", "launch_memory_spatial_binding_missing"
+            ))
+        else:
+            try:
+                replayed_launch = validate_launch_memory_range_analysis_v2(
+                    launch_memory_range_analysis,
+                    units=list(normalized_units.values()),
+                    launch_assumptions=launch_assumptions,
+                    pe_sha256=str(pe_sha256),
+                    machine_ir_sha256=str(machine_ir_sha256),
+                    image_base=image_base,
+                    size_of_image=size_of_image,
+                )
+                launch_spatial_facts = [
+                    copy.deepcopy(dict(row))
+                    for row in replayed_launch.values()
+                ]
+            except (TypeError, ValueError) as exc:
+                spatial_issues.append(_issue(
+                    "violated",
+                    "launch_memory_spatial_analysis_invalid",
+                    reason=str(exc),
+                ))
+    spatial_facts = sorted(
+        [*spatial_facts, *launch_spatial_facts],
+        key=lambda row: (
+            str(row["unit_id"]), int(row["event_index"]), str(row["id"])
+        ),
+    )
     access_spatial_facts = {
         _event_node(str(row["unit_id"]), int(row["event_index"])): row
         for row in spatial_facts
     }
+    if len(access_spatial_facts) != len(spatial_facts):
+        spatial_issues.append(_issue(
+            "violated", "checked_memory_spatial_event_duplicated"
+        ))
     graph_info, graph_issues = _normalize_graph(graph, normalized_units)
     relevant_reads, relevant_read_issues = _normalize_relevant_reads(
         relevant_read_dependencies,

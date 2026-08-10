@@ -710,6 +710,7 @@ let
           "spaghetti_extractor.joint_fixed_point_v2"
           "spaghetti_extractor.joint_interprocedural_analysis_v2"
           "spaghetti_extractor.launch_profile_v2"
+          "spaghetti_extractor.launch_memory_ranges_v2"
           "spaghetti_extractor.memory_range_invariants_v2"
           "spaghetti_extractor.mutable_slot_candidates_v2"
           "spaghetti_extractor.internal_function_contracts"
@@ -764,6 +765,9 @@ let
               parse_launch_assumption_template_v1,
               parse_launch_profile_v2,
           )
+          from spaghetti_extractor.launch_memory_ranges_v2 import (
+              derive_launch_memory_range_analysis_v2,
+          )
           from spaghetti_extractor.mutable_slot_candidates_v2 import (
               derive_dependency_scoped_slot_inventory_v2,
               derive_mutable_slot_candidates,
@@ -806,6 +810,14 @@ let
               assumptions = {}
           machine_ir_sha256 = hashlib.sha256(inputs["machine_ir"].read_bytes()).hexdigest()
           launch_assumptions_sha256 = canonical_sha256({"assumptions": assumptions})
+          launch_memory_ranges = derive_launch_memory_range_analysis_v2(
+              units=units,
+              launch_assumptions={"assumptions": assumptions},
+              pe_sha256=binary.sha256,
+              machine_ir_sha256=machine_ir_sha256,
+              image_base=binary.image_base,
+              size_of_image=binary.size_of_image,
+          )
           analysis_finite_value_budget = 32
           exact = exact_control_inventory_v2(units)
           control = manifest.get("control", {})
@@ -977,6 +989,8 @@ let
                   checked_memory_spatial_facts=stack_ranges.get(
                       "checked_spatial_facts", []
                   ),
+                  launch_memory_range_analysis=launch_memory_ranges,
+                  launch_assumptions={"assumptions": assumptions},
                   range_authority_binding=stack_ranges.get("binding"),
                   launch_initial_values=launch_initial_values,
                   memory_range_invariant_analysis=memory_range_invariants,
@@ -1017,6 +1031,8 @@ let
                   checked_memory_spatial_facts=stack_ranges.get(
                       "checked_spatial_facts", []
                   ),
+                  launch_memory_range_analysis=launch_memory_ranges,
+                  launch_assumptions={"assumptions": assumptions},
                   range_authority_binding=stack_ranges.get("binding"),
                   relevant_read_dependencies=dependencies,
                   launch_initial_values=launch_initial_values,
@@ -1078,6 +1094,8 @@ let
                       "call_site_effects", []
                   ),
                   stack_finite_offset_budget=analysis_finite_value_budget,
+                  launch_memory_range_analysis=launch_memory_ranges,
+                  launch_memory_assumptions={"assumptions": assumptions},
               )
 
           progress_started = time.monotonic()

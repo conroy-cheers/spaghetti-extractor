@@ -41,18 +41,32 @@ def constant_u32(expression: Any) -> int | None:
     return None
 
 
-def affine_register_offset(expression: Any, register: str) -> int | None:
-    """Return the signed constant in ``register + constant`` when exact."""
+def affine_atom_offset(
+    expression: Any,
+    *,
+    atom_op: str,
+    atom_name: str | None = None,
+) -> int | None:
+    """Return the signed constant in ``atom + constant`` when exact.
 
-    normalized = register.lower()
+    ``atom_name`` is used for named atoms such as registers.  Unnamed machine
+    inputs such as ``fs_base`` are selected by operation alone.
+    """
+
+    normalized_op = atom_op.lower()
+    normalized_name = None if atom_name is None else atom_name.lower()
 
     def affine(value: Any) -> tuple[int, int] | None:
         if not isinstance(value, Mapping):
             return None
         op = str(value.get("op", "")).lower()
-        if op in {"reg", "register", "input_reg"}:
+        if normalized_name is None:
+            if op == normalized_op:
+                return 1, 0
+        elif op == normalized_op:
             name = str(value.get("name", value.get("reg", ""))).lower()
-            return (1, 0) if name == normalized else None
+            if name == normalized_name:
+                return 1, 0
         if op in {"const", "constant"}:
             raw = value.get("value")
             if not isinstance(raw, int) or isinstance(raw, bool):
@@ -82,4 +96,29 @@ def affine_register_offset(expression: Any, register: str) -> int | None:
     return result[1] if result is not None and result[0] == 1 else None
 
 
-__all__ = ["affine_register_offset", "constant_u32"]
+def affine_register_offset(expression: Any, register: str) -> int | None:
+    """Return the signed constant in ``register + constant`` when exact."""
+
+    for operation in ("reg", "register", "input_reg"):
+        result = affine_atom_offset(
+            expression,
+            atom_op=operation,
+            atom_name=register,
+        )
+        if result is not None:
+            return result
+    return None
+
+
+def affine_special_offset(expression: Any, operation: str) -> int | None:
+    """Return the signed offset from an unnamed machine-input expression."""
+
+    return affine_atom_offset(expression, atom_op=operation)
+
+
+__all__ = [
+    "affine_atom_offset",
+    "affine_register_offset",
+    "affine_special_offset",
+    "constant_u32",
+]

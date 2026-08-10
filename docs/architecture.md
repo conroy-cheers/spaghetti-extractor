@@ -98,6 +98,10 @@ The v2 evidence graph is fail-closed:
    state contracts.
 2. Mutable image slots are tracked point-sensitively. Unknown or aliasing
    writes taint downstream facts; they are never pooled into every root.
+   Stack- and FS-relative accesses may be excluded from image-slot aliasing
+   only through exact event-bound spatial facts replayed from the corresponding
+   private launch-range contract. Such facts establish separation, not
+   immutability of stack or TEB contents.
 3. Call summaries and indirect targets converge together over an SCC worklist,
    then replay from no proposal seeds. Expensive bounded-context recovery runs
    only as a checkpoint after ordinary propagation stabilizes; a checkpoint
