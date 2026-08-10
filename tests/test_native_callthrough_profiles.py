@@ -42,6 +42,7 @@ _EXPECTED_ARITIES = {
 _EXCLUDED_MIDI_CALLBACK_APIS = {
     "midiOutPrepareHeader",
     "midiOutReset",
+    "midiOutUnprepareHeader",
     "midiStreamOpen",
     "midiStreamOut",
     "midiStreamProperty",

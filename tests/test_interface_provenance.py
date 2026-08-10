@@ -3332,6 +3332,78 @@ class InterfaceProvenanceTests(unittest.TestCase):
             {issue["code"] for issue in strict_with_contract["issues"]},
         )
 
+    def test_cyclic_register_held_iat_target_is_discovered_from_profile(self) -> None:
+        identity = MachineImportIdentity(
+            "winmm.dll", "symbol", "midiOutUnprepareHeader"
+        )
+        abi = resolve_machine_call_abi("pe32-stdcall-v1")
+        assert abi is not None
+        selected = SelectedImportABI(
+            identity=identity,
+            abi=abi,
+            profile_id="fixture-winmm-v1",
+            profile_sha256="1" * 64,
+            entry_key="machine_import_signatures",
+            entry_index=0,
+            argument_words=3,
+            contract={"disposition": "returns"},
+        )
+        thunk_rva = 0x3000
+        load_import = unit(
+            "load-import",
+            0x1000,
+            writes=[{
+                "register": "ebp",
+                "value": load(const(IMAGE_BASE + thunk_rva)),
+            }],
+        )
+        call_event = {
+            "kind": "indirect_call",
+            "return_rva": 0x1011,
+            "target": reg("ebp"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        call = unit("call-import", 0x1010, events=[call_event])
+        advance = unit("advance", 0x1020)
+        exit_row = {
+            "id": "exit:cached-import",
+            "source_unit_id": "call-import",
+            "source_rva": 0x1010,
+            "source_event_index": 0,
+            "kind": "indirect_call",
+            "target_expression": reg("ebp"),
+        }
+
+        result = self._run(
+            [load_import, call, advance],
+            [
+                edge("load-import", "call-import"),
+                edge("call-import", "advance"),
+                edge("advance", "call-import"),
+            ],
+            roots=["load-import"],
+            imports=[{
+                "dll": "winmm.dll",
+                "symbol": "midiOutUnprepareHeader",
+                "thunk_rva": thunk_rva,
+            }],
+            extra_import_abis={identity: selected},
+            indirect_exits=[exit_row],
+            bootstrap_unknown_call_preserved_registers=frozenset({"ebp"}),
+            collect_path_recovery_proposals=True,
+        )
+
+        recovery = result["resolutions"][0]
+        self.assertEqual(recovery["status"], "recovered", recovery)
+        self.assertEqual(recovery["origin_kinds"], ["import"])
+        self.assertEqual(
+            recovery["external_targets"][0]["import"]["symbol"],
+            "midiOutUnprepareHeader",
+        )
+        self.assertEqual(
+            recovery["external_targets"][0]["argument_words"], 3
+        )
+
     def test_preserved_register_hypothesis_is_local_and_non_authorizing(self) -> None:
         esi_target = IMAGE_BASE + 0x2000
         edi_target = IMAGE_BASE + 0x2100

@@ -68,6 +68,7 @@ _RUNTIME_PROFILE_ARITIES = {
     ("user32.dll", "WaitMessage"): 0,
     ("winmm.dll", "midiOutPrepareHeader"): 3,
     ("winmm.dll", "midiOutReset"): 1,
+    ("winmm.dll", "midiOutUnprepareHeader"): 3,
     ("winmm.dll", "midiStreamClose"): 1,
     ("winmm.dll", "midiStreamOpen"): 6,
     ("winmm.dll", "midiStreamOut"): 3,

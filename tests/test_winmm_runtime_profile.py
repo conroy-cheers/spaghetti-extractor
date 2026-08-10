@@ -26,6 +26,7 @@ _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _PROFILE = _REPOSITORY_ROOT / "profiles/pe32-winmm-runtime-v1.json"
 _ADDED_ARITIES = {
     "midiOutPrepareHeader": 3,
+    "midiOutUnprepareHeader": 3,
     "midiOutReset": 1,
     "midiStreamOpen": 6,
     "midiStreamOut": 3,
@@ -59,7 +60,7 @@ def _load_mutated(payload: dict[str, object]) -> None:
 
 
 class WinmmRuntimeProfileTests(unittest.TestCase):
-    def test_profile_covers_six_reviewed_pe32_sdk_imports(self) -> None:
+    def test_profile_covers_reviewed_pe32_sdk_imports(self) -> None:
         contracts = {
             str(contract.identity.value): contract
             for contract in load_machine_import_profile_set([_PROFILE]).contracts
