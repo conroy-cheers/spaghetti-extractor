@@ -714,6 +714,7 @@
     "spaghetti_extractor.hybrid_authority_builder_v2": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.analysis.scc_worklist",
         "spaghetti_extractor.authority_bindings_v2",
         "spaghetti_extractor.authority_dependencies_v2",
         "spaghetti_extractor.hybrid_authority_v2",

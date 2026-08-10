@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Iterable, Mapping, Sequence
 
+from .analysis.scc_worklist import decompose_scc
 from .hybrid_authority_v2 import (
     AuthorityBundle,
     AuthorityDependency,
@@ -32,7 +33,10 @@ from .authority_bindings_v2 import (
     IndirectExitBinding,
     match_indirect_recovery_v2,
 )
-from .authority_dependencies_v2 import call_frame_dependency_id
+from .authority_dependencies_v2 import (
+    call_frame_dependency_id,
+    parse_call_frame_dependency,
+)
 from .machine_ir_authority_v2 import (
     MACHINE_IR_AUTHORITY_BINDINGS_FORMAT,
     MachineIRAuthorityV2Error,
@@ -286,14 +290,54 @@ def build_hybrid_authority_v2(
                         target.unit_id,
                     )] = frame
 
+    indirect_events: dict[
+        str,
+        tuple[
+            Mapping[str, Any],
+            IndirectExitBinding,
+            Mapping[str, Any] | None,
+            tuple[EvidenceIssue, ...],
+        ],
+    ] = {}
     for event in events:
         binding = event["binding"]
-        if binding.unit.unit_id not in reachable_units:
+        if (
+            binding.unit.unit_id not in reachable_units
+            or binding.event_kind not in {"indirect_call", "indirect_jump"}
+        ):
             continue
-        raw = event["row"]
-        if binding.event_kind in {"indirect_call", "indirect_jump"}:
-            indirect_binding = _indirect_exit_binding(event)
-            recovery, recovery_issues = _matching_recovery(recoveries, event)
+        indirect_binding = _indirect_exit_binding(event)
+        recovery, recovery_issues = _matching_recovery(recoveries, event)
+        indirect_events[indirect_binding.exit_id] = (
+            event,
+            indirect_binding,
+            recovery,
+            recovery_issues,
+        )
+
+    dependency_edges = {
+        (dependency_id, exit_id)
+        for exit_id, (_event, _binding, recovery, _issues) in indirect_events.items()
+        for dependency_id in _indirect_analysis_dependency_ids(recovery)
+        if dependency_id in indirect_events
+    }
+    decomposition = decompose_scc(
+        indirect_events.keys(),
+        dependency_edges,
+    )
+    certificates_by_exit: dict[str, IndirectExitCertificate] = {}
+    for component in decomposition.components:
+        cyclic = len(component) > 1 or any(
+            source == target == component[0]
+            for source, target in dependency_edges
+        )
+        cyclic_members = frozenset(component) if cyclic else frozenset()
+        for exit_id in component:
+            event, indirect_binding, recovery, recovery_issues = indirect_events[
+                exit_id
+            ]
+            binding = event["binding"]
+            raw = event["row"]
             mutable_dependencies, mutable_issues = _checked_mutable_dependencies(
                 recovery,
                 binary=binary,
@@ -307,6 +351,14 @@ def build_hybrid_authority_v2(
                         dependency.content_id
                         for dependency in mutable_dependencies
                     ),
+                )
+            )
+            indirect_dependencies, indirect_dependency_issues = (
+                _checked_indirect_exit_dependencies(
+                    recovery,
+                    certificates_by_exit=certificates_by_exit,
+                    known_exit_ids=frozenset(indirect_events),
+                    cyclic_dependency_ids=cyclic_members,
                 )
             )
             targets = [] if recovery is None else recovery.get("target_unit_ids", [])
@@ -365,6 +417,7 @@ def build_hybrid_authority_v2(
                 and external_complete
                 and not mutable_issues
                 and not call_dependency_issues
+                and not indirect_dependency_issues
                 and not recovery_issues
             )
             indirect_issues = (
@@ -372,15 +425,25 @@ def build_hybrid_authority_v2(
                     *recovery_issues,
                     *mutable_issues,
                     *call_dependency_issues,
+                    *indirect_dependency_issues,
                 ))
-                if recovery_issues or mutable_issues or call_dependency_issues
+                if (
+                    recovery_issues
+                    or mutable_issues
+                    or call_dependency_issues
+                    or indirect_dependency_issues
+                )
                 else ()
                 if recovered
                 else (
                     _missing("indirect_targets_missing", "indirect exit has no complete finite v2 target inventory"),
                 )
             )
-            dependencies = [*mutable_dependencies, *call_dependencies]
+            dependencies = [
+                *mutable_dependencies,
+                *call_dependencies,
+                *indirect_dependencies,
+            ]
             for external_record in external_records:
                 add(external_record, is_required=False)
                 dependencies.append(AuthorityDependency(
@@ -401,7 +464,7 @@ def build_hybrid_authority_v2(
                 )
                 if frame is not None:
                     add(frame, is_required=False)
-            add(IndirectExitCertificate(
+            certificate = IndirectExitCertificate(
                 exit_site=binding,
                 analysis_fact_id=indirect_binding.exit_id,
                 target_expression_sha256=indirect_binding.target_expression_sha256,
@@ -421,7 +484,9 @@ def build_hybrid_authority_v2(
                 ),
                 dependencies=tuple(sorted(set(dependencies))),
                 issues=_issues(indirect_issues),
-            ))
+            )
+            add(certificate)
+            certificates_by_exit[exit_id] = certificate
 
     external_by_binding: dict[EventBinding, list[CheckedExternalSite]] = {}
     for record in supplied_external:
@@ -809,6 +874,14 @@ def _checked_call_frame_dependencies(
             continue
         if dependency_id in non_call_dependency_ids:
             continue
+        if dependency_id.startswith("indirect-exit:"):
+            continue
+        if parse_call_frame_dependency(dependency_id) is None:
+            issues.append(_contradiction(
+                "analysis_dependency_kind_unsupported",
+                f"target provenance has unknown dependency {dependency_id}",
+            ))
+            continue
         frame = call_frames_by_dependency.get(dependency_id)
         if frame is None:
             issues.append(_missing(
@@ -823,6 +896,65 @@ def _checked_call_frame_dependencies(
             issues.append(_missing(
                 "call_frame_dependency_incomplete",
                 f"target provenance crosses incomplete frame {dependency_id}",
+            ))
+    return tuple(sorted(dependencies)), _issues(issues)
+
+
+def _indirect_analysis_dependency_ids(
+    recovery: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    if recovery is None:
+        return ()
+    raw_dependencies = recovery.get("analysis_dependencies", ())
+    if not isinstance(raw_dependencies, Sequence) or isinstance(
+        raw_dependencies, (str, bytes)
+    ):
+        return ()
+    return tuple(sorted({
+        dependency_id
+        for dependency_id in raw_dependencies
+        if isinstance(dependency_id, str)
+        and dependency_id.startswith("indirect-exit:")
+    }))
+
+
+def _checked_indirect_exit_dependencies(
+    recovery: Mapping[str, Any] | None,
+    *,
+    certificates_by_exit: Mapping[str, IndirectExitCertificate],
+    known_exit_ids: frozenset[str],
+    cyclic_dependency_ids: frozenset[str] = frozenset(),
+) -> tuple[tuple[AuthorityDependency, ...], tuple[EvidenceIssue, ...]]:
+    """Bind recovered target provenance to earlier checked exit certificates."""
+
+    dependencies: set[AuthorityDependency] = set()
+    issues: list[EvidenceIssue] = []
+    for dependency_id in _indirect_analysis_dependency_ids(recovery):
+        if dependency_id in cyclic_dependency_ids:
+            issues.append(_missing(
+                "indirect_exit_dependency_cycle",
+                f"target provenance participates in cycle through {dependency_id}",
+            ))
+            continue
+        certificate = certificates_by_exit.get(dependency_id)
+        if certificate is None:
+            issues.append(_missing(
+                "indirect_exit_dependency_missing",
+                (
+                    f"target provenance requires unavailable exit {dependency_id}"
+                    if dependency_id in known_exit_ids
+                    else f"target provenance names unknown exit {dependency_id}"
+                ),
+            ))
+            continue
+        dependencies.add(AuthorityDependency(
+            "indirect_exit_certificate",
+            certificate.content_id,
+        ))
+        if certificate.status is not AuthorityStatus.COMPLETE:
+            issues.append(_missing(
+                "indirect_exit_dependency_incomplete",
+                f"target provenance crosses incomplete exit {dependency_id}",
             ))
     return tuple(sorted(dependencies)), _issues(issues)
 

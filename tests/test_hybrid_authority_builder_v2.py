@@ -141,7 +141,167 @@ def _recovery(rows: list[dict], **values: object) -> dict:
     }
 
 
+def _indirect_row(unit_id: str, rva: int, register: str) -> dict:
+    row = _row(outcome={
+        "kind": "indirect_jump",
+        "instruction_rva": rva,
+        "target": {"op": "reg", "name": register, "width": 32},
+    })
+    row["id"] = unit_id
+    row["source"]["original"] = {
+        "rva_start": rva,
+        "rva_end": rva + 1,
+    }
+    row["instructions"][0]["rva_start"] = rva
+    row["instructions"][0]["rva_end"] = rva + 1
+    return row
+
+
+def _recovery_for(
+    rows: list[dict], unit_id: str, **values: object
+) -> dict:
+    bindings = build_machine_ir_authority_bindings(rows, pe_sha256=BINARY_SHA)
+    exit_binding = next(
+        binding
+        for row in bindings["indirect_exits"]
+        for binding in (IndirectExitBinding.parse(row),)
+        if binding.unit.unit_id == unit_id
+    )
+    return {
+        **exit_binding.identity_payload(),
+        "id": exit_binding.exit_id,
+        "status": "recovered",
+        "target_unit_ids": [],
+        "external_targets": [],
+        **values,
+    }
+
+
 class HybridAuthorityBuilderV2Tests(unittest.TestCase):
+    def test_indirect_provenance_binds_checked_provider_certificate(self) -> None:
+        rows = [
+            _indirect_row("unit:entry", 0x1000, "eax"),
+            _indirect_row("unit:dependent", 0x1010, "ecx"),
+        ]
+        provider = _recovery_for(
+            rows,
+            "unit:entry",
+            target_unit_ids=["unit:dependent"],
+        )
+        dependent = _recovery_for(
+            rows,
+            "unit:dependent",
+            target_unit_ids=["unit:dependent"],
+            analysis_dependencies=[provider["id"]],
+        )
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=_interprocedural(
+                recoveries=[dependent, provider]
+            ),
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        certificates = {
+            record.analysis_fact_id: record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+        }
+        self.assertEqual(bundle.status, AuthorityStatus.COMPLETE, bundle.diagnostics)
+        self.assertEqual(len(certificates[dependent["id"]].dependencies), 1)
+        dependency = certificates[dependent["id"]].dependencies[0]
+        self.assertEqual(dependency.role, "indirect_exit_certificate")
+        self.assertEqual(
+            dependency.content_id,
+            certificates[provider["id"]].content_id,
+        )
+
+    def test_unknown_indirect_provenance_dependency_fails_closed(self) -> None:
+        rows = [_indirect_row("unit:entry", 0x1000, "eax")]
+        recovery = _recovery_for(
+            rows,
+            "unit:entry",
+            target_unit_ids=["unit:entry"],
+            analysis_dependencies=["indirect-exit:not-present"],
+        )
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=_interprocedural(recoveries=[recovery]),
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        certificate = next(
+            record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+        )
+        self.assertEqual(bundle.status, AuthorityStatus.INCOMPLETE)
+        self.assertIn(
+            "indirect_exit_dependency_missing",
+            {issue.code for issue in certificate.issues},
+        )
+        self.assertNotIn(
+            "call_frame_dependency_missing",
+            {issue.code for issue in certificate.issues},
+        )
+
+    def test_cyclic_indirect_provenance_fails_closed_without_record_cycle(self) -> None:
+        rows = [
+            _indirect_row("unit:entry", 0x1000, "eax"),
+            _indirect_row("unit:other", 0x1010, "ecx"),
+        ]
+        first = _recovery_for(
+            rows,
+            "unit:entry",
+            target_unit_ids=["unit:other"],
+        )
+        second = _recovery_for(
+            rows,
+            "unit:other",
+            target_unit_ids=["unit:entry"],
+        )
+        first["analysis_dependencies"] = [second["id"]]
+        second["analysis_dependencies"] = [first["id"]]
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=_interprocedural(
+                recoveries=[first, second]
+            ),
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        certificates = [
+            record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+        ]
+        self.assertEqual(bundle.status, AuthorityStatus.INCOMPLETE)
+        self.assertNotIn("dependency_cycle", bundle.diagnostics)
+        self.assertEqual(len(certificates), 2)
+        self.assertTrue(all(
+            "indirect_exit_dependency_cycle"
+            in {issue.code for issue in certificate.issues}
+            for certificate in certificates
+        ))
+
     def test_unrelated_incomplete_exit_does_not_taint_complete_call_frame(self) -> None:
         rows = [_row(external_events=[{
             "kind": "internal_call",
