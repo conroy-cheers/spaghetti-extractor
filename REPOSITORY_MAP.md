@@ -115,6 +115,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `authority_bindings_v2.py`, `authority_record_core_v2.py` | Exact binary/unit/event bindings and common immutable authority-record validation. |
 | `address_expression_v2.py` | Normalized address-expression IR used by provenance and target certificates. |
 | `checked_memory_access_v2.py` | Exact event-bound finite memory-address facts emitted by cold interprocedural replay. |
+| `checked_memory_address_domain_v2.py` | Exhaustive bounded-context address-domain certificates for one exact memory event; these authorize conditional mutable-slot reads without turning ordinary provenance observations into coverage claims. |
 | `authority_v2_cli.py` | Stable command-line adapters for emitting and validating v2 authority artifacts. |
 | `control_analysis_v2.py` | Exact unit/control inventories and rooted closure, independent of legacy provenance. |
 | `entry_fact_derivation_v2.py` | Immutable launch/IAT facts and fail-closed mutable-slot promotion inputs. |

@@ -34,6 +34,7 @@ from tests.test_global_slot_analysis_v2 import (
     SLOT,
     _analyze,
     _checked_access_facts,
+    _checked_address_domains,
     _const,
     _graph,
     _read,
@@ -700,6 +701,37 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
         self.assertEqual(authority["status"], "violated")
         self.assertIn(
             "checked_memory_access_binding_invalid",
+            {row["code"] for row in authority["issues"]},
+        )
+
+    def test_recomputed_outer_hash_cannot_hide_stale_address_domain(self) -> None:
+        units = [_unit("entry", 0x1000, [_read(_reg("eax"))])]
+        domains = _checked_address_domains(units, addresses=[SLOT, SLOT + 4])
+        analysis = _analyze(
+            units,
+            _graph(units),
+            launch_initial_values={SLOT: 0},
+            checked_address_domains=domains,
+        )
+        corrupted = copy.deepcopy(analysis)
+        corrupted["checked_memory_address_domains"][0]["binding"][
+            "event_sha256"
+        ] = "0" * 64
+        _rehash_analysis(corrupted)
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=corrupted,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        self.assertEqual(authority["status"], "violated")
+        self.assertIn(
+            "checked_memory_address_domain_binding_invalid",
             {row["code"] for row in authority["issues"]},
         )
 

@@ -17,6 +17,10 @@ from .checked_memory_access_v2 import (
     CheckedMemoryAccessV2Error,
     validate_checked_memory_access_facts_v2,
 )
+from .checked_memory_address_domain_v2 import (
+    CheckedMemoryAddressDomainV2Error,
+    validate_checked_memory_address_domains_v2,
+)
 from .global_slot_proposal_v2 import propose_global_slot_invariant
 from .global_slot_image_v2 import (
     GlobalSlotImageV2Error,
@@ -96,6 +100,11 @@ def replay_global_slot_authority_v2(
         if isinstance(operation, Mapping)
         else []
     )
+    address_domains = (
+        operation.get("checked_memory_address_domains", [])
+        if isinstance(operation, Mapping)
+        else []
+    )
     call_site_effects = (
         operation.get("call_site_effects", [])
         if isinstance(operation, Mapping)
@@ -123,6 +132,7 @@ def replay_global_slot_authority_v2(
         relevant_read_dependencies=relevant_reads,
         launch_initial_values=launch_initial_values,
         checked_memory_access_facts=access_facts,
+        checked_memory_address_domains=address_domains,
         call_site_effects=call_site_effects,
         memory_range_invariant_analysis=memory_range_invariant_analysis,
         pe_sha256=original_binary.sha256,
@@ -225,6 +235,34 @@ def build_global_slot_authority_v2(
             issues.append(_issue(
                 "violated",
                 "checked_memory_access_binding_invalid",
+                detail=str(exc),
+            ))
+    raw_address_domains = global_slot_analysis.get(
+        "checked_memory_address_domains"
+    )
+    if not isinstance(raw_address_domains, list) or any(
+        not isinstance(row, Mapping) for row in raw_address_domains
+    ):
+        issues.append(_issue(
+            "violated",
+            "checked_memory_address_domain_inventory_corrupt",
+        ))
+    elif raw_address_domains:
+        try:
+            validate_checked_memory_address_domains_v2(
+                raw_address_domains,
+                units=units,
+                binary=binary,
+                interprocedural_authority_sha256=interprocedural_sha256,
+            )
+        except (
+            CheckedMemoryAddressDomainV2Error,
+            TypeError,
+            ValueError,
+        ) as exc:
+            issues.append(_issue(
+                "violated",
+                "checked_memory_address_domain_binding_invalid",
                 detail=str(exc),
             ))
     raw_spatial_facts = global_slot_analysis.get(

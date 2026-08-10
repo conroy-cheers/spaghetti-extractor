@@ -40,6 +40,10 @@ from .checked_memory_access_v2 import (
     prepare_checked_memory_access_facts_v2,
     seal_checked_memory_access_facts_v2,
 )
+from .checked_memory_address_domain_v2 import (
+    prepare_checked_memory_address_domains_v2,
+    seal_checked_memory_address_domains_v2,
+)
 from .call_frame_hypotheses import (
     PreservedRegisterHypothesis,
     hypothesis_id as call_frame_hypothesis_id,
@@ -544,12 +548,34 @@ def analyze_interprocedural_control(
             ),
         )
     )
+    domain_proposals = authority_pass.operation_provenance.get(
+        "memory_address_domain_proposals", []
+    )
+    if not isinstance(domain_proposals, list) or any(
+        not isinstance(row, Mapping) for row in domain_proposals
+    ):
+        raise ValueError(
+            "interprocedural memory address-domain proposal inventory is invalid"
+        )
+    prepared_memory_address_domains = (
+        ()
+        if pe_sha256 is None or machine_ir_sha256 is None
+        else prepare_checked_memory_address_domains_v2(
+            domain_proposals,
+            units=units,
+            binary=BinaryBinding(
+                pe_sha256=pe_sha256,
+                machine_ir_sha256=machine_ir_sha256,
+            ),
+        )
+    )
     authority_artifact_sha256 = interprocedural_authority_signature_v2(
         root_unit_ids=authority_pass.roots,
         dependency_inventory=dependency_inventory,
         call_summaries=authority_pass.summaries,
         recovered_targets=authorizing_recoveries,
         memory_access_facts=prepared_memory_access_facts,
+        memory_address_domains=prepared_memory_address_domains,
         call_site_effects=_call_site_effect_rows(
             authority_pass.operation_provenance
         ),
@@ -558,12 +584,20 @@ def analyze_interprocedural_control(
         prepared_memory_access_facts,
         interprocedural_authority_sha256=authority_artifact_sha256,
     )
+    checked_memory_address_domains = seal_checked_memory_address_domains_v2(
+        prepared_memory_address_domains,
+        interprocedural_authority_sha256=authority_artifact_sha256,
+    )
     operation_provenance = copy.deepcopy(
         dict(authority_pass.operation_provenance)
     )
     operation_provenance.pop("memory_access_proposals", None)
+    operation_provenance.pop("memory_address_domain_proposals", None)
     operation_provenance["checked_memory_access_facts"] = list(
         checked_memory_access_facts
+    )
+    operation_provenance["checked_memory_address_domains"] = list(
+        checked_memory_address_domains
     )
     fixed_point = {
         "format": INTERPROCEDURAL_ANALYSIS_FORMAT,
@@ -639,6 +673,9 @@ def analyze_interprocedural_control(
         "round_bound_kind": "transfer_evaluation_resource_limit",
         "typed_fact_count": len(authority_pass.facts),
         "checked_memory_access_fact_count": len(checked_memory_access_facts),
+        "checked_memory_address_domain_count": len(
+            checked_memory_address_domains
+        ),
         "reachable_targets_complete": reachable_targets_complete,
         "dependency_edge_count": len(authority_pass.dependency_edges),
         "scc_count": len(authority_pass.decomposition.components),
@@ -881,8 +918,24 @@ def _merge_inductive_operation_provenance(
     """Retain replayed event facts whose simultaneous hypotheses closed."""
 
     result = copy.deepcopy(dict(cold))
-    cold_rows = cold.get("memory_access_proposals", ())
-    replay_rows = replay.get("memory_access_proposals", ())
+    for field in (
+        "memory_access_proposals",
+        "memory_address_domain_proposals",
+    ):
+        result[field] = _merge_inductive_event_rows(
+            cold.get(field, ()),
+            replay.get(field, ()),
+            available_dependencies=available_dependencies,
+        )
+    return result
+
+
+def _merge_inductive_event_rows(
+    cold_rows: Any,
+    replay_rows: Any,
+    *,
+    available_dependencies: set[str],
+) -> list[dict[str, Any]]:
     by_event: dict[tuple[str, int], dict[str, Any]] = {}
     for row in cold_rows if isinstance(cold_rows, list) else ():
         if not isinstance(row, Mapping):
@@ -914,10 +967,7 @@ def _merge_inductive_operation_provenance(
         by_event.setdefault(
             (unit_id, event_index), copy.deepcopy(dict(row))
         )
-    result["memory_access_proposals"] = [
-        by_event[key] for key in sorted(by_event)
-    ]
-    return result
+    return [by_event[key] for key in sorted(by_event)]
 
 
 def _complete_output_nodes(

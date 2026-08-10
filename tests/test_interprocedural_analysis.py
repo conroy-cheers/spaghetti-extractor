@@ -31,6 +31,10 @@ from spaghetti_extractor.indirect_target_dependency_v2 import (
 from spaghetti_extractor.checked_memory_access_v2 import (
     MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
 )
+from spaghetti_extractor.checked_memory_address_domain_v2 import (
+    CONTEXTUAL_MEMORY_COVERAGE_V1_FORMAT,
+    MEMORY_ADDRESS_DOMAIN_PROPOSAL_V2_FORMAT,
+)
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
 from spaghetti_extractor.machine_abi import resolve_machine_call_abi
 from spaghetti_extractor.provenance_domain import ValueOrigin
@@ -871,6 +875,70 @@ class InterproceduralAnalysisTests(unittest.TestCase):
 
         self.assertEqual(rejected["memory_access_proposals"], [])
         self.assertEqual(accepted["memory_access_proposals"], [proposal])
+
+    def test_cold_replay_seals_exhaustive_memory_address_domain(self) -> None:
+        root = unit(
+            "root",
+            0x1000,
+            memory=({
+                "kind": "read",
+                "width": 4,
+                "address": reg("esi"),
+            },),
+        )
+        root["source"]["instruction_bytes_sha256"] = "e" * 64
+
+        def resolver(**_kwargs: Any) -> dict[str, object]:
+            event = root["semantics"]["memory_events"][0]
+            return {
+                "resolutions": [],
+                "memory_address_domain_proposals": [{
+                    "format": MEMORY_ADDRESS_DOMAIN_PROPOSAL_V2_FORMAT,
+                    "status": "complete",
+                    "unit_id": "root",
+                    "event_index": 0,
+                    "memory_kind": "read",
+                    "width_bytes": 4,
+                    "address_expression": event["address"],
+                    "addresses": [SLOT, SLOT + 4],
+                    "authority_dependencies": [],
+                    "context_coverage": {
+                        "format": CONTEXTUAL_MEMORY_COVERAGE_V1_FORMAT,
+                        "status": "complete",
+                        "root_unit_ids": ["root"],
+                        "relevant_unit_ids": ["root"],
+                        "context_states": 1,
+                        "context_depth": 1,
+                        "contexts_per_unit": 32,
+                        "truncated_calls": 0,
+                        "dropped_contexts": 0,
+                        "work_budget_exceeded": False,
+                    },
+                }],
+            }
+
+        result = self._run(
+            units=[root],
+            roots=["root"],
+            resolver=resolver,
+            bind_memory_accesses=True,
+        )
+
+        domains = result.operation_provenance[
+            "checked_memory_address_domains"
+        ]
+        self.assertEqual(len(domains), 1)
+        self.assertEqual(domains[0]["addresses"], [SLOT, SLOT + 4])
+        self.assertEqual(
+            domains[0]["interprocedural_authority_sha256"],
+            result.fixed_point["authority_artifact_sha256"],
+        )
+        self.assertNotIn(
+            "memory_address_domain_proposals", result.operation_provenance
+        )
+        self.assertEqual(
+            result.fixed_point["checked_memory_address_domain_count"], 1
+        )
 
     def test_operator_internal_contracts_are_proposal_only(self) -> None:
         observed: list[dict[str, dict[str, object]]] = []

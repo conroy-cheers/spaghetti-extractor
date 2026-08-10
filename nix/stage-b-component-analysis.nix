@@ -684,6 +684,7 @@ let
         expectedFormat = "spaghetti-extractor-joint-interprocedural-analysis-v2";
         allowedStatuses = [ "complete" "incomplete" "violated" ];
         pythonModules = [
+          "spaghetti_extractor.checked_memory_address_domain_v2"
           "spaghetti_extractor.global_slot_analysis_v2"
           "spaghetti_extractor.global_slot_authority_v2"
           "spaghetti_extractor.interprocedural_phase_v2"
@@ -984,6 +985,11 @@ let
                   checked_memory_access_facts=(
                       interprocedural.get("operation_provenance", {}).get(
                           "checked_memory_access_facts", []
+                      )
+                  ),
+                  checked_memory_address_domains=(
+                      interprocedural.get("operation_provenance", {}).get(
+                          "checked_memory_address_domains", []
                       )
                   ),
                   call_site_effects=(

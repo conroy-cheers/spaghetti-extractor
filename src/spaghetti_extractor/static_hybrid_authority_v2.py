@@ -953,6 +953,11 @@ def _interprocedural_payload(
         if isinstance(operation_provenance, Mapping)
         else []
     )
+    memory_address_domains = (
+        operation_provenance.get("checked_memory_address_domains", [])
+        if isinstance(operation_provenance, Mapping)
+        else []
+    )
     call_site_effects = (
         operation_provenance.get("call_site_effects", [])
         if isinstance(operation_provenance, Mapping)
@@ -1001,6 +1006,8 @@ def _interprocedural_payload(
         and all(isinstance(row, Mapping) for row in recoveries)
         and isinstance(memory_access_facts, list)
         and all(isinstance(row, Mapping) for row in memory_access_facts)
+        and isinstance(memory_address_domains, list)
+        and all(isinstance(row, Mapping) for row in memory_address_domains)
         and isinstance(call_site_effects, list)
         and all(isinstance(row, Mapping) for row in call_site_effects)
         and isinstance(fixed.get("root_unit_ids"), list)
@@ -1014,6 +1021,7 @@ def _interprocedural_payload(
             call_summaries=summaries,
             recovered_targets=recoveries,
             memory_access_facts=memory_access_facts,
+            memory_address_domains=memory_address_domains,
             call_site_effects=call_site_effects,
         )
         if artifact_inputs_valid

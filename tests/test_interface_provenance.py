@@ -4382,13 +4382,16 @@ class InterfaceProvenanceTests(unittest.TestCase):
                 "slot_addresses": sorted(table_words),
             }],
         )
-        contextual_access = next(
-            row for row in result["memory_access_proposals"]
+        contextual_domain = next(
+            row for row in result["memory_address_domain_proposals"]
             if row["unit_id"] == "load-target" and row["event_index"] == 0
         )
         self.assertEqual(
-            sorted(origin["key"][0] for origin in contextual_access["address_origins"]),
+            contextual_domain["addresses"],
             sorted(table_words),
+        )
+        self.assertEqual(
+            contextual_domain["context_coverage"]["status"], "complete"
         )
         self.assertTrue(all(
             context["proposal_static_read_addresses"]

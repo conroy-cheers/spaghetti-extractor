@@ -64,6 +64,10 @@ from .import_abi import SelectedImportABI
 from .machine_abi import MachineCallABI, resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity, MachineImportProfileError
 from .checked_memory_access_v2 import MEMORY_ACCESS_PROPOSAL_V2_FORMAT
+from .checked_memory_address_domain_v2 import (
+    CONTEXTUAL_MEMORY_COVERAGE_V1_FORMAT,
+    MEMORY_ADDRESS_DOMAIN_PROPOSAL_V2_FORMAT,
+)
 from .provenance_domain import (
     FiniteValue,
     ValueOrigin,
@@ -303,7 +307,7 @@ class _RunResult:
     states: dict[str, _State]
     resolutions: list[dict[str, Any]]
     path_recovery_proposals: list[dict[str, Any]]
-    contextual_memory_access_proposals: list[dict[str, Any]]
+    contextual_memory_address_domain_proposals: list[dict[str, Any]]
     proposed_slots: dict[_MemoryLocation, _Value]
     tainted_slots: set[_MemoryLocation]
     issues: list[dict[str, Any]]
@@ -366,7 +370,7 @@ class _PathContext:
 @dataclass
 class _ContextDiscoveryResult:
     proposals: list[dict[str, Any]]
-    memory_access_proposals: list[dict[str, Any]]
+    memory_address_domain_proposals: list[dict[str, Any]]
     issues: list[dict[str, Any]]
     context_states: int
     truncated_calls: int
@@ -689,10 +693,8 @@ def recover_external_interface_targets(
         checked_stack_entry_offsets=stack_entry_offsets,
         finite_value_budget=finite_value_budget,
     )
-    memory_access_proposals = _merge_memory_access_proposals(
-        memory_access_proposals,
-        final.contextual_memory_access_proposals,
-        finite_value_budget=finite_value_budget,
+    memory_address_domain_proposals = (
+        final.contextual_memory_address_domain_proposals
     )
     if recovered_known_slots is not None:
         recovered_known_slots.clear()
@@ -828,6 +830,7 @@ def recover_external_interface_targets(
         "call_argument_recoveries": call_argument_recoveries,
         "callback_registrations": callback_registrations,
         "memory_access_proposals": memory_access_proposals,
+        "memory_address_domain_proposals": memory_address_domain_proposals,
         "issues": final.issues,
         "counts": {
             "units": len(units),
@@ -867,6 +870,9 @@ def recover_external_interface_targets(
                 for row in callback_registrations
             ),
             "memory_access_proposals": len(memory_access_proposals),
+            "memory_address_domain_proposals": len(
+                memory_address_domain_proposals
+            ),
             "inferred_internal_call_cleanups": sum(
                 evidence.status == "complete"
                 and evidence.target_address not in supplied_call_stack_cleanup
@@ -941,31 +947,6 @@ def _memory_access_proposals(
                 "authority_dependencies": list(value_dependencies(origins)),
             })
     return result
-
-
-def _merge_memory_access_proposals(
-    primary: Sequence[Mapping[str, Any]],
-    contextual: Sequence[Mapping[str, Any]],
-    *,
-    finite_value_budget: int,
-) -> list[dict[str, Any]]:
-    """Prefer the context-insensitive fact and fill otherwise missing events."""
-
-    by_event: dict[tuple[str, int], dict[str, Any]] = {}
-    for row in (*primary, *contextual):
-        unit_id = row.get("unit_id") if isinstance(row, Mapping) else None
-        event_index = row.get("event_index") if isinstance(row, Mapping) else None
-        origins = row.get("address_origins") if isinstance(row, Mapping) else None
-        if (
-            not isinstance(unit_id, str)
-            or not isinstance(event_index, int)
-            or isinstance(event_index, bool)
-            or not isinstance(origins, list)
-            or not 0 < len(origins) <= finite_value_budget
-        ):
-            continue
-        by_event.setdefault((unit_id, event_index), copy.deepcopy(dict(row)))
-    return [by_event[key] for key in sorted(by_event)]
 
 
 class _ProfileInventory:
@@ -1619,13 +1600,15 @@ def _run_dataflow(
     )
     path_recovery_proposals = _attach_contextual_memory_read_sites(
         path_recovery_proposals,
-        contextual.memory_access_proposals,
+        contextual.memory_address_domain_proposals,
     )
     return _RunResult(
         states=input_states,
         resolutions=resolutions,
         path_recovery_proposals=path_recovery_proposals,
-        contextual_memory_access_proposals=contextual.memory_access_proposals,
+        contextual_memory_address_domain_proposals=(
+            contextual.memory_address_domain_proposals
+        ),
         proposed_slots=proposed_slots,
         tainted_slots=tainted_slots,
         issues=_deduplicate(issues),
@@ -2133,10 +2116,10 @@ def _run_contextual_target_discovery(
         for identity, rows in sorted(contextual_rows.items())
         if final_by_id.get(identity, {}).get("status") != "recovered"
     ]
-    memory_access_proposals = (
+    memory_address_domain_proposals = (
         []
         if dropped_contexts or work_budget_exceeded
-        else _contextual_memory_access_proposals(
+        else _contextual_memory_address_domain_proposals(
             by_id=by_id,
             states=states,
             relevant_units=relevant_units,
@@ -2144,6 +2127,11 @@ def _run_contextual_target_discovery(
             known_slots=known_slots,
             finite_value_budget=finite_value_budget,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
+            root_unit_ids=roots,
+            context_depth=context_depth,
+            contexts_per_unit=contexts_per_unit,
+            truncated_calls=truncated_calls,
+            context_states=len(states),
         )
     )
     issues: list[dict[str, Any]] = []
@@ -2162,7 +2150,7 @@ def _run_contextual_target_discovery(
         })
     return _ContextDiscoveryResult(
         proposals=proposals,
-        memory_access_proposals=memory_access_proposals,
+        memory_address_domain_proposals=memory_address_domain_proposals,
         issues=issues,
         context_states=len(states),
         truncated_calls=truncated_calls,
@@ -2171,7 +2159,7 @@ def _run_contextual_target_discovery(
     )
 
 
-def _contextual_memory_access_proposals(
+def _contextual_memory_address_domain_proposals(
     *,
     by_id: Mapping[str, Mapping[str, Any]],
     states: Mapping[tuple[str, _PathContext], _State],
@@ -2180,6 +2168,11 @@ def _contextual_memory_access_proposals(
     known_slots: Mapping[_MemoryLocation, _Value],
     finite_value_budget: int,
     checked_stack_entry_offsets: Mapping[str, frozenset[int]],
+    root_unit_ids: set[str],
+    context_depth: int,
+    contexts_per_unit: int,
+    truncated_calls: int,
+    context_states: int,
 ) -> list[dict[str, Any]]:
     """Export finite event addresses from every retained call context.
 
@@ -2247,16 +2240,42 @@ def _contextual_memory_access_proposals(
         origins = grouped[key]
         if origins is None or not origins:
             continue
+        exact_addresses: list[int] = []
+        malformed = False
+        for origin in origins:
+            if (
+                origin.kind != "exact"
+                or len(origin.key) != 1
+                or not isinstance(origin.key[0], int)
+                or isinstance(origin.key[0], bool)
+            ):
+                malformed = True
+                break
+            exact_addresses.append(int(origin.key[0]) & 0xFFFF_FFFF)
+        if malformed:
+            continue
         result.append({
-            "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+            "format": MEMORY_ADDRESS_DOMAIN_PROPOSAL_V2_FORMAT,
             "status": "complete",
             "unit_id": unit_id,
             "event_index": event_index,
             "memory_kind": event.get("kind"),
             "width_bytes": event.get("width"),
             "address_expression": copy.deepcopy(event.get("address")),
-            "address_origins": _origins_json(origins),
+            "addresses": sorted(set(exact_addresses)),
             "authority_dependencies": list(value_dependencies(origins)),
+            "context_coverage": {
+                "format": CONTEXTUAL_MEMORY_COVERAGE_V1_FORMAT,
+                "status": "complete",
+                "root_unit_ids": sorted(root_unit_ids),
+                "relevant_unit_ids": sorted(relevant_units),
+                "context_states": context_states,
+                "context_depth": context_depth,
+                "contexts_per_unit": contexts_per_unit,
+                "truncated_calls": truncated_calls,
+                "dropped_contexts": 0,
+                "work_budget_exceeded": False,
+            },
         })
     return result
 
@@ -2593,12 +2612,12 @@ def _merge_context_and_legacy_proposals(
 
 def _attach_contextual_memory_read_sites(
     recoveries: Sequence[Mapping[str, Any]],
-    memory_access_proposals: Sequence[Mapping[str, Any]],
+    memory_address_domain_proposals: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     """Attach proposal-only event locations for independently checked replay."""
 
     read_sites: list[tuple[frozenset[int], dict[str, Any]]] = []
-    for row in memory_access_proposals:
+    for row in memory_address_domain_proposals:
         if (
             not isinstance(row, Mapping)
             or row.get("memory_kind") not in {"read", "read_write"}
@@ -2607,7 +2626,16 @@ def _attach_contextual_memory_read_sites(
             or not isinstance(row.get("event_index"), int)
         ):
             continue
-        addresses = _exact_origin_addresses(row.get("address_origins"))
+        raw_addresses = row.get("addresses")
+        addresses = (
+            frozenset(
+                int(value) & 0xFFFF_FFFF
+                for value in raw_addresses
+                if isinstance(value, int) and not isinstance(value, bool)
+            )
+            if isinstance(raw_addresses, list)
+            else frozenset()
+        )
         if not addresses:
             continue
         read_sites.append((addresses, {
@@ -2643,25 +2671,6 @@ def _attach_contextual_memory_read_sites(
                 )
         result.append(row)
     return result
-
-
-def _exact_origin_addresses(value: Any) -> frozenset[int]:
-    if not isinstance(value, list) or not value:
-        return frozenset()
-    result: set[int] = set()
-    for row in value:
-        key = row.get("key") if isinstance(row, Mapping) else None
-        if (
-            not isinstance(row, Mapping)
-            or row.get("kind") != "exact"
-            or not isinstance(key, list)
-            or len(key) != 1
-            or not isinstance(key[0], int)
-            or isinstance(key[0], bool)
-        ):
-            return frozenset()
-        result.add(int(key[0]) & 0xFFFF_FFFF)
-    return frozenset(result)
 
 
 def _state_cache_key(state: _State) -> tuple[Any, ...]:

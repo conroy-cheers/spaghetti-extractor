@@ -575,7 +575,7 @@ def _propose_read_invariants(
                 ))
 
         classification = raw.get("classification")
-        if classification != "exact":
+        if classification not in {"exact", "conditional_exact"}:
             local_issues.append(_issue(
                 (
                     "incomplete"

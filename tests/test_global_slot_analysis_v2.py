@@ -17,6 +17,12 @@ from spaghetti_extractor.checked_memory_access_v2 import (
     prepare_checked_memory_access_facts_v2,
     seal_checked_memory_access_facts_v2,
 )
+from spaghetti_extractor.checked_memory_address_domain_v2 import (
+    CONTEXTUAL_MEMORY_COVERAGE_V1_FORMAT,
+    MEMORY_ADDRESS_DOMAIN_PROPOSAL_V2_FORMAT,
+    prepare_checked_memory_address_domains_v2,
+    seal_checked_memory_address_domains_v2,
+)
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
 from spaghetti_extractor.stack_range_analysis_v2 import (
     derive_stack_range_analysis_v2,
@@ -118,6 +124,7 @@ def _analyze(
     launch_initial_values: dict[int, int] | None = None,
     slot: int = SLOT,
     checked_access_facts: list[dict[str, object]] | None = None,
+    checked_address_domains: list[dict[str, object]] | None = None,
     checked_spatial_facts: list[dict[str, object]] | None = None,
     call_site_effects: list[dict[str, object]] | None = None,
     range_binding: dict[str, object] | None = None,
@@ -147,6 +154,9 @@ def _analyze(
         launch_initial_values=launch_initial_values,
         checked_memory_access_facts=(
             [] if checked_access_facts is None else checked_access_facts
+        ),
+        checked_memory_address_domains=(
+            [] if checked_address_domains is None else checked_address_domains
         ),
         call_site_effects=(
             [] if call_site_effects is None else call_site_effects
@@ -192,6 +202,46 @@ def _checked_access_facts(
         binary=BinaryBinding(PE_SHA256, machine_ir_sha256(units)),
     )
     return list(seal_checked_memory_access_facts_v2(
+        prepared,
+        interprocedural_authority_sha256=INTERPROCEDURAL_SHA256,
+    ))
+
+
+def _checked_address_domains(
+    units: list[dict[str, object]],
+    *,
+    addresses: list[int],
+) -> list[dict[str, object]]:
+    event = units[0]["semantics"]["memory_events"][0]
+    proposal = {
+        "format": MEMORY_ADDRESS_DOMAIN_PROPOSAL_V2_FORMAT,
+        "status": "complete",
+        "unit_id": units[0]["id"],
+        "event_index": 0,
+        "memory_kind": event["kind"],
+        "width_bytes": event["width"],
+        "address_expression": copy.deepcopy(event["address"]),
+        "addresses": addresses,
+        "authority_dependencies": [],
+        "context_coverage": {
+            "format": CONTEXTUAL_MEMORY_COVERAGE_V1_FORMAT,
+            "status": "complete",
+            "root_unit_ids": [units[0]["id"]],
+            "relevant_unit_ids": [units[0]["id"]],
+            "context_states": 1,
+            "context_depth": 1,
+            "contexts_per_unit": 32,
+            "truncated_calls": 0,
+            "dropped_contexts": 0,
+            "work_budget_exceeded": False,
+        },
+    }
+    prepared = prepare_checked_memory_address_domains_v2(
+        [proposal],
+        units=units,
+        binary=BinaryBinding(PE_SHA256, machine_ir_sha256(units)),
+    )
+    return list(seal_checked_memory_address_domains_v2(
         prepared,
         interprocedural_authority_sha256=INTERPROCEDURAL_SHA256,
     ))
@@ -503,6 +553,37 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
                 "unit_id": "dispatch",
                 "event_index": 0,
             }],
+        )
+
+    def test_checked_finite_domain_authorizes_conditional_exact_read(self) -> None:
+        units = [_unit("dispatch", 0x1000, [_read(_reg("esi"))])]
+        domains = _checked_address_domains(
+            units,
+            addresses=[SLOT, SLOT + 4],
+        )
+
+        result = _analyze(
+            units,
+            _graph(units),
+            relevant_reads=[{
+                "slot_rva": SLOT - IMAGE_BASE,
+                "exit_id": "indirect-exit:dispatch",
+                "unit_id": "dispatch",
+                "event_index": 0,
+            }],
+            launch_initial_values={SLOT: 0x401020},
+            checked_address_domains=domains,
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        evidence = result["global_slot_evidence"][0]
+        self.assertEqual(
+            evidence["read_inventory"][0]["classification"],
+            "conditional_exact",
+        )
+        self.assertIn(
+            "checked_memory_address_domain",
+            {row["kind"] for row in evidence["dependencies"]},
         )
 
     def test_corrupt_checked_access_fact_is_violated(self) -> None:

@@ -10,6 +10,9 @@ from .artifact_identity_v2 import canonical_sha256
 ROOTED_CONTROL_GRAPH_V2_FORMAT = "stage-a-rooted-control-graph-v2"
 CHECKED_MEMORY_RANGE_FACT_V2_FORMAT = "stage-a-checked-memory-range-fact-v2"
 CHECKED_MEMORY_ACCESS_FACT_V2_FORMAT = "stage-a-checked-memory-access-fact-v2"
+CHECKED_MEMORY_ADDRESS_DOMAIN_V2_FORMAT = (
+    "spaghetti-extractor-checked-memory-address-domain-v2"
+)
 INTERPROCEDURAL_AUTHORITY_STATE_V2_FORMAT = (
     "spaghetti-extractor-interprocedural-authority-state-v2"
 )
@@ -22,6 +25,7 @@ def interprocedural_authority_signature_v2(
     call_summaries: Mapping[str, Any],
     recovered_targets: Sequence[Mapping[str, Any]],
     memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    memory_address_domains: Sequence[Mapping[str, Any]] = (),
     call_site_effects: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     """Bind the exact interprocedural outputs consumed by later phases.
@@ -61,6 +65,21 @@ def interprocedural_authority_signature_v2(
             ),
             key=lambda row: str(row.get("id", "")),
         ),
+        "memory_address_domains": sorted(
+            (
+                {
+                    key: value
+                    for key, value in dict(row).items()
+                    if key
+                    not in {
+                        "interprocedural_authority_sha256",
+                        "domain_sha256",
+                    }
+                }
+                for row in memory_address_domains
+            ),
+            key=lambda row: str(row.get("id", "")),
+        ),
         "call_site_effects": sorted(
             (dict(row) for row in call_site_effects),
             key=lambda row: (
@@ -75,6 +94,7 @@ def interprocedural_authority_signature_v2(
 __all__ = [
     "CHECKED_MEMORY_RANGE_FACT_V2_FORMAT",
     "CHECKED_MEMORY_ACCESS_FACT_V2_FORMAT",
+    "CHECKED_MEMORY_ADDRESS_DOMAIN_V2_FORMAT",
     "INTERPROCEDURAL_AUTHORITY_STATE_V2_FORMAT",
     "ROOTED_CONTROL_GRAPH_V2_FORMAT",
     "interprocedural_authority_signature_v2",

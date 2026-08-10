@@ -42,6 +42,11 @@ from .checked_memory_access_v2 import (
     CheckedMemoryAccessV2Error,
     validate_checked_memory_access_facts_v2,
 )
+from .checked_memory_address_domain_v2 import (
+    CheckedMemoryAddressDomain,
+    CheckedMemoryAddressDomainV2Error,
+    validate_checked_memory_address_domains_v2,
+)
 from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
 from .stack_range_analysis_v2 import CHECKED_STACK_SPATIAL_FACT_V2_FORMAT
 
@@ -118,6 +123,7 @@ def analyze_global_slots_v2(
     relevant_read_dependencies: Sequence[Mapping[str, Any]] | None = None,
     launch_initial_values: Mapping[int, int] | None = None,
     checked_memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    checked_memory_address_domains: Sequence[Mapping[str, Any]] = (),
     call_site_effects: Sequence[Mapping[str, Any]] = (),
     checked_memory_spatial_facts: Sequence[Mapping[str, Any]] = (),
     memory_range_invariant_analysis: Mapping[str, Any] | None = None,
@@ -182,6 +188,7 @@ def analyze_global_slots_v2(
         interprocedural_authority_sha256=interprocedural_authority_sha256,
     )
     access_facts: dict[str, CheckedMemoryAccessFact] = {}
+    address_domain_facts: dict[str, CheckedMemoryAddressDomain] = {}
     access_range_facts: dict[str, Mapping[str, Any]] = {}
     access_spatial_facts: dict[str, Mapping[str, Any]] = {}
     access_fact_issues: list[dict[str, Any]] = []
@@ -214,6 +221,39 @@ def analyze_global_slots_v2(
                 access_fact_issues.append(_issue(
                     "violated",
                     "checked_memory_access_fact_invalid",
+                    reason=str(exc),
+                ))
+    if checked_memory_address_domains:
+        if not all(
+            _digest(value)
+            for value in (
+                pe_sha256,
+                machine_ir_sha256,
+                interprocedural_authority_sha256,
+            )
+        ):
+            access_fact_issues.append(
+                _issue("violated", "checked_memory_address_domain_binding_missing")
+            )
+        else:
+            try:
+                address_domain_facts = (
+                    validate_checked_memory_address_domains_v2(
+                        checked_memory_address_domains,
+                        units=list(normalized_units.values()),
+                        binary=BinaryBinding(
+                            pe_sha256=str(pe_sha256),
+                            machine_ir_sha256=str(machine_ir_sha256),
+                        ),
+                        interprocedural_authority_sha256=str(
+                            interprocedural_authority_sha256
+                        ),
+                    )
+                )
+            except (CheckedMemoryAddressDomainV2Error, ValueError) as exc:
+                access_fact_issues.append(_issue(
+                    "violated",
+                    "checked_memory_address_domain_invalid",
                     reason=str(exc),
                 ))
     if memory_range_invariant_analysis is not None:
@@ -263,6 +303,7 @@ def analyze_global_slots_v2(
         image_base=image_base,
         candidate_addresses=frozenset(normalized_slots),
         access_facts=access_facts,
+        address_domain_facts=address_domain_facts,
     )
     global_issues = _deduplicate_issues(
         [
@@ -292,6 +333,7 @@ def analyze_global_slots_v2(
         graph_info=graph_info,
         slots=normalized_slots,
         access_facts=access_facts,
+        address_domain_facts=address_domain_facts,
         access_range_facts=access_range_facts,
         access_spatial_facts=access_spatial_facts,
         alternative_budget=alternative_budget,
@@ -310,6 +352,7 @@ def analyze_global_slots_v2(
         graph_info=graph_info,
         slots=normalized_slots,
         access_facts=access_facts,
+        address_domain_facts=address_domain_facts,
         access_range_facts=access_range_facts,
         access_spatial_facts=access_spatial_facts,
         alternative_budget=alternative_budget,
@@ -364,7 +407,11 @@ def analyze_global_slots_v2(
             "rooted_graph_sha256": first["rooted_graph_sha256"],
             "interprocedural_authority_sha256": (
                 interprocedural_authority_sha256
-                if checked_memory_access_facts or call_site_effects
+                if (
+                    checked_memory_access_facts
+                    or checked_memory_address_domains
+                    or call_site_effects
+                )
                 else None
             ),
         },
@@ -377,12 +424,16 @@ def analyze_global_slots_v2(
             "incomplete_slots": sum(value == "incomplete" for value in slot_statuses),
             "violated_slots": sum(value == "violated" for value in slot_statuses),
             "checked_memory_access_facts": len(access_facts),
+            "checked_memory_address_domains": len(address_domain_facts),
             "call_site_effects": len(normalized_call_effects),
             "checked_memory_address_ranges": len(access_range_facts),
             "checked_memory_spatial_facts": len(access_spatial_facts),
         },
         "checked_memory_access_facts": [
             fact.to_payload() for fact in access_facts.values()
+        ],
+        "checked_memory_address_domains": [
+            domain.to_payload() for domain in address_domain_facts.values()
         ],
         "call_site_effects": [
             effect.as_json()
@@ -414,6 +465,7 @@ def _analyze_once(
     graph_info: Mapping[str, Any],
     slots: Sequence[int],
     access_facts: Mapping[str, CheckedMemoryAccessFact],
+    address_domain_facts: Mapping[str, CheckedMemoryAddressDomain],
     access_range_facts: Mapping[str, Mapping[str, Any]],
     access_spatial_facts: Mapping[str, Mapping[str, Any]],
     alternative_budget: int,
@@ -458,6 +510,7 @@ def _analyze_once(
             events=events,
             event_graph=event_graph,
             access_facts=access_facts,
+            address_domain_facts=address_domain_facts,
             access_range_facts=access_range_facts,
             access_spatial_facts=access_spatial_facts,
             alternative_budget=alternative_budget,
@@ -487,6 +540,7 @@ def _analyze_slot(
     events: Mapping[str, _Event],
     event_graph: Mapping[str, Any],
     access_facts: Mapping[str, CheckedMemoryAccessFact],
+    address_domain_facts: Mapping[str, CheckedMemoryAddressDomain],
     access_range_facts: Mapping[str, Mapping[str, Any]],
     access_spatial_facts: Mapping[str, Mapping[str, Any]],
     alternative_budget: int,
@@ -508,6 +562,7 @@ def _analyze_slot(
         access = _classify_access(
             event,
             slot_address=address,
+            checked_domain=address_domain_facts.get(node_id),
             checked_fact=access_facts.get(node_id),
             checked_range=access_range_facts.get(node_id),
             checked_spatial=access_spatial_facts.get(node_id),
@@ -587,7 +642,8 @@ def _analyze_slot(
             node_id
             for node_id, event in events.items()
             if event.kind in {"read", "read_write"}
-            and accesses[node_id].classification in {"exact", "alias", "unknown"}
+            and accesses[node_id].classification
+            in {"exact", "conditional_exact", "alias", "unknown"}
         )
     missing_relevant_reads = sorted(
         set(requested_relevant_reads).difference(relevant_reads)
@@ -720,7 +776,10 @@ def _analyze_slot(
                     budget=alternative_budget,
                 )
             )
-        if accesses[node_id].classification != "exact":
+        if accesses[node_id].classification not in {
+            "exact",
+            "conditional_exact",
+        }:
             read_frontiers.setdefault(
                 "global_slot_read_alias_unresolved", []
             ).append(node_id)
@@ -845,6 +904,19 @@ def _analyze_slot(
         }
         for identity in sorted(used_fact_ids)
         if identity in access_by_id
+    )
+    domain_by_id = {
+        domain.domain_id: domain.to_payload()
+        for domain in address_domain_facts.values()
+    }
+    dependencies.extend(
+        {
+            "kind": "checked_memory_address_domain",
+            "id": identity,
+            "sha256": str(domain_by_id[identity]["domain_sha256"]),
+        }
+        for identity in sorted(used_fact_ids)
+        if identity in domain_by_id
     )
     dependencies.extend(
         {
@@ -1226,6 +1298,7 @@ def _normalize_relevant_reads(
     image_base: int,
     candidate_addresses: frozenset[int],
     access_facts: Mapping[str, CheckedMemoryAccessFact],
+    address_domain_facts: Mapping[str, CheckedMemoryAddressDomain],
 ) -> tuple[dict[int, Mapping[str, Any]] | None, list[dict[str, Any]]]:
     """Check target-to-slot read dependencies against exact memory events."""
 
@@ -1282,6 +1355,13 @@ def _normalize_relevant_reads(
         event = events[event_index] if event_index < len(events) else None
         expected_address = address
         node_id = _event_node(unit_id, event_index)
+        domain_access = (
+            _checked_domain_classification(
+                address_domain_facts[node_id], slot_address=expected_address
+            )
+            if node_id in address_domain_facts
+            else None
+        )
         if (
             not isinstance(event, Mapping)
             or event.get("kind") not in {"read", "read_write"}
@@ -1309,6 +1389,22 @@ def _normalize_relevant_reads(
                 )
             )
             continue
+        if (
+            constant_address is None
+            and (
+                domain_access is None
+                or domain_access.classification
+                not in {"exact", "conditional_exact"}
+            )
+        ):
+            issues.append(_issue(
+                "incomplete",
+                "relevant_slot_read_dependency_unproved",
+                index=index,
+                unit_id=unit_id,
+                event_index=event_index,
+                slot_address=expected_address,
+            ))
         entry["node_ids"].add(node_id)
         entry["target_dependencies"][(exit_id, unit_id, event_index, False)] = {
             "exit_id": exit_id,
@@ -2135,6 +2231,7 @@ def _classify_access(
     event: _Event,
     *,
     slot_address: int,
+    checked_domain: CheckedMemoryAddressDomain | None = None,
     checked_fact: CheckedMemoryAccessFact | None = None,
     checked_range: Mapping[str, Any] | None = None,
     checked_spatial: Mapping[str, Any] | None = None,
@@ -2143,6 +2240,10 @@ def _classify_access(
         return _Access("unknown", reason="memory_event_shape_unknown")
     if checked_spatial is not None:
         return _Access("disjoint", (str(checked_spatial["id"]),))
+    if checked_domain is not None:
+        return _checked_domain_classification(
+            checked_domain, slot_address=slot_address
+        )
     if checked_fact is not None:
         checked = _checked_access_classification(
             checked_fact,
@@ -2176,6 +2277,30 @@ def _classify_access(
     if isinstance(event.address, Mapping):
         return _Access("alias", reason="symbolic_address_may_alias_slot")
     return _Access("unknown", reason="memory_address_unknown")
+
+
+def _checked_domain_classification(
+    domain: CheckedMemoryAddressDomain,
+    *,
+    slot_address: int,
+) -> _Access:
+    classifications = {
+        "exact"
+        if domain.width_bytes == 4 and value == slot_address
+        else "alias"
+        if _spans_overlap32(value, domain.width_bytes, slot_address, 4)
+        else "disjoint"
+        for value in domain.addresses
+    }
+    if len(classifications) == 1:
+        return _Access(next(iter(classifications)), (domain.domain_id,))
+    if classifications == {"exact", "disjoint"}:
+        return _Access("conditional_exact", (domain.domain_id,))
+    return _Access(
+        "alias",
+        (domain.domain_id,),
+        "checked_address_domain_has_mixed_alias_classes",
+    )
 
 
 def _checked_access_classification(

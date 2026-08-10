@@ -101,6 +101,10 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         ]
 
         self.assertIn("spaghetti_extractor.global_slot_analysis_v2", joint_phase)
+        self.assertIn(
+            "spaghetti_extractor.checked_memory_address_domain_v2",
+            joint_phase,
+        )
         self.assertIn("spaghetti_extractor.mutable_slot_candidates_v2", joint_phase)
         self.assertIn("spaghetti_extractor.global_slot_authority_v2", joint_phase)
         self.assertIn("derive_proposal_slot_dependencies", joint_phase)
@@ -278,6 +282,9 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             pending.extend(index[module]["dependencies"])
 
         self.assertIn("spaghetti_extractor.authority_record_core_v2", closure)
+        self.assertIn(
+            "spaghetti_extractor.checked_memory_address_domain_v2", closure
+        )
         self.assertIn("spaghetti_extractor.global_slot_contract_v2", closure)
         self.assertIn("spaghetti_extractor.entry_state_contract_v2", closure)
         self.assertNotIn("spaghetti_extractor.hybrid_authority_v2", closure)
