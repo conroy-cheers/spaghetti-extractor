@@ -8,6 +8,7 @@ from spaghetti_extractor.indirect_target_dependency_v2 import (
 )
 from spaghetti_extractor.static_indirect_replay_v2 import (
     replay_exact_static_recoveries_v2,
+    replay_inductive_static_hypotheses_v2,
 )
 
 
@@ -175,6 +176,51 @@ class StaticIndirectReplayV2Tests(unittest.TestCase):
 
         self.assertEqual(recovery["status"], "incomplete")
         self.assertEqual(recovery["failure"]["code"], "unresolved_index_bound")
+
+    def test_inductive_hypothesis_is_rebound_without_predecessor_bound(self) -> None:
+        bounded_units, exit_record = fixture()
+        proposal = replay_exact_static_recoveries_v2(
+            binary=binary(0x1020, 0x1030),
+            units=bounded_units,
+            indirect_exits=[exit_record],
+        )[0]
+        unbounded_units, _ = fixture(with_bound=False)
+
+        rebound = replay_inductive_static_hypotheses_v2(
+            binary=binary(0x1020, 0x1030),
+            units=unbounded_units,
+            indirect_exits=[exit_record],
+            hypotheses=[proposal],
+        )
+
+        self.assertEqual(len(rebound), 1)
+        self.assertEqual(
+            rebound[0]["proposal_source"],
+            "inductive_static_target_inventory_v2",
+        )
+        self.assertEqual(
+            rebound[0]["hypothesis_validation"],
+            "exact_pe_target_inventory_v2",
+        )
+        self.assertFalse(rebound[0]["proof_authority"])
+        self.assertTrue(has_value_independent_target_set_v2(rebound[0]))
+
+    def test_inductive_hypothesis_with_changed_pe_bytes_is_rejected(self) -> None:
+        units, exit_record = fixture()
+        proposal = replay_exact_static_recoveries_v2(
+            binary=binary(0x1020, 0x1030),
+            units=units,
+            indirect_exits=[exit_record],
+        )[0]
+
+        rebound = replay_inductive_static_hypotheses_v2(
+            binary=binary(0x1020, 0x1020),
+            units=units,
+            indirect_exits=[exit_record],
+            hypotheses=[proposal],
+        )
+
+        self.assertEqual(rebound, [])
 
 
 if __name__ == "__main__":

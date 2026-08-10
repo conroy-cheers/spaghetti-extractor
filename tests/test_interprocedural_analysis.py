@@ -1818,6 +1818,71 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             resolution["target_set_dependency"],
         )
 
+    def test_exact_static_target_hypothesis_closes_only_after_cycle_replay(self) -> None:
+        exit_row = indirect_exit(
+            "exit:dispatch:0", "dispatch", kind="indirect_jump"
+        )
+        exit_row["target_expression"] = load({
+            "op": "add32",
+            "args": [
+                const(IMAGE_BASE + 0x3000),
+                {"op": "mul32", "args": [reg("eax"), const(4)]},
+            ],
+        })
+        hypothesis = bounded_table_recovery(exit_row, ("target", 0x2000))
+        hypothesis.update({
+            "proof_authority": False,
+            "proposal_source": "inductive_static_target_inventory_v2",
+            "hypothesis_validation": "exact_pe_target_inventory_v2",
+        })
+        dynamic = recovered(exit_row, "target")
+        dynamic.update({
+            "target_rvas": [0x2000],
+            "origin_count": 1,
+            "origin_kinds": ["internal"],
+            "target_origin_witnesses": [{
+                "kind": "static_code",
+                "key": [IMAGE_BASE + 0x2000, [IMAGE_BASE + 0x3000]],
+            }],
+            "analysis_dependencies": [],
+        })
+
+        def resolver(**kwargs):
+            selected = kwargs["recovered_indirect_edges"]
+            return {
+                "resolutions": [
+                    dynamic
+                    if any(
+                        row.get("id") == exit_row["id"]
+                        and row.get("status") == "recovered"
+                        for row in selected
+                    )
+                    else incomplete_recovery(exit_row)
+                ]
+            }
+
+        result = self._run(
+            units=[unit("dispatch", 0x1000), unit("target", 0x2000)],
+            roots=["dispatch"],
+            direct=[edge("target", "dispatch")],
+            exits=[exit_row],
+            inductive=[hypothesis],
+            resolver=resolver,
+            authority_only=True,
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        recovery = result.recovered_targets[0]
+        self.assertEqual(recovery["status"], "recovered")
+        self.assertEqual(
+            recovery["target_set_dependency"],
+            hypothesis["target_set_dependency"],
+        )
+        self.assertIn(
+            exit_row["id"],
+            result.fixed_point["inductive_replay"]["accepted_nodes"],
+        )
+
     def test_checked_stack_write_does_not_taint_image_slot(self) -> None:
         exit_row = indirect_exit("exit:dispatch:0", "dispatch")
         invariant = slot_invariant("init", 0x1000, IMAGE_BASE + 0x2000)

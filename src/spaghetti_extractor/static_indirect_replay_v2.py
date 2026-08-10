@@ -13,7 +13,11 @@ from hashlib import sha256
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .indirect_target_dependency_v2 import build_bounded_selector_dependency_v2
+from .indirect_target_dependency_v2 import (
+    IndirectTargetDependencyV2Error,
+    build_bounded_selector_dependency_v2,
+    validate_bounded_selector_dependency_v2,
+)
 from .reconstruction_control import (
     pe32_jump_table_index_expression,
     recover_static_pe32_jump_table_inventory,
@@ -132,6 +136,173 @@ def replay_exact_static_recoveries_v2(
             )
         result.append(recovery)
     return result
+
+
+def replay_inductive_static_hypotheses_v2(
+    *,
+    binary: StageABinary,
+    units: Sequence[Mapping[str, Any]],
+    indirect_exits: Sequence[Mapping[str, Any]],
+    hypotheses: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Rebind finite-table hypotheses to exact PE bytes and canonical units.
+
+    The selector domain remains an inductive hypothesis.  This function checks
+    only the non-circular part of the claim: exact target expression, immutable
+    PE table bytes, and complete canonical target-unit binding.  The unified
+    interprocedural pass must independently reproduce the target set before the
+    hypothesis can authorize an SCC.
+    """
+
+    starts = {
+        int(source["rva_start"]): unit
+        for unit in units
+        for source in (unit.get("source", {}).get("original", {}),)
+        if isinstance(source, Mapping)
+        and isinstance(source.get("rva_start"), int)
+        and not isinstance(source.get("rva_start"), bool)
+    }
+    exits_by_id = {
+        str(row.get("id")): row
+        for row in indirect_exits
+        if isinstance(row.get("id"), str)
+    }
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for hypothesis in hypotheses:
+        identity = hypothesis.get("id")
+        if not isinstance(identity, str) or identity in seen:
+            continue
+        observed_dependency = hypothesis.get("target_set_dependency")
+        if not isinstance(observed_dependency, Mapping):
+            continue
+        try:
+            validate_bounded_selector_dependency_v2(hypothesis)
+        except (IndirectTargetDependencyV2Error, TypeError, ValueError):
+            continue
+        exit_record = exits_by_id.get(identity)
+        index = hypothesis.get("index")
+        submitted_target = hypothesis.get("target_expression")
+        if (
+            exit_record is None
+            or not isinstance(index, Mapping)
+            or (
+                submitted_target is not None
+                and submitted_target != exit_record.get("target_expression")
+            )
+            or hypothesis.get("source_unit_id")
+            != exit_record.get("source_unit_id")
+            or hypothesis.get("source_rva") != exit_record.get("source_rva")
+            or hypothesis.get("source_event_index")
+            != exit_record.get("source_event_index")
+            or hypothesis.get("kind") != exit_record.get("kind")
+        ):
+            continue
+        expression = index.get("expression")
+        values = index.get("values")
+        if (
+            not isinstance(expression, Mapping)
+            or expression
+            != pe32_jump_table_index_expression(
+                exit_record.get("target_expression", {})
+            )
+            or not isinstance(values, list)
+            or not values
+            or values != sorted(set(values))
+            or any(
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or not 0 <= value <= 0xFFFF_FFFF
+                for value in values
+            )
+        ):
+            continue
+        source_unit_id = exit_record.get("source_unit_id")
+        if not isinstance(source_unit_id, str):
+            continue
+        finite_domain = {
+            "format": "stage-a-finite-u32-expression-domain-v1",
+            "status": "complete",
+            "source_unit_id": source_unit_id,
+            "expression_sha256": _expression_sha256(expression),
+            "values": list(values),
+            "hypothesis_kind": "inductive_static_selector_domain_v2",
+        }
+        recovery = recover_static_pe32_jump_table_inventory(
+            target_expression=exit_record["target_expression"],
+            predecessor_evidence=(),
+            image_base=binary.image_base,
+            sections=binary.sections,
+            read_rva=lambda rva, size: bytes(binary.pe.get_data(rva, size)),
+            finite_index_domain=finite_domain,
+            valid_target_rvas=starts,
+        )
+        target_rvas = [
+            int(rva)
+            for rva in recovery.get("target_rvas", ())
+            if isinstance(rva, int) and not isinstance(rva, bool)
+        ]
+        resolved = sorted(rva for rva in target_rvas if rva in starts)
+        unresolved = sorted(rva for rva in target_rvas if rva not in starts)
+        recovery.update({
+            "id": identity,
+            "recovery_kind": recovery.get("kind"),
+            "source_unit_id": source_unit_id,
+            "source_rva": exit_record.get("source_rva"),
+            "source_event_index": exit_record.get("source_event_index"),
+            "kind": exit_record.get("kind"),
+            "target_expression": copy.deepcopy(exit_record["target_expression"]),
+            "target_unit_ids": [str(starts[rva]["id"]) for rva in resolved],
+            "external_targets": [],
+            "unit_binding": {
+                "status": (
+                    "complete"
+                    if recovery.get("status") == "recovered" and not unresolved
+                    else "incomplete"
+                ),
+                "resolved_target_rvas": resolved,
+                "unmaterialized_target_rvas": unresolved,
+            },
+        })
+        if (
+            recovery.get("status") != "recovered"
+            or recovery.get("closure") != "checked_finite_target_inventory"
+            or recovery.get("recovery_kind")
+            != "pe32_indexed_absolute_jump_table"
+            or recovery.get("failure") is not None
+            or recovery["unit_binding"]["status"] != "complete"
+        ):
+            continue
+        recovery["target_set_dependency"] = (
+            build_bounded_selector_dependency_v2(recovery)
+        )
+        if (
+            recovery["target_set_dependency"] != observed_dependency
+            or recovery.get("target_rvas") != hypothesis.get("target_rvas")
+            or recovery.get("target_unit_ids")
+            != hypothesis.get("target_unit_ids")
+        ):
+            continue
+        recovery.update({
+            "proof_authority": False,
+            "proposal_source": "inductive_static_target_inventory_v2",
+            "hypothesis_validation": "exact_pe_target_inventory_v2",
+        })
+        seen.add(identity)
+        result.append(recovery)
+    return sorted(result, key=lambda row: str(row["id"]))
+
+
+def _expression_sha256(expression: Mapping[str, Any]) -> str:
+    return sha256(
+        json.dumps(
+            expression,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ).encode("ascii")
+    ).hexdigest()
 
 
 def _checked_control_domains(

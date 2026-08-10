@@ -1078,7 +1078,10 @@ def _path_recovery_inductive_edges(
         for identity in (recovery.get("id"),)
         if isinstance(identity, str)
         and _eligible_inductive_target_hypothesis(recovery)
-        and recovery.get("proposal_source") == "bounded_call_context_v1"
+        and recovery.get("proposal_source") in {
+            "bounded_call_context_v1",
+            "inductive_static_target_inventory_v2",
+        }
         and recovery.get("kind") in {"indirect_call", "indirect_jump"}
         and recovery.get("source_unit_id") in cyclic_units
     )
@@ -1339,6 +1342,10 @@ def _run_typed_pass(
                 else []
             ),
             operation_provenance.get("resolutions", []),
+        )
+        next_selected = _attach_reproduced_static_target_certificates(
+            next_selected,
+            initial_recoveries,
         )
         next_selected = _bind_mutable_slot_dependencies(
             next_selected,
@@ -4318,6 +4325,15 @@ def _eligible_inductive_target_hypothesis(row: Mapping[str, Any]) -> bool:
         return False
     if row.get("proof_authority") is not False:
         return True
+    if (
+        row.get("proof_authority") is False
+        and row.get("proposal_source")
+        == "inductive_static_target_inventory_v2"
+        and row.get("hypothesis_validation")
+        == "exact_pe_target_inventory_v2"
+        and has_value_independent_target_set_v2(row)
+    ):
+        return True
     coverage = row.get("context_coverage")
     if (
         row.get("proposal_source") != "bounded_call_context_v1"
@@ -4346,6 +4362,66 @@ def _eligible_inductive_target_hypothesis(row: Mapping[str, Any]) -> bool:
             for context in contexts
         )
     )
+
+
+def _attach_reproduced_static_target_certificates(
+    recoveries: Sequence[Mapping[str, Any]],
+    hypotheses: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Retain an exact table certificate only after target reproduction.
+
+    The hypothesis supplies immutable PE/table evidence, while ``recoveries``
+    supplies the independently recomputed operation-provenance result for this
+    iteration.  Neither side is sufficient by itself.
+    """
+
+    validated = {
+        str(row.get("id")): row
+        for row in hypotheses
+        if isinstance(row, Mapping)
+        and row.get("proposal_source")
+        == "inductive_static_target_inventory_v2"
+        and row.get("hypothesis_validation")
+        == "exact_pe_target_inventory_v2"
+        and has_value_independent_target_set_v2(row)
+    }
+    result: list[dict[str, Any]] = []
+    for raw in recoveries:
+        row = copy.deepcopy(dict(raw))
+        identity = row.get("id")
+        hypothesis = validated.get(identity) if isinstance(identity, str) else None
+        if (
+            hypothesis is None
+            or row.get("status") != "recovered"
+            or row.get("source_unit_id") != hypothesis.get("source_unit_id")
+            or row.get("source_event_index")
+            != hypothesis.get("source_event_index")
+            or row.get("kind") != hypothesis.get("kind")
+            or row.get("target_expression")
+            != hypothesis.get("target_expression")
+            or _target_alternatives(row) != _target_alternatives(hypothesis)
+            or not _has_inductive_origin_witnesses(row)
+        ):
+            result.append(row)
+            continue
+        for key in (
+            "closure",
+            "recovery_kind",
+            "index",
+            "table",
+            "entries",
+            "target_rvas",
+            "target_unit_ids",
+            "external_targets",
+            "unit_binding",
+            "target_set_dependency",
+            "proof_authority",
+            "proposal_source",
+            "hypothesis_validation",
+        ):
+            row[key] = copy.deepcopy(hypothesis[key])
+        result.append(row)
+    return result
 
 
 def _freeze_recovery_inputs(

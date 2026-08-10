@@ -29,6 +29,7 @@ from .machine_import_profiles import MachineImportIdentity
 from .stage_binary import StageABinary
 from .stack_range_analysis_v2 import validate_checked_stack_range_facts_v2
 from .static_indirect_replay_v2 import replay_exact_static_recoveries_v2
+from .static_indirect_replay_v2 import replay_inductive_static_hypotheses_v2
 
 
 class InterproceduralPhaseV2Error(ValueError):
@@ -127,6 +128,12 @@ def derive_interprocedural_result_v2(
         if static_recoveries is None
         else _validate_static_recoveries(static_recoveries, indirect_exits)
     )
+    normalized_inductive_hypotheses = _normalize_inductive_hypotheses(
+        binary=binary,
+        units=units,
+        indirect_exits=indirect_exits,
+        hypotheses=inductive_hypothesis_recoveries,
+    )
     typed_slots = _strict_global_slot_invariants(
         global_slot_invariants,
         binary=binary,
@@ -214,7 +221,7 @@ def derive_interprocedural_result_v2(
             {} if internal_function_contracts is None else internal_function_contracts
         ),
         proposal_recoveries=proposal_recoveries,
-        inductive_hypothesis_recoveries=inductive_hypothesis_recoveries,
+        inductive_hypothesis_recoveries=normalized_inductive_hypotheses,
         inductive_hypothesis_call_frames=inductive_hypothesis_call_frames,
         global_slot_invariants=typed_slots,
         checked_stack_entry_offsets=checked_stack_entry_offsets,
@@ -446,6 +453,39 @@ def _validate_static_recoveries(
             "static recovery inventory must contain exactly one row per indirect exit"
         )
     return rows
+
+
+def _normalize_inductive_hypotheses(
+    *,
+    binary: StageABinary,
+    units: Sequence[Mapping[str, Any]],
+    indirect_exits: Sequence[Mapping[str, Any]],
+    hypotheses: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    """Rebind finite target claims and omit any that fail exact replay."""
+
+    rebound = {
+        str(row["id"]): row
+        for row in replay_inductive_static_hypotheses_v2(
+            binary=binary,
+            units=units,
+            indirect_exits=indirect_exits,
+            hypotheses=hypotheses,
+        )
+    }
+    result: list[Mapping[str, Any]] = []
+    for hypothesis in hypotheses:
+        identity = hypothesis.get("id")
+        checked = rebound.get(identity) if isinstance(identity, str) else None
+        if checked is not None:
+            result.append(checked)
+            continue
+        if isinstance(hypothesis.get("target_set_dependency"), Mapping):
+            # A submitted finite target claim is never an authority input until
+            # its dependency, table bytes, and unit bindings replay exactly.
+            continue
+        result.append(hypothesis)
+    return tuple(result)
 
 
 def _strict_global_slot_invariants(
