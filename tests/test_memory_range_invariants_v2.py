@@ -195,6 +195,12 @@ class MemoryRangeInvariantV2Tests(unittest.TestCase):
 
     def test_global_slot_replay_consumes_only_checked_ranges(self) -> None:
         units = _counted_loop()
+        exit_unit = next(row for row in units if row["id"] == "unit:exit")
+        exit_unit["semantics"]["memory_events"] = [{
+            "kind": "read",
+            "width": 4,
+            "address": _const(0x3000),
+        }]
         graph = {
             "format": "stage-a-rooted-control-graph-v2",
             "id": "counted-loop-graph",

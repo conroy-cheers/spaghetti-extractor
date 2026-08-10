@@ -39,6 +39,7 @@ from spaghetti_extractor.hybrid_authority_v2 import (
     EvidenceIssueKind,
     FiniteAlternatives,
     GlobalSlotInvariant,
+    EventBinding,
     UnitBinding,
 )
 
@@ -278,6 +279,7 @@ def slot_invariant(
     *values: int,
     tainted: bool = False,
     slot_address: int = SLOT,
+    event_index: int | None = None,
 ) -> GlobalSlotInvariant:
     binary = BinaryBinding("a" * 64, "b" * 64)
     binding = UnitBinding(
@@ -288,11 +290,24 @@ def slot_invariant(
         unit_sha256="c" * 64,
         instruction_bytes_sha256="d" * 64,
     )
+    exact_binding = (
+        binding
+        if event_index is None
+        else EventBinding(
+            unit=binding,
+            event_index=event_index,
+            event_kind="read",
+            instruction_rva=initializer_rva,
+            event_sha256="e" * 64,
+        )
+    )
     return GlobalSlotInvariant(
-        binding=binding,
+        binding=exact_binding,
         slot_rva=slot_address - IMAGE_BASE,
         width_bytes=4,
-        invariant_kind="finite_set",
+        invariant_kind=(
+            "finite_set" if event_index is None else "finite_set_at_read"
+        ),
         alternatives=FiniteAlternatives.of(
             [
                 {"kind": "exact_bits", "value": value, "width_bits": 32}
@@ -1665,6 +1680,64 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertEqual(
             result.recovered_targets[0]["mutable_slot_dependencies"][0]["content_id"],
             invariant.content_id,
+        )
+
+    def test_event_slot_invariant_is_not_seeded_at_roots(self) -> None:
+        exit_row = indirect_exit("exit:dispatch:0", "dispatch")
+        invariant = slot_invariant(
+            "load",
+            0x1010,
+            IMAGE_BASE + 0x2000,
+            event_index=0,
+        )
+        observed: list[tuple[dict[object, object], dict[object, object]]] = []
+
+        def resolver(**kwargs: Any) -> dict[str, object]:
+            observed.append((
+                kwargs["initial_known_slots"],
+                kwargs["initial_event_known_slots"],
+            ))
+            resolution = recovered(exit_row, "target")
+            resolution["analysis_dependencies"] = [invariant.content_id]
+            resolution["target_origin_witnesses"] = [{
+                "kind": "exact",
+                "key": [IMAGE_BASE + 0x2000],
+                "authority_dependencies": [invariant.content_id],
+            }]
+            return {"resolutions": [resolution]}
+
+        result = self._run(
+            units=[
+                unit(
+                    "load",
+                    0x1010,
+                    writes=({"register": "eax", "value": load(const(SLOT))},),
+                    memory=(slot_read(),),
+                ),
+                unit("dispatch", 0x1020),
+                unit("target", 0x2000),
+            ],
+            roots=["load"],
+            direct=[edge("load", "dispatch")],
+            exits=[exit_row],
+            globals=[invariant],
+            resolver=resolver,
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        self.assertTrue(observed)
+        root_slots, event_slots = observed[-1]
+        self.assertEqual(root_slots, {})
+        self.assertIn(CallSiteId("load", 0), event_slots)
+        self.assertEqual(
+            result.recovered_targets[0]["mutable_slot_dependencies"],
+            [{
+                "slot_rva": SLOT - IMAGE_BASE,
+                "width_bytes": 4,
+                "content_id": invariant.content_id,
+                "read_sites": [{"unit_id": "load", "event_index": 0}],
+                "origin_witnessed": False,
+            }],
         )
 
     def test_cold_origin_witness_binds_symbolic_slot_address(self) -> None:

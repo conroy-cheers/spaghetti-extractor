@@ -277,6 +277,8 @@ def validate_joint_replay_v2(
         slot_inventory_valid,
         missing_slots,
         extra_slots,
+        missing_slot_dependencies,
+        extra_slot_dependencies,
         slot_inventory_error,
     ) = _slot_inventory_check(
         global_slot_analysis=global_slot_analysis,
@@ -331,6 +333,8 @@ def validate_joint_replay_v2(
             ),
             "missing_slot_rvas": missing_slots,
             "extra_slot_rvas": extra_slots,
+            "missing_dependencies": missing_slot_dependencies,
+            "extra_dependencies": extra_slot_dependencies,
             **(
                 {"reason": slot_inventory_error}
                 if slot_inventory_error is not None
@@ -386,8 +390,16 @@ def _slot_inventory_check(
     *,
     global_slot_analysis: Mapping[str, Any],
     interprocedural: Mapping[str, Any],
-) -> tuple[bool, list[int], list[int], str | None]:
+) -> tuple[
+    bool,
+    list[int],
+    list[int],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    str | None,
+]:
     required: frozenset[int] = frozenset()
+    required_dependencies: set[tuple[int, str, str, int, bool]] = set()
     try:
         raw_recoveries = interprocedural.get("recovered_targets", ())
         if not isinstance(raw_recoveries, Sequence) or isinstance(
@@ -395,11 +407,12 @@ def _slot_inventory_check(
         ):
             raise ValueError("interprocedural recovery inventory is not an array")
         required = required_recovery_slot_rvas_v2(raw_recoveries)
+        required_dependencies = _required_slot_dependencies(raw_recoveries)
         raw_slots = global_slot_analysis.get("slots", ())
         if not isinstance(raw_slots, Sequence) or isinstance(raw_slots, (str, bytes)):
             raise ValueError("global-slot replay inventory is not an array")
         if not raw_slots and not required:
-            return True, [], [], None
+            return True, [], [], [], [], None
         bindings = global_slot_analysis.get("bindings")
         image_base = bindings.get("image_base") if isinstance(bindings, Mapping) else None
         if not isinstance(image_base, int) or isinstance(image_base, bool):
@@ -414,14 +427,142 @@ def _slot_inventory_check(
             ):
                 raise ValueError("global-slot replay contains a malformed address")
             analyzed.add(address - image_base)
+        analyzed_dependencies = _analyzed_slot_dependencies(
+            global_slot_analysis,
+            image_base=image_base,
+        )
     except ValueError as exc:
-        return False, sorted(required), [], str(exc)
+        return (
+            False,
+            sorted(required),
+            [],
+            [_slot_dependency_payload(key) for key in sorted(required_dependencies)],
+            [],
+            str(exc),
+        )
+    missing_dependencies = required_dependencies - analyzed_dependencies
+    extra_dependencies = analyzed_dependencies - required_dependencies
     return (
-        analyzed == required,
+        analyzed == required
+        and not missing_dependencies
+        and not extra_dependencies,
         sorted(required - analyzed),
         sorted(analyzed - required),
+        [_slot_dependency_payload(key) for key in sorted(missing_dependencies)],
+        [_slot_dependency_payload(key) for key in sorted(extra_dependencies)],
         None,
     )
+
+
+def _required_slot_dependencies(
+    recoveries: Sequence[Mapping[str, Any]],
+) -> set[tuple[int, str, str, int, bool]]:
+    result: set[tuple[int, str, str, int, bool]] = set()
+    for recovery in recoveries:
+        exit_id = recovery.get("id") if isinstance(recovery, Mapping) else None
+        raw_dependencies = (
+            recovery.get("mutable_slot_dependencies", ())
+            if isinstance(recovery, Mapping)
+            else ()
+        )
+        if not isinstance(raw_dependencies, Sequence) or isinstance(
+            raw_dependencies, (str, bytes)
+        ):
+            raise ValueError("mutable-slot dependency inventory is not an array")
+        if raw_dependencies and (not isinstance(exit_id, str) or not exit_id):
+            raise ValueError("mutable-slot recovery has no exact exit ID")
+        for dependency in raw_dependencies:
+            if not isinstance(dependency, Mapping):
+                raise ValueError("mutable-slot dependency is not an object")
+            slot_rva = dependency.get("slot_rva")
+            read_sites = dependency.get("read_sites", ())
+            if not isinstance(read_sites, Sequence) or isinstance(
+                read_sites, (str, bytes)
+            ):
+                raise ValueError("mutable-slot read-site inventory is not an array")
+            if not read_sites:
+                result.add((int(slot_rva), str(exit_id), "", -1, True))
+                continue
+            for site in read_sites:
+                unit_id = site.get("unit_id") if isinstance(site, Mapping) else None
+                event_index = (
+                    site.get("event_index") if isinstance(site, Mapping) else None
+                )
+                if (
+                    not isinstance(unit_id, str)
+                    or not unit_id
+                    or not isinstance(event_index, int)
+                    or isinstance(event_index, bool)
+                    or event_index < 0
+                ):
+                    raise ValueError("mutable-slot read site is malformed")
+                result.add((int(slot_rva), str(exit_id), unit_id, event_index, False))
+    return result
+
+
+def _analyzed_slot_dependencies(
+    global_slot_analysis: Mapping[str, Any],
+    *,
+    image_base: int,
+) -> set[tuple[int, str, str, int, bool]]:
+    raw_evidence = global_slot_analysis.get("global_slot_evidence", ())
+    if not isinstance(raw_evidence, Sequence) or isinstance(
+        raw_evidence, (str, bytes)
+    ):
+        raise ValueError("global-slot evidence inventory is not an array")
+    result: set[tuple[int, str, str, int, bool]] = set()
+    for evidence in raw_evidence:
+        address = evidence.get("address") if isinstance(evidence, Mapping) else None
+        dependencies = (
+            evidence.get("target_dependencies", ())
+            if isinstance(evidence, Mapping)
+            else ()
+        )
+        if (
+            not isinstance(address, int)
+            or isinstance(address, bool)
+            or address < image_base
+            or not isinstance(dependencies, Sequence)
+            or isinstance(dependencies, (str, bytes))
+        ):
+            raise ValueError("global-slot evidence contains a malformed binding")
+        slot_rva = address - image_base
+        for dependency in dependencies:
+            if not isinstance(dependency, Mapping):
+                raise ValueError("global-slot target dependency is not an object")
+            exit_id = dependency.get("exit_id")
+            if not isinstance(exit_id, str) or not exit_id:
+                raise ValueError("global-slot target dependency has no exit ID")
+            if dependency.get("witness_only") is True:
+                result.add((slot_rva, exit_id, "", -1, True))
+                continue
+            unit_id = dependency.get("unit_id")
+            event_index = dependency.get("event_index")
+            if (
+                not isinstance(unit_id, str)
+                or not unit_id
+                or not isinstance(event_index, int)
+                or isinstance(event_index, bool)
+                or event_index < 0
+            ):
+                raise ValueError("global-slot target dependency has a malformed read site")
+            result.add((slot_rva, exit_id, unit_id, event_index, False))
+    return result
+
+
+def _slot_dependency_payload(
+    key: tuple[int, str, str, int, bool],
+) -> dict[str, Any]:
+    slot_rva, exit_id, unit_id, event_index, witness_only = key
+    return {
+        "slot_rva": slot_rva,
+        "exit_id": exit_id,
+        **(
+            {"witness_only": True}
+            if witness_only
+            else {"unit_id": unit_id, "event_index": event_index}
+        ),
+    }
 
 
 def _target_projection(row: Mapping[str, Any]) -> dict[str, Any]:

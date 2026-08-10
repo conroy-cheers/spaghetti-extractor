@@ -404,6 +404,9 @@ def recover_external_interface_targets(
     static_data_reader: Callable[[int, int], bytes | None] | None = None,
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None = None,
     initial_known_slots: Mapping[_MemoryLocation, _Value] | None = None,
+    initial_event_known_slots: Mapping[
+        CallSiteId, Mapping[_MemoryLocation, _Value]
+    ] | None = None,
     initial_root_argument_origins: Mapping[
         str, Mapping[int, _Value]
     ] | None = None,
@@ -537,6 +540,11 @@ def recover_external_interface_targets(
     ):
         raise ValueError("initial interface-provenance slot seed is invalid")
     initial_known_slot_count = len(known_slots)
+    event_known_slots, event_slot_issues = _normalize_event_known_slots(
+        initial_event_known_slots or {},
+        by_id=by_id,
+        finite_value_budget=finite_value_budget,
+    )
     root_argument_origins = _normalize_root_argument_origins(
         initial_root_argument_origins or {},
         roots=roots_set,
@@ -571,6 +579,7 @@ def recover_external_interface_targets(
             ),
             image_base=image_base,
             known_slots=known_slots,
+            event_known_slots=event_known_slots,
             root_argument_origins=root_argument_origins,
             finite_value_budget=finite_value_budget,
             static_slot_budget=static_slot_budget,
@@ -627,6 +636,7 @@ def recover_external_interface_targets(
             "derived_domain_bound": fixed_point_budget is None,
         })
     final.issues.extend(cleanup_conflicts)
+    final.issues.extend(event_slot_issues)
     callback_registrations = [
         row
         for row in final.argument_recoveries
@@ -723,6 +733,10 @@ def recover_external_interface_targets(
             "rounds": rounds,
             "converged": converged,
             "initial_known_slots": initial_known_slot_count,
+            "initial_event_known_slot_units": len(event_known_slots),
+            "initial_event_known_slots": sum(
+                len(values) for values in event_known_slots.values()
+            ),
         },
         "internal_call_cleanup_inference": [
             evidence.as_json(image_base=image_base)
@@ -1275,6 +1289,7 @@ def _run_dataflow(
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
     image_base: int,
     known_slots: Mapping[_MemoryLocation, _Value],
+    event_known_slots: Mapping[str, Mapping[_MemoryLocation, _Value]],
     root_argument_origins: Mapping[str, Mapping[int, _Value]],
     finite_value_budget: int,
     static_slot_budget: int,
@@ -1324,6 +1339,11 @@ def _run_dataflow(
             input_state,
             unit_id=source_id,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
+        )
+        checked_state = _with_event_known_slots(
+            checked_state,
+            unit_id=source_id,
+            event_known_slots=event_known_slots,
         )
         key = (source_id, _state_cache_key(checked_state))
         cached = transfer_cache.get(key)
@@ -1377,6 +1397,11 @@ def _run_dataflow(
                 unit_id=source_id,
                 checked_stack_entry_offsets=checked_stack_entry_offsets,
             )
+            checked_state = _with_event_known_slots(
+                checked_state,
+                unit_id=source_id,
+                event_known_slots=event_known_slots,
+            )
             for proposal in _resolve_exits(
                 exits_by_source[source_id],
                 by_id=by_id,
@@ -1384,6 +1409,7 @@ def _run_dataflow(
                 inventory=inventory,
                 import_abis=import_abis,
                 known_slots=known_slots,
+                event_known_slots=event_known_slots,
                 finite_value_budget=finite_value_budget,
             ):
                 if proposal.get("status") != "recovered":
@@ -1504,6 +1530,7 @@ def _run_dataflow(
         inventory=inventory,
         import_abis=import_abis,
         known_slots=known_slots,
+        event_known_slots=event_known_slots,
         finite_value_budget=finite_value_budget,
     )
     legacy_path_proposals = _finalize_path_recovery_proposals(
@@ -1523,6 +1550,7 @@ def _run_dataflow(
             inventory=inventory,
             import_abis=import_abis,
             known_slots=known_slots,
+            event_known_slots=event_known_slots,
             root_argument_origins=root_argument_origins,
             image_base=image_base,
             finite_value_budget=finite_value_budget,
@@ -1619,6 +1647,126 @@ def _initial_root_state(
     )
 
 
+def _normalize_event_known_slots(
+    values: Mapping[CallSiteId, Mapping[_MemoryLocation, _Value]],
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    finite_value_budget: int,
+) -> tuple[
+    dict[str, dict[_MemoryLocation, _Value]],
+    list[dict[str, Any]],
+]:
+    """Lower exact read-bound facts to conservative unit-local overlays.
+
+    The current transfer adapter evaluates one normalized expression summary
+    per machine-IR unit.  A read-bound fact is therefore usable only when no
+    other memory event in that unit can alias the same slot.  Unsupported
+    multi-access units remain incomplete instead of widening an event fact to
+    a root-wide memory invariant.
+    """
+
+    result: dict[str, dict[_MemoryLocation, _Value]] = defaultdict(dict)
+    issues: list[dict[str, Any]] = []
+    for site, raw_slots in sorted(
+        values.items(), key=lambda item: (item[0].unit_id, item[0].event_index)
+    ):
+        if not isinstance(site, CallSiteId):
+            raise ValueError("event-known slot key must be an exact event site")
+        unit = by_id.get(site.unit_id)
+        if unit is None:
+            raise ValueError("event-known slot references an unknown unit")
+        memory_events = _mapping(unit.get("semantics")).get("memory_events")
+        if (
+            not isinstance(memory_events, list)
+            or site.event_index >= len(memory_events)
+        ):
+            raise ValueError("event-known slot references an unknown memory event")
+        event = _mapping(memory_events[site.event_index])
+        event_address = _constant_u32_expression(event.get("address"))
+        if (
+            event.get("kind") not in {"read", "read_write"}
+            or _integer(event.get("width")) != 4
+            or event_address is None
+        ):
+            raise ValueError("event-known slot must bind an exact 32-bit read")
+        if not isinstance(raw_slots, Mapping) or not raw_slots:
+            raise ValueError("event-known slot inventory is empty")
+        for location, origins in raw_slots.items():
+            if location != event_address or not isinstance(location, int):
+                raise ValueError("event-known slot address contradicts its read")
+            if (
+                origins is None
+                or not origins
+                or len(origins) > finite_value_budget
+                or any(not _persistent_origin(origin) for origin in origins)
+            ):
+                raise ValueError("event-known slot value is invalid")
+            if not _event_slot_isolated(
+                memory_events,
+                event_index=site.event_index,
+                address=location,
+            ):
+                issues.append({
+                    "code": "event_known_slot_unit_scope_not_isolated",
+                    "unit_id": site.unit_id,
+                    "event_index": site.event_index,
+                    "address": location,
+                })
+                continue
+            previous = result[site.unit_id].get(location)
+            if previous is not None and previous != origins:
+                raise ValueError("event-known slot facts contradict within one unit")
+            result[site.unit_id][location] = origins
+    return {
+        unit_id: dict(sorted(slots.items(), key=lambda item: repr(item[0])))
+        for unit_id, slots in sorted(result.items())
+        if slots
+    }, issues
+
+
+def _event_slot_isolated(
+    memory_events: Sequence[Any], *, event_index: int, address: int
+) -> bool:
+    for index, raw in enumerate(memory_events):
+        if index == event_index:
+            continue
+        event = _mapping(raw)
+        if event.get("kind") not in {"read", "write", "read_write"}:
+            continue
+        other_address = _constant_u32_expression(event.get("address"))
+        width = _integer(event.get("width"))
+        if other_address is None or width is None or width <= 0:
+            return False
+        if other_address < address + 4 and address < other_address + width:
+            return False
+    return True
+
+
+def _constant_u32_expression(value: Any) -> int | None:
+    row = _mapping(value)
+    if str(row.get("op") or "").lower() not in {"const", "constant"}:
+        return None
+    concrete = _integer(row.get("value"))
+    return None if concrete is None else concrete & 0xFFFF_FFFF
+
+
+def _with_event_known_slots(
+    state: _State,
+    *,
+    unit_id: str,
+    event_known_slots: Mapping[str, Mapping[_MemoryLocation, _Value]],
+) -> _State:
+    slots = event_known_slots.get(unit_id)
+    if not slots:
+        return state
+    return _State(
+        dict(state.registers),
+        {**state.memory, **slots},
+        dict(state.stack),
+        state.memory_invalidated,
+    )
+
+
 def _context_target_exit_ids(
     *,
     legacy_path_proposals: Sequence[Mapping[str, Any]],
@@ -1653,6 +1801,7 @@ def _run_contextual_target_discovery(
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     known_slots: Mapping[_MemoryLocation, _Value],
+    event_known_slots: Mapping[str, Mapping[_MemoryLocation, _Value]],
     root_argument_origins: Mapping[str, Mapping[int, _Value]],
     image_base: int,
     finite_value_budget: int,
@@ -1822,6 +1971,11 @@ def _run_contextual_target_discovery(
             unit_id=source_id,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
         )
+        checked = _with_event_known_slots(
+            checked,
+            unit_id=source_id,
+            event_known_slots=event_known_slots,
+        )
         for resolution in _resolve_exits(
             exits,
             by_id=by_id,
@@ -1829,6 +1983,7 @@ def _run_contextual_target_discovery(
             inventory=inventory,
             import_abis=import_abis,
             known_slots=known_slots,
+            event_known_slots=event_known_slots,
             finite_value_budget=finite_value_budget,
         ):
             identity = resolution.get("id")
@@ -6136,6 +6291,7 @@ def _resolve_exits(
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     known_slots: Mapping[Any, _Value],
+    event_known_slots: Mapping[str, Mapping[_MemoryLocation, _Value]],
     finite_value_budget: int,
 ) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
@@ -6143,6 +6299,12 @@ def _resolve_exits(
         source = str(exit_record.get("source_unit_id") or "")
         identity = str(exit_record.get("id") or _stable_id(exit_record))
         state = states.get(source)
+        if state is not None:
+            state = _with_event_known_slots(
+                state,
+                unit_id=source,
+                event_known_slots=event_known_slots,
+            )
         target = exit_record.get("target_expression")
         event_index = _integer(exit_record.get("source_event_index"))
         if state is not None and source in by_id and event_index is not None:

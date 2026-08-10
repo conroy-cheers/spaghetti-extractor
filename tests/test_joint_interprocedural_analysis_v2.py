@@ -6,6 +6,7 @@ import unittest
 from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
 from spaghetti_extractor.control_analysis_v2 import exact_control_inventory_v2
 from spaghetti_extractor.joint_interprocedural_analysis_v2 import (
+    _slot_inventory_check,
     build_proposal_control_graph_v2,
     merge_recovery_proposals_v2,
     validate_joint_replay_v2,
@@ -43,6 +44,61 @@ def _stack_binding(graph_id: str) -> dict[str, object]:
 
 
 class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
+    def test_slot_inventory_binds_exact_required_read_sites(self) -> None:
+        recovery = {
+            "id": "exit:slot",
+            "mutable_slot_dependencies": [{
+                "slot_rva": 0x3000,
+                "width_bytes": 4,
+                "read_sites": [{"unit_id": "load", "event_index": 2}],
+            }],
+        }
+        analysis = {
+            "bindings": {"image_base": 0x400000},
+            "slots": [{"address": 0x403000}],
+            "global_slot_evidence": [{
+                "address": 0x403000,
+                "target_dependencies": [{
+                    "exit_id": "exit:slot",
+                    "unit_id": "load",
+                    "event_index": 2,
+                }],
+            }],
+        }
+
+        exact = _slot_inventory_check(
+            global_slot_analysis=analysis,
+            interprocedural={"recovered_targets": [recovery]},
+        )
+        self.assertTrue(exact[0], exact)
+
+        analysis["global_slot_evidence"][0]["target_dependencies"][0][
+            "event_index"
+        ] = 3
+        mismatched = _slot_inventory_check(
+            global_slot_analysis=analysis,
+            interprocedural={"recovered_targets": [recovery]},
+        )
+        self.assertFalse(mismatched[0])
+        self.assertEqual(
+            mismatched[3],
+            [{
+                "slot_rva": 0x3000,
+                "exit_id": "exit:slot",
+                "unit_id": "load",
+                "event_index": 2,
+            }],
+        )
+        self.assertEqual(
+            mismatched[4],
+            [{
+                "slot_rva": 0x3000,
+                "exit_id": "exit:slot",
+                "unit_id": "load",
+                "event_index": 3,
+            }],
+        )
+
     def test_exact_control_preserves_and_normalizes_target_guard(self) -> None:
         loaded = {
             "op": "load",

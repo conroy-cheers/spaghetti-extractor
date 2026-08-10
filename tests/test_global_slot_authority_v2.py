@@ -56,6 +56,23 @@ def _provenance(*, slot: int = SLOT) -> dict:
     }
 
 
+def _invariants(authority: dict, invariant_kind: str) -> list[GlobalSlotInvariant]:
+    return [
+        invariant
+        for row in authority["global_slot_invariants"]
+        for invariant in (GlobalSlotInvariant.parse(row),)
+        if invariant.invariant_kind == invariant_kind
+    ]
+
+
+def _rehash_analysis(analysis: dict) -> None:
+    body = dict(analysis)
+    body.pop("analysis_sha256", None)
+    analysis["analysis_sha256"] = hashlib.sha256(
+        canonical_json_bytes(body)
+    ).hexdigest()
+
+
 class GlobalSlotAuthorityV2Tests(unittest.TestCase):
     def _replay_fixture(self) -> tuple[dict, dict]:
         temporary, binary = self._writable_data_binary()
@@ -158,7 +175,8 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
         )
 
         self.assertEqual(authority["status"], "complete", authority["issues"])
-        self.assertEqual(len(authority["global_slot_invariants"]), 1)
+        self.assertEqual(len(_invariants(authority, "finite_set")), 1)
+        self.assertEqual(len(_invariants(authority, "finite_set_at_read")), 1)
 
     def test_independent_replay_rejects_removed_spatial_evidence(self) -> None:
         analysis, replay_inputs = self._replay_fixture()
@@ -270,7 +288,8 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
         )
 
         self.assertEqual(authority["status"], "complete", authority["issues"])
-        self.assertEqual(len(authority["global_slot_invariants"]), 1)
+        self.assertEqual(len(_invariants(authority, "finite_set")), 1)
+        self.assertEqual(len(_invariants(authority, "finite_set_at_read")), 1)
 
         corrupted = copy.deepcopy(stack)
         corrupted["entry_offsets"]["entry"] = [-4]
@@ -320,7 +339,8 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
 
         self.assertEqual(authority["format"], GLOBAL_SLOT_AUTHORITY_V2_FORMAT)
         self.assertEqual(authority["status"], "complete", authority["issues"])
-        self.assertEqual(len(authority["global_slot_invariants"]), 1)
+        self.assertEqual(len(_invariants(authority, "finite_set")), 1)
+        self.assertEqual(len(_invariants(authority, "finite_set_at_read")), 1)
         self.assertFalse(authority["constraints"]["tainted_slots_exported"])
         fresh = apply_global_slot_authority_v2(
             {
@@ -359,6 +379,174 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
         self.assertEqual(authority["global_slot_invariants"], [])
         self.assertEqual(
             authority["authoritative_provenance"]["rejected_tainted_slots"], []
+        )
+
+    def test_clean_read_exports_event_fact_despite_tainted_sibling(self) -> None:
+        units = [
+            _unit(
+                "init",
+                0x1000,
+                [_write(_const(1))],
+                direct_targets=[0x1010, 0x1020],
+            ),
+            _unit("clean", 0x1010, [_read()]),
+            _unit("tainted", 0x1020, [_write(_reg("eax")), _read()]),
+        ]
+        analysis = _analyze(
+            units,
+            _graph(units, edges=[("init", "clean"), ("init", "tainted")]),
+        )
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=analysis,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        self.assertEqual(analysis["status"], "incomplete")
+        self.assertEqual(authority["status"], "complete", authority["issues"])
+        self.assertEqual(_invariants(authority, "finite_set"), [])
+        event_invariants = _invariants(authority, "finite_set_at_read")
+        self.assertEqual(len(event_invariants), 1)
+        self.assertEqual(event_invariants[0].binding.unit.unit_id, "clean")
+        self.assertEqual(event_invariants[0].binding.event_index, 0)
+        read_checks = authority["checks"][0]["read_checks"]
+        self.assertEqual(
+            [(row["site"]["unit_id"], row["status"]) for row in read_checks],
+            [("clean", "complete"), ("tainted", "incomplete")],
+        )
+        self.assertFalse(authority["constraints"]["event_facts_seeded_globally"])
+        self.assertEqual(
+            authority["authoritative_provenance"]["static_interface_slots"], []
+        )
+
+    def test_forged_event_binding_is_violated(self) -> None:
+        units = [_unit("init", 0x1000, [_write(_const(1)), _read()])]
+        analysis = _analyze(units, _graph(units))
+        accepted = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=analysis,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+        forged = copy.deepcopy(analysis)
+        binding = _invariants(accepted, "finite_set_at_read")[0].binding.to_payload()
+        binding["event_sha256"] = "0" * 64
+        forged["global_slot_evidence"][0]["read_inventory"][0][
+            "binding"
+        ] = binding
+        _rehash_analysis(forged)
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=forged,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        self.assertEqual(authority["status"], "violated")
+        self.assertEqual(_invariants(authority, "finite_set_at_read"), [])
+        self.assertIn(
+            "global_slot_per_read_event_binding_mismatch",
+            {
+                issue["code"]
+                for issue in authority["checks"][0]["read_checks"][0]["issues"]
+            },
+        )
+
+    def test_mismatched_read_alternatives_are_violated(self) -> None:
+        units = [_unit("init", 0x1000, [_write(_const(1)), _read()])]
+        analysis = _analyze(units, _graph(units))
+        forged = copy.deepcopy(analysis)
+        forged["global_slot_evidence"][0]["read_inventory"][0]["state"][
+            "alternatives"
+        ] = [{"kind": "exact_bits", "value": 2, "width_bits": 32}]
+        _rehash_analysis(forged)
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=forged,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        self.assertEqual(authority["status"], "violated")
+        self.assertEqual(_invariants(authority, "finite_set_at_read"), [])
+        codes = {
+            issue["code"]
+            for issue in authority["checks"][0]["read_checks"][0]["issues"]
+        }
+        self.assertIn("global_slot_per_read_alternatives_mismatch", codes)
+        self.assertIn("global_slot_per_read_state_copy_mismatch", codes)
+
+    def test_missing_read_dependency_is_incomplete(self) -> None:
+        units = [_unit("init", 0x1000, [_write(_const(1)), _read()])]
+        analysis = _analyze(units, _graph(units))
+        incomplete = copy.deepcopy(analysis)
+        incomplete["global_slot_evidence"][0]["read_inventory"][0][
+            "dependencies"
+        ] = ["missing-dependency"]
+        _rehash_analysis(incomplete)
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=incomplete,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        self.assertEqual(authority["status"], "complete", authority["issues"])
+        self.assertEqual(_invariants(authority, "finite_set_at_read"), [])
+        read_check = authority["checks"][0]["read_checks"][0]
+        self.assertEqual(read_check["status"], "incomplete")
+        self.assertIn(
+            "global_slot_per_read_dependency_missing",
+            {issue["code"] for issue in read_check["issues"]},
+        )
+
+    def test_malformed_reaching_write_evidence_is_violated(self) -> None:
+        units = [_unit("init", 0x1000, [_write(_const(1)), _read()])]
+        analysis = _analyze(units, _graph(units))
+        forged = copy.deepcopy(analysis)
+        forged["global_slot_evidence"][0]["read_inventory"][0][
+            "reaching_write_inventory"
+        ]["writes"] = [None]
+        _rehash_analysis(forged)
+
+        authority = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=forged,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=analysis["bindings"]["machine_ir_sha256"],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+        )
+
+        self.assertEqual(authority["status"], "violated")
+        self.assertEqual(_invariants(authority, "finite_set_at_read"), [])
+        self.assertIn(
+            "global_slot_per_read_reaching_write_record_corrupt",
+            {
+                issue["code"]
+                for issue in authority["checks"][0]["read_checks"][0]["issues"]
+            },
         )
 
     def test_corrupted_analysis_hash_is_violated(self) -> None:
@@ -450,9 +638,7 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
         )
 
         self.assertEqual(authority["status"], "complete", authority["issues"])
-        invariant = GlobalSlotInvariant.parse(
-            authority["global_slot_invariants"][0]
-        )
+        invariant = _invariants(authority, "finite_set")[0]
         self.assertEqual(invariant.binding.to_payload()["kind"], "image_span")
         validate_global_slot_invariant_binding_v2(
             invariant,
@@ -499,7 +685,9 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
 
         self.assertEqual(authority["status"], "complete", authority["issues"])
         self.assertEqual(
-            authority["global_slot_invariants"][0]["binding"]["relocation_kind"],
+            _invariants(authority, "finite_set")[0].binding.to_payload()[
+                "relocation_kind"
+            ],
             "pe32_highlow",
         )
 

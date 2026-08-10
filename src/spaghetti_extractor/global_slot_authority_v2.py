@@ -7,7 +7,12 @@ import json
 from typing import Any, Mapping, Sequence
 
 from .entry_fact_derivation_v2 import promote_complete_global_slot_evidence_v2
-from .authority_bindings_v2 import BinaryBinding, canonical_json_bytes
+from .authority_bindings_v2 import (
+    BinaryBinding,
+    EventBinding,
+    UnitBinding,
+    canonical_json_bytes,
+)
 from .checked_memory_access_v2 import (
     CheckedMemoryAccessV2Error,
     validate_checked_memory_access_facts_v2,
@@ -19,7 +24,11 @@ from .global_slot_image_v2 import (
     loader_initial_bytes_v2,
 )
 from .global_slot_analysis_v2 import analyze_global_slots_v2
-from .machine_ir_authority_v2 import recompute_unit_binding
+from .machine_ir_authority_v2 import (
+    MachineIRAuthorityV2Error,
+    recompute_event_binding,
+    recompute_unit_binding,
+)
 from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
 from .mutable_slot_candidates_v2 import (
     derive_recovery_slot_requirements_v2,
@@ -188,6 +197,11 @@ def build_global_slot_authority_v2(
         for row in units
         for binding in (recompute_unit_binding(row, binary=binary),)
     }
+    event_bindings = _memory_event_bindings(
+        units,
+        unit_bindings=unit_bindings,
+        issues=issues,
+    )
     raw_access_facts = global_slot_analysis.get("checked_memory_access_facts")
     analysis_bindings = global_slot_analysis.get("bindings")
     interprocedural_sha256 = (
@@ -311,13 +325,9 @@ def build_global_slot_authority_v2(
         and isinstance(row.get("address"), int)
         and not isinstance(row.get("address"), bool)
     }
-    promoted_evidence = [
-        dict(row)
-        for row in evidence_rows
-        if isinstance(row, Mapping) and row.get("address") in promoted_addresses
-    ]
     checks: list[dict[str, Any]] = []
     records: list[dict[str, Any]] = []
+    record_addresses: set[int] = set()
     image_span_bindings = {}
     for address, evidence in sorted(evidence_by_address.items()):
         launch = evidence.get("launch_initializer")
@@ -367,23 +377,28 @@ def build_global_slot_authority_v2(
                 address=address,
                 detail=str(exc),
             ))
-    for slot in promoted.get("static_interface_slots", ()):
-        address = slot.get("address") if isinstance(slot, Mapping) else None
-        evidence = evidence_by_address.get(address) if isinstance(address, int) else None
-        if evidence is None:
-            issues.append(_issue("violated", "promoted_global_slot_evidence_missing"))
-            continue
+    promoted_by_address = {
+        int(slot["address"]): slot
+        for slot in promoted.get("static_interface_slots", ())
+        if isinstance(slot, Mapping)
+        and isinstance(slot.get("address"), int)
+        and not isinstance(slot.get("address"), bool)
+    }
+    for address, evidence in sorted(evidence_by_address.items()):
+        slot = promoted_by_address.get(address)
         check = propose_global_slot_invariant(
             evidence,
             interface_slot=slot,
             unit_bindings=unit_bindings,
+            event_bindings=event_bindings,
             image_span_bindings=image_span_bindings,
             image_base=image_base,
             size_of_image=size_of_image,
         )
         checks.append(check)
-        if check.get("status") != "complete" or not isinstance(
-            check.get("proposal"), Mapping
+        if slot is not None and (
+            check.get("status") != "complete"
+            or not isinstance(check.get("proposal"), Mapping)
         ):
             issues.append(_issue(
                 (
@@ -398,11 +413,69 @@ def build_global_slot_authority_v2(
                 ),
                 address=address,
             ))
+        elif slot is not None:
+            records.append(dict(check["proposal"]))
+            record_addresses.add(address)
+
+        read_checks = check.get("read_checks")
+        if not isinstance(read_checks, list):
+            issues.append(_issue(
+                "violated",
+                "global_slot_per_read_checks_corrupt",
+                address=address,
+            ))
             continue
-        records.append(dict(check["proposal"]))
+        for read_check in read_checks:
+            if not isinstance(read_check, Mapping):
+                issues.append(_issue(
+                    "violated",
+                    "global_slot_per_read_check_corrupt",
+                    address=address,
+                ))
+                continue
+            proposal = read_check.get("proposal")
+            if read_check.get("status") == "complete" and isinstance(
+                proposal, Mapping
+            ):
+                records.append(dict(proposal))
+                record_addresses.add(address)
+            elif read_check.get("status") == "violated":
+                issues.append(_issue(
+                    "violated",
+                    "global_slot_per_read_replay_contradiction",
+                    address=address,
+                    read_index=read_check.get("read_index"),
+                ))
+    missing_promoted = sorted(promoted_addresses - set(evidence_by_address))
+    if missing_promoted:
+        issues.append(_issue(
+            "violated",
+            "promoted_global_slot_evidence_missing",
+            addresses=missing_promoted,
+        ))
+    by_content_id: dict[str, dict[str, Any]] = {}
+    for record in records:
+        content_id = record.get("content_id")
+        if not isinstance(content_id, str) or content_id in by_content_id:
+            issues.append(_issue(
+                "violated",
+                "global_slot_invariant_record_duplicated",
+                content_id=content_id,
+            ))
+            continue
+        by_content_id[content_id] = record
+    records = list(by_content_id.values())
     records.sort(key=lambda row: str(row.get("content_id")))
     checks.sort(key=lambda row: int(row.get("address", -1)))
+    promoted_evidence = [
+        dict(row)
+        for row in evidence_rows
+        if isinstance(row, Mapping)
+        and row.get("address") in promoted_addresses | record_addresses
+    ]
     status = _status(issues)
+    if status != "complete":
+        records = []
     body = {
         "format": GLOBAL_SLOT_AUTHORITY_V2_FORMAT,
         "status": status,
@@ -421,6 +494,7 @@ def build_global_slot_authority_v2(
             "inductive_facts_require_final_complete_rooted_graph": True,
             "tainted_slots_exported": False,
             "incomplete_evidence_exported": False,
+            "event_facts_seeded_globally": False,
         },
     }
     return {**body, "authority_sha256": _sha256(body)}
@@ -512,6 +586,7 @@ def _violated_replay_authority(
             "inductive_facts_require_final_complete_rooted_graph": True,
             "tainted_slots_exported": False,
             "incomplete_evidence_exported": False,
+            "event_facts_seeded_globally": False,
         },
     }
     return {**body, "authority_sha256": _sha256(body)}
@@ -519,6 +594,56 @@ def _violated_replay_authority(
 
 def _issue(status: str, code: str, **details: Any) -> dict[str, Any]:
     return {"status": status, "code": code, **details}
+
+
+def _memory_event_bindings(
+    units: Sequence[Mapping[str, Any]],
+    *,
+    unit_bindings: Mapping[str, UnitBinding],
+    issues: list[dict[str, Any]],
+) -> dict[tuple[str, int], EventBinding]:
+    result: dict[tuple[str, int], EventBinding] = {}
+    for unit_index, row in enumerate(units):
+        unit_id = row.get("id") if isinstance(row, Mapping) else None
+        binding = unit_bindings.get(unit_id) if isinstance(unit_id, str) else None
+        semantics = row.get("semantics") if isinstance(row, Mapping) else None
+        events = (
+            semantics.get("memory_events")
+            if isinstance(semantics, Mapping)
+            else None
+        )
+        if binding is None or not isinstance(events, list):
+            issues.append(_issue(
+                "violated",
+                "global_slot_memory_event_inventory_corrupt",
+                unit_index=unit_index,
+                unit_id=unit_id,
+            ))
+            continue
+        for event_index, event in enumerate(events):
+            if not isinstance(event, Mapping):
+                issues.append(_issue(
+                    "violated",
+                    "global_slot_memory_event_corrupt",
+                    unit_id=unit_id,
+                    event_index=event_index,
+                ))
+                continue
+            try:
+                result[(unit_id, event_index)] = recompute_event_binding(
+                    binding,
+                    event,
+                    event_index=event_index,
+                )
+            except (MachineIRAuthorityV2Error, TypeError, ValueError) as exc:
+                issues.append(_issue(
+                    "violated",
+                    "global_slot_memory_event_binding_invalid",
+                    unit_id=unit_id,
+                    event_index=event_index,
+                    detail=str(exc),
+                ))
+    return dict(sorted(result.items()))
 
 
 def _status(issues: Sequence[Mapping[str, Any]]) -> str:

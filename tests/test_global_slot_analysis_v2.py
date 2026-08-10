@@ -196,6 +196,18 @@ def _codes(result: dict[str, Any]) -> set[str]:
     return {str(issue["code"]) for issue in slot["issues"]}
 
 
+def _incoming(
+    result: dict[str, Any], unit_id: str, event_index: int
+) -> dict[str, Any]:
+    reads = result["global_slot_evidence"][0]["relevant_reads"]
+    return next(
+        row["incoming"]
+        for row in reads
+        if row["site"]["unit_id"] == unit_id
+        and row["site"]["event_index"] == event_index
+    )
+
+
 def _call_effect(
     unit_id: str,
     *,
@@ -412,8 +424,8 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
             checked_access_facts=facts,
         )
 
-        self.assertEqual(without_fact["status"], "incomplete")
-        self.assertEqual(with_fact["status"], "incomplete")
+        self.assertEqual(without_fact["status"], "complete")
+        self.assertEqual(with_fact["status"], "complete")
         self.assertEqual(with_fact["counts"]["checked_memory_access_facts"], 1)
         aliasing = with_fact["global_slot_evidence"][0][
             "reachable_write_inventory"
@@ -653,6 +665,39 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
             }],
         )
 
+    def test_one_exit_retains_multiple_exact_read_dependencies(self) -> None:
+        units = [_unit(
+            "dispatch",
+            0x1000,
+            [_write(_const(0x401020)), _read(), _read()],
+        )]
+        result = _analyze(
+            units,
+            _graph(units),
+            relevant_reads=[
+                {
+                    "slot_rva": SLOT - IMAGE_BASE,
+                    "exit_id": "indirect-exit:fixture",
+                    "unit_id": "dispatch",
+                    "event_index": event_index,
+                }
+                for event_index in (1, 2)
+            ],
+        )
+
+        self.assertEqual(result["status"], "complete", result["slots"][0]["issues"])
+        self.assertEqual(
+            result["global_slot_evidence"][0]["target_dependencies"],
+            [
+                {
+                    "exit_id": "indirect-exit:fixture",
+                    "unit_id": "dispatch",
+                    "event_index": event_index,
+                }
+                for event_index in (1, 2)
+            ],
+        )
+
     def test_unknown_overwrite_taints_downstream_read(self) -> None:
         units = [
             _unit(
@@ -668,6 +713,165 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
         self.assertIn("global_slot_read_reached_by_tainted_value", _codes(result))
         inventory = result["global_slot_evidence"][0]["reachable_write_inventory"]
         self.assertEqual(len(inventory["unknown_writes"]), 1)
+
+    def test_unknown_write_after_read_is_diagnostic_only(self) -> None:
+        units = [
+            _unit(
+                "entry",
+                0x1000,
+                [_write(_const(1)), _read(), _write(_reg("eax"))],
+            )
+        ]
+
+        result = _analyze(units, _graph(units))
+
+        self.assertEqual(result["status"], "complete", result["slots"][0]["issues"])
+        self.assertNotIn("global_slot_unknown_write_taint", _codes(result))
+        self.assertFalse(result["slots"][0]["tainted"])
+        incoming = _incoming(result, "entry", 1)
+        self.assertEqual(incoming["status"], "complete")
+        self.assertTrue(incoming["initialized"])
+        self.assertFalse(incoming["tainted"])
+        self.assertFalse(incoming["overflow"])
+        self.assertEqual(
+            incoming["alternatives"],
+            [{"kind": "exact_bits", "value": 1, "width_bits": 32}],
+        )
+        self.assertEqual(incoming["unknown_writes"], [])
+        evidence = result["global_slot_evidence"][0]
+        replay_read = evidence["read_inventory"][0]
+        self.assertEqual(replay_read["status"], incoming["status"])
+        self.assertEqual(replay_read["state"]["alternatives"], incoming["alternatives"])
+        self.assertEqual(
+            replay_read["reaching_write_inventory"]["unknown_writes"], []
+        )
+        self.assertEqual(
+            evidence["diagnostic_inventory"]["counts"]["unknown_writes"], 1
+        )
+        self.assertEqual(
+            evidence["reachable_write_inventory"]["status"], "incomplete"
+        )
+
+    def test_unknown_write_on_unrelated_branch_does_not_taint_read(self) -> None:
+        units = [
+            _unit(
+                "branch",
+                0x1000,
+                [],
+                direct_targets=[0x1010, 0x1020],
+            ),
+            _unit("clean", 0x1010, [_write(_const(2)), _read()]),
+            _unit("unrelated", 0x1020, [_write(_reg("eax"))]),
+        ]
+        edges = [("branch", "clean"), ("branch", "unrelated")]
+
+        result = _analyze(units, _graph(units, edges=edges))
+
+        self.assertEqual(result["status"], "complete", result["slots"][0]["issues"])
+        self.assertNotIn("global_slot_unknown_write_taint", _codes(result))
+        incoming = _incoming(result, "clean", 1)
+        self.assertEqual(incoming["status"], "complete")
+        self.assertFalse(incoming["tainted"])
+        self.assertEqual(incoming["unknown_writes"], [])
+        counts = result["global_slot_evidence"][0]["diagnostic_inventory"]["counts"]
+        self.assertEqual(counts["unknown_writes"], 1)
+
+    def test_alias_write_before_exact_strong_update_does_not_reach_read(self) -> None:
+        units = [
+            _unit(
+                "entry",
+                0x1000,
+                [
+                    _write(_const(9), address=_reg("eax")),
+                    _write(_const(3)),
+                    _read(),
+                ],
+            )
+        ]
+
+        result = _analyze(units, _graph(units))
+
+        self.assertEqual(result["status"], "complete", result["slots"][0]["issues"])
+        self.assertNotIn("global_slot_aliasing_write_taint", _codes(result))
+        incoming = _incoming(result, "entry", 2)
+        self.assertEqual(incoming["status"], "complete")
+        self.assertFalse(incoming["tainted"])
+        self.assertEqual(incoming["aliasing_writes"], [])
+        self.assertEqual(
+            [row["site"]["event_index"] for row in incoming["writes"]],
+            [1],
+        )
+        counts = result["global_slot_evidence"][0]["diagnostic_inventory"]["counts"]
+        self.assertEqual(counts["aliasing_writes"], 1)
+
+    def test_tainted_predecessor_keeps_joined_read_incomplete(self) -> None:
+        units = [
+            _unit("init", 0x1000, [_write(_const(0))], direct_targets=[0x1010]),
+            _unit(
+                "branch",
+                0x1010,
+                [],
+                direct_targets=[0x1020, 0x1030],
+            ),
+            _unit("clean", 0x1020, [], direct_targets=[0x1040]),
+            _unit(
+                "tainted",
+                0x1030,
+                [_write(_reg("eax"))],
+                direct_targets=[0x1040],
+            ),
+            _unit("join", 0x1040, [_read()]),
+        ]
+        edges = [
+            ("init", "branch"),
+            ("branch", "clean"),
+            ("branch", "tainted"),
+            ("clean", "join"),
+            ("tainted", "join"),
+        ]
+
+        result = _analyze(units, _graph(units, edges=edges))
+
+        self.assertEqual(result["status"], "incomplete")
+        incoming = _incoming(result, "join", 0)
+        self.assertEqual(incoming["status"], "incomplete")
+        self.assertTrue(incoming["initialized"])
+        self.assertTrue(incoming["tainted"])
+        self.assertEqual(len(incoming["unknown_writes"]), 1)
+        self.assertIn(
+            "global_slot_read_reached_by_tainted_value",
+            {issue["code"] for issue in incoming["issues"]},
+        )
+
+    def test_sibling_reads_retain_independent_incoming_statuses(self) -> None:
+        units = [
+            _unit("init", 0x1000, [_write(_const(0))], direct_targets=[0x1010]),
+            _unit(
+                "branch",
+                0x1010,
+                [],
+                direct_targets=[0x1020, 0x1030],
+            ),
+            _unit("clean", 0x1020, [_read()]),
+            _unit("tainted", 0x1030, [_write(_reg("eax")), _read()]),
+        ]
+        edges = [
+            ("init", "branch"),
+            ("branch", "clean"),
+            ("branch", "tainted"),
+        ]
+
+        result = _analyze(units, _graph(units, edges=edges))
+
+        self.assertEqual(result["status"], "incomplete")
+        clean = _incoming(result, "clean", 0)
+        tainted = _incoming(result, "tainted", 1)
+        self.assertEqual(clean["status"], "complete")
+        self.assertFalse(clean["tainted"])
+        self.assertEqual(clean["unknown_writes"], [])
+        self.assertEqual(tainted["status"], "incomplete")
+        self.assertTrue(tainted["tainted"])
+        self.assertEqual(len(tainted["unknown_writes"]), 1)
 
     def test_finite_branch_join_preserves_bounded_alternatives(self) -> None:
         units = [

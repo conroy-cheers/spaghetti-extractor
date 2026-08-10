@@ -10,6 +10,7 @@ from spaghetti_extractor.call_frame_hypotheses import (
     PreservedRegisterHypothesis,
     hypothesis_id as call_frame_hypothesis_id,
 )
+from spaghetti_extractor.call_site_effects import CallSiteId
 from spaghetti_extractor.external_interface_profiles import (
     EXTERNAL_INTERFACE_PROFILE_FORMAT,
     ExternalInterfaceProfile,
@@ -1016,6 +1017,107 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(
             result["resolutions"][0]["failure"]["code"],
             "static_slot_target_origin_missing",
+        )
+
+    def test_event_slot_fact_applies_only_to_its_exact_read_unit(self) -> None:
+        slot_read = {
+            "kind": "read",
+            "width": 4,
+            "address": const(SLOT),
+        }
+        units = [
+            unit("bound", 0x1100, memory=[slot_read]),
+            unit("other", 0x1200, memory=[slot_read]),
+            unit("target", 0x1800),
+        ]
+        exits = [
+            {
+                "id": "exit:bound",
+                "source_unit_id": "bound",
+                "source_rva": 0x1100,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(const(SLOT)),
+            },
+            {
+                "id": "exit:other",
+                "source_unit_id": "other",
+                "source_rva": 0x1200,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(const(SLOT)),
+            },
+        ]
+        dependency = "hybrid-authority-v2:global_slot_invariant:" + "b" * 64
+        result = self._run(
+            units,
+            [],
+            roots=["bound", "other"],
+            indirect_exits=exits,
+            initial_event_known_slots={
+                CallSiteId("bound", 0): {
+                    SLOT: frozenset({
+                        ValueOrigin(
+                            "exact",
+                            (IMAGE_BASE + 0x1800,),
+                            (dependency,),
+                        )
+                    })
+                }
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        by_id = {row["id"]: row for row in result["resolutions"]}
+        self.assertEqual(by_id["exit:bound"]["status"], "recovered")
+        self.assertEqual(by_id["exit:other"]["status"], "incomplete")
+        self.assertEqual(result["counts"]["static_interface_slots"], 0)
+        self.assertEqual(result["fixed_point"]["initial_known_slots"], 0)
+        self.assertEqual(result["fixed_point"]["initial_event_known_slots"], 1)
+
+    def test_event_slot_fact_fails_closed_when_unit_scope_can_alias(self) -> None:
+        units = [
+            unit(
+                "dispatch",
+                0x1100,
+                memory=[
+                    {"kind": "read", "width": 4, "address": const(SLOT)},
+                    {"kind": "write", "width": 4, "address": reg("eax")},
+                ],
+            ),
+            unit("target", 0x1800),
+        ]
+        dependency = "hybrid-authority-v2:global_slot_invariant:" + "c" * 64
+        result = self._run(
+            units,
+            [],
+            roots=["dispatch"],
+            indirect_exits=[{
+                "id": "exit:dispatch",
+                "source_unit_id": "dispatch",
+                "source_rva": 0x1100,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(const(SLOT)),
+            }],
+            initial_event_known_slots={
+                CallSiteId("dispatch", 0): {
+                    SLOT: frozenset({
+                        ValueOrigin(
+                            "exact",
+                            (IMAGE_BASE + 0x1800,),
+                            (dependency,),
+                        )
+                    })
+                }
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "incomplete")
+        self.assertIn(
+            "event_known_slot_unit_scope_not_isolated",
+            {issue["code"] for issue in result["issues"]},
         )
 
     def test_dynamic_allocator_result_carries_interface_field_provenance(self) -> None:
@@ -3846,6 +3948,9 @@ class InterfaceProvenanceTests(unittest.TestCase):
             int, dict[ValueOrigin, frozenset[ValueOrigin] | None]
         ] | None = None,
         initial_known_slots: dict[object, object] | None = None,
+        initial_event_known_slots: dict[
+            CallSiteId, dict[object, object]
+        ] | None = None,
         initial_root_argument_origins: dict[str, dict[int, object]] | None = None,
         recovered_known_slots: dict[object, object] | None = None,
         checked_stack_entry_offsets: dict[str, list[int]] | None = None,
@@ -3905,6 +4010,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
                 bootstrap_unknown_call_preserved_registers
             ),
             initial_known_slots=initial_known_slots,
+            initial_event_known_slots=initial_event_known_slots,
             initial_root_argument_origins=initial_root_argument_origins,
             recovered_known_slots=recovered_known_slots,
             checked_stack_entry_offsets=checked_stack_entry_offsets,

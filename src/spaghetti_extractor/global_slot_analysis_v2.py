@@ -11,6 +11,9 @@ The emitted ``global_slot_evidence`` records are deliberately shaped for
 ``entry_state_analysis_v2.propose_global_slot_invariant``.  This module only
 constructs replay evidence; the entry-state analyzer remains the authority that
 promotes complete evidence to ``GlobalSlotInvariant`` records.
+
+Authority-relevant slot facts are scoped to the state entering each required
+read.  Process-wide write inventories remain deterministic diagnostics.
 """
 
 from __future__ import annotations
@@ -564,16 +567,20 @@ def _analyze_slot(
         if event.kind in {"write", "read_write"}
         and accesses[node_id].classification == "alias"
     )
+    requested_relevant_reads: list[str] = []
     if relevant_read_inventory_explicit:
-        relevant_reads = sorted(
+        requested_relevant_reads = sorted(
             str(node_id)
             for node_id in (
                 ()
                 if relevant_read_dependency is None
                 else relevant_read_dependency.get("node_ids", ())
             )
-            if isinstance(node_id, str) and node_id in events
+            if isinstance(node_id, str)
         )
+        relevant_reads = [
+            node_id for node_id in requested_relevant_reads if node_id in events
+        ]
     else:
         relevant_reads = sorted(
             node_id
@@ -581,6 +588,9 @@ def _analyze_slot(
             if event.kind in {"read", "read_write"}
             and accesses[node_id].classification in {"exact", "alias", "unknown"}
         )
+    missing_relevant_reads = sorted(
+        set(requested_relevant_reads).difference(relevant_reads)
+    )
 
     initializer = (
         None
@@ -592,6 +602,17 @@ def _analyze_slot(
         )
     )
 
+    read_provenance = {
+        node_id: _reaching_write_provenance(
+            node_id=node_id,
+            event_graph=event_graph,
+            events=events,
+            accesses=accesses,
+            exact_write_values=exact_write_values,
+        )
+        for node_id in relevant_reads
+    }
+
     issues: list[dict[str, Any]] = [copy.deepcopy(dict(issue)) for issue in global_issues]
     if not flow["converged"]:
         issues.append(_issue("incomplete", "global_slot_replay_did_not_converge"))
@@ -601,79 +622,181 @@ def _analyze_slot(
         issues.append(
             _issue("incomplete", "global_slot_relevant_read_inventory_missing")
         )
-    if unknown_writes:
+    if missing_relevant_reads:
+        issues.append(
+            _issue(
+                "incomplete",
+                "global_slot_relevant_read_unreachable",
+                node_ids=missing_relevant_reads[:_DIAGNOSTIC_SITE_LIMIT],
+                node_count=len(missing_relevant_reads),
+            )
+        )
+
+    base_read_issues = _deduplicate_issues(issues)
+    read_details: dict[str, dict[str, Any]] = {}
+    read_frontiers: dict[str, list[str]] = {}
+    reaching_exact_writes: set[str] = set()
+    reaching_unknown_writes: set[str] = set()
+    reaching_aliasing_writes: set[str] = set()
+    overflow_reads: list[str] = []
+    uninitialized_reads: list[str] = []
+    for node_id in relevant_reads:
+        state = flow["in_states"].get(node_id, _FlowState())
+        provenance = read_provenance[node_id]
+        local_issues: list[dict[str, Any]] = []
+        provenance_tainted = bool(
+            provenance["unknown_writes"] or provenance["aliasing_writes"]
+        )
+        provenance_alternatives = {
+            _canonical_json(alternative)
+            for write_node in provenance["writes"]
+            for alternative in exact_write_values[write_node]
+        }
+        if launch_initial_value is not None and provenance["launch_reaches"]:
+            provenance_alternatives.add(
+                _canonical_json({
+                    "kind": "exact_bits",
+                    "value": launch_initial_value,
+                    "width_bits": 32,
+                })
+            )
+        if flow["converged"] and (
+            state.tainted != provenance_tainted
+            or (
+                not state.overflow
+                and tuple(sorted(provenance_alternatives)) != state.alternatives
+            )
+        ):
+            local_issues.append(
+                _issue(
+                    "violated",
+                    "global_slot_read_replay_provenance_mismatch",
+                    site=events[node_id].site.payload(),
+                )
+            )
+        if not state.reachable:
+            local_issues.append(
+                _issue(
+                    "incomplete",
+                    "global_slot_relevant_read_unreachable",
+                    site=events[node_id].site.payload(),
+                )
+            )
+        if not state.initialized:
+            uninitialized_reads.append(node_id)
+            root_kind = _uninitialized_callback_root_kind(
+                node_id=node_id,
+                event_graph=event_graph,
+                root_kinds=root_kinds,
+            )
+            code = (
+                "callback_entry_global_slot_invariant_missing"
+                if root_kind == "callback"
+                else "global_slot_read_before_dominated_initialization"
+            )
+            read_frontiers.setdefault(code, []).append(node_id)
+            local_issues.append(
+                _issue("incomplete", code, site=events[node_id].site.payload())
+            )
+        if state.tainted or provenance_tainted:
+            read_frontiers.setdefault(
+                "global_slot_read_reached_by_tainted_value", []
+            ).append(node_id)
+            local_issues.append(
+                _issue(
+                    "incomplete",
+                    "global_slot_read_reached_by_tainted_value",
+                    site=events[node_id].site.payload(),
+                )
+            )
+        if state.overflow:
+            overflow_reads.append(node_id)
+            local_issues.append(
+                _issue(
+                    "incomplete",
+                    "global_slot_alternative_budget_exceeded",
+                    site=events[node_id].site.payload(),
+                    budget=alternative_budget,
+                )
+            )
+        if accesses[node_id].classification != "exact":
+            read_frontiers.setdefault(
+                "global_slot_read_alias_unresolved", []
+            ).append(node_id)
+            local_issues.append(
+                _issue(
+                    "incomplete",
+                    "global_slot_read_alias_unresolved",
+                    site=events[node_id].site.payload(),
+                    classification=accesses[node_id].classification,
+                )
+            )
+        read_issues = _deduplicate_issues([*base_read_issues, *local_issues])
+        read_details[node_id] = {
+            "state": state,
+            "provenance": provenance,
+            "status": _aggregate_status(
+                str(issue["status"]) for issue in read_issues
+            ),
+            "issues": read_issues,
+        }
+        reaching_exact_writes.update(provenance["writes"])
+        reaching_unknown_writes.update(provenance["unknown_writes"])
+        reaching_aliasing_writes.update(provenance["aliasing_writes"])
+
+    if reaching_unknown_writes:
         issues.append(
             _issue(
                 "incomplete",
                 "global_slot_unknown_write_taint",
                 sites=[
                     events[node].site.payload()
-                    for node in unknown_writes[:_DIAGNOSTIC_SITE_LIMIT]
+                    for node in sorted(reaching_unknown_writes)[
+                        :_DIAGNOSTIC_SITE_LIMIT
+                    ]
                 ],
-                site_count=len(unknown_writes),
+                site_count=len(reaching_unknown_writes),
             )
         )
-    if aliasing_writes:
+    if reaching_aliasing_writes:
         issues.append(
             _issue(
                 "incomplete",
                 "global_slot_aliasing_write_taint",
                 sites=[
                     events[node].site.payload()
-                    for node in aliasing_writes[:_DIAGNOSTIC_SITE_LIMIT]
+                    for node in sorted(reaching_aliasing_writes)[
+                        :_DIAGNOSTIC_SITE_LIMIT
+                    ]
                 ],
-                site_count=len(aliasing_writes),
+                site_count=len(reaching_aliasing_writes),
             )
         )
-    if overflow_writes or flow["overflow"]:
+    if overflow_reads:
         issues.append(
             _issue(
                 "incomplete",
                 "global_slot_alternative_budget_exceeded",
                 budget=alternative_budget,
+                sites=[
+                    events[node].site.payload()
+                    for node in overflow_reads[:_DIAGNOSTIC_SITE_LIMIT]
+                ],
+                site_count=len(overflow_reads),
             )
         )
-    if (
-        relevant_reads
-        and launch_initial_value is None
-        and initializer is None
-    ):
+    if uninitialized_reads and launch_initial_value is None:
         issues.append(
             _issue(
                 "incomplete",
                 "global_slot_initialization_does_not_dominate_reads",
                 reads=[
                     events[node].site.payload()
-                    for node in relevant_reads[:_DIAGNOSTIC_SITE_LIMIT]
+                    for node in uninitialized_reads[:_DIAGNOSTIC_SITE_LIMIT]
                 ],
-                read_count=len(relevant_reads),
+                read_count=len(uninitialized_reads),
             )
         )
-    read_frontiers: dict[str, list[str]] = {}
-    for node_id in relevant_reads:
-        state = flow["in_states"].get(node_id, _FlowState())
-        if not state.initialized:
-            root_kind = _uninitialized_callback_root_kind(
-                node_id=node_id,
-                event_graph=event_graph,
-                root_kinds=root_kinds,
-            )
-            read_frontiers.setdefault(
-                (
-                    "callback_entry_global_slot_invariant_missing"
-                    if root_kind == "callback"
-                    else "global_slot_read_before_dominated_initialization"
-                ),
-                [],
-            ).append(node_id)
-        if state.tainted:
-            read_frontiers.setdefault(
-                "global_slot_read_reached_by_tainted_value", []
-            ).append(node_id)
-        if accesses[node_id].classification != "exact":
-            read_frontiers.setdefault(
-                "global_slot_read_alias_unresolved", []
-            ).append(node_id)
     for code, nodes in sorted(read_frontiers.items()):
         issues.append(
             _issue(
@@ -756,25 +879,39 @@ def _analyze_slot(
     )
     dependencies = sorted(dependencies, key=lambda row: (str(row["kind"]), str(row["id"])))
 
-    diagnostic_only = status != "complete"
-    selected_exact_writes = (
-        exact_writes[:_DIAGNOSTIC_SITE_LIMIT] if diagnostic_only else exact_writes
+    process_global_inventory_incomplete = bool(
+        unknown_writes
+        or aliasing_writes
+        or overflow_writes
+        or flow["overflow"]
     )
-    selected_unknown_writes = (
-        unknown_writes[:_DIAGNOSTIC_SITE_LIMIT]
-        if diagnostic_only
-        else unknown_writes
+    diagnostic_only = status != "complete" or process_global_inventory_incomplete
+    selected_exact_writes = sorted(
+        set(
+            exact_writes[:_DIAGNOSTIC_SITE_LIMIT]
+            if diagnostic_only
+            else exact_writes
+        )
+        | reaching_exact_writes
     )
-    selected_aliasing_writes = (
-        aliasing_writes[:_DIAGNOSTIC_SITE_LIMIT]
-        if diagnostic_only
-        else aliasing_writes
+    selected_unknown_writes = sorted(
+        set(
+            unknown_writes[:_DIAGNOSTIC_SITE_LIMIT]
+            if diagnostic_only
+            else unknown_writes
+        )
+        | reaching_unknown_writes
     )
-    selected_reads = (
-        relevant_reads[:_DIAGNOSTIC_SITE_LIMIT]
-        if diagnostic_only
-        else relevant_reads
+    selected_aliasing_writes = sorted(
+        set(
+            aliasing_writes[:_DIAGNOSTIC_SITE_LIMIT]
+            if diagnostic_only
+            else aliasing_writes
+        )
+        | reaching_aliasing_writes
     )
+    # Required-read evidence is authority-bearing and must never be truncated.
+    selected_reads = relevant_reads
     writes_payload = [
         {
             "site": events[node_id].site.payload(),
@@ -795,6 +932,47 @@ def _analyze_slot(
         _access_payload(events[node_id], accesses[node_id])
         for node_id in selected_aliasing_writes
     ]
+    incoming_payloads: dict[str, dict[str, Any]] = {}
+    for node_id in selected_reads:
+        detail = read_details[node_id]
+        state = detail["state"]
+        provenance = detail["provenance"]
+        incoming_payloads[node_id] = {
+            "status": detail["status"],
+            **_state_payload(state),
+            "launch_initializer": (
+                {
+                    "kind": "launch_image",
+                    "address": address,
+                    "value_origin": copy.deepcopy(launch_alternatives[0]),
+                }
+                if launch_initial_value is not None
+                and provenance["launch_reaches"]
+                else None
+            ),
+            "writes": [
+                {
+                    "site": events[write_node].site.payload(),
+                    "classification": (
+                        "initializer"
+                        if write_node == initializer
+                        else "bounded_alternatives"
+                    ),
+                    "alternatives": copy.deepcopy(exact_write_values[write_node]),
+                    "dependencies": list(accesses[write_node].dependency_ids),
+                }
+                for write_node in provenance["writes"]
+            ],
+            "unknown_writes": [
+                _access_payload(events[write_node], accesses[write_node])
+                for write_node in provenance["unknown_writes"]
+            ],
+            "aliasing_writes": [
+                _access_payload(events[write_node], accesses[write_node])
+                for write_node in provenance["aliasing_writes"]
+            ],
+            "issues": copy.deepcopy(detail["issues"]),
+        }
     read_payload = [
         {
             "site": events[node_id].site.payload(),
@@ -808,6 +986,7 @@ def _analyze_slot(
                 if initializer is not None
                 else None
             ),
+            "incoming": copy.deepcopy(incoming_payloads[node_id]),
         }
         for node_id in selected_reads
     ]
@@ -817,6 +996,11 @@ def _analyze_slot(
             "classification": accesses[node_id].classification,
             "state": _state_payload(flow["in_states"].get(node_id, _FlowState())),
             "dependencies": list(accesses[node_id].dependency_ids),
+            "status": read_details[node_id]["status"],
+            "reaching_write_inventory": {
+                key: copy.deepcopy(incoming_payloads[node_id][key])
+                for key in ("writes", "unknown_writes", "aliasing_writes")
+            },
         }
         for node_id in selected_reads
     ]
@@ -825,6 +1009,7 @@ def _analyze_slot(
         "address": address,
         "width": 4,
         "analysis_status": status,
+        "authority_basis": "per_required_read_incoming",
         "launch_initializer": (
             None
             if launch_initial_value is None
@@ -835,7 +1020,12 @@ def _analyze_slot(
             }
         ),
         "reachable_write_inventory": {
-            "status": "complete" if status == "complete" else "incomplete",
+            "status": (
+                "complete"
+                if status == "complete" and not process_global_inventory_incomplete
+                else "incomplete"
+            ),
+            "scope": "process_global_diagnostic",
             "writes": writes_payload,
             "unknown_writes": unknown_payload,
             "aliasing_writes": alias_payload,
@@ -855,8 +1045,8 @@ def _analyze_slot(
             copy.deepcopy(dict(issue)) for issue in inductive_graph_frontiers
         ],
         "final_authorization_condition": (
-            "the unseeded joint fixed point must reproduce this invariant "
-            "and close the rooted control graph"
+            "every required read must have complete incoming evidence, and "
+            "the unseeded joint fixed point must close the rooted control graph"
         ),
         "diagnostic_inventory": {
             "truncated": diagnostic_only and any(
@@ -865,22 +1055,26 @@ def _analyze_slot(
                     exact_writes,
                     unknown_writes,
                     aliasing_writes,
-                    relevant_reads,
                 )
             ),
             "limit": _DIAGNOSTIC_SITE_LIMIT,
+            "process_global_tainted": bool(unknown_writes or aliasing_writes),
+            "process_global_overflow": bool(overflow_writes or flow["overflow"]),
             "counts": {
                 "exact_writes": len(exact_writes),
                 "unknown_writes": len(unknown_writes),
                 "aliasing_writes": len(aliasing_writes),
                 "relevant_reads": len(relevant_reads),
+                "read_reaching_exact_writes": len(reaching_exact_writes),
+                "read_reaching_unknown_writes": len(reaching_unknown_writes),
+                "read_reaching_aliasing_writes": len(reaching_aliasing_writes),
             },
         },
     }
     return {
         "address": address,
         "status": status,
-        "tainted": bool(unknown_writes or aliasing_writes),
+        "tainted": any(detail["state"].tainted for detail in read_details.values()),
         "evidence": evidence,
         "issues": issues,
     }
@@ -1066,7 +1260,7 @@ def _normalize_relevant_reads(
             {"node_ids": set(), "target_dependencies": {}},
         )
         if witness_only:
-            entry["target_dependencies"][exit_id] = {
+            entry["target_dependencies"][(exit_id, "", -1, True)] = {
                 "exit_id": exit_id,
                 "witness_only": True,
             }
@@ -1102,7 +1296,7 @@ def _normalize_relevant_reads(
             )
             continue
         entry["node_ids"].add(_event_node(unit_id, event_index))
-        entry["target_dependencies"][exit_id] = {
+        entry["target_dependencies"][(exit_id, unit_id, event_index, False)] = {
             "exit_id": exit_id,
             "unit_id": unit_id,
             "event_index": event_index,
@@ -1763,6 +1957,59 @@ def _common_dominating_write(
         if reads.isdisjoint(seen):
             return candidate
     return None
+
+
+def _reaching_write_provenance(
+    *,
+    node_id: str,
+    event_graph: Mapping[str, Any],
+    events: Mapping[str, _Event],
+    accesses: Mapping[str, _Access],
+    exact_write_values: Mapping[str, Sequence[Any]],
+) -> dict[str, Any]:
+    """Collect definitions on paths into one read, stopping at strong writes."""
+
+    pending = list(reversed(event_graph["predecessors"].get(node_id, ())))
+    seen: set[str] = set()
+    writes: set[str] = set()
+    unknown_writes: set[str] = set()
+    aliasing_writes: set[str] = set()
+    launch_reaches = False
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if current == "super":
+            launch_reaches = True
+            continue
+        event = events.get(current)
+        access = accesses.get(current)
+        if (
+            event is not None
+            and access is not None
+            and event.kind in {"write", "read_write"}
+            and access.classification != "disjoint"
+        ):
+            if (
+                access.classification == "exact"
+                and current in exact_write_values
+            ):
+                writes.add(current)
+                continue
+            if access.classification == "alias":
+                aliasing_writes.add(current)
+            else:
+                unknown_writes.add(current)
+        pending.extend(
+            reversed(event_graph["predecessors"].get(current, ()))
+        )
+    return {
+        "launch_reaches": launch_reaches,
+        "writes": sorted(writes),
+        "unknown_writes": sorted(unknown_writes),
+        "aliasing_writes": sorted(aliasing_writes),
+    }
 
 
 def _flow_replay(

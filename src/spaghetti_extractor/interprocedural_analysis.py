@@ -35,8 +35,7 @@ from .external_capabilities import CallableExternalProfile
 from .external_interface_profiles import ExternalInterfaceProfile
 from .external_operation_profiles import ExternalOperationProfile
 from .import_abi import SelectedImportABI
-from .authority_bindings_v2 import AuthorityDataError
-from .authority_bindings_v2 import BinaryBinding
+from .authority_bindings_v2 import AuthorityDataError, BinaryBinding, EventBinding
 from .checked_memory_access_v2 import (
     prepare_checked_memory_access_facts_v2,
     seal_checked_memory_access_facts_v2,
@@ -1171,7 +1170,7 @@ def _run_typed_pass(
     callback_root_arguments: Mapping[
         str, Mapping[int, FiniteValue]
     ] = {}
-    checked_global_slots = _global_slot_known_values(
+    checked_global_slots, checked_event_slots = _global_slot_known_values(
         global_slot_invariants,
         image_base=image_base,
         finite_value_budget=finite_value_budget,
@@ -1269,6 +1268,7 @@ def _run_typed_pass(
             ),
             allow_global_slot_promotion=False,
             initial_known_slots=checked_global_slots,
+            initial_event_known_slots=checked_event_slots,
             initial_root_argument_origins=callback_root_arguments,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
             checked_nonimage_stack_units=checked_nonimage_stack_units,
@@ -1588,10 +1588,16 @@ def _global_slot_known_values(
     *,
     image_base: int,
     finite_value_budget: int,
-) -> dict[int, frozenset[ValueOrigin]]:
+) -> tuple[
+    dict[int, frozenset[ValueOrigin]],
+    dict[CallSiteId, dict[int, frozenset[ValueOrigin]]],
+]:
     """Translate complete checked invariants into dependency-bearing facts."""
 
     result: dict[int, frozenset[ValueOrigin]] = {}
+    event_result: dict[
+        CallSiteId, dict[int, frozenset[ValueOrigin]]
+    ] = defaultdict(dict)
     for invariant in invariants:
         if invariant.status is not AuthorityStatus.COMPLETE:
             continue
@@ -1643,10 +1649,32 @@ def _global_slot_known_values(
         if not origins or len(origins) > finite_value_budget:
             raise ValueError("global-slot origin set is empty or over budget")
         address = (image_base + invariant.slot_rva) & 0xFFFF_FFFF
+        values = frozenset(origins)
+        if isinstance(invariant.binding, EventBinding):
+            if invariant.invariant_kind != "finite_set_at_read":
+                raise ValueError("event-bound global-slot invariant has wrong kind")
+            site = CallSiteId(
+                invariant.binding.unit.unit_id,
+                invariant.binding.event_index,
+            )
+            if address in event_result[site]:
+                raise ValueError(
+                    "global-slot invariants duplicate one exact read binding"
+                )
+            event_result[site][address] = values
+            continue
+        if invariant.invariant_kind == "finite_set_at_read":
+            raise ValueError("read-bound global-slot invariant has no event binding")
         if address in result:
             raise ValueError("global-slot invariants duplicate one exact address")
-        result[address] = frozenset(origins)
-    return result
+        result[address] = values
+    return result, {
+        site: dict(sorted(slots.items()))
+        for site, slots in sorted(
+            event_result.items(),
+            key=lambda item: (item[0].unit_id, item[0].event_index),
+        )
+    }
 
 
 def _mutable_call_targets(
@@ -1806,6 +1834,7 @@ def _analyze_mutable_slot_influence(
             for invariant in global_slot_invariants
             if invariant.status is AuthorityStatus.COMPLETE
             and invariant.width_bytes == 4
+            and not isinstance(invariant.binding, EventBinding)
         )
     )
     states: dict[str, _MutableState] = {
@@ -3170,11 +3199,23 @@ def _bind_mutable_slot_dependencies(
     writable_image_ranges: Sequence[tuple[int, int]],
     image_base: int,
 ) -> list[dict[str, Any]]:
-    by_slot: dict[int, list[GlobalSlotInvariant]] = defaultdict(list)
+    global_by_slot: dict[int, list[GlobalSlotInvariant]] = defaultdict(list)
+    event_by_slot_site: dict[
+        tuple[int, str, int], list[GlobalSlotInvariant]
+    ] = defaultdict(list)
     by_content_id: dict[str, GlobalSlotInvariant] = {}
     for invariant in global_slot_invariants:
         if invariant.width_bytes == 4:
-            by_slot[invariant.slot_rva].append(invariant)
+            if isinstance(invariant.binding, EventBinding):
+                event_by_slot_site[
+                    (
+                        invariant.slot_rva,
+                        invariant.binding.unit.unit_id,
+                        invariant.binding.event_index,
+                    )
+                ].append(invariant)
+            else:
+                global_by_slot[invariant.slot_rva].append(invariant)
             by_content_id[invariant.content_id] = invariant
 
     result: list[dict[str, Any]] = []
@@ -3216,8 +3257,19 @@ def _bind_mutable_slot_dependencies(
                 for start, end in writable_image_ranges
             )
         }
+        mutable_influence_read_slot_rvas = {
+            slot_rva
+            for slot_rva, _unit_id, _event_index in influence.read_sites
+            if not writable_image_ranges
+            or any(
+                start <= image_base + slot_rva
+                and image_base + slot_rva + 4 <= end
+                for start, end in writable_image_ranges
+            )
+        }
         effective_slot_rvas = tuple(sorted(
             mutable_influence_slot_rvas
+            | mutable_influence_read_slot_rvas
             | set(witnessed_slot_rvas)
             | {invariant.slot_rva for invariant in analysis_invariants}
         ))
@@ -3259,49 +3311,72 @@ def _bind_mutable_slot_dependencies(
             failure_code = "mutable_slot_tainted"
 
         for slot_rva in effective_slot_rvas:
-            read_sites = [
-                {"unit_id": unit_id, "event_index": event_index}
+            read_sites = sorted({
+                (unit_id, event_index)
                 for observed_slot, unit_id, event_index in influence.read_sites
                 if observed_slot == slot_rva
-                and observed_slot in mutable_influence_slot_rvas
-            ]
-            candidates = by_slot.get(slot_rva, ())
-            if len(candidates) != 1:
-                failure_code = failure_code or (
-                    "mutable_slot_invariant_missing"
-                    if not candidates
-                    else "mutable_slot_invariant_ambiguous"
-                )
-                details.append({
+                and observed_slot in mutable_influence_read_slot_rvas
+            })
+            bindings: list[
+                tuple[list[dict[str, Any]], Sequence[GlobalSlotInvariant]]
+            ] = []
+            if read_sites:
+                for unit_id, event_index in read_sites:
+                    event_candidates = event_by_slot_site.get(
+                        (slot_rva, unit_id, event_index), ()
+                    )
+                    candidates = (
+                        event_candidates
+                        if event_candidates
+                        else global_by_slot.get(slot_rva, ())
+                    )
+                    bindings.append(([
+                        {"unit_id": unit_id, "event_index": event_index}
+                    ], candidates))
+            else:
+                bindings.append(([], global_by_slot.get(slot_rva, ())))
+
+            for bound_reads, candidates in bindings:
+                detail = {
                     "slot_rva": slot_rva,
                     "width_bytes": 4,
-                    "read_sites": read_sites,
+                    "read_sites": bound_reads,
                     "origin_witnessed": slot_rva in witnessed_slot_rvas,
+                }
+                if len(candidates) != 1:
+                    failure_code = failure_code or (
+                        "mutable_slot_invariant_missing"
+                        if not candidates
+                        else "mutable_slot_invariant_ambiguous"
+                    )
+                    details.append(detail)
+                    continue
+                invariant = candidates[0]
+                details.append({**detail, "content_id": invariant.content_id})
+                dependencies.append({
+                    "role": "mutable_slot_invariant",
+                    "content_id": invariant.content_id,
                 })
-                continue
-            invariant = candidates[0]
-            details.append({
-                "slot_rva": slot_rva,
-                "width_bytes": 4,
-                "content_id": invariant.content_id,
-                "read_sites": read_sites,
-                "origin_witnessed": slot_rva in witnessed_slot_rvas,
-            })
-            dependencies.append({
-                "role": "mutable_slot_invariant",
-                "content_id": invariant.content_id,
-            })
-            if (
-                invariant.alternatives is not None
-                and len(invariant.alternatives.values) > finite_value_budget
-            ):
-                failure_code = failure_code or "mutable_slot_dependency_budget_exceeded"
-            elif invariant.status is not AuthorityStatus.COMPLETE:
-                failure_code = failure_code or "mutable_slot_invariant_incomplete"
+                if (
+                    invariant.alternatives is not None
+                    and len(invariant.alternatives.values) > finite_value_budget
+                ):
+                    failure_code = (
+                        failure_code
+                        or "mutable_slot_dependency_budget_exceeded"
+                    )
+                elif invariant.status is not AuthorityStatus.COMPLETE:
+                    failure_code = (
+                        failure_code or "mutable_slot_invariant_incomplete"
+                    )
 
         row["mutable_slot_dependencies"] = sorted(
             details,
-            key=lambda item: (int(item["slot_rva"]), str(item.get("content_id", ""))),
+            key=lambda item: (
+                int(item["slot_rva"]),
+                str(item.get("content_id", "")),
+                repr(item.get("read_sites", ())),
+            ),
         )
         row["authority_dependencies"] = sorted(
             {
@@ -3562,7 +3637,9 @@ def _summary_state(raw: Mapping[str, Any]) -> _NodeState:
         isinstance(result_row, Mapping)
         and result_row.get("status") == "complete"
     ):
-        result_fact = Exact(_freeze_value(dict(result_row)))
+        result_fact = Exact(
+            _freeze_value(_canonical_summary_register_origins(result_row))
+        )
     elif hard_conflict:
         result_fact = Conflict()
     behavior_row = raw.get("return_behavior")
@@ -3584,6 +3661,65 @@ def _summary_state(raw: Mapping[str, Any]) -> _NodeState:
         taint=Taint.of(blockers if hard_conflict else ()),
     )
     return _NodeState(fact, "complete" if complete else "incomplete", blockers)
+
+
+def _canonical_summary_register_origins(
+    result_row: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Collapse exact affine entry-register identities to their canonical form."""
+
+    result = copy.deepcopy(dict(result_row))
+    registers = result.get("registers")
+    if not isinstance(registers, Mapping):
+        return result
+    normalized: dict[str, Any] = {}
+    for raw_register, raw_origin in registers.items():
+        register = str(raw_register).lower()
+        replacement = raw_origin
+        origins = (
+            raw_origin.get("origins")
+            if isinstance(raw_origin, Mapping)
+            and raw_origin.get("kind") == "typed_origins"
+            else None
+        )
+        if (
+            isinstance(origins, Sequence)
+            and not isinstance(origins, (str, bytes))
+            and len(origins) == 1
+            and _is_exact_entry_register_origin(origins[0], register)
+        ):
+            replacement = {"kind": "input_register", "register": register}
+        normalized[register] = copy.deepcopy(replacement)
+    result["registers"] = normalized
+    return result
+
+
+def _is_exact_entry_register_origin(origin: Any, register: str) -> bool:
+    if not isinstance(origin, Mapping) or origin.get("kind") != "symbolic_affine":
+        return False
+    key = origin.get("key")
+    if (
+        not isinstance(key, Sequence)
+        or isinstance(key, (str, bytes))
+        or len(key) != 2
+        or key[0] != 0
+    ):
+        return False
+    terms = key[1]
+    if (
+        not isinstance(terms, Sequence)
+        or isinstance(terms, (str, bytes))
+        or len(terms) != 1
+    ):
+        return False
+    term = terms[0]
+    return (
+        isinstance(term, Sequence)
+        and not isinstance(term, (str, bytes))
+        and len(term) == 2
+        and term[0] == f"entry:{register}"
+        and term[1] == 1
+    )
 
 
 def _recovery_state(
