@@ -417,10 +417,14 @@ def _successor_offsets(
 
     if kind == "external_call":
         cleanup = _call_effect_cleanup(effect)
+        checked_effect = effect is not None
         if effect is None:
             cleanup = _external_cleanup(event)
         disposition = _mapping(event.get("abi_contract")).get("disposition")
-        if cleanup is None or disposition not in {"returns", "may_return"}:
+        if cleanup is None or (
+            not checked_effect
+            and disposition not in {"returns", "may_return"}
+        ):
             if disposition not in {"terminates", "noreturn"}:
                 frontiers.append({
                     "status": "incomplete",

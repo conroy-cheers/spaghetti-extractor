@@ -306,6 +306,75 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
 
         self.assertEqual(result["entry_offsets"]["next"], [0])
 
+    def test_checked_external_call_effect_does_not_require_raw_disposition(self) -> None:
+        call = {
+            "kind": "external_call",
+            "register_inputs": {"esp": _reg("esp")},
+            "abi_contract": {
+                "template": "pe32-stdcall-v1",
+                "argument_words": 0,
+            },
+        }
+        units = [
+            _unit(
+                "entry",
+                0x1000,
+                target_rvas=[0x1010],
+                stack_delta=None,
+                external_events=[call],
+            ),
+            _unit("next", 0x1010, memory_offsets=[0]),
+        ]
+        effect = _call_effect(
+            "entry",
+            transfer_kind="external_call",
+            cleanup_bytes=0,
+        )
+
+        result = _derive(units, call_site_effects=[effect])
+
+        self.assertEqual(result["entry_offsets"]["next"], [0])
+        self.assertNotIn(
+            "external_call_frame_incomplete",
+            {row["code"] for row in result["frontiers"]},
+        )
+
+    def test_incomplete_external_call_effect_cannot_use_raw_fallback(self) -> None:
+        call = {
+            "kind": "external_call",
+            "register_inputs": {"esp": _reg("esp")},
+            "abi_contract": {
+                "template": "pe32-stdcall-v1",
+                "argument_words": 0,
+                "disposition": "returns",
+            },
+        }
+        units = [
+            _unit(
+                "entry",
+                0x1000,
+                target_rvas=[0x1010],
+                stack_delta=None,
+                external_events=[call],
+            ),
+            _unit("next", 0x1010, memory_offsets=[0]),
+        ]
+
+        result = _derive(
+            units,
+            call_site_effects=[_call_effect(
+                "entry",
+                transfer_kind="external_call",
+                cleanup_bytes=None,
+            )],
+        )
+
+        self.assertNotIn("next", result["entry_offsets"])
+        self.assertIn(
+            "external_call_frame_incomplete",
+            {row["code"] for row in result["frontiers"]},
+        )
+
     def test_internal_call_requires_summary_only_for_continuation(self) -> None:
         call = {
             "kind": "internal_call",
