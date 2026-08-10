@@ -22,6 +22,7 @@ def interprocedural_authority_signature_v2(
     call_summaries: Mapping[str, Any],
     recovered_targets: Sequence[Mapping[str, Any]],
     memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    call_site_effects: Sequence[Mapping[str, Any]] = (),
 ) -> str:
     """Bind the exact interprocedural outputs consumed by later phases.
 
@@ -59,6 +60,14 @@ def interprocedural_authority_signature_v2(
                 for row in memory_access_facts
             ),
             key=lambda row: str(row.get("id", "")),
+        ),
+        "call_site_effects": sorted(
+            (dict(row) for row in call_site_effects),
+            key=lambda row: (
+                str(row.get("unit_id", "")),
+                str(row.get("event_index", "")),
+                canonical_sha256(row),
+            ),
         ),
     })
 

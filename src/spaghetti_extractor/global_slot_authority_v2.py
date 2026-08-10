@@ -90,6 +90,11 @@ def replay_global_slot_authority_v2(
         if isinstance(operation, Mapping)
         else []
     )
+    call_site_effects = (
+        operation.get("call_site_effects", [])
+        if isinstance(operation, Mapping)
+        else []
+    )
     fixed = interprocedural.get("fixed_point")
     interprocedural_sha256 = (
         fixed.get("authority_artifact_sha256")
@@ -112,6 +117,7 @@ def replay_global_slot_authority_v2(
         relevant_read_dependencies=relevant_reads,
         launch_initial_values=launch_initial_values,
         checked_memory_access_facts=access_facts,
+        call_site_effects=call_site_effects,
         memory_range_invariant_analysis=memory_range_invariant_analysis,
         pe_sha256=original_binary.sha256,
         machine_ir_sha256=machine_ir_sha256,

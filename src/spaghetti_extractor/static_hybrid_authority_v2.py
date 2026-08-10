@@ -27,6 +27,7 @@ from .authority_bindings_v2 import (
     IndirectExitBinding,
     match_indirect_recovery_v2,
 )
+from .call_site_effects import parse_call_site_effects
 from .exception_invariants_v2 import (
     EXCEPTION_INVARIANT_CHECK_V2_FORMAT,
     canonical_sha256 as exception_sha256,
@@ -227,6 +228,7 @@ def build_static_hybrid_authority_v2(
     interprocedural = _interprocedural_payload(
         interprocedural_result,
         blockers=blockers,
+        row_by_id=row_by_id,
     )
     external_records = _external_authority_records(
         checked_external_sites,
@@ -894,7 +896,10 @@ def _entry_authority_records(
 
 
 def _interprocedural_payload(
-    value: Any, *, blockers: list[dict[str, Any]]
+    value: Any,
+    *,
+    blockers: list[dict[str, Any]],
+    row_by_id: Mapping[str, Mapping[str, Any]],
 ) -> dict[str, Any]:
     if isinstance(value, Mapping):
         payload = dict(value)
@@ -944,10 +949,50 @@ def _interprocedural_payload(
     recoveries = payload.get("recovered_targets")
     operation_provenance = payload.get("operation_provenance")
     memory_access_facts = (
-        operation_provenance.get("checked_memory_access_facts")
+        operation_provenance.get("checked_memory_access_facts", [])
         if isinstance(operation_provenance, Mapping)
         else []
     )
+    call_site_effects = (
+        operation_provenance.get("call_site_effects", [])
+        if isinstance(operation_provenance, Mapping)
+        else []
+    )
+    if isinstance(call_site_effects, list) and all(
+        isinstance(row, Mapping) for row in call_site_effects
+    ):
+        try:
+            parsed_effects = parse_call_site_effects(
+                call_site_effects,
+                finite_value_budget=256,
+            )
+            for site, effect in parsed_effects.items():
+                unit = row_by_id.get(site.unit_id)
+                semantics = unit.get("semantics") if isinstance(unit, Mapping) else None
+                external_events = (
+                    semantics.get("external_events")
+                    if isinstance(semantics, Mapping)
+                    else None
+                )
+                if (
+                    not isinstance(external_events, list)
+                    or not 0 <= site.event_index < len(external_events)
+                    or not isinstance(external_events[site.event_index], Mapping)
+                    or external_events[site.event_index].get("kind")
+                    != effect.transfer_kind
+                ):
+                    raise ValueError(
+                        "call-site effect does not bind an exact external event"
+                    )
+        except (TypeError, ValueError) as exc:
+            blockers.append(_blocker(
+                status="violated",
+                category="interprocedural",
+                code="interprocedural_call_site_effect_invalid",
+                message="an interprocedural call-site effect does not replay",
+                next_action="regenerate the v2 interprocedural authority artifact",
+                details={"reason": str(exc)},
+            ))
     artifact_inputs_valid = (
         isinstance(dependencies, list)
         and all(isinstance(row, Mapping) for row in dependencies)
@@ -956,6 +1001,8 @@ def _interprocedural_payload(
         and all(isinstance(row, Mapping) for row in recoveries)
         and isinstance(memory_access_facts, list)
         and all(isinstance(row, Mapping) for row in memory_access_facts)
+        and isinstance(call_site_effects, list)
+        and all(isinstance(row, Mapping) for row in call_site_effects)
         and isinstance(fixed.get("root_unit_ids"), list)
         and all(isinstance(value, str) for value in fixed["root_unit_ids"])
     )
@@ -967,10 +1014,26 @@ def _interprocedural_payload(
             call_summaries=summaries,
             recovered_targets=recoveries,
             memory_access_facts=memory_access_facts,
+            call_site_effects=call_site_effects,
         )
         if artifact_inputs_valid
         else None
     )
+    if (
+        expected_authority_sha256 is not None
+        and observed_authority_sha256 != expected_authority_sha256
+    ):
+        blockers.append(_blocker(
+            status="violated",
+            category="interprocedural",
+            code="interprocedural_authority_hash_mismatch",
+            message="the interprocedural outputs do not match their authority digest",
+            next_action="discard the stale artifact and replay the affected SCC authority certificates",
+            details={
+                "expected": expected_authority_sha256,
+                "observed": _safe_json(observed_authority_sha256),
+            },
+        ))
     if isinstance(memory_access_facts, list) and any(
         row.get("interprocedural_authority_sha256")
         != observed_authority_sha256

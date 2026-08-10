@@ -150,15 +150,19 @@ def _entry_analysis(rows: list[dict]) -> dict:
     return {**body, "analysis_sha256": _sha256(body)}
 
 
-def _interprocedural() -> dict:
+def _interprocedural(
+    *, call_site_effects: list[dict] | None = None
+) -> dict:
     signature = "8" * 64
     call_summaries = {"summaries": []}
     recovered_targets: list[dict] = []
     dependencies: list[dict] = []
+    effects = [] if call_site_effects is None else call_site_effects
     root_unit_ids = ["unit:entry"]
     return {
         "call_summaries": call_summaries,
         "recovered_targets": recovered_targets,
+        "operation_provenance": {"call_site_effects": effects},
         "fixed_point": {
             "format": "stage-a-interprocedural-analysis-v2",
             "status": "complete",
@@ -174,12 +178,41 @@ def _interprocedural() -> dict:
                 dependency_inventory=dependencies,
                 call_summaries=call_summaries,
                 recovered_targets=recovered_targets,
+                call_site_effects=effects,
             ),
             "root_unit_ids": root_unit_ids,
             "dependencies": dependencies,
             "failure_reasons": [],
             "recursive_summary_roots": [],
         },
+    }
+
+
+def _call_effect() -> dict:
+    return {
+        "format": "stage-a-call-site-effect-v2",
+        "unit_id": "unit:entry",
+        "event_index": 0,
+        "transfer_kind": "external_call",
+        "status": "complete",
+        "register_frame": {
+            "status": "complete",
+            "preserved_registers": [],
+        },
+        "stack_frame": {
+            "status": "complete",
+            "stack_cleanup_bytes": 0,
+        },
+        "result_frame": {"status": "complete", "outputs": []},
+        "memory_frame": {
+            "status": "complete",
+            "preserved": True,
+            "writes": [],
+        },
+        "abi": None,
+        "argument_words": None,
+        "dependencies": [],
+        "failure_codes": [],
     }
 
 
@@ -788,6 +821,33 @@ class StaticHybridAuthorityV2Tests(unittest.TestCase):
         self.assertEqual(report["status"], "violated")
         self.assertIn(
             "interprocedural_completion_contradiction",
+            {row["details"]["code"] for row in report["diagnostics"]["blockers"]},
+        )
+
+    def test_call_site_effect_mutation_invalidates_authority_digest(self) -> None:
+        rows = [_row(external_events=[_external_event()])]
+        interprocedural = _interprocedural(call_site_effects=[_call_effect()])
+        interprocedural["operation_provenance"]["call_site_effects"][0][
+            "register_frame"
+        ]["preserved_registers"] = ["ebx"]
+
+        report = _complete_report(rows, interprocedural=interprocedural)
+
+        self.assertEqual(report["status"], "violated")
+        self.assertIn(
+            "interprocedural_authority_hash_mismatch",
+            {row["details"]["code"] for row in report["diagnostics"]["blockers"]},
+        )
+
+    def test_call_site_effect_requires_exact_machine_event(self) -> None:
+        rows = [_row()]
+        interprocedural = _interprocedural(call_site_effects=[_call_effect()])
+
+        report = _complete_report(rows, interprocedural=interprocedural)
+
+        self.assertEqual(report["status"], "violated")
+        self.assertIn(
+            "interprocedural_call_site_effect_invalid",
             {row["details"]["code"] for row in report["diagnostics"]["blockers"]},
         )
 

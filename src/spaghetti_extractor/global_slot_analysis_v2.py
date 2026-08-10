@@ -29,6 +29,11 @@ from .analysis_schema_v2 import (
 )
 from .artifact_identity_v2 import canonical_sha256
 from .authority_bindings_v2 import BinaryBinding
+from .call_site_effects import (
+    CallSiteEffect,
+    CallSiteId,
+    parse_call_site_effects,
+)
 from .checked_memory_access_v2 import (
     CheckedMemoryAccessFact,
     CheckedMemoryAccessV2Error,
@@ -78,6 +83,7 @@ class _Event:
     address: Any
     value: Any
     raw: Mapping[str, Any]
+    order_key: tuple[int, int, int]
 
 
 @dataclass(frozen=True)
@@ -109,6 +115,7 @@ def analyze_global_slots_v2(
     relevant_read_dependencies: Sequence[Mapping[str, Any]] | None = None,
     launch_initial_values: Mapping[int, int] | None = None,
     checked_memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    call_site_effects: Sequence[Mapping[str, Any]] = (),
     checked_memory_spatial_facts: Sequence[Mapping[str, Any]] = (),
     memory_range_invariant_analysis: Mapping[str, Any] | None = None,
     pe_sha256: str | None = None,
@@ -165,6 +172,12 @@ def analyze_global_slots_v2(
         candidate_addresses=frozenset(normalized_slots),
     )
     normalized_units, unit_issues = _normalize_units(units)
+    normalized_call_effects, call_effect_issues = _normalize_call_site_effects(
+        call_site_effects,
+        units=normalized_units,
+        finite_value_budget=alternative_budget,
+        interprocedural_authority_sha256=interprocedural_authority_sha256,
+    )
     access_facts: dict[str, CheckedMemoryAccessFact] = {}
     access_range_facts: dict[str, Mapping[str, Any]] = {}
     access_spatial_facts: dict[str, Mapping[str, Any]] = {}
@@ -252,6 +265,7 @@ def analyze_global_slots_v2(
             *option_issues,
             *unit_issues,
             *access_fact_issues,
+            *call_effect_issues,
             *range_issues,
             *spatial_issues,
             *graph_issues,
@@ -281,6 +295,8 @@ def analyze_global_slots_v2(
         inductive_graph_frontiers=inductive_graph_frontiers,
         relevant_reads=relevant_reads,
         launch_initial_values=initial_values,
+        call_site_effects=normalized_call_effects,
+        interprocedural_authority_sha256=interprocedural_authority_sha256,
     )
     first_bytes = _canonical_json(first).encode("ascii")
     first_digest = sha256(first_bytes).hexdigest()
@@ -297,6 +313,8 @@ def analyze_global_slots_v2(
         inductive_graph_frontiers=inductive_graph_frontiers,
         relevant_reads=relevant_reads,
         launch_initial_values=initial_values,
+        call_site_effects=normalized_call_effects,
+        interprocedural_authority_sha256=interprocedural_authority_sha256,
     )
     second_digest = canonical_sha256(second)
     del second
@@ -342,7 +360,7 @@ def analyze_global_slots_v2(
             "rooted_graph_sha256": first["rooted_graph_sha256"],
             "interprocedural_authority_sha256": (
                 interprocedural_authority_sha256
-                if checked_memory_access_facts
+                if checked_memory_access_facts or call_site_effects
                 else None
             ),
         },
@@ -355,11 +373,16 @@ def analyze_global_slots_v2(
             "incomplete_slots": sum(value == "incomplete" for value in slot_statuses),
             "violated_slots": sum(value == "violated" for value in slot_statuses),
             "checked_memory_access_facts": len(access_facts),
+            "call_site_effects": len(normalized_call_effects),
             "checked_memory_address_ranges": len(access_range_facts),
             "checked_memory_spatial_facts": len(access_spatial_facts),
         },
         "checked_memory_access_facts": [
             fact.to_payload() for fact in access_facts.values()
+        ],
+        "call_site_effects": [
+            effect.as_json()
+            for effect in normalized_call_effects.values()
         ],
         "checked_memory_spatial_facts": spatial_facts,
         "memory_range_invariant_analysis": (
@@ -394,9 +417,16 @@ def _analyze_once(
     inductive_graph_frontiers: Sequence[Mapping[str, Any]],
     relevant_reads: Mapping[int, Mapping[str, Any]] | None,
     launch_initial_values: Mapping[int, int],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+    interprocedural_authority_sha256: str | None,
 ) -> dict[str, Any]:
     reachable = frozenset(str(value) for value in graph_info["reachable_units"])
-    events = _events(units, reachable)
+    events = _events(
+        units,
+        reachable,
+        call_site_effects=call_site_effects,
+        interprocedural_authority_sha256=interprocedural_authority_sha256,
+    )
     event_graph = _event_graph(
         units=units,
         reachable=reachable,
@@ -467,6 +497,7 @@ def _analyze_slot(
 ) -> dict[str, Any]:
     accesses: dict[str, _Access] = {}
     used_fact_ids: set[str] = set()
+    used_interprocedural_authority: set[str] = set()
     exact_write_values: dict[str, list[Any]] = {}
     overflow_writes: set[str] = set()
     for node_id, event in sorted(events.items()):
@@ -479,6 +510,11 @@ def _analyze_slot(
         )
         accesses[node_id] = access
         used_fact_ids.update(access.dependency_ids)
+        authority_sha256 = event.raw.get(
+            "interprocedural_authority_sha256"
+        )
+        if access.classification != "disjoint" and _digest(authority_sha256):
+            used_interprocedural_authority.add(str(authority_sha256))
         if event.kind in {"write", "read_write"} and access.classification == "exact":
             alternatives = _event_alternatives(event.value, event.raw)
             if alternatives is None:
@@ -685,6 +721,14 @@ def _analyze_slot(
         }
         for identity in sorted(used_fact_ids)
         if identity in access_by_id
+    )
+    dependencies.extend(
+        {
+            "kind": "interprocedural_authority",
+            "id": f"interprocedural-authority:{identity}",
+            "sha256": identity,
+        }
+        for identity in sorted(used_interprocedural_authority)
     )
     access_range_by_id = {
         str(fact["id"]): fact for fact in access_range_facts.values()
@@ -896,6 +940,59 @@ def _normalize_units(
                 )
         result[unit_id] = unit
     return dict(sorted(result.items())), _deduplicate_issues(issues)
+
+
+def _normalize_call_site_effects(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    units: Mapping[str, Mapping[str, Any]],
+    finite_value_budget: int,
+    interprocedural_authority_sha256: str | None,
+) -> tuple[dict[CallSiteId, CallSiteEffect], list[dict[str, Any]]]:
+    if not rows:
+        return {}, []
+    if not _digest(interprocedural_authority_sha256):
+        return {}, [_issue("violated", "call_site_effect_authority_binding_missing")]
+    try:
+        parsed = parse_call_site_effects(
+            rows,
+            finite_value_budget=finite_value_budget,
+        )
+    except (TypeError, ValueError) as exc:
+        return {}, [_issue(
+            "violated",
+            "call_site_effect_inventory_invalid",
+            reason=str(exc),
+        )]
+
+    issues: list[dict[str, Any]] = []
+    accepted: dict[CallSiteId, CallSiteEffect] = {}
+    for site, effect in sorted(
+        parsed.items(), key=lambda item: (item[0].unit_id, item[0].event_index)
+    ):
+        unit = units.get(site.unit_id)
+        semantics = unit.get("semantics") if isinstance(unit, Mapping) else None
+        external_events = (
+            semantics.get("external_events")
+            if isinstance(semantics, Mapping)
+            else None
+        )
+        if (
+            not isinstance(external_events, list)
+            or not 0 <= site.event_index < len(external_events)
+            or not isinstance(external_events[site.event_index], Mapping)
+            or external_events[site.event_index].get("kind")
+            != effect.transfer_kind
+        ):
+            issues.append(_issue(
+                "violated",
+                "call_site_effect_event_binding_invalid",
+                unit_id=site.unit_id,
+                event_index=site.event_index,
+            ))
+            continue
+        accepted[site] = effect
+    return accepted, _deduplicate_issues(issues)
 
 
 def _normalize_launch_initial_values(
@@ -1412,7 +1509,11 @@ def _normalize_spatial_facts(
 
 
 def _events(
-    units: Mapping[str, Mapping[str, Any]], reachable: frozenset[str]
+    units: Mapping[str, Mapping[str, Any]],
+    reachable: frozenset[str],
+    *,
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+    interprocedural_authority_sha256: str | None,
 ) -> dict[str, _Event]:
     result: dict[str, _Event] = {}
     for unit_id in sorted(reachable):
@@ -1439,6 +1540,128 @@ def _events(
                 address=copy.deepcopy(raw.get("address")),
                 value=copy.deepcopy(raw.get("value")),
                 raw=copy.deepcopy(dict(raw)),
+                order_key=(int(instruction_rva), 0, event_index),
+            )
+    for site, effect in sorted(
+        call_site_effects.items(),
+        key=lambda item: (item[0].unit_id, item[0].event_index),
+    ):
+        if site.unit_id not in reachable:
+            continue
+        unit = units[site.unit_id]
+        external_event = unit["semantics"]["external_events"][site.event_index]
+        instruction_rva = external_event.get("instruction_rva")
+        if not _u32(instruction_rva):
+            instruction_rva = unit["source"]["original"]["rva_start"]
+        assert isinstance(instruction_rva, int)
+
+        output_addresses = {
+            int(output.location.key[0]) & 0xFFFFFFFF
+            for output in effect.outputs
+            if output.location.kind == "exact"
+            and len(output.location.key) == 1
+            and _u32(output.location.key[0])
+        }
+        if effect.memory_frame_status != "complete":
+            node_id = _call_unknown_memory_write_node(
+                site.unit_id, site.event_index
+            )
+            raw = {
+                "kind": "write",
+                "width": None,
+                "address": None,
+                "value": None,
+                "instruction_rva": instruction_rva,
+                "source": "incomplete_interprocedural_call_memory_frame",
+                "interprocedural_authority_sha256": (
+                    interprocedural_authority_sha256
+                ),
+            }
+            result[node_id] = _Event(
+                node_id=node_id,
+                site=_Site(site.unit_id, site.event_index, instruction_rva),
+                kind="write",
+                width=None,
+                address=None,
+                value=None,
+                raw=raw,
+                order_key=(instruction_rva, 1, 0),
+            )
+        else:
+            for write_index, span in enumerate(effect.memory_writes):
+                address = (
+                    int(span.base.key[0]) & 0xFFFFFFFF
+                    if span.base.kind == "exact"
+                    and len(span.base.key) == 1
+                    and _u32(span.base.key[0])
+                    else span.base.as_json()
+                )
+                if (
+                    isinstance(address, int)
+                    and span.size == 4
+                    and address in output_addresses
+                ):
+                    continue
+                node_id = _call_memory_write_node(
+                    site.unit_id, site.event_index, write_index
+                )
+                raw = {
+                    "kind": "write",
+                    "width": span.size,
+                    "address": copy.deepcopy(address),
+                    "value": None,
+                    "instruction_rva": instruction_rva,
+                    "source": "interprocedural_call_memory_frame",
+                    "interprocedural_authority_sha256": (
+                        interprocedural_authority_sha256
+                    ),
+                }
+                result[node_id] = _Event(
+                    node_id=node_id,
+                    site=_Site(
+                        site.unit_id, site.event_index, instruction_rva
+                    ),
+                    kind="write",
+                    width=span.size,
+                    address=copy.deepcopy(address),
+                    value=None,
+                    raw=raw,
+                    order_key=(instruction_rva, 1, write_index),
+                )
+
+        for output_index, output in enumerate(effect.outputs):
+            if (
+                output.location.kind != "exact"
+                or len(output.location.key) != 1
+                or not _u32(output.location.key[0])
+            ):
+                continue
+            address = int(output.location.key[0]) & 0xFFFFFFFF
+            origins = [origin.as_json() for origin in sorted(output.value)]
+            node_id = _call_output_write_node(
+                site.unit_id, site.event_index, output_index
+            )
+            raw = {
+                "kind": "write",
+                "width": 4,
+                "address": {"op": "const", "value": address, "width": 32},
+                "value": None,
+                "value_origins": origins,
+                "instruction_rva": instruction_rva,
+                "source": "interprocedural_call_result_frame",
+                "interprocedural_authority_sha256": (
+                    interprocedural_authority_sha256
+                ),
+            }
+            result[node_id] = _Event(
+                node_id=node_id,
+                site=_Site(site.unit_id, site.event_index, instruction_rva),
+                kind="write",
+                width=4,
+                address=copy.deepcopy(raw["address"]),
+                value=None,
+                raw=raw,
+                order_key=(instruction_rva, 2, output_index),
             )
     return result
 
@@ -1457,8 +1680,15 @@ def _event_graph(
         entry = _entry_node(unit_id)
         exit_node = _exit_node(unit_id)
         nodes = [
-            _event_node(unit_id, index)
-            for index in range(len(units[unit_id]["semantics"]["memory_events"]))
+            event.node_id
+            for event in sorted(
+                (
+                    event
+                    for event in events.values()
+                    if event.site.unit_id == unit_id
+                ),
+                key=lambda event: (event.order_key, event.node_id),
+            )
         ]
         chain = [entry, *nodes, exit_node]
         for node in chain:
@@ -1862,6 +2092,22 @@ def _edge(value: Any) -> tuple[str, str] | None:
 
 def _event_node(unit_id: str, index: int) -> str:
     return f"event:{unit_id}:{index}"
+
+
+def _call_memory_write_node(
+    unit_id: str, event_index: int, write_index: int
+) -> str:
+    return f"call-memory-write:{unit_id}:{event_index}:{write_index}"
+
+
+def _call_unknown_memory_write_node(unit_id: str, event_index: int) -> str:
+    return f"call-unknown-memory-write:{unit_id}:{event_index}"
+
+
+def _call_output_write_node(
+    unit_id: str, event_index: int, output_index: int
+) -> str:
+    return f"call-output-write:{unit_id}:{event_index}:{output_index}"
 
 
 def _entry_node(unit_id: str) -> str:

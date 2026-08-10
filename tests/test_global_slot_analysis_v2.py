@@ -66,6 +66,7 @@ def _unit(
     *,
     direct_targets: list[int] | None = None,
     indirect: bool = False,
+    external_events: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
         "format": "stage-a-machine-ir-v2",
@@ -75,7 +76,10 @@ def _unit(
             "contract_sha256": (f"{rva:064x}")[-64:],
             "instruction_bytes_sha256": (f"{rva + 1:064x}")[-64:],
         },
-        "semantics": {"memory_events": copy.deepcopy(events)},
+        "semantics": {
+            "memory_events": copy.deepcopy(events),
+            "external_events": copy.deepcopy(external_events or []),
+        },
         "control": {
             "direct_targets": list(direct_targets or []),
             "has_indirect_target": indirect,
@@ -115,6 +119,7 @@ def _analyze(
     slot: int = SLOT,
     checked_access_facts: list[dict[str, object]] | None = None,
     checked_spatial_facts: list[dict[str, object]] | None = None,
+    call_site_effects: list[dict[str, object]] | None = None,
     range_binding: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     machine_sha = machine_ir_sha256(units)
@@ -142,6 +147,9 @@ def _analyze(
         launch_initial_values=launch_initial_values,
         checked_memory_access_facts=(
             [] if checked_access_facts is None else checked_access_facts
+        ),
+        call_site_effects=(
+            [] if call_site_effects is None else call_site_effects
         ),
         checked_memory_spatial_facts=(
             [] if checked_spatial_facts is None else checked_spatial_facts
@@ -188,7 +196,144 @@ def _codes(result: dict[str, Any]) -> set[str]:
     return {str(issue["code"]) for issue in slot["issues"]}
 
 
+def _call_effect(
+    unit_id: str,
+    *,
+    output_address: int | None = None,
+    memory_complete: bool = True,
+) -> dict[str, object]:
+    outputs = []
+    writes = []
+    if output_address is not None:
+        outputs.append({
+            "location": {"kind": "exact", "key": [output_address]},
+            "origins": [{
+                "kind": "interface_object",
+                "key": ["f" * 64, "ITestInterface"],
+            }],
+        })
+        writes.append({
+            "base": {"kind": "exact", "key": [output_address]},
+            "size": 4,
+        })
+    failure_codes = [] if memory_complete else ["memory_frame_unknown"]
+    return {
+        "format": "stage-a-call-site-effect-v2",
+        "unit_id": unit_id,
+        "event_index": 0,
+        "transfer_kind": "external_call",
+        "status": "complete" if memory_complete else "incomplete",
+        "register_frame": {
+            "status": "complete",
+            "preserved_registers": [],
+        },
+        "stack_frame": {
+            "status": "complete",
+            "stack_cleanup_bytes": 0,
+        },
+        "result_frame": {"status": "complete", "outputs": outputs},
+        "memory_frame": {
+            "status": "complete" if memory_complete else "incomplete",
+            "preserved": memory_complete and not writes,
+            "writes": writes if memory_complete else [],
+        },
+        "abi": None,
+        "argument_words": None,
+        "dependencies": [],
+        "failure_codes": failure_codes,
+    }
+
+
 class GlobalSlotAnalysisV2Tests(unittest.TestCase):
+    def test_call_output_is_a_point_sensitive_global_slot_write(self) -> None:
+        factory = _unit(
+            "factory",
+            0x1000,
+            [],
+            external_events=[{
+                "kind": "external_call",
+                "instruction_rva": 0x1000,
+            }],
+        )
+        use = _unit("use", 0x1010, [_read()])
+        units = [factory, use]
+        result = _analyze(
+            units,
+            _graph(units, edges=[("factory", "use")]),
+            launch_initial_values={SLOT: 0},
+            call_site_effects=[_call_effect("factory", output_address=SLOT)],
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        evidence = result["global_slot_evidence"][0]
+        self.assertEqual(
+            {row["kind"] for row in evidence["alternatives"]},
+            {"exact_bits", "interface_object"},
+        )
+        self.assertIn(
+            "interprocedural_authority",
+            {row["kind"] for row in evidence["dependencies"]},
+        )
+        self.assertEqual(result["counts"]["call_site_effects"], 1)
+        self.assertEqual(result["cold_replay"]["status"], "complete")
+
+    def test_incomplete_call_memory_frame_taints_slot(self) -> None:
+        call = _unit(
+            "call",
+            0x1000,
+            [],
+            external_events=[{
+                "kind": "external_call",
+                "instruction_rva": 0x1000,
+            }],
+        )
+        use = _unit("use", 0x1010, [_read()])
+        units = [call, use]
+        result = _analyze(
+            units,
+            _graph(units, edges=[("call", "use")]),
+            launch_initial_values={SLOT: 0},
+            call_site_effects=[_call_effect("call", memory_complete=False)],
+        )
+
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn("global_slot_unknown_write_taint", _codes(result))
+
+    def test_call_effect_requires_exact_event_and_authority_binding(self) -> None:
+        unit = _unit("call", 0x1000, [])
+        malformed = _analyze(
+            [unit],
+            _graph([unit]),
+            launch_initial_values={SLOT: 0},
+            call_site_effects=[_call_effect("call", output_address=SLOT)],
+        )
+        self.assertEqual(malformed["status"], "violated")
+        self.assertIn("call_site_effect_event_binding_invalid", _codes(malformed))
+
+        call = _unit(
+            "bound",
+            0x1010,
+            [],
+            external_events=[{
+                "kind": "external_call",
+                "instruction_rva": 0x1010,
+            }],
+        )
+        missing_authority = analyze_global_slots_v2(
+            units=[call],
+            graph=_graph([call]),
+            candidate_slot_addresses=[SLOT],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            launch_initial_values={SLOT: 0},
+            call_site_effects=[_call_effect("bound", output_address=SLOT)],
+        )
+        self.assertEqual(missing_authority["status"], "violated")
+        self.assertIn(
+            "call_site_effect_authority_binding_missing",
+            _codes(missing_authority),
+        )
+
     def test_checked_event_bound_stack_spatial_fact_excludes_image_slot(self) -> None:
         units = [_unit(
             "entry",

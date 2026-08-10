@@ -535,6 +535,9 @@ def analyze_interprocedural_control(
         call_summaries=authority_pass.summaries,
         recovered_targets=authorizing_recoveries,
         memory_access_facts=prepared_memory_access_facts,
+        call_site_effects=_call_site_effect_rows(
+            authority_pass.operation_provenance
+        ),
     )
     checked_memory_access_facts = seal_checked_memory_access_facts_v2(
         prepared_memory_access_facts,

@@ -977,6 +977,11 @@ let
                           "checked_memory_access_facts", []
                       )
                   ),
+                  call_site_effects=(
+                      interprocedural.get("operation_provenance", {}).get(
+                          "call_site_effects", []
+                      )
+                  ),
                   memory_range_invariant_analysis=memory_range_invariants,
                   pe_sha256=binary.sha256,
                   machine_ir_sha256=machine_ir_sha256,
