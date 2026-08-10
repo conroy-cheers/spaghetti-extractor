@@ -491,11 +491,11 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
             "checked_non_image_origin_lacks_spatial_witness",
         )
 
-    def test_checked_exact_access_still_excludes_a_disjoint_address(self) -> None:
+    def test_exact_machine_address_precedes_weaker_origin_evidence(self) -> None:
         units = [_unit(
             "entry",
             0x1000,
-            [_write(_const(7), address=_reg("eax"))],
+            [_write(_const(7), address=_const(SLOT + 8))],
         )]
         facts = _checked_access_facts(
             units,
@@ -510,11 +510,80 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "complete", result["issues"])
+        inventory = result["global_slot_evidence"][0][
+            "reachable_write_inventory"
+        ]
+        self.assertEqual(inventory["aliasing_writes"], [])
+        self.assertEqual(inventory["unknown_writes"], [])
         dependency_kinds = {
             row["kind"]
             for row in result["global_slot_evidence"][0]["dependencies"]
         }
-        self.assertIn("checked_memory_access_fact", dependency_kinds)
+        self.assertNotIn("checked_memory_access_fact", dependency_kinds)
+
+    def test_exact_machine_address_partial_overlap_remains_aliasing(self) -> None:
+        units = [_unit(
+            "entry",
+            0x1000,
+            [{
+                "kind": "write",
+                "width": 4,
+                "address": _const(SLOT - 2),
+                "value": _const(7),
+            }],
+        )]
+
+        result = _analyze(
+            units,
+            _graph(units),
+            launch_initial_values={SLOT: 0},
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        aliasing = result["global_slot_evidence"][0][
+            "reachable_write_inventory"
+        ]["aliasing_writes"]
+        self.assertEqual(len(aliasing), 1)
+        self.assertEqual(
+            aliasing[0]["reason"],
+            "constant_partial_or_overlapping_access",
+        )
+
+    def test_exact_machine_address_wraparound_overlap_remains_aliasing(self) -> None:
+        slot = 1
+        units = [_unit(
+            "entry",
+            0x1000,
+            [{
+                "kind": "write",
+                "width": 4,
+                "address": _const(0xFFFFFFFF),
+                "value": _const(7),
+            }],
+        )]
+
+        graph = _graph(units)
+        result = analyze_global_slots_v2(
+            units=units,
+            graph=graph,
+            candidate_slot_addresses=[slot],
+            image_base=0,
+            size_of_image=0x100,
+            launch_initial_values={slot: 0},
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_ir_sha256(units),
+            interprocedural_authority_sha256=INTERPROCEDURAL_SHA256,
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        aliasing = result["global_slot_evidence"][0][
+            "reachable_write_inventory"
+        ]["aliasing_writes"]
+        self.assertEqual(len(aliasing), 1)
+        self.assertEqual(
+            aliasing[0]["reason"],
+            "constant_partial_or_overlapping_access",
+        )
 
     def test_checked_finite_origins_do_not_authorize_read_coverage(self) -> None:
         units = [_unit("dispatch", 0x1000, [_read(_reg("esi"))])]

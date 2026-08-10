@@ -953,6 +953,61 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertEqual(result.fixed_point["contextual_probes"], 1)
         self.assertEqual(result.recovered_targets[0]["status"], "recovered")
 
+    def test_proposal_pass_retains_contextual_hint_until_checkpoint_stable(
+        self,
+    ) -> None:
+        exit_row = indirect_exit("exit:root:0", "root")
+        hint = recovered(exit_row, "target")
+        hint.update({
+            "proposal_source": "path_sensitive_pre_widening_v1",
+            "proof_authority": False,
+            "target_origin_witnesses": [{
+                "kind": "static_code",
+                "key": [IMAGE_BASE + 0x2000, [SLOT]],
+            }],
+        })
+        requests: list[bool] = []
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            requested = kwargs.get("run_contextual_recovery") is True
+            requests.append(requested)
+            return {
+                "resolutions": [incomplete_recovery(exit_row)],
+                "path_recovery_proposals": [hint] if requested else [],
+                "contextual_recovery": {
+                    "required": True,
+                    "executed": requested,
+                },
+            }
+
+        result = self._run(
+            units=[unit("root", 0x1000), unit("target", 0x2000)],
+            roots=["root"],
+            exits=[exit_row],
+            resolver=resolver,
+            proposal_only=True,
+            writable_image_ranges=[(SLOT, SLOT + 4)],
+        )
+
+        self.assertEqual(requests, [False, True, False, True])
+        self.assertEqual(result.fixed_point["discovery_rounds"], 2)
+        self.assertEqual(result.fixed_point["contextual_probe_requests"], 2)
+        self.assertEqual(result.fixed_point["contextual_probes"], 2)
+        self.assertEqual(result.recovered_targets[0]["status"], "recovered")
+        self.assertFalse(result.recovered_targets[0]["proof_authority"])
+        self.assertEqual(
+            result.recovered_targets[0]["proposal_source"],
+            "path_sensitive_pre_widening_v1",
+        )
+        self.assertEqual(
+            result.recovered_targets[0]["hypothesis_validation"],
+            "pending_authority_replay_v2",
+        )
+        self.assertEqual(
+            result.recovered_targets[0]["proposal_failure"]["code"],
+            "mutable_slot_invariant_missing",
+        )
+
     def test_transient_proposal_failure_is_not_final_authority(self) -> None:
         exit_row = indirect_exit("exit:root:0", "root")
         effect = call_effect("root", preserved=frozenset({"ebx"}))
@@ -1472,6 +1527,45 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             "origin_witnessed": True,
         }])
 
+    def test_proposal_bootstrap_retains_bounded_writable_slot_target(self) -> None:
+        exit_row = indirect_exit("exit:dispatch:0", "dispatch")
+
+        def resolver(**_kwargs: Any) -> dict[str, object]:
+            resolution = recovered(exit_row, "target")
+            resolution.update({
+                "target_origin_witnesses": [{
+                    "kind": "static_code",
+                    "key": (IMAGE_BASE + 0x2000, (SLOT,)),
+                }],
+            })
+            return {"resolutions": [resolution]}
+
+        result = self._run(
+            units=[unit("dispatch", 0x1010), unit("target", 0x2000)],
+            roots=["dispatch"],
+            exits=[exit_row],
+            resolver=resolver,
+            writable_image_ranges=[(SLOT, SLOT + 4)],
+            proposal_only=True,
+        )
+
+        self.assertFalse(result.complete)
+        recovery = result.recovered_targets[0]
+        self.assertEqual(recovery["status"], "recovered")
+        self.assertFalse(recovery["proof_authority"])
+        self.assertEqual(
+            recovery["proposal_source"],
+            "mutable_slot_inductive_bootstrap_v2",
+        )
+        self.assertEqual(
+            recovery["hypothesis_validation"],
+            "pending_global_slot_replay_v2",
+        )
+        self.assertEqual(
+            recovery["proposal_failure"]["code"],
+            "mutable_slot_invariant_missing",
+        )
+
     def test_late_target_discovery_schedules_new_summary_dependency(self) -> None:
         exit_row = indirect_exit("exit:a:0", "a")
 
@@ -1827,8 +1921,12 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertFalse(result.complete)
         self.assertEqual(result.recovered_targets[0]["status"], "incomplete")
         proposal = result.proposal_artifacts["recoveries"][0]
-        self.assertEqual(proposal["status"], "incomplete")
-        self.assertIsNot(proposal.get("proof_authority"), True)
+        self.assertEqual(proposal["status"], "recovered")
+        self.assertFalse(proposal["proof_authority"])
+        self.assertEqual(
+            proposal["proposal_source"],
+            "path_sensitive_pre_widening_v1",
+        )
         self.assertEqual(
             result.proposal_artifacts["path_recovery_diagnostics"], [seed]
         )

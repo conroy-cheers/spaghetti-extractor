@@ -2238,6 +2238,20 @@ def _classify_access(
 ) -> _Access:
     if event.kind not in _MEMORY_KINDS or event.width is None:
         return _Access("unknown", reason="memory_event_shape_unknown")
+    # A literal address in the exact machine IR is already a complete address
+    # evaluation.  Contextual origin/domain facts are useful for symbolic
+    # expressions, but consulting them first can weaken a constant access back
+    # to a conservative alias merely because the proposal checker does not
+    # authorize coverage.  Classify the authoritative literal directly.
+    constant = _constant(event.address)
+    if constant is not None:
+        if event.width == 4 and constant == slot_address:
+            return _Access("exact")
+        if event.width > 4096:
+            return _Access("alias", reason="access_span_too_large_to_exclude")
+        if _spans_overlap32(constant, event.width, slot_address, 4):
+            return _Access("alias", reason="constant_partial_or_overlapping_access")
+        return _Access("disjoint")
     if checked_spatial is not None:
         return _Access("disjoint", (str(checked_spatial["id"]),))
     if checked_domain is not None:
@@ -2265,15 +2279,6 @@ def _classify_access(
         return _Access(
             "alias", (identity,), "checked_address_range_may_overlap_slot"
         )
-    constant = _constant(event.address)
-    if constant is not None:
-        if event.width == 4 and constant == slot_address:
-            return _Access("exact")
-        if event.width > 4096:
-            return _Access("alias", reason="access_span_too_large_to_exclude")
-        if _spans_overlap32(constant, event.width, slot_address, 4):
-            return _Access("alias", reason="constant_partial_or_overlapping_access")
-        return _Access("disjoint")
     if isinstance(event.address, Mapping):
         return _Access("alias", reason="symbolic_address_may_alias_slot")
     return _Access("unknown", reason="memory_address_unknown")

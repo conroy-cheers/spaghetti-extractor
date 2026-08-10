@@ -115,6 +115,64 @@ class JointFixedPointV2Tests(unittest.TestCase):
             len(result["joint_fixed_point"]["authoritative_rounds"]), 2
         )
 
+    def test_proposal_bootstrap_only_seeds_replayable_slot_invariants(self) -> None:
+        observed: list[tuple[int, bool]] = []
+
+        proposal = _interprocedural(generation=0, proposal_seed_count=1)
+        proposal["fixed_point"].update({
+            "proposal_only": True,
+            "cold_initial_recoveries_empty": False,
+        })
+        proposal["recovered_targets"] = [{
+            "id": "exit-a",
+            "status": "recovered",
+            "proof_authority": False,
+        }]
+
+        def interprocedural(
+            invariants, _stack_entry_offsets, _stack_range_facts, recoveries
+        ):
+            observed.append((len(invariants), recoveries is not None))
+            return _interprocedural(
+                generation=len(invariants),
+                proposal_seed_count=0 if recoveries is None else len(recoveries),
+            )
+
+        def authority(_analysis, _stack, _graph, _interprocedural):
+            return {
+                "status": "complete",
+                "global_slot_invariants": [{"content_id": "slot-a"}],
+            }
+
+        result = derive_joint_fixed_point_v2(
+            proposal_graph=_graph(),
+            proposal_recoveries=[{"id": "exit-a"}],
+            proposal_interprocedural=proposal,
+            callbacks=JointFixedPointCallbacks(
+                derive_interprocedural=interprocedural,
+                derive_stack_ranges=lambda graph, interprocedural: _stack(
+                    dict(interprocedural["call_summaries"]),
+                    graph_id=str(graph["id"]),
+                ),
+                derive_global_slots=lambda _graph, _ranges: {
+                    "status": "complete"
+                },
+                derive_global_slot_authority=authority,
+                derive_graph=lambda _interprocedural: _graph(),
+            ),
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertEqual(observed[0], (1, False))
+        self.assertFalse(any(seeded for _count, seeded in observed))
+        self.assertEqual(len(result["joint_fixed_point"]["rounds"]), 1)
+        self.assertFalse(
+            result["joint_fixed_point"]["rounds"][0]["proof_authority"]
+        )
+        self.assertTrue(
+            result["joint_fixed_point"]["authoritative_interprocedural_unseeded"]
+        )
+
     def test_nonconvergent_finite_lattice_remains_incomplete(self) -> None:
         def interprocedural(
             invariants, _stack_entry_offsets, _stack_range_facts, recoveries

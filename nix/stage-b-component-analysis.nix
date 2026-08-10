@@ -523,6 +523,8 @@ let
         };
         program = ''
           import hashlib
+          import sys
+          import time
 
           from spaghetti_extractor.external_capabilities import load_callable_external_profile
           from spaghetti_extractor.external_interface_profiles import load_external_interface_profile
@@ -544,6 +546,25 @@ let
           machine_ir_sha256 = hashlib.sha256(
               inputs["machine_ir"].read_bytes()
           ).hexdigest()
+          progress_started = time.monotonic()
+
+          def emit_progress(phase, details):
+              print(
+                  json.dumps(
+                      {
+                          "event": "interprocedural_seed_progress_v2",
+                          "phase": phase,
+                          "elapsed_seconds": round(
+                              time.monotonic() - progress_started, 3
+                          ),
+                          **dict(details),
+                      },
+                      sort_keys=True,
+                  ),
+                  file=sys.stderr,
+                  flush=True,
+              )
+
           internal_paths = tuple(
               pathlib.Path(path)
               for path in inventory["internal_function_contract_profiles"]
@@ -584,6 +605,7 @@ let
               ),
               static_recoveries=None,
               proposal_only=True,
+              progress=emit_progress,
           )
           output.write_text(
               json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -1060,6 +1082,7 @@ let
           payload = derive_joint_fixed_point_v2(
               proposal_graph=proposal_graph,
               proposal_recoveries=proposals,
+              proposal_interprocedural=seed,
               proposal_call_frame_hypotheses=discovery_call_frames,
               proposal_slot_dependencies=proposal_slot_dependencies,
               callbacks=JointFixedPointCallbacks(

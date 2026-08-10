@@ -76,6 +76,7 @@ def derive_joint_fixed_point_v2(
     *,
     proposal_graph: Mapping[str, Any],
     proposal_recoveries: Sequence[Mapping[str, Any]],
+    proposal_interprocedural: Mapping[str, Any] | None = None,
     proposal_call_frame_hypotheses: Sequence[Mapping[str, Any]] = (),
     proposal_slot_dependencies: Sequence[Mapping[str, Any]] = (),
     callbacks: JointFixedPointCallbacks,
@@ -98,32 +99,39 @@ def derive_joint_fixed_point_v2(
 
     # Proposal discovery is already a separately cached, non-authorizing Nix
     # phase.  Re-running it inside this derivation multiplied the expensive
-    # whole-program transfer cost without adding evidence.  Keep only its
-    # finite recoveries as optional hypotheses; authority still starts from
-    # the launch-only bottom state and uses them solely for genuinely recursive
-    # SCC replay.
+    # whole-program transfer cost without adding evidence.  Its checked effect
+    # proposals may be used once to expose mutually recursive slot/target
+    # invariants.  Every subsequent round is unseeded and must reproduce those
+    # invariants and targets before they can enter the returned authority.
     bootstrap_rounds: list[dict[str, Any]] = []
-    bootstrap: Mapping[str, Any] = {
-        "status": "prepared",
-        "proposal_artifacts": {
-            "proof_authority": False,
-            "recoveries": [copy.deepcopy(dict(row)) for row in proposal_recoveries],
-            "call_frame_hypotheses": [
-                copy.deepcopy(dict(row))
-                for row in proposal_call_frame_hypotheses
-            ],
-            "slot_dependencies": [
-                copy.deepcopy(dict(row)) for row in proposal_slot_dependencies
-            ],
-            "signature": canonical_sha256({
-                "recoveries": list(proposal_recoveries),
-                "call_frame_hypotheses": list(
-                    proposal_call_frame_hypotheses
-                ),
-                "slot_dependencies": list(proposal_slot_dependencies),
-            }),
-        },
-    }
+    bootstrap: Mapping[str, Any] = (
+        copy.deepcopy(dict(proposal_interprocedural))
+        if proposal_interprocedural is not None
+        else {
+            "status": "prepared",
+            "proposal_artifacts": {
+                "proof_authority": False,
+                "recoveries": [
+                    copy.deepcopy(dict(row)) for row in proposal_recoveries
+                ],
+                "call_frame_hypotheses": [
+                    copy.deepcopy(dict(row))
+                    for row in proposal_call_frame_hypotheses
+                ],
+                "slot_dependencies": [
+                    copy.deepcopy(dict(row))
+                    for row in proposal_slot_dependencies
+                ],
+                "signature": canonical_sha256({
+                    "recoveries": list(proposal_recoveries),
+                    "call_frame_hypotheses": list(
+                        proposal_call_frame_hypotheses
+                    ),
+                    "slot_dependencies": list(proposal_slot_dependencies),
+                }),
+            },
+        }
+    )
     bootstrap_graph: Mapping[str, Any] = proposal_graph
     bootstrap_converged = True
     invariants: tuple[Mapping[str, Any], ...] = ()
@@ -137,6 +145,59 @@ def derive_joint_fixed_point_v2(
     slot_analysis: Mapping[str, Any] = {}
     slot_authority: Mapping[str, Any] = {}
     final_signature: str | None = None
+
+    if proposal_interprocedural is not None:
+        fixed = _mapping(bootstrap.get("fixed_point"))
+        if (
+            fixed.get("proposal_only") is not True
+            or fixed.get("cold_initial_recoveries_empty") is not False
+            or fixed.get("static_recovery_authority_seeded") is True
+        ):
+            raise ValueError(
+                "proposal interprocedural bootstrap is not a non-authorizing "
+                "proposal-only artifact"
+            )
+        bootstrap_graph = callbacks.derive_graph(bootstrap)
+        bootstrap_stack, bootstrap_slots, bootstrap_authority = (
+            _derive_graph_evidence(
+                graph=bootstrap_graph,
+                interprocedural=bootstrap,
+                callbacks=callbacks,
+                progress=progress,
+                round_index=0,
+            )
+        )
+        invariants = _global_slot_invariants(bootstrap_authority)
+        stack_entry_offsets = _stack_entry_offsets(bootstrap_stack)
+        stack_range_facts = _mapping_rows(
+            bootstrap_stack.get("checked_range_facts")
+        )
+        bootstrap_converged = not any(
+            row.get("status") == "violated"
+            for artifact in (
+                bootstrap_graph,
+                bootstrap_stack,
+                bootstrap_slots,
+                bootstrap_authority,
+            )
+            for row in _mapping_rows(artifact.get("issues"))
+        )
+        bootstrap_rounds.append({
+            "round": 0,
+            "proof_authority": False,
+            "graph_id": bootstrap_graph.get("id"),
+            "graph_status": bootstrap_graph.get("status"),
+            "interprocedural_status": bootstrap.get("status"),
+            "global_slot_invariants": len(invariants),
+            "checked_stack_ranges": len(stack_range_facts),
+            "stack_entry_units": len(stack_entry_offsets),
+            "signature": _iteration_signature(
+                bootstrap=bootstrap,
+                stack_ranges=bootstrap_stack,
+                slot_analysis=bootstrap_slots,
+                slot_authority=bootstrap_authority,
+            ),
+        })
 
     for round_index in range(1, finite_round_budget + 1):
         input_signature = _authority_state_signature(

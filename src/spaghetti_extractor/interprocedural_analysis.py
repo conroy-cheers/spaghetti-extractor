@@ -1400,7 +1400,9 @@ def _run_typed_pass(
 ) -> _PassResult:
     known_unit_ids = frozenset(_unit_id(unit) for unit in units)
     selected = _prefer_indirect_recoveries(
-        static_recoveries, initial_recoveries
+        static_recoveries,
+        initial_recoveries,
+        allow_proposal_hypotheses=allow_bootstrap,
     )
     call_frame_hypotheses = tuple(initial_call_frame_hypotheses)
     facts: dict[str, _NodeState] = {}
@@ -1922,11 +1924,13 @@ def _derive_operation_outputs(
             else []
         ),
         operation_provenance.get("resolutions", []),
+        allow_proposal_hypotheses=allow_bootstrap,
     )
     if retain_contextual_hypotheses:
         next_selected = _prefer_indirect_recoveries(
             next_selected,
             _contextual_recovery_hypotheses(prior_recoveries),
+            allow_proposal_hypotheses=allow_bootstrap,
         )
     next_selected = _attach_reproduced_static_target_certificates(
         next_selected,
@@ -1939,6 +1943,7 @@ def _derive_operation_outputs(
         finite_value_budget=finite_value_budget,
         writable_image_ranges=writable_image_ranges,
         image_base=image_base,
+        retain_proposal_hypotheses=allow_bootstrap,
     )
     call_frame_hypotheses = tuple(prior_call_frame_hypotheses)
     if allow_bootstrap:
@@ -3893,6 +3898,7 @@ def _bind_mutable_slot_dependencies(
     finite_value_budget: int,
     writable_image_ranges: Sequence[tuple[int, int]],
     image_base: int,
+    retain_proposal_hypotheses: bool = False,
 ) -> list[dict[str, Any]]:
     global_by_slot: dict[int, list[GlobalSlotInvariant]] = defaultdict(list)
     event_by_slot_site: dict[
@@ -4083,7 +4089,39 @@ def _bind_mutable_slot_dependencies(
             {"role": role, "content_id": content_id}
             for role, content_id in row["authority_dependencies"]
         ]
-        if failure_code is not None:
+        if failure_code is not None and (
+            retain_proposal_hypotheses
+            and _can_retain_mutable_slot_target_hypothesis(row, details)
+        ):
+            # Discovery may need this finite target in order to summarize the
+            # very call graph whose framed writes prove the slot invariant.
+            # Keep it only as proposal data.  The joint fixed point uses the
+            # resulting summaries to propose an invariant, then starts the
+            # authority pass without this recovery; acceptance requires the
+            # invariant and target to be reproduced from exact machine IR.
+            contextual_hypothesis = _eligible_proposal_target_hypothesis(row)
+            row.update({
+                "proof_authority": False,
+                "proposal_source": (
+                    row.get("proposal_source")
+                    if contextual_hypothesis
+                    else "mutable_slot_inductive_bootstrap_v2"
+                ),
+                "hypothesis_validation": row.get(
+                    "hypothesis_validation",
+                    (
+                        "pending_authority_replay_v2"
+                        if contextual_hypothesis
+                        else "pending_global_slot_replay_v2"
+                    ),
+                ),
+                "proposal_failure": {
+                    "code": failure_code,
+                    "slot_rvas": list(influence.slot_rvas),
+                },
+                "failure": None,
+            })
+        elif failure_code is not None:
             row.update({
                 "status": "incomplete",
                 "closure": "unresolved",
@@ -4097,6 +4135,64 @@ def _bind_mutable_slot_dependencies(
             })
         result.append(row)
     return result
+
+
+def _can_retain_mutable_slot_target_hypothesis(
+    recovery: Mapping[str, Any],
+    dependencies: Sequence[Mapping[str, Any]],
+) -> bool:
+    """Recognize a finite, explicitly witnessed mutable-slot proposal.
+
+    This predicate deliberately says nothing about authority.  It only keeps
+    enough bounded data for the proposal bootstrap to expose a mutually
+    recursive slot/target SCC.  A later unseeded pass must recover the same
+    target using a complete GlobalSlotInvariant.
+    """
+
+    if _eligible_proposal_target_hypothesis(recovery):
+        return True
+    if (
+        recovery.get("status") != "recovered"
+        or recovery.get("proof_authority") is True
+        or recovery.get("kind") not in {"indirect_call", "indirect_jump"}
+    ):
+        return False
+    internal = recovery.get("target_unit_ids")
+    external = recovery.get("external_targets")
+    witnesses = recovery.get("target_origin_witnesses")
+    if (
+        not isinstance(internal, list)
+        or not isinstance(external, list)
+        or not internal and not external
+        or not isinstance(witnesses, list)
+        or not witnesses
+    ):
+        return False
+    if any(not isinstance(target, str) or not target for target in internal):
+        return False
+    if any(not isinstance(target, Mapping) for target in external):
+        return False
+    witnessed_slots = {
+        int(detail["slot_rva"])
+        for detail in dependencies
+        if isinstance(detail, Mapping)
+        and isinstance(detail.get("slot_rva"), int)
+        and not isinstance(detail.get("slot_rva"), bool)
+        and detail.get("origin_witnessed") is True
+    }
+    if not witnessed_slots:
+        return False
+    return all(
+        isinstance(witness, Mapping)
+        and witness.get("kind") in {"static_code", "static_data"}
+        and isinstance(witness.get("key"), Sequence)
+        and not isinstance(witness.get("key"), (str, bytes))
+        and len(witness["key"]) == 2
+        and isinstance(witness["key"][1], Sequence)
+        and not isinstance(witness["key"][1], (str, bytes))
+        and witness["key"][1]
+        for witness in witnesses
+    )
 
 
 def _target_origin_writable_slot_rvas(
@@ -4116,8 +4212,16 @@ def _target_origin_writable_slot_rvas(
         ):
             continue
         key = witness.get("key")
-        sources = key[1] if isinstance(key, list) and len(key) == 2 else None
-        if not isinstance(sources, list):
+        sources = (
+            key[1]
+            if isinstance(key, Sequence)
+            and not isinstance(key, (str, bytes))
+            and len(key) == 2
+            else None
+        )
+        if not isinstance(sources, Sequence) or isinstance(
+            sources, (str, bytes)
+        ):
             continue
         for address in sources:
             if (
@@ -5063,6 +5167,7 @@ def _external_target_memory_preserved(
 def _prefer_indirect_recoveries(
     static_recoveries: Sequence[Mapping[str, Any]],
     *proposal_sets: Sequence[Mapping[str, Any]],
+    allow_proposal_hypotheses: bool = False,
 ) -> list[dict[str, Any]]:
     proposals_by_id = [
         {str(row.get("id")): row for row in proposals}
@@ -5077,7 +5182,11 @@ def _prefer_indirect_recoveries(
                 *(proposals.get(str(static.get("id"))) for proposals in proposals_by_id),
             )
             if isinstance(candidate, Mapping)
-            and _eligible_inductive_target_hypothesis(candidate)
+            and (
+                _eligible_inductive_target_hypothesis(candidate)
+                or allow_proposal_hypotheses
+                and _eligible_proposal_target_hypothesis(candidate)
+            )
         ]
         alternatives = {
             _target_alternatives(candidate) for candidate in candidates
@@ -5116,6 +5225,38 @@ def _prefer_indirect_recoveries(
             selected = candidates[0] if candidates else incomplete[0]
         result.append(copy.deepcopy(dict(selected)))
     return result
+
+
+def _eligible_proposal_target_hypothesis(row: Mapping[str, Any]) -> bool:
+    """Admit a bounded discovery fact without granting proof authority.
+
+    Contextual and mutable-slot discovery can expose a target needed by the
+    next ordinary transfer round.  Dropping that fact immediately makes the
+    proposal pass oscillate between its ordinary and contextual states.  The
+    cold/inductive authority passes never enable this predicate and must still
+    reproduce every accepted target through their stricter checker.
+    """
+
+    if (
+        row.get("status") != "recovered"
+        or row.get("proof_authority") is not False
+        or row.get("proposal_source") not in {
+            "bounded_call_context_v1",
+            "path_sensitive_pre_widening_v1",
+            "mutable_slot_inductive_bootstrap_v2",
+        }
+        or row.get("kind") not in {"indirect_call", "indirect_jump"}
+    ):
+        return False
+    internal = row.get("target_unit_ids")
+    external = row.get("external_targets")
+    return bool(
+        isinstance(internal, list)
+        and isinstance(external, list)
+        and (internal or external)
+        and all(isinstance(target, str) and target for target in internal)
+        and all(isinstance(target, Mapping) for target in external)
+    )
 
 
 def _eligible_inductive_target_hypothesis(row: Mapping[str, Any]) -> bool:
