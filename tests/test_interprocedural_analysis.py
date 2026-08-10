@@ -767,6 +767,167 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             )
         )
 
+    def test_contextual_recovery_runs_only_after_ordinary_stability(self) -> None:
+        requests: list[bool] = []
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            requested = kwargs.get("run_contextual_recovery") is True
+            requests.append(requested)
+            return {
+                "resolutions": [],
+                "contextual_recovery": {
+                    "required": True,
+                    "executed": requested,
+                },
+            }
+
+        result = self._run(
+            units=[unit("root", 0x1000)],
+            roots=["root"],
+            resolver=resolver,
+            proposal_only=True,
+        )
+
+        self.assertEqual(requests, [False, True])
+        self.assertEqual(result.fixed_point["discovery_rounds"], 1)
+        self.assertEqual(result.fixed_point["contextual_probe_requests"], 1)
+        self.assertEqual(result.fixed_point["contextual_probes"], 1)
+        self.assertEqual(result.fixed_point["discovery_contextual_probes"], 1)
+
+    def test_pass_without_contextual_frontier_performs_no_probe(self) -> None:
+        requests: list[bool] = []
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            requests.append(kwargs.get("run_contextual_recovery") is True)
+            return {
+                "resolutions": [],
+                "contextual_recovery": {
+                    "required": False,
+                    "executed": False,
+                },
+            }
+
+        result = self._run(
+            units=[unit("root", 0x1000)],
+            roots=["root"],
+            resolver=resolver,
+            proposal_only=True,
+        )
+
+        self.assertEqual(requests, [False])
+        self.assertEqual(result.fixed_point["contextual_probe_requests"], 0)
+        self.assertEqual(result.fixed_point["contextual_probes"], 0)
+
+    def test_contextual_discovery_resumes_ordinary_propagation(self) -> None:
+        exit_row = indirect_exit("exit:root:0", "root")
+        seed = recovered(exit_row, "target")
+        seed.update({
+            "analysis_dependencies": [exit_row["id"]],
+            "origin_count": 1,
+            "origin_kinds": ["internal"],
+            "target_origin_witnesses": [{
+                "kind": "static_code",
+                "key": [IMAGE_BASE + 0x2000, 0],
+            }],
+            "proposal_source": "bounded_call_context_v1",
+            "proof_authority": False,
+            "context_coverage": {
+                "format": "bounded-call-context-coverage-v1",
+                "status": "complete",
+                "context_count": 1,
+                "complete_contexts": 1,
+                "incomplete_contexts": 0,
+                "impacted_by_budget": False,
+                "contexts": [{
+                    "id": "bounded-call-context-v1:fixture",
+                    "status": "recovered",
+                }],
+            },
+        })
+        requests: list[bool] = []
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            requested = kwargs.get("run_contextual_recovery") is True
+            requests.append(requested)
+            selected = kwargs.get("recovered_indirect_edges")
+            assert isinstance(selected, list)
+            current = next(
+                row for row in selected if row.get("id") == exit_row["id"]
+            )
+            if requested:
+                return {
+                    "resolutions": [incomplete_recovery(exit_row)],
+                    "path_recovery_proposals": [seed],
+                    "contextual_recovery": {
+                        "required": True,
+                        "executed": True,
+                    },
+                }
+            if current.get("status") == "recovered":
+                witnessed = dict(seed)
+                witnessed.pop("proposal_source")
+                witnessed.pop("proof_authority")
+                return {
+                    "resolutions": [witnessed],
+                    "contextual_recovery": {
+                        "required": False,
+                        "executed": False,
+                    },
+                }
+            return {
+                "resolutions": [incomplete_recovery(exit_row)],
+                "contextual_recovery": {
+                    "required": True,
+                    "executed": False,
+                },
+            }
+
+        result = self._run(
+            units=[unit("root", 0x1000), unit("target", 0x2000)],
+            roots=["root"],
+            exits=[exit_row],
+            resolver=resolver,
+            proposal_only=True,
+        )
+
+        self.assertEqual(requests, [False, True, False])
+        self.assertEqual(result.fixed_point["discovery_rounds"], 2)
+        self.assertEqual(result.fixed_point["contextual_probe_requests"], 1)
+        self.assertEqual(result.fixed_point["contextual_probes"], 1)
+        self.assertEqual(result.recovered_targets[0]["status"], "recovered")
+
+    def test_transient_proposal_failure_is_not_final_authority(self) -> None:
+        exit_row = indirect_exit("exit:root:0", "root")
+        effect = call_effect("root", preserved=frozenset({"ebx"}))
+        evaluations = 0
+
+        def resolver(**_kwargs: object) -> dict[str, object]:
+            nonlocal evaluations
+            evaluations += 1
+            return {
+                "resolutions": [
+                    incomplete_recovery(exit_row)
+                    if evaluations == 1
+                    else recovered(exit_row, "target")
+                ],
+                "call_site_effects": [effect],
+            }
+
+        result = self._run(
+            units=[unit("root", 0x1000), unit("target", 0x2000)],
+            roots=["root"],
+            exits=[exit_row],
+            resolver=resolver,
+            proposal_only=True,
+        )
+
+        inventory = {
+            row["id"]: row for row in result.fixed_point["dependencies"]
+        }
+        self.assertGreaterEqual(result.fixed_point["discovery_rounds"], 2)
+        self.assertEqual(inventory[exit_row["id"]]["status"], "complete")
+        self.assertEqual(inventory[exit_row["id"]]["failure_reasons"], [])
+
     def test_mutable_influence_schedules_acyclic_diamond_once(self) -> None:
         observed: list[dict[str, object]] = []
 
@@ -922,11 +1083,16 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         )
         root["source"]["instruction_bytes_sha256"] = "e" * 64
 
-        def resolver(**_kwargs: Any) -> dict[str, object]:
+        def resolver(**kwargs: Any) -> dict[str, object]:
+            requested = kwargs.get("run_contextual_recovery") is True
             event = root["semantics"]["memory_events"][0]
             return {
                 "resolutions": [],
-                "memory_address_domain_proposals": [{
+                "contextual_recovery": {
+                    "required": True,
+                    "executed": requested,
+                },
+                "memory_address_domain_proposals": ([] if not requested else [{
                     "format": MEMORY_ADDRESS_DOMAIN_PROPOSAL_V2_FORMAT,
                     "status": "complete",
                     "unit_id": "root",
@@ -948,7 +1114,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                         "dropped_contexts": 0,
                         "work_budget_exceeded": False,
                     },
-                }],
+                }]),
             }
 
         result = self._run(
@@ -973,6 +1139,41 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertEqual(
             result.fixed_point["checked_memory_address_domain_count"], 1
         )
+
+    def test_unscheduled_contextual_domain_fails_closed(self) -> None:
+        root = unit(
+            "root",
+            0x1000,
+            memory=({
+                "kind": "read",
+                "width": 4,
+                "address": reg("esi"),
+            },),
+        )
+
+        def resolver(**_kwargs: Any) -> dict[str, object]:
+            return {
+                "resolutions": [],
+                "contextual_recovery": {
+                    "required": True,
+                    "executed": False,
+                },
+                "memory_address_domain_proposals": [{
+                    "unit_id": "root",
+                    "event_index": 0,
+                }],
+            }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "contextual memory address domains require an executed scheduled recovery",
+        ):
+            self._run(
+                units=[root],
+                roots=["root"],
+                resolver=resolver,
+                proposal_only=True,
+            )
 
     def test_operator_internal_contracts_are_proposal_only(self) -> None:
         observed: list[dict[str, dict[str, object]]] = []

@@ -99,7 +99,10 @@ The v2 evidence graph is fail-closed:
 2. Mutable image slots are tracked point-sensitively. Unknown or aliasing
    writes taint downstream facts; they are never pooled into every root.
 3. Call summaries and indirect targets converge together over an SCC worklist,
-   then replay from no proposal seeds.
+   then replay from no proposal seeds. Expensive bounded-context recovery runs
+   only as a checkpoint after ordinary propagation stabilizes; a checkpoint
+   that discovers new driver facts resumes ordinary propagation before another
+   checkpoint may authorize contextual memory evidence.
 4. External sites are normalized only after target recovery and are rebound to
    the exact event, ABI, arguments, effects, continuation, and selected profile.
 5. Every reachable instruction form is bound to one binary-specific qualified
@@ -108,6 +111,13 @@ The v2 evidence graph is fail-closed:
    invariants. Bounded predecessor search cannot close an exception frontier.
 7. Dependent fallout is reported through `blocked_by`; progress is measured by
    unresolved certificates, SCCs, environment sites, and ISA forms.
+
+Typed facts and dependency edges describe the current converged proposal graph.
+They are not unioned with transient earlier evaluations: those evaluations are
+successive approximations, not simultaneous execution alternatives. Contextual
+address domains are accepted only from an explicitly scheduled and executed
+checkpoint. These rules make the authority inventory independent of evaluation
+history and prevent stale contextual proposals from being sealed.
 
 ## Completion Criteria
 

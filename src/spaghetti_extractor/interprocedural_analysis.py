@@ -170,16 +170,6 @@ class _NodeState:
     status: str
     failure_reasons: tuple[str, ...] = ()
 
-    def join(self, other: "_NodeState", *, maximum: int) -> "_NodeState":
-        joined = self.fact.join(other.fact, maximum=maximum)
-        return _NodeState(
-            fact=joined,
-            status=_joined_status(self.status, other.status, joined.complete),
-            failure_reasons=tuple(
-                sorted(set(self.failure_reasons) | set(other.failure_reasons))
-            ),
-        )
-
 
 @dataclass(frozen=True)
 class _PassResult:
@@ -195,6 +185,8 @@ class _PassResult:
     recoveries: tuple[Mapping[str, Any], ...]
     call_frame_hypotheses: tuple[PreservedRegisterHypothesis, ...]
     roots: tuple[str, ...]
+    contextual_probe_requests: int
+    contextual_probes: int
 
     @property
     def lattice_complete(self) -> bool:
@@ -202,6 +194,16 @@ class _PassResult:
             state.status == "complete" and state.fact.complete
             for state in self.facts.values()
         )
+
+
+@dataclass(frozen=True)
+class _OperationOutputs:
+    call_site_effects: tuple[Mapping[str, Any], ...]
+    callback_root_arguments: Mapping[str, Mapping[int, FiniteValue]]
+    roots: frozenset[str]
+    value_provenance: Mapping[str, Any]
+    recoveries: tuple[Mapping[str, Any], ...]
+    call_frame_hypotheses: tuple[PreservedRegisterHypothesis, ...]
 
 
 @dataclass(frozen=True)
@@ -611,6 +613,22 @@ def analyze_interprocedural_control(
         ) + (0 if inductive is None else inductive.evaluations),
         "discovery_rounds": 0 if discovery is None else discovery.evaluations,
         "cold_replay_rounds": 0 if cold is None else cold.evaluations,
+        "contextual_probes": (
+            (0 if discovery is None else discovery.contextual_probes)
+            + (0 if cold is None else cold.contextual_probes)
+            + (0 if inductive is None else inductive.contextual_probes)
+        ),
+        "discovery_contextual_probes": (
+            0 if discovery is None else discovery.contextual_probes
+        ),
+        "cold_contextual_probes": (
+            0 if cold is None else cold.contextual_probes
+        ),
+        "contextual_probe_requests": (
+            (0 if discovery is None else discovery.contextual_probe_requests)
+            + (0 if cold is None else cold.contextual_probe_requests)
+            + (0 if inductive is None else inductive.contextual_probe_requests)
+        ),
         "scc_evaluations": (0 if discovery is None else discovery.scc_evaluations) + (
             0 if cold is None else cold.scc_evaluations
         ) + (0 if inductive is None else inductive.scc_evaluations),
@@ -893,6 +911,11 @@ def _select_inductive_authority(
         # New callback roots require their own entry-state contracts and are
         # promoted by the launch/root phase, not by an inductive target seed.
         roots=cold.roots,
+        contextual_probe_requests=(
+            cold.contextual_probe_requests
+            + replay.contextual_probe_requests
+        ),
+        contextual_probes=cold.contextual_probes + replay.contextual_probes,
     )
     promoted_components = sorted({
         decomposition.component_index(node)
@@ -1272,6 +1295,8 @@ def _run_typed_pass(
     call_site_effects: tuple[Mapping[str, Any], ...] = ()
     value_provenance: Mapping[str, Any] = {"resolutions": []}
     scc_evaluations = 0
+    contextual_probe_requests = 0
+    contextual_probes = 0
     decomposition: SCCDecomposition[str] = decompose_scc(tuple[str]())
     active_roots = set(roots)
     callback_root_arguments: Mapping[
@@ -1348,43 +1373,59 @@ def _run_typed_pass(
             import_abis=import_abis,
             image_base=image_base,
         )
-        operation_provenance = recover_external_interface_targets(
-            units=units,
-            roots=current_roots,
-            direct_edges=direct_edges,
-            internal_call_edges=internal_call_edges,
-            recovered_indirect_edges=selected,
-            indirect_exits=indirect_exits,
-            profiles=interface_profiles,
-            operation_profiles=operation_profiles,
-            callable_external_profiles=callable_profiles,
-            imports=imports,
-            import_abis=import_abis,
-            internal_call_preserved_registers=preserved,
-            internal_call_stack_cleanup=cleanup,
-            internal_call_result_relations=results,
-            internal_call_memory_result_relations=memory_results,
-            internal_call_memory_preservation=memory_preservation,
-            image_base=image_base,
-            finite_value_budget=finite_value_budget,
-            static_data_reader=static_data_reader,
-            bootstrap_unknown_call_preserved_registers=(
-                frozenset({"ebp", "ebx", "edi", "esi"})
-                if allow_bootstrap and evaluation == 1
-                else None
-            ),
-            allow_global_slot_promotion=False,
-            initial_known_slots=checked_global_slots,
-            initial_event_known_slots=checked_event_slots,
-            initial_root_argument_origins=callback_root_arguments,
-            checked_stack_entry_offsets=checked_stack_entry_offsets,
-            checked_nonimage_stack_units=checked_nonimage_stack_units,
-            collect_path_recovery_proposals=allow_bootstrap,
-            preserved_register_hypotheses=[
-                hypothesis.as_json()
-                for hypothesis in call_frame_hypotheses
-            ],
+
+        def derive_operation_provenance(
+            *, run_contextual_recovery: bool
+        ) -> Mapping[str, Any]:
+            return recover_external_interface_targets(
+                units=units,
+                roots=current_roots,
+                direct_edges=direct_edges,
+                internal_call_edges=internal_call_edges,
+                recovered_indirect_edges=selected,
+                indirect_exits=indirect_exits,
+                profiles=interface_profiles,
+                operation_profiles=operation_profiles,
+                callable_external_profiles=callable_profiles,
+                imports=imports,
+                import_abis=import_abis,
+                internal_call_preserved_registers=preserved,
+                internal_call_stack_cleanup=cleanup,
+                internal_call_result_relations=results,
+                internal_call_memory_result_relations=memory_results,
+                internal_call_memory_preservation=memory_preservation,
+                image_base=image_base,
+                finite_value_budget=finite_value_budget,
+                static_data_reader=static_data_reader,
+                bootstrap_unknown_call_preserved_registers=(
+                    frozenset({"ebp", "ebx", "edi", "esi"})
+                    if allow_bootstrap and evaluation == 1
+                    else None
+                ),
+                allow_global_slot_promotion=False,
+                initial_known_slots=checked_global_slots,
+                initial_event_known_slots=checked_event_slots,
+                initial_root_argument_origins=callback_root_arguments,
+                checked_stack_entry_offsets=checked_stack_entry_offsets,
+                checked_nonimage_stack_units=checked_nonimage_stack_units,
+                collect_path_recovery_proposals=allow_bootstrap,
+                run_contextual_recovery=run_contextual_recovery,
+                preserved_register_hypotheses=[
+                    hypothesis.as_json()
+                    for hypothesis in call_frame_hypotheses
+                ],
+            )
+
+        operation_provenance = derive_operation_provenance(
+            run_contextual_recovery=False
         )
+        contextual_required, contextual_executed = (
+            _validate_contextual_recovery(
+                operation_provenance,
+                scheduled=False,
+            )
+        )
+        contextual_probes += int(contextual_executed)
         _progress(progress, "operation_provenance_derived", {
             "pass_kind": pass_kind,
             "evaluation": evaluation,
@@ -1396,23 +1437,6 @@ def _run_typed_pass(
                 operation_provenance.get("callback_registrations")
             ),
         })
-        next_call_site_effects = _call_site_effect_rows(operation_provenance)
-        next_callback_root_arguments = callback_root_argument_origins(
-            operation_provenance,
-            finite_value_budget=finite_value_budget,
-        )
-        next_callback_root_arguments = {
-            unit_id: arguments
-            for unit_id, arguments in next_callback_root_arguments.items()
-            if unit_id not in roots
-        }
-        next_roots = active_roots | _callback_root_unit_ids(
-            operation_provenance, known_units=known_unit_ids
-        )
-        value_provenance = legacy_value_provenance_view(
-            operation_provenance,
-            finite_target_budget=finite_value_budget,
-        )
         mutable_result = _analyze_mutable_slot_influence(
             units=units,
             roots=current_roots,
@@ -1441,43 +1465,31 @@ def _run_typed_pass(
             "join_evaluations": mutable_result.join_evaluations,
             "budget_exhausted": mutable_result.exhausted,
         })
-        next_selected = _prefer_indirect_recoveries(
-            static_recoveries,
-            value_provenance.get("resolutions", []),
-            (
-                operation_provenance.get("path_recovery_proposals", [])
-                if allow_bootstrap
-                else []
-            ),
-            operation_provenance.get("resolutions", []),
-        )
-        next_selected = _attach_reproduced_static_target_certificates(
-            next_selected,
-            initial_recoveries,
-        )
-        next_selected = _bind_mutable_slot_dependencies(
-            next_selected,
-            exit_influence=mutable_result.exits,
+        operation_outputs = _derive_operation_outputs(
+            operation_provenance=operation_provenance,
+            original_roots=roots,
+            active_roots=active_roots,
+            known_unit_ids=known_unit_ids,
+            static_recoveries=static_recoveries,
+            prior_recoveries=selected,
+            initial_recoveries=initial_recoveries,
+            mutable_result=mutable_result,
             global_slot_invariants=global_slot_invariants,
-            finite_value_budget=finite_value_budget,
             writable_image_ranges=writable_image_ranges,
             image_base=image_base,
+            units=units,
+            direct_edges=direct_edges,
+            prior_call_frame_hypotheses=call_frame_hypotheses,
+            finite_value_budget=finite_value_budget,
+            allow_bootstrap=allow_bootstrap,
+            retain_contextual_hypotheses=True,
         )
-        next_call_frame_hypotheses = call_frame_hypotheses
-        if allow_bootstrap:
-            cyclic_units = _recursive_control_units(
-                units=units,
-                direct_edges=direct_edges,
-                recoveries=next_selected,
-            )
-            next_call_frame_hypotheses = _merge_call_frame_hypotheses(
-                call_frame_hypotheses,
-                _call_frame_hypotheses_from_effects(
-                    next_call_site_effects,
-                    cyclic_units=cyclic_units,
-                    finite_value_budget=finite_value_budget,
-                ),
-            )
+        next_call_site_effects = operation_outputs.call_site_effects
+        next_callback_root_arguments = operation_outputs.callback_root_arguments
+        next_roots = set(operation_outputs.roots)
+        value_provenance = operation_outputs.value_provenance
+        next_selected = list(operation_outputs.recoveries)
+        next_call_frame_hypotheses = operation_outputs.call_frame_hypotheses
         used_global_slots = _used_global_slot_invariants(
             next_selected, global_slot_invariants
         )
@@ -1499,11 +1511,17 @@ def _run_typed_pass(
             recoveries=next_selected,
             call_frame_hypotheses=next_call_frame_hypotheses,
         )
-        next_edges = dependency_edges | proposed_edges
-        nodes = set(facts) | set(proposals)
+        # Each outer evaluation is a successively more precise proposal graph,
+        # not an additional execution alternative.  Retaining facts or edges
+        # from transient evaluations makes authority depend on scheduling order.
+        # Certify only the current graph; the driving recoveries, summaries,
+        # effects, roots, and callback inputs are separately required to reach
+        # a fixed point below.
+        next_edges = proposed_edges
+        nodes = set(proposals)
         nodes.update(node for edge in next_edges for node in edge)
         worklist = SCCWorklist(nodes, next_edges)
-        next_facts = dict(facts)
+        next_facts: dict[str, _NodeState] = {}
         while worklist:
             component = worklist.pop()
             scc_evaluations += 1
@@ -1511,12 +1529,7 @@ def _run_typed_pass(
                 proposal = proposals.get(node)
                 if proposal is None:
                     continue
-                prior = next_facts.get(node)
-                next_facts[node] = (
-                    proposal
-                    if prior is None
-                    else prior.join(proposal, maximum=finite_value_budget)
-                )
+                next_facts[node] = proposal
         decomposition = worklist.decomposition
 
         transfer_stable = _freeze_recovery_inputs(next_selected) == input_recoveries
@@ -1539,6 +1552,61 @@ def _run_typed_pass(
             and roots_stable
             and callback_root_arguments_stable
         )
+        contextual_required = bool(
+            contextual_required
+            or _contextual_recovery_hypotheses(next_selected)
+        )
+        contextual_requested = False
+        contextual_executed = False
+        if stable and contextual_required:
+            contextual_requested = True
+            contextual_probe_requests += 1
+            checkpoint_provenance = derive_operation_provenance(
+                run_contextual_recovery=True
+            )
+            _, contextual_executed = _validate_contextual_recovery(
+                checkpoint_provenance,
+                scheduled=True,
+            )
+            contextual_probes += int(contextual_executed)
+            checkpoint_outputs = _derive_operation_outputs(
+                operation_provenance=checkpoint_provenance,
+                original_roots=roots,
+                active_roots=active_roots,
+                known_unit_ids=known_unit_ids,
+                static_recoveries=static_recoveries,
+                prior_recoveries=selected,
+                initial_recoveries=initial_recoveries,
+                mutable_result=mutable_result,
+                global_slot_invariants=global_slot_invariants,
+                writable_image_ranges=writable_image_ranges,
+                image_base=image_base,
+                units=units,
+                direct_edges=direct_edges,
+                prior_call_frame_hypotheses=call_frame_hypotheses,
+                finite_value_budget=finite_value_budget,
+                allow_bootstrap=allow_bootstrap,
+                retain_contextual_hypotheses=False,
+            )
+            stable = _operation_outputs_stable(
+                checkpoint_outputs,
+                input_recoveries=input_recoveries,
+                input_call_site_effects=input_call_site_effects,
+                input_call_frame_hypotheses=input_call_frame_hypotheses,
+                input_roots=frozenset(active_roots),
+                input_callback_root_arguments=input_callback_root_arguments,
+            )
+            operation_provenance = checkpoint_provenance
+            next_call_site_effects = checkpoint_outputs.call_site_effects
+            next_callback_root_arguments = (
+                checkpoint_outputs.callback_root_arguments
+            )
+            next_roots = set(checkpoint_outputs.roots)
+            value_provenance = checkpoint_outputs.value_provenance
+            next_selected = list(checkpoint_outputs.recoveries)
+            next_call_frame_hypotheses = (
+                checkpoint_outputs.call_frame_hypotheses
+            )
         _progress(progress, "evaluation_finished", {
             "pass_kind": pass_kind,
             "evaluation": evaluation,
@@ -1549,6 +1617,9 @@ def _run_typed_pass(
             "selected_recoveries": len(next_selected),
             "call_site_effects": len(next_call_site_effects),
             "roots": len(next_roots),
+            "contextual_probe_requested": contextual_requested,
+            "contextual_probe": contextual_executed,
+            "contextual_required": contextual_required,
         })
         facts = next_facts
         dependency_edges = next_edges
@@ -1581,6 +1652,8 @@ def _run_typed_pass(
                 tuple(copy.deepcopy(row) for row in selected),
                 call_frame_hypotheses,
                 tuple(sorted(active_roots)),
+                contextual_probe_requests,
+                contextual_probes,
             )
         call_site_effects = next_call_site_effects
 
@@ -1604,6 +1677,167 @@ def _run_typed_pass(
         tuple(copy.deepcopy(row) for row in selected),
         call_frame_hypotheses,
         tuple(sorted(active_roots)),
+        contextual_probe_requests,
+        contextual_probes,
+    )
+
+
+def _validate_contextual_recovery(
+    operation_provenance: Mapping[str, Any],
+    *,
+    scheduled: bool,
+) -> tuple[bool, bool]:
+    status = operation_provenance.get("contextual_recovery")
+    if status is not None and not isinstance(status, Mapping):
+        raise ValueError("operation provenance contextual recovery is invalid")
+    required = bool(
+        isinstance(status, Mapping) and status.get("required") is True
+    )
+    executed = bool(
+        isinstance(status, Mapping) and status.get("executed") is True
+    )
+    if executed and not scheduled:
+        raise ValueError("contextual recovery executed without being scheduled")
+    domains = operation_provenance.get("memory_address_domain_proposals", [])
+    if not isinstance(domains, list):
+        raise ValueError(
+            "interprocedural memory address-domain proposal inventory is invalid"
+        )
+    if domains and not (scheduled and executed):
+        raise ValueError(
+            "contextual memory address domains require an executed "
+            "scheduled recovery"
+        )
+    return required, executed
+
+
+def _derive_operation_outputs(
+    *,
+    operation_provenance: Mapping[str, Any],
+    original_roots: Sequence[str],
+    active_roots: set[str],
+    known_unit_ids: frozenset[str],
+    static_recoveries: Sequence[Mapping[str, Any]],
+    prior_recoveries: Sequence[Mapping[str, Any]],
+    initial_recoveries: Sequence[Mapping[str, Any]],
+    mutable_result: _MutableInfluenceResult,
+    global_slot_invariants: Sequence[GlobalSlotInvariant],
+    writable_image_ranges: Sequence[tuple[int, int]],
+    image_base: int,
+    units: Sequence[Mapping[str, Any]],
+    direct_edges: Sequence[Mapping[str, Any]],
+    prior_call_frame_hypotheses: Sequence[PreservedRegisterHypothesis],
+    finite_value_budget: int,
+    allow_bootstrap: bool,
+    retain_contextual_hypotheses: bool,
+) -> _OperationOutputs:
+    call_site_effects = _call_site_effect_rows(operation_provenance)
+    callback_arguments = callback_root_argument_origins(
+        operation_provenance,
+        finite_value_budget=finite_value_budget,
+    )
+    callback_arguments = {
+        unit_id: arguments
+        for unit_id, arguments in callback_arguments.items()
+        if unit_id not in original_roots
+    }
+    next_roots = active_roots | _callback_root_unit_ids(
+        operation_provenance, known_units=known_unit_ids
+    )
+    value_provenance = legacy_value_provenance_view(
+        operation_provenance,
+        finite_target_budget=finite_value_budget,
+    )
+    next_selected = _prefer_indirect_recoveries(
+        static_recoveries,
+        value_provenance.get("resolutions", []),
+        (
+            operation_provenance.get("path_recovery_proposals", [])
+            if allow_bootstrap
+            else []
+        ),
+        operation_provenance.get("resolutions", []),
+    )
+    if retain_contextual_hypotheses:
+        next_selected = _prefer_indirect_recoveries(
+            next_selected,
+            _contextual_recovery_hypotheses(prior_recoveries),
+        )
+    next_selected = _attach_reproduced_static_target_certificates(
+        next_selected,
+        initial_recoveries,
+    )
+    next_selected = _bind_mutable_slot_dependencies(
+        next_selected,
+        exit_influence=mutable_result.exits,
+        global_slot_invariants=global_slot_invariants,
+        finite_value_budget=finite_value_budget,
+        writable_image_ranges=writable_image_ranges,
+        image_base=image_base,
+    )
+    call_frame_hypotheses = tuple(prior_call_frame_hypotheses)
+    if allow_bootstrap:
+        cyclic_units = _recursive_control_units(
+            units=units,
+            direct_edges=direct_edges,
+            recoveries=next_selected,
+        )
+        call_frame_hypotheses = _merge_call_frame_hypotheses(
+            prior_call_frame_hypotheses,
+            _call_frame_hypotheses_from_effects(
+                call_site_effects,
+                cyclic_units=cyclic_units,
+                finite_value_budget=finite_value_budget,
+            ),
+        )
+    return _OperationOutputs(
+        call_site_effects=call_site_effects,
+        callback_root_arguments=callback_arguments,
+        roots=frozenset(next_roots),
+        value_provenance=value_provenance,
+        recoveries=tuple(copy.deepcopy(row) for row in next_selected),
+        call_frame_hypotheses=call_frame_hypotheses,
+    )
+
+
+def _operation_outputs_stable(
+    outputs: _OperationOutputs,
+    *,
+    input_recoveries: tuple[Hashable, ...],
+    input_call_site_effects: tuple[Hashable, ...],
+    input_call_frame_hypotheses: tuple[Hashable, ...],
+    input_roots: frozenset[str],
+    input_callback_root_arguments: Mapping[str, Mapping[int, FiniteValue]],
+) -> bool:
+    return (
+        _freeze_recovery_inputs(outputs.recoveries) == input_recoveries
+        and _freeze_call_site_effects(outputs.call_site_effects)
+        == input_call_site_effects
+        and _freeze_call_frame_hypotheses(outputs.call_frame_hypotheses)
+        == input_call_frame_hypotheses
+        and outputs.roots == input_roots
+        and outputs.callback_root_arguments == input_callback_root_arguments
+    )
+
+
+def _contextual_recovery_hypotheses(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    """Retain path-sensitive hypotheses until their scheduled checkpoint.
+
+    These rows remain proposal-only inputs.  The final contextual checkpoint
+    must reproduce their exact finite targets before authority selection can
+    accept them.
+    """
+
+    return tuple(
+        row
+        for row in rows
+        if row.get("status") == "recovered"
+        and row.get("proposal_source") in {
+            "bounded_call_context_v1",
+            "path_sensitive_pre_widening_v1",
+        }
     )
 
 
@@ -5085,14 +5319,6 @@ def _reachable_targets_complete(
         ):
             return False
     return True
-
-
-def _joined_status(left: str, right: str, lattice_complete: bool) -> str:
-    if not lattice_complete:
-        return "incomplete"
-    if left == "complete" or right == "complete":
-        return "complete"
-    return "incomplete"
 
 
 def _is_conflict_reason(reason: str) -> bool:

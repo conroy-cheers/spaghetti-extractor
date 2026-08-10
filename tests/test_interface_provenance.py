@@ -3992,6 +3992,37 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(proposal["context_coverage"]["status"], "incomplete")
         self.assertEqual(proposal["legacy_path_hint"]["status"], "recovered")
         self.assertEqual(proposal["legacy_path_hint"]["target_rvas"], [0x2000])
+        self.assertEqual(
+            result["contextual_recovery"],
+            {"required": True, "executed": True},
+        )
+
+        deferred = self._run(
+            [seed, call, clobber, unit("target", 0x2000)],
+            [
+                edge("seed", "call"),
+                edge("call", "clobber"),
+                edge("clobber", "call"),
+            ],
+            roots=["seed"],
+            indirect_exits=[exit_row],
+            bootstrap_unknown_call_preserved_registers=frozenset({"esi"}),
+            collect_path_recovery_proposals=True,
+            run_contextual_recovery=False,
+        )
+
+        self.assertEqual(
+            deferred["contextual_recovery"],
+            {"required": True, "executed": False},
+        )
+        self.assertEqual(deferred["counts"]["path_context_evaluations"], 0)
+        self.assertEqual(
+            deferred["path_recovery_proposals"][0]["proposal_source"],
+            "path_sensitive_pre_widening_v1",
+        )
+        self.assertFalse(
+            deferred["path_recovery_proposals"][0]["proof_authority"]
+        )
 
     def test_bounded_call_contexts_preserve_correlated_table_ranges(self) -> None:
         table_a = IMAGE_BASE + 0x5000
@@ -4433,6 +4464,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
         checked_nonimage_stack_units: frozenset[str] = frozenset(),
         allow_global_slot_promotion: bool = True,
         collect_path_recovery_proposals: bool = False,
+        run_contextual_recovery: bool | None = None,
         preserved_register_hypotheses: list[dict[str, object]] | None = None,
         path_context_depth: int = 1,
         path_context_budget: int = 64,
@@ -4493,6 +4525,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             checked_nonimage_stack_units=checked_nonimage_stack_units,
             allow_global_slot_promotion=allow_global_slot_promotion,
             collect_path_recovery_proposals=collect_path_recovery_proposals,
+            run_contextual_recovery=run_contextual_recovery,
             preserved_register_hypotheses=(
                 preserved_register_hypotheses or []
             ),

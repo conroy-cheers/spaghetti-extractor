@@ -324,6 +324,7 @@ class _RunResult:
     context_evaluations: int
     context_truncated_calls: int
     context_dropped_states: int
+    contextual_recovery_required: bool
 
 
 @dataclass(frozen=True, order=True)
@@ -431,6 +432,7 @@ def recover_external_interface_targets(
     checked_nonimage_stack_units: frozenset[str] = frozenset(),
     allow_global_slot_promotion: bool = True,
     collect_path_recovery_proposals: bool = False,
+    run_contextual_recovery: bool | None = None,
     preserved_register_hypotheses: Sequence[Mapping[str, Any]] = (),
     path_context_depth: int = 1,
     path_context_budget: int = 64,
@@ -445,6 +447,10 @@ def recover_external_interface_targets(
         raise ValueError("allow_global_slot_promotion must be a boolean")
     if not isinstance(collect_path_recovery_proposals, bool):
         raise ValueError("path-recovery proposal selection must be a boolean")
+    if run_contextual_recovery is not None and not isinstance(
+        run_contextual_recovery, bool
+    ):
+        raise ValueError("contextual recovery selection must be a boolean or null")
     if (
         not isinstance(path_context_depth, int)
         or isinstance(path_context_depth, bool)
@@ -611,6 +617,7 @@ def recover_external_interface_targets(
             checked_stack_entry_offsets=stack_entry_offsets,
             checked_nonimage_stack_units=checked_nonimage_stack_units,
             collect_path_recovery_proposals=collect_path_recovery_proposals,
+            run_contextual_recovery=run_contextual_recovery,
             contextual_memory_exit_ids=contextual_memory_exit_ids,
             preserved_register_hypotheses=parsed_call_hypotheses,
             path_context_depth=path_context_depth,
@@ -851,6 +858,9 @@ def recover_external_interface_targets(
             "path_context_evaluations": final.context_evaluations,
             "path_context_truncated_calls": final.context_truncated_calls,
             "path_context_dropped_states": final.context_dropped_states,
+            "contextual_recovery_required": (
+                final.contextual_recovery_required
+            ),
             "static_interface_slots": sum(
                 isinstance(address, int) for address in known_slots
             ),
@@ -883,6 +893,10 @@ def recover_external_interface_targets(
             ),
             "finite_budget_exceeded": final.budget_exceeded,
             "issues": len(final.issues),
+        },
+        "contextual_recovery": {
+            "required": final.contextual_recovery_required,
+            "executed": final.context_evaluations > 0,
         },
     }
 
@@ -1329,6 +1343,7 @@ def _run_dataflow(
     checked_stack_entry_offsets: Mapping[str, frozenset[int]],
     checked_nonimage_stack_units: frozenset[str],
     collect_path_recovery_proposals: bool,
+    run_contextual_recovery: bool | None,
     contextual_memory_exit_ids: frozenset[str],
     preserved_register_hypotheses: Mapping[
         CallSiteId, Mapping[str, PreservedRegisterHypothesis]
@@ -1571,6 +1586,12 @@ def _run_dataflow(
         )
         | contextual_memory_exit_ids
     )
+    contextual_required = bool(contextual_target_exit_ids)
+    contextual_enabled = (
+        contextual_required
+        if run_contextual_recovery is None
+        else contextual_required and run_contextual_recovery
+    )
     contextual = (
         _run_contextual_target_discovery(
             by_id=by_id,
@@ -1593,7 +1614,7 @@ def _run_dataflow(
             context_depth=path_context_depth,
             contexts_per_unit=path_context_budget,
         )
-        if collect_path_recovery_proposals or contextual_memory_exit_ids
+        if contextual_enabled
         else _ContextDiscoveryResult([], [], [], 0, 0, 0, 0)
     )
     issues.extend(contextual.issues)
@@ -1631,6 +1652,7 @@ def _run_dataflow(
         context_evaluations=contextual.evaluations,
         context_truncated_calls=contextual.truncated_calls,
         context_dropped_states=contextual.dropped_contexts,
+        contextual_recovery_required=contextual_required,
     )
 
 
