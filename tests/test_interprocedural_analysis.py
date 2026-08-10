@@ -990,6 +990,23 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         )
         self.assertFalse(any(details["budget_exhausted"] for details in observed))
 
+    def test_mutable_replay_reuses_unchanged_dependency_projection(self) -> None:
+        effect = call_effect("root", preserved=frozenset({"ebx"}))
+
+        result = self._run(
+            units=[unit("root", 0x1000)],
+            roots=["root"],
+            resolver=lambda **_kwargs: {
+                "resolutions": [],
+                "call_site_effects": [effect],
+            },
+            proposal_only=True,
+        )
+
+        self.assertEqual(result.fixed_point["discovery_rounds"], 2)
+        self.assertEqual(result.fixed_point["mutable_replay_requests"], 2)
+        self.assertEqual(result.fixed_point["mutable_replay_cache_hits"], 1)
+
     def test_cold_replay_seals_event_bound_memory_access_facts(self) -> None:
         root = unit(
             "root",

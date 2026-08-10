@@ -188,6 +188,8 @@ class _PassResult:
     roots: tuple[str, ...]
     contextual_probe_requests: int
     contextual_probes: int
+    mutable_replay_requests: int
+    mutable_replay_cache_hits: int
 
     @property
     def lattice_complete(self) -> bool:
@@ -630,6 +632,16 @@ def analyze_interprocedural_control(
             + (0 if cold is None else cold.contextual_probe_requests)
             + (0 if inductive is None else inductive.contextual_probe_requests)
         ),
+        "mutable_replay_requests": (
+            (0 if discovery is None else discovery.mutable_replay_requests)
+            + (0 if cold is None else cold.mutable_replay_requests)
+            + (0 if inductive is None else inductive.mutable_replay_requests)
+        ),
+        "mutable_replay_cache_hits": (
+            (0 if discovery is None else discovery.mutable_replay_cache_hits)
+            + (0 if cold is None else cold.mutable_replay_cache_hits)
+            + (0 if inductive is None else inductive.mutable_replay_cache_hits)
+        ),
         "scc_evaluations": (0 if discovery is None else discovery.scc_evaluations) + (
             0 if cold is None else cold.scc_evaluations
         ) + (0 if inductive is None else inductive.scc_evaluations),
@@ -917,6 +929,13 @@ def _select_inductive_authority(
             + replay.contextual_probe_requests
         ),
         contextual_probes=cold.contextual_probes + replay.contextual_probes,
+        mutable_replay_requests=(
+            cold.mutable_replay_requests + replay.mutable_replay_requests
+        ),
+        mutable_replay_cache_hits=(
+            cold.mutable_replay_cache_hits
+            + replay.mutable_replay_cache_hits
+        ),
     )
     promoted_components = sorted({
         decomposition.component_index(node)
@@ -1298,6 +1317,9 @@ def _run_typed_pass(
     scc_evaluations = 0
     contextual_probe_requests = 0
     contextual_probes = 0
+    mutable_replay_requests = 0
+    mutable_replay_cache_hits = 0
+    mutable_replay_cache: dict[Hashable, _MutableInfluenceResult] = {}
     decomposition: SCCDecomposition[str] = decompose_scc(tuple[str]())
     active_roots = set(roots)
     callback_root_arguments: Mapping[
@@ -1442,25 +1464,42 @@ def _run_typed_pass(
                 operation_provenance.get("callback_registrations")
             ),
         })
-        mutable_result = _analyze_mutable_slot_influence(
-            units=units,
+        mutable_replay_requests += 1
+        mutable_key = _mutable_influence_input_key(
             roots=current_roots,
-            direct_edges=direct_edges,
-            internal_call_edges=internal_call_edges,
-            recovered_indirect_edges=selected,
-            indirect_exits=indirect_exits,
-            image_base=image_base,
-            image_size=image_size,
-            finite_value_budget=finite_value_budget,
-            checked_nonimage_stack_units=checked_nonimage_stack_units,
+            recoveries=selected,
             call_preserved_registers=preserved,
             call_stack_cleanup=cleanup,
             call_result_relations=results,
             call_memory_result_relations=memory_results,
             call_memory_preservation=call_memory_preservation,
-            global_slot_invariants=global_slot_invariants,
-            writable_image_ranges=writable_image_ranges,
         )
+        cached_mutable = mutable_replay_cache.get(mutable_key)
+        mutable_cache_hit = cached_mutable is not None
+        if cached_mutable is None:
+            mutable_result = _analyze_mutable_slot_influence(
+                units=units,
+                roots=current_roots,
+                direct_edges=direct_edges,
+                internal_call_edges=internal_call_edges,
+                recovered_indirect_edges=selected,
+                indirect_exits=indirect_exits,
+                image_base=image_base,
+                image_size=image_size,
+                finite_value_budget=finite_value_budget,
+                checked_nonimage_stack_units=checked_nonimage_stack_units,
+                call_preserved_registers=preserved,
+                call_stack_cleanup=cleanup,
+                call_result_relations=results,
+                call_memory_result_relations=memory_results,
+                call_memory_preservation=call_memory_preservation,
+                global_slot_invariants=global_slot_invariants,
+                writable_image_ranges=writable_image_ranges,
+            )
+            mutable_replay_cache[mutable_key] = mutable_result
+        else:
+            mutable_replay_cache_hits += 1
+            mutable_result = cached_mutable
         _progress(progress, "mutable_influence_derived", {
             "pass_kind": pass_kind,
             "evaluation": evaluation,
@@ -1469,6 +1508,7 @@ def _run_typed_pass(
             "transfer_evaluations": mutable_result.transfer_evaluations,
             "join_evaluations": mutable_result.join_evaluations,
             "budget_exhausted": mutable_result.exhausted,
+            "cache_hit": mutable_cache_hit,
         })
         operation_outputs = _derive_operation_outputs(
             operation_provenance=operation_provenance,
@@ -1659,6 +1699,8 @@ def _run_typed_pass(
                 tuple(sorted(active_roots)),
                 contextual_probe_requests,
                 contextual_probes,
+                mutable_replay_requests,
+                mutable_replay_cache_hits,
             )
         call_site_effects = next_call_site_effects
 
@@ -1684,6 +1726,8 @@ def _run_typed_pass(
         tuple(sorted(active_roots)),
         contextual_probe_requests,
         contextual_probes,
+        mutable_replay_requests,
+        mutable_replay_cache_hits,
     )
 
 
@@ -2102,6 +2146,33 @@ def _mutable_call_targets(
         source: tuple(sorted(targets))
         for source, targets in sorted(result.items())
     }
+
+
+def _mutable_influence_input_key(
+    *,
+    roots: Sequence[str],
+    recoveries: Sequence[Mapping[str, Any]],
+    call_preserved_registers: Mapping[int, frozenset[str]],
+    call_stack_cleanup: Mapping[int, int],
+    call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
+    call_memory_result_relations: Mapping[
+        int, Sequence[Mapping[str, Any]]
+    ],
+    call_memory_preservation: Mapping[str, bool],
+) -> Hashable:
+    """Exact changing inputs for one pass-scoped mutable replay."""
+
+    return (
+        tuple(sorted(roots)),
+        _freeze_recovery_inputs(recoveries),
+        _freeze_value(call_preserved_registers),
+        _freeze_value(call_stack_cleanup),
+        _freeze_value(call_result_relations),
+        _freeze_value(call_memory_result_relations),
+        _freeze_value(call_memory_preservation),
+    )
 
 
 def _analyze_mutable_slot_influence(

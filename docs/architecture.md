@@ -194,6 +194,13 @@ hypothesis environment, so an evolving call contract invalidates only
 call-sensitive transfers. The cache is created afresh for each discovery,
 cold, or inductive pass, is never serialized, and carries no authority; all
 accepted artifacts still come from the final converged proposal graph.
+Mutable-slot influence has a separate pass-scoped memo keyed only by the exact
+roots, recovered control, call-result, and memory-frame projection that its
+transfer function consumes. Changes confined to provenance hypotheses do not
+replay that graph; changes to any mutable-analysis dependency invalidate the
+memo. This whole-analysis memo is an intermediate optimization. The durable
+boundary remains independently realizable SCC summaries and their true
+condensation-graph descendants.
 
 Generated files belong under Nix outputs or ignored `build/` workspaces. Authored
 intent and source belong in target bundles. Private binaries belong under the
