@@ -313,6 +313,129 @@ def _call_effect(
 
 
 class GlobalSlotAnalysisV2Tests(unittest.TestCase):
+    def test_relevant_read_issue_is_scoped_to_its_candidate_slot(self) -> None:
+        second_slot = SLOT + 4
+        units = [_unit(
+            "dispatch",
+            0x1000,
+            [
+                _read(),
+                _read(_reg("eax")),
+            ],
+        )]
+        result = analyze_global_slots_v2(
+            units=units,
+            graph=_graph(units),
+            candidate_slot_addresses=[SLOT, second_slot],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            relevant_read_dependencies=[
+                {
+                    "slot_rva": SLOT - IMAGE_BASE,
+                    "exit_id": "indirect-exit:exact",
+                    "unit_id": "dispatch",
+                    "event_index": 0,
+                },
+                {
+                    "slot_rva": second_slot - IMAGE_BASE,
+                    "exit_id": "indirect-exit:dynamic",
+                    "unit_id": "dispatch",
+                    "event_index": 1,
+                },
+            ],
+            launch_initial_values={SLOT: 0x401020, second_slot: 0x401040},
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_ir_sha256(units),
+            interprocedural_authority_sha256=INTERPROCEDURAL_SHA256,
+        )
+
+        by_address = {row["address"]: row for row in result["slots"]}
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(by_address[SLOT]["status"], "complete")
+        self.assertNotIn(
+            "relevant_slot_read_dependency_unproved",
+            {issue["code"] for issue in by_address[SLOT]["issues"]},
+        )
+        self.assertEqual(by_address[second_slot]["status"], "incomplete")
+        self.assertIn(
+            "relevant_slot_read_dependency_unproved",
+            {issue["code"] for issue in by_address[second_slot]["issues"]},
+        )
+
+    def test_relevant_read_mismatch_is_scoped_after_slot_validation(self) -> None:
+        second_slot = SLOT + 4
+        units = [_unit(
+            "dispatch",
+            0x1000,
+            [
+                _read(),
+                _read(_const(SLOT + 8)),
+            ],
+        )]
+        result = analyze_global_slots_v2(
+            units=units,
+            graph=_graph(units),
+            candidate_slot_addresses=[SLOT, second_slot],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            relevant_read_dependencies=[
+                {
+                    "slot_rva": SLOT - IMAGE_BASE,
+                    "exit_id": "indirect-exit:exact",
+                    "unit_id": "dispatch",
+                    "event_index": 0,
+                },
+                {
+                    "slot_rva": second_slot - IMAGE_BASE,
+                    "exit_id": "indirect-exit:mismatch",
+                    "unit_id": "dispatch",
+                    "event_index": 1,
+                },
+            ],
+            launch_initial_values={SLOT: 0x401020, second_slot: 0x401040},
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_ir_sha256(units),
+            interprocedural_authority_sha256=INTERPROCEDURAL_SHA256,
+        )
+
+        by_address = {row["address"]: row for row in result["slots"]}
+        self.assertEqual(result["status"], "violated")
+        self.assertEqual(by_address[SLOT]["status"], "complete")
+        self.assertEqual(by_address[second_slot]["status"], "violated")
+        self.assertIn(
+            "relevant_slot_read_dependency_mismatch",
+            {issue["code"] for issue in by_address[second_slot]["issues"]},
+        )
+
+    def test_relevant_read_without_trustworthy_slot_remains_global(self) -> None:
+        second_slot = SLOT + 4
+        units = [_unit("dispatch", 0x1000, [_read()])]
+        result = analyze_global_slots_v2(
+            units=units,
+            graph=_graph(units),
+            candidate_slot_addresses=[SLOT, second_slot],
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            relevant_read_dependencies=[{
+                "slot_rva": "not-an-rva",
+                "exit_id": "indirect-exit:malformed",
+                "unit_id": "dispatch",
+                "event_index": 0,
+            }],
+            launch_initial_values={SLOT: 0x401020, second_slot: 0x401040},
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_ir_sha256(units),
+            interprocedural_authority_sha256=INTERPROCEDURAL_SHA256,
+        )
+
+        self.assertEqual(result["status"], "violated")
+        for row in result["slots"]:
+            self.assertEqual(row["status"], "violated")
+            self.assertIn(
+                "relevant_slot_read_dependency_invalid",
+                {issue["code"] for issue in row["issues"]},
+            )
+
     def test_call_output_is_a_point_sensitive_global_slot_write(self) -> None:
         factory = _unit(
             "factory",

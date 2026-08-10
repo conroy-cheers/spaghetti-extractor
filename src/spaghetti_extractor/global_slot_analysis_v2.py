@@ -517,7 +517,7 @@ def _analyze_once(
             machine_ir_dependency=machine_ir_dependency,
             graph_dependency=graph_dependency,
             root_kinds=graph_info["root_kinds"],
-            global_issues=global_issues,
+            global_issues=_issues_for_slot(global_issues, address=address),
             inductive_graph_frontiers=inductive_graph_frontiers,
             relevant_read_dependency=(
                 None if relevant_reads is None else relevant_reads.get(address)
@@ -1322,14 +1322,20 @@ def _normalize_relevant_reads(
             or isinstance(slot_rva, bool)
             or slot_rva < 0
             or image_base + slot_rva not in candidate_addresses
-            or not isinstance(exit_id, str)
-            or not exit_id
         ):
             issues.append(
                 _issue("violated", "relevant_slot_read_dependency_invalid", index=index)
             )
             continue
         address = image_base + slot_rva
+        if not isinstance(exit_id, str) or not exit_id:
+            issues.append(_issue(
+                "violated",
+                "relevant_slot_read_dependency_invalid",
+                index=index,
+                slot_address=address,
+            ))
+            continue
         entry = grouped.setdefault(
             address,
             {"node_ids": set(), "target_dependencies": {}},
@@ -1348,7 +1354,12 @@ def _normalize_relevant_reads(
             or event_index < 0
         ):
             issues.append(
-                _issue("violated", "relevant_slot_read_dependency_invalid", index=index)
+                _issue(
+                    "violated",
+                    "relevant_slot_read_dependency_invalid",
+                    index=index,
+                    slot_address=address,
+                )
             )
             continue
         events = units[unit_id]["semantics"]["memory_events"]
@@ -1374,6 +1385,7 @@ def _normalize_relevant_reads(
                     index=index,
                     unit_id=unit_id,
                     event_index=event_index,
+                    slot_address=expected_address,
                 )
             )
             continue
@@ -1386,6 +1398,7 @@ def _normalize_relevant_reads(
                     index=index,
                     unit_id=unit_id,
                     event_index=event_index,
+                    slot_address=expected_address,
                 )
             )
             continue
@@ -1421,6 +1434,25 @@ def _normalize_relevant_reads(
         }
         for address, value in sorted(grouped.items())
     }, _deduplicate_issues(issues)
+
+
+def _issues_for_slot(
+    issues: Sequence[Mapping[str, Any]], *, address: int
+) -> list[dict[str, Any]]:
+    """Keep global issues and issues explicitly bound to one candidate slot."""
+
+    result: list[Mapping[str, Any]] = []
+    for issue in issues:
+        details = issue.get("details")
+        if not isinstance(details, Mapping) or "slot_address" not in details:
+            result.append(issue)
+            continue
+        slot_address = details.get("slot_address")
+        # A malformed scope must fail globally rather than disappearing from
+        # every per-slot replay.
+        if not _u32(slot_address) or int(slot_address) == address:
+            result.append(issue)
+    return _deduplicate_issues(result)
 
 
 def _normalize_graph(

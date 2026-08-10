@@ -15,6 +15,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from .artifact_identity_v2 import canonical_sha256
+from .global_slot_hypotheses_v2 import (
+    GlobalSlotHypothesisV2Error,
+    GlobalSlotInductionHypothesisV2,
+)
 from .joint_interprocedural_analysis_v2 import validate_joint_replay_v2
 
 
@@ -79,15 +83,21 @@ def derive_joint_fixed_point_v2(
     proposal_interprocedural: Mapping[str, Any] | None = None,
     proposal_call_frame_hypotheses: Sequence[Mapping[str, Any]] = (),
     proposal_slot_dependencies: Sequence[Mapping[str, Any]] = (),
+    proposal_global_slot_hypotheses: Sequence[
+        Mapping[str, Any] | GlobalSlotInductionHypothesisV2
+    ] = (),
     callbacks: JointFixedPointCallbacks,
     finite_round_budget: int = 32,
     progress: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Close one graph-bound finite lattice and replay it without seeds.
 
-    Proposal recoveries accelerate only the bootstrap.  Acceptance depends on
-    an unseeded interprocedural pass whose derived graph, stack facts, and
-    mutable-slot invariants reproduce the exact facts supplied to that pass.
+    Proposal recoveries accelerate only the bootstrap.  Exact launch-value
+    slot hypotheses may additionally seed the first authority round, but they
+    are discarded immediately unless point-sensitive replay emits the
+    identical typed invariant.  Acceptance depends on an unseeded
+    interprocedural pass whose derived graph, stack facts, and mutable-slot
+    invariants reproduce the exact facts supplied to that pass.
     """
 
     if (
@@ -104,6 +114,9 @@ def derive_joint_fixed_point_v2(
     # invariants.  Every subsequent round is unseeded and must reproduce those
     # invariants and targets before they can enter the returned authority.
     bootstrap_rounds: list[dict[str, Any]] = []
+    slot_hypotheses = _normalize_global_slot_hypotheses(
+        proposal_global_slot_hypotheses
+    )
     bootstrap: Mapping[str, Any] = (
         copy.deepcopy(dict(proposal_interprocedural))
         if proposal_interprocedural is not None
@@ -145,6 +158,7 @@ def derive_joint_fixed_point_v2(
     slot_analysis: Mapping[str, Any] = {}
     slot_authority: Mapping[str, Any] = {}
     final_signature: str | None = None
+    bootstrap_authority_invariants: tuple[Mapping[str, Any], ...] = ()
 
     if proposal_interprocedural is not None:
         fixed = _mapping(bootstrap.get("fixed_point"))
@@ -167,7 +181,10 @@ def derive_joint_fixed_point_v2(
                 round_index=0,
             )
         )
-        invariants = _global_slot_invariants(bootstrap_authority)
+        bootstrap_authority_invariants = _global_slot_invariants(
+            bootstrap_authority
+        )
+        invariants = bootstrap_authority_invariants
         stack_entry_offsets = _stack_entry_offsets(bootstrap_stack)
         stack_range_facts = _mapping_rows(
             bootstrap_stack.get("checked_range_facts")
@@ -199,6 +216,13 @@ def derive_joint_fixed_point_v2(
             ),
         })
 
+    invariants, introduced_slot_hypothesis_ids, shadowed_slot_hypothesis_ids = (
+        _merge_initial_global_slot_hypotheses(
+            invariants,
+            slot_hypotheses,
+        )
+    )
+
     for round_index in range(1, finite_round_budget + 1):
         input_signature = _authority_state_signature(
             invariants, stack_entry_offsets, stack_range_facts
@@ -210,7 +234,7 @@ def derive_joint_fixed_point_v2(
             "checked_stack_ranges": len(stack_range_facts),
             "input_authority_signature": input_signature,
         })
-        hypotheses = tuple(
+        target_hypotheses = tuple(
             copy.deepcopy(dict(row)) for row in proposal_recoveries
         )
         interprocedural = (
@@ -225,7 +249,7 @@ def derive_joint_fixed_point_v2(
                 invariants,
                 stack_entry_offsets,
                 stack_range_facts,
-                hypotheses,
+                target_hypotheses,
                 proposal_call_frame_hypotheses,
             )
         )
@@ -357,6 +381,26 @@ def derive_joint_fixed_point_v2(
         "proposal_bootstrap_only": True,
         "prepared_proposal_reused": True,
         "authoritative_interprocedural_unseeded": authoritative_unseeded,
+        "global_slot_induction": {
+            "proof_authority": False,
+            "hypothesis_ids": [hypothesis.id for hypothesis in slot_hypotheses],
+            "invariant_content_ids": [
+                hypothesis.invariant.content_id for hypothesis in slot_hypotheses
+            ],
+            "introduced_content_ids": sorted(introduced_slot_hypothesis_ids),
+            "shadowed_by_bootstrap_authority_content_ids": sorted(
+                shadowed_slot_hypothesis_ids
+            ),
+            "reproduced_content_ids": sorted(
+                introduced_slot_hypothesis_ids
+                & _global_slot_content_ids(invariants)
+            ),
+            "not_reproduced_content_ids": sorted(
+                introduced_slot_hypothesis_ids
+                - _global_slot_content_ids(invariants)
+            ),
+            "first_authority_round_only": True,
+        },
         "final_signature": final_signature,
         "dependency_signature": canonical_sha256({
             "cold_graph_id": cold_graph.get("id"),
@@ -397,6 +441,12 @@ def derive_joint_fixed_point_v2(
             "proposal_slot_dependencies": [
                 copy.deepcopy(dict(row)) for row in proposal_slot_dependencies
             ],
+            "proposal_global_slot_hypotheses": [
+                hypothesis.to_payload() for hypothesis in slot_hypotheses
+            ],
+            "bootstrap_authority_global_slot_content_ids": sorted(
+                _global_slot_content_ids(bootstrap_authority_invariants)
+            ),
             "converged": bootstrap_converged,
         },
     }
@@ -479,6 +529,72 @@ def _global_slot_invariants(
         copy.deepcopy(dict(row))
         for row in authority.get("global_slot_invariants", ())
         if isinstance(row, Mapping)
+    )
+
+
+def _normalize_global_slot_hypotheses(
+    values: Sequence[Mapping[str, Any] | GlobalSlotInductionHypothesisV2],
+) -> tuple[GlobalSlotInductionHypothesisV2, ...]:
+    result: list[GlobalSlotInductionHypothesisV2] = []
+    try:
+        for value in values:
+            result.append(
+                value
+                if isinstance(value, GlobalSlotInductionHypothesisV2)
+                else GlobalSlotInductionHypothesisV2.parse(value)
+            )
+    except (GlobalSlotHypothesisV2Error, TypeError, ValueError) as exc:
+        raise ValueError(f"global-slot induction hypothesis is invalid: {exc}") from exc
+    result.sort(key=lambda item: item.id)
+    if len({item.id for item in result}) != len(result):
+        raise ValueError("global-slot induction hypothesis IDs must be unique")
+    slot_rvas = [item.invariant.slot_rva for item in result]
+    if len(set(slot_rvas)) != len(slot_rvas):
+        raise ValueError(
+            "global-slot induction hypotheses must contain one record per slot"
+        )
+    return tuple(result)
+
+
+def _merge_initial_global_slot_hypotheses(
+    authoritative: Sequence[Mapping[str, Any]],
+    hypotheses: Sequence[GlobalSlotInductionHypothesisV2],
+) -> tuple[tuple[Mapping[str, Any], ...], frozenset[str], frozenset[str]]:
+    """Add proposals once, with independently replayed authority taking priority."""
+
+    rows = [copy.deepcopy(dict(row)) for row in authoritative]
+    content_ids = set(_global_slot_content_ids(rows))
+    occupied_slots = {
+        int(row["slot_rva"])
+        for row in rows
+        if isinstance(row.get("slot_rva"), int)
+        and not isinstance(row.get("slot_rva"), bool)
+    }
+    introduced: set[str] = set()
+    shadowed: set[str] = set()
+    for hypothesis in hypotheses:
+        content_id = hypothesis.invariant.content_id
+        if (
+            content_id in content_ids
+            or hypothesis.invariant.slot_rva in occupied_slots
+        ):
+            shadowed.add(content_id)
+            continue
+        rows.append(hypothesis.invariant.to_payload())
+        content_ids.add(content_id)
+        occupied_slots.add(hypothesis.invariant.slot_rva)
+        introduced.add(content_id)
+    rows.sort(key=lambda row: str(row.get("content_id", "")))
+    return tuple(rows), frozenset(introduced), frozenset(shadowed)
+
+
+def _global_slot_content_ids(
+    values: Sequence[Mapping[str, Any]],
+) -> frozenset[str]:
+    return frozenset(
+        str(row["content_id"])
+        for row in values
+        if isinstance(row.get("content_id"), str) and row.get("content_id")
     )
 
 

@@ -705,6 +705,7 @@ let
           "spaghetti_extractor.checked_memory_address_domain_v2"
           "spaghetti_extractor.global_slot_analysis_v2"
           "spaghetti_extractor.global_slot_authority_v2"
+          "spaghetti_extractor.global_slot_hypotheses_v2"
           "spaghetti_extractor.interprocedural_phase_v2"
           "spaghetti_extractor.joint_fixed_point_v2"
           "spaghetti_extractor.joint_interprocedural_analysis_v2"
@@ -744,6 +745,9 @@ let
           from spaghetti_extractor.global_slot_image_v2 import (
               GlobalSlotImageV2Error,
               loader_initial_bytes_v2,
+          )
+          from spaghetti_extractor.global_slot_hypotheses_v2 import (
+              derive_global_slot_induction_hypotheses_v2,
           )
           from spaghetti_extractor.import_abi import load_selected_import_abis
           from spaghetti_extractor.internal_function_contracts import load_internal_function_contracts
@@ -817,6 +821,14 @@ let
           proposal_slot_dependencies = derive_proposal_slot_dependencies(
               binary,
               proposals,
+          )
+          proposal_global_slot_hypotheses = (
+              derive_global_slot_induction_hypotheses_v2(
+                  binary,
+                  machine_ir_sha256=machine_ir_sha256,
+                  proposal_slot_dependencies=proposal_slot_dependencies,
+                  finite_value_budget=analysis_finite_value_budget,
+              )
           )
           proposal_graph = build_proposal_control_graph_v2(
               units=units,
@@ -1085,6 +1097,9 @@ let
               proposal_interprocedural=seed,
               proposal_call_frame_hypotheses=discovery_call_frames,
               proposal_slot_dependencies=proposal_slot_dependencies,
+              proposal_global_slot_hypotheses=(
+                  proposal_global_slot_hypotheses
+              ),
               callbacks=JointFixedPointCallbacks(
                   derive_interprocedural=derive_interprocedural,
                   derive_stack_ranges=derive_stack_ranges,

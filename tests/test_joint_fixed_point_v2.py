@@ -3,6 +3,15 @@ from __future__ import annotations
 import unittest
 
 from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
+from spaghetti_extractor.authority_bindings_v2 import (
+    BinaryBinding,
+    ImageSpanBinding,
+)
+from spaghetti_extractor.authority_record_core_v2 import FiniteAlternatives
+from spaghetti_extractor.global_slot_contract_v2 import GlobalSlotInvariant
+from spaghetti_extractor.global_slot_hypotheses_v2 import (
+    GlobalSlotInductionHypothesisV2,
+)
 from spaghetti_extractor.joint_fixed_point_v2 import (
     JointFixedPointCallbacks,
     derive_joint_fixed_point_v2,
@@ -60,7 +69,151 @@ def _stack(
     }
 
 
+def _slot_hypothesis() -> GlobalSlotInductionHypothesisV2:
+    invariant = GlobalSlotInvariant(
+        binding=ImageSpanBinding(
+            binary=BinaryBinding("a" * 64, "b" * 64),
+            rva_start=0x2000,
+            rva_end=0x2004,
+            initial_bytes_sha256="c" * 64,
+            initialization_kind="file_bytes",
+            relocation_kind="none",
+        ),
+        slot_rva=0x2000,
+        width_bytes=4,
+        invariant_kind="finite_set",
+        alternatives=FiniteAlternatives.of([
+            {"kind": "exact_bits", "value": 0x401000, "width_bits": 32}
+        ]),
+    )
+    return GlobalSlotInductionHypothesisV2(
+        invariant=invariant,
+        exit_ids=("exit:a",),
+        dependency_sha256="d" * 64,
+    )
+
+
 class JointFixedPointV2Tests(unittest.TestCase):
+    def test_slot_hypothesis_survives_only_when_replay_reproduces_it(self) -> None:
+        hypothesis = _slot_hypothesis()
+        observed: list[tuple[str, ...]] = []
+
+        def interprocedural(
+            invariants, _stack_entry_offsets, _stack_range_facts, _recoveries
+        ):
+            observed.append(tuple(
+                str(row["content_id"]) for row in invariants
+            ))
+            return _interprocedural(
+                generation=len(invariants), proposal_seed_count=0
+            )
+
+        result = derive_joint_fixed_point_v2(
+            proposal_graph=_graph(),
+            proposal_recoveries=[],
+            proposal_global_slot_hypotheses=[hypothesis.to_payload()],
+            callbacks=JointFixedPointCallbacks(
+                derive_interprocedural=interprocedural,
+                derive_stack_ranges=lambda graph, interprocedural: _stack(
+                    dict(interprocedural["call_summaries"]),
+                    graph_id=str(graph["id"]),
+                ),
+                derive_global_slots=lambda _graph, _ranges: {"status": "complete"},
+                derive_global_slot_authority=lambda *_args: {
+                    "status": "complete",
+                    "global_slot_invariants": [hypothesis.invariant.to_payload()],
+                },
+                derive_graph=lambda _interprocedural: _graph(),
+            ),
+        )
+
+        content_id = hypothesis.invariant.content_id
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertTrue(observed)
+        self.assertTrue(all(row == (content_id,) for row in observed))
+        self.assertEqual(
+            result["joint_fixed_point"]["global_slot_induction"][
+                "reproduced_content_ids"
+            ],
+            [content_id],
+        )
+
+    def test_unreproduced_slot_hypothesis_is_dropped_before_convergence(self) -> None:
+        hypothesis = _slot_hypothesis()
+        observed: list[tuple[str, ...]] = []
+
+        def interprocedural(
+            invariants, _stack_entry_offsets, _stack_range_facts, _recoveries
+        ):
+            observed.append(tuple(
+                str(row["content_id"]) for row in invariants
+            ))
+            return _interprocedural(
+                generation=len(invariants), proposal_seed_count=0
+            )
+
+        result = derive_joint_fixed_point_v2(
+            proposal_graph=_graph(),
+            proposal_recoveries=[],
+            proposal_global_slot_hypotheses=[hypothesis],
+            callbacks=JointFixedPointCallbacks(
+                derive_interprocedural=interprocedural,
+                derive_stack_ranges=lambda graph, interprocedural: _stack(
+                    dict(interprocedural["call_summaries"]),
+                    graph_id=str(graph["id"]),
+                ),
+                derive_global_slots=lambda _graph, _ranges: {"status": "complete"},
+                derive_global_slot_authority=lambda *_args: {
+                    "status": "complete",
+                    "global_slot_invariants": [],
+                },
+                derive_graph=lambda _interprocedural: _graph(),
+            ),
+        )
+
+        content_id = hypothesis.invariant.content_id
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertEqual(observed[0], (content_id,))
+        self.assertTrue(observed[1:])
+        self.assertTrue(all(row == () for row in observed[1:]))
+        self.assertEqual(
+            result["joint_fixed_point"]["global_slot_induction"][
+                "not_reproduced_content_ids"
+            ],
+            [content_id],
+        )
+        self.assertEqual(
+            result["interprocedural"]["call_summaries"]["generation"], 0
+        )
+
+    def test_authorizing_slot_hypothesis_wrapper_is_rejected(self) -> None:
+        payload = _slot_hypothesis().to_payload()
+        payload["proof_authority"] = True
+
+        with self.assertRaisesRegex(ValueError, "non-authorizing"):
+            derive_joint_fixed_point_v2(
+                proposal_graph=_graph(),
+                proposal_recoveries=[],
+                proposal_global_slot_hypotheses=[payload],
+                callbacks=JointFixedPointCallbacks(
+                    derive_interprocedural=lambda *_args: _interprocedural(
+                        generation=0, proposal_seed_count=0
+                    ),
+                    derive_stack_ranges=lambda graph, interprocedural: _stack(
+                        dict(interprocedural["call_summaries"]),
+                        graph_id=str(graph["id"]),
+                    ),
+                    derive_global_slots=lambda _graph, _ranges: {
+                        "status": "complete"
+                    },
+                    derive_global_slot_authority=lambda *_args: {
+                        "status": "complete",
+                        "global_slot_invariants": [],
+                    },
+                    derive_graph=lambda _interprocedural: _graph(),
+                ),
+            )
+
     def test_prepared_proposal_is_reused_but_authority_is_unseeded(self) -> None:
         calls: list[tuple[int, bool]] = []
 
