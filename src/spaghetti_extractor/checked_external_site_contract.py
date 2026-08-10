@@ -799,7 +799,7 @@ def _resolved_event_machine_contract(
         "argument_base_offset": 0 if transfer_kind == "call" else 4,
         "contract_id": contract.get("id"),
         "profile_binding": copy.deepcopy(dict(profile_binding)),
-        "disposition": contract.get("disposition", "returns"),
+        "disposition": contract.get("disposition"),
         "result_register_relations": copy.deepcopy(
             contract.get("result_register_relations", [])
         ),
@@ -888,7 +888,7 @@ def require_profile_match(
         "contract_id": str(profile_contract.get("id")),
         "abi_template": profile_contract.get("abi_template"),
         "argument_words": profile_words,
-        "disposition": profile_contract.get("disposition", "returns"),
+        "disposition": profile_contract.get("disposition"),
         "result_register_relations": _metadata(profile_contract.get("result_register_relations", [])),
         "memory_effect": profile_contract.get("memory_effect"),
         "memory_footprints": _metadata(profile_contract.get("memory_footprints", [])),

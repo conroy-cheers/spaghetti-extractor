@@ -179,32 +179,28 @@
       "import": {"dll": "user32.dll", "symbol": "PeekMessageA"},
       "abi_template": "pe32-stdcall-v1",
       "arity": {"kind": "fixed", "words": 5},
-      "disposition": "returns",
-      "result_register_relations": [{"register": "eax", "relation": "exact"}]
+      "disposition": "returns"
     },
     {
       "id": "user32.dll!GetMessageA:abi-only",
       "import": {"dll": "user32.dll", "symbol": "GetMessageA"},
       "abi_template": "pe32-stdcall-v1",
       "arity": {"kind": "fixed", "words": 4},
-      "disposition": "returns",
-      "result_register_relations": [{"register": "eax", "relation": "exact"}]
+      "disposition": "returns"
     },
     {
       "id": "user32.dll!TranslateMessage:abi-only",
       "import": {"dll": "user32.dll", "symbol": "TranslateMessage"},
       "abi_template": "pe32-stdcall-v1",
       "arity": {"kind": "fixed", "words": 1},
-      "disposition": "returns",
-      "result_register_relations": [{"register": "eax", "relation": "exact"}]
+      "disposition": "returns"
     },
     {
       "id": "user32.dll!DispatchMessageA:abi-only",
       "import": {"dll": "user32.dll", "symbol": "DispatchMessageA"},
       "abi_template": "pe32-stdcall-v1",
       "arity": {"kind": "fixed", "words": 1},
-      "disposition": "returns",
-      "result_register_relations": [{"register": "eax", "relation": "exact"}]
+      "disposition": "returns"
     }
   ]
 }

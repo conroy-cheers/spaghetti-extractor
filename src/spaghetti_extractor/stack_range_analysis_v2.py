@@ -748,6 +748,8 @@ def _external_cleanup(event: Mapping[str, Any]) -> int | None:
     abi = event.get("abi_contract")
     if not isinstance(abi, Mapping):
         return None
+    if abi.get("disposition") != "returns":
+        return None
     words = abi.get("argument_words")
     template = abi.get("template")
     if not isinstance(words, int) or isinstance(words, bool) or words < 0:
@@ -781,6 +783,8 @@ def _indirect_cleanup(
         cleanups.add(cleanup)
     for target in recovery.get("external_targets", ()):
         if not isinstance(target, Mapping):
+            return None, target_units
+        if target.get("disposition") != "returns":
             return None, target_units
         abi = target.get("abi")
         words = target.get("argument_words")

@@ -408,6 +408,7 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
                 "target_rvas": [],
                 "external_targets": [{
                     "argument_words": 1,
+                    "disposition": "returns",
                     "abi": {
                         "template": "pe32-stdcall-v1",
                         "callee_cleanup": True,
@@ -417,6 +418,29 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
         )
 
         self.assertEqual(result["entry_offsets"]["continuation"], [0])
+
+        unresolved = _derive(
+            units,
+            recoveries=[{
+                "id": exit_id,
+                "status": "recovered",
+                "kind": "indirect_call",
+                "target_unit_ids": [],
+                "target_rvas": [],
+                "external_targets": [{
+                    "argument_words": 1,
+                    "abi": {
+                        "template": "pe32-stdcall-v1",
+                        "callee_cleanup": True,
+                    },
+                }],
+            }],
+        )
+        self.assertNotIn("continuation", unresolved["entry_offsets"])
+        self.assertIn(
+            "indirect_call_frame_unresolved",
+            {row["code"] for row in unresolved["frontiers"]},
+        )
 
 
 if __name__ == "__main__":

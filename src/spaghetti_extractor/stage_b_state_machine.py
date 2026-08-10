@@ -537,20 +537,23 @@ def _annotate_machine_import_arguments(
             "argument_words": argument_words,
             "argument_base_offset": argument_base_offset,
             "contract_id": contract.get("id"),
-            "disposition": contract.get("disposition", "returns"),
-            "result_register_relations": _machine_contract_metadata(
-                contract.get("result_register_relations", [])
-            ),
-            "memory_effect": contract.get("memory_effect", "none"),
-            "memory_footprints": _machine_contract_metadata(
-                contract.get("memory_footprints", [])
-            ),
-            "world_effect": contract.get("world_effect", "none"),
-            "callback_effect": contract.get("callback_effect"),
-            "out_interface_relations": _machine_contract_metadata(
-                contract.get("out_interface_relations", [])
-            ),
         }
+        for field in (
+            "disposition",
+            "memory_effect",
+            "world_effect",
+            "callback_effect",
+        ):
+            if field in contract:
+                abi_contract[field] = contract[field]
+        for field in (
+            "result_register_relations",
+            "memory_footprints",
+            "out_pointer_relations",
+            "out_interface_relations",
+        ):
+            if field in contract:
+                abi_contract[field] = _machine_contract_metadata(contract[field])
         profile_binding = contract.get("profile_binding")
         if isinstance(profile_binding, Mapping):
             abi_contract["profile_binding"] = dict(profile_binding)

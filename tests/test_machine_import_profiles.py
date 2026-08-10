@@ -237,11 +237,38 @@ class MachineImportProfileTests(unittest.TestCase):
                 )
                 self.assertNotIn("memory_effect", contract.contract)
                 self.assertNotIn("world_effect", contract.contract)
+                self.assertNotIn("callback_effect", contract.contract)
                 self.assertFalse(authority_entries[(dll, symbol)].complete)
                 self.assertEqual(
                     authority_entries[(dll, symbol)].failure_reason,
                     "machine import profile entry lacks an exact ABI/effect contract",
                 )
+
+        contracts = _machine_import_contracts([profile])
+        event = {
+            "kind": "external_call",
+            "dll": "user32.dll",
+            "symbol": "PeekMessageA",
+            "ordinal": None,
+            "arguments": [],
+            "stack_inputs": [],
+        }
+        annotated = _annotate_machine_import_arguments({
+            "outcome": {"kind": "fallthrough", "target_rva": 0x1010},
+            "external_events": [event],
+            "ordered_events": [event],
+        }, contracts)["external_events"][0]["abi_contract"]
+        self.assertEqual(annotated["template"], "pe32-stdcall-v1")
+        self.assertEqual(annotated["argument_words"], 5)
+        self.assertEqual(annotated["disposition"], "returns")
+        for field in (
+            "result_register_relations",
+            "memory_effect",
+            "memory_footprints",
+            "world_effect",
+            "callback_effect",
+        ):
+            self.assertNotIn(field, annotated)
 
     def test_callback_profiles_declare_source_abi_and_lifetime(self) -> None:
         profile_set = load_machine_import_profile_set([
@@ -268,6 +295,8 @@ class MachineImportProfileTests(unittest.TestCase):
                 if contract.contract.get("world_effect")
                 == "callbackRegistration"
                 else "none"
+                if "world_effect" in contract.contract
+                else None
             )
             self.assertEqual(
                 contract.contract.get("callback_effect"),

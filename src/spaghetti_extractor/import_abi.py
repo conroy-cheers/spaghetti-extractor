@@ -47,6 +47,14 @@ class SelectedImportABI:
         }
         if self.argument_words is not None:
             result["argument_words"] = self.argument_words
+        contract = self.contract
+        disposition = (
+            contract.get("disposition")
+            if isinstance(contract, Mapping)
+            else None
+        )
+        if disposition in {"returns", "terminates"}:
+            result["disposition"] = disposition
         return result
 
 

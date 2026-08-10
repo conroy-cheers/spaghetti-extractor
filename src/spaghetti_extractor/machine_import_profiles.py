@@ -653,7 +653,21 @@ def _normalize_entry(
     elif arity_kind == "variadic":
         result["minimum_argument_words"] = words
     result.setdefault("id", f"{profile_id}:{entry_key}:{entry_index}")
-    if "callback_effect" not in result and default_callback_effect is not None:
+    has_external_effect_contract = any(
+        field in result
+        for field in (
+            "effect_model",
+            "memory_effect",
+            "world_effect",
+            "callback_source",
+            "callback_abi",
+        )
+    )
+    if (
+        "callback_effect" not in result
+        and default_callback_effect is not None
+        and has_external_effect_contract
+    ):
         result["callback_effect"] = default_callback_effect
     result["profile_id"] = profile_id
     return result
