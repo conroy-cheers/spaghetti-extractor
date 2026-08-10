@@ -4,6 +4,7 @@ import unittest
 
 from spaghetti_extractor.call_arguments import (
     CALL_ARGUMENT_RECOVERY_FORMAT,
+    recover_pe32_local_stack_argument_prefix,
     recover_pe32_stack_call_arguments,
 )
 
@@ -82,6 +83,48 @@ class CallArgumentRecoveryTests(unittest.TestCase):
 
         self.assertEqual(recovered.status, "incomplete")
         self.assertEqual(recovered.failure_code, "argument_write_missing")
+
+    def test_infers_contiguous_local_argument_prefix_without_abi(self) -> None:
+        esp_minus_4 = sub(reg("esp"), const(4))
+        esp_minus_8 = sub(esp_minus_4, const(4))
+        call = {
+            "kind": "internal_call",
+            "target_rva": 0x1800,
+            "return_rva": 0x1010,
+            "register_inputs": {"esp": esp_minus_8},
+        }
+        unit = {
+            "semantics": {
+                "external_events": [call],
+                "ordered_events": [
+                    {
+                        "kind": "write",
+                        "width": 4,
+                        "address": esp_minus_4,
+                        "value": const(0x416038),
+                    },
+                    {
+                        "kind": "write",
+                        "width": 4,
+                        "address": esp_minus_8,
+                        "value": const(0x41602C),
+                    },
+                    call,
+                ],
+            }
+        }
+
+        recovered = recover_pe32_local_stack_argument_prefix(unit, event_index=0)
+
+        self.assertEqual(recovered.status, "complete")
+        self.assertEqual(
+            [argument["value"] for argument in recovered.arguments],
+            [0x41602C, 0x416038],
+        )
+        self.assertEqual(
+            [row["argument_index"] for row in recovered.evidence],
+            [0, 1],
+        )
 
     def test_unknown_memory_write_before_call_fails_closed(self) -> None:
         call = {

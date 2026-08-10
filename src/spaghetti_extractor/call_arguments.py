@@ -57,52 +57,10 @@ def recover_pe32_stack_call_arguments(
         or not 0 <= argument_words <= 64
     ):
         raise ValueError("call argument recovery indices are out of range")
-    semantics = _mapping(unit.get("semantics"))
-    events = semantics.get("external_events")
-    ordered = semantics.get("ordered_events")
-    if not isinstance(events, list) or not 0 <= event_index < len(events):
-        return _failure("missing_call_event")
-    if not isinstance(ordered, list):
-        return _failure("missing_ordered_effects")
-    desired = _mapping(events[event_index])
-    if desired.get("kind") not in _CALL_KINDS:
-        return _failure("selected_event_is_not_call")
-    register_inputs = _mapping(desired.get("register_inputs"))
-    call_esp = _affine_esp(register_inputs.get("esp"))
-    if call_esp is None:
-        return _failure("call_esp_not_affine")
-
-    stack_writes: dict[int, tuple[Any, dict[str, Any]]] = {}
-    observed_call_index = -1
-    selected = False
-    for ordered_index, raw in enumerate(ordered):
-        event = _mapping(raw)
-        kind = event.get("kind")
-        if kind in _CALL_KINDS:
-            observed_call_index += 1
-            if observed_call_index == event_index:
-                if not _same_call(desired, event):
-                    return _failure("ordered_call_identity_mismatch")
-                selected = True
-                break
-            continue
-        if kind != "write":
-            continue
-        width = event.get("width")
-        offset = _affine_esp(event.get("address"))
-        if width != 4 or offset is None:
-            return _failure("non_affine_pre_call_memory_write")
-        stack_writes[offset] = (
-            copy.deepcopy(event.get("value")),
-            {
-                "ordered_event_index": ordered_index,
-                "instruction_rva": event.get("instruction_rva"),
-                "stack_offset_from_unit_input": offset,
-                "width": 4,
-            },
-        )
-    if not selected:
-        return _failure("ordered_call_missing")
+    prepared, failure = _prepare_local_call_stack(unit, event_index=event_index)
+    if prepared is None:
+        return _failure(failure or "local_call_stack_unavailable")
+    call_esp, stack_writes = prepared
 
     arguments: list[Any] = []
     evidence: list[Mapping[str, Any]] = []
@@ -123,6 +81,104 @@ def recover_pe32_stack_call_arguments(
         arguments=tuple(arguments),
         evidence=tuple(evidence),
     )
+
+
+def recover_pe32_local_stack_argument_prefix(
+    unit: Mapping[str, Any],
+    *,
+    event_index: int,
+    max_argument_words: int = 64,
+) -> CallArgumentRecovery:
+    """Recover the contiguous argument prefix prepared in one call unit.
+
+    Unlike ``recover_pe32_stack_call_arguments``, this helper does not require
+    an ABI-derived argument count. It is suitable for non-authorizing target
+    discovery when a caller pushes a complete local frame but the callee's ABI
+    is not known yet. Consumers must still replay any resulting target against
+    checked stack and call-frame evidence before granting authority.
+    """
+
+    if (
+        not isinstance(max_argument_words, int)
+        or isinstance(max_argument_words, bool)
+        or not 1 <= max_argument_words <= 64
+    ):
+        raise ValueError("local call argument budget must be between 1 and 64")
+    prepared, failure = _prepare_local_call_stack(unit, event_index=event_index)
+    if prepared is None:
+        return _failure(failure or "local_call_stack_unavailable")
+    call_esp, stack_writes = prepared
+    arguments: list[Any] = []
+    evidence: list[Mapping[str, Any]] = []
+    for argument_index in range(max_argument_words):
+        recovered = stack_writes.get(call_esp + argument_index * 4)
+        if recovered is None:
+            break
+        value, witness = recovered
+        arguments.append(copy.deepcopy(value))
+        evidence.append({
+            **witness,
+            "argument_index": argument_index,
+            "call_esp_offset": call_esp,
+        })
+    if not arguments:
+        return _failure("argument_write_missing")
+    return CallArgumentRecovery(
+        status="complete",
+        arguments=tuple(arguments),
+        evidence=tuple(evidence),
+    )
+
+
+def _prepare_local_call_stack(
+    unit: Mapping[str, Any], *, event_index: int
+) -> tuple[
+    tuple[int, dict[int, tuple[Any, dict[str, Any]]]] | None,
+    str | None,
+]:
+    semantics = _mapping(unit.get("semantics"))
+    events = semantics.get("external_events")
+    ordered = semantics.get("ordered_events")
+    if not isinstance(events, list) or not 0 <= event_index < len(events):
+        return None, "missing_call_event"
+    if not isinstance(ordered, list):
+        return None, "missing_ordered_effects"
+    desired = _mapping(events[event_index])
+    if desired.get("kind") not in _CALL_KINDS:
+        return None, "selected_event_is_not_call"
+    register_inputs = _mapping(desired.get("register_inputs"))
+    call_esp = _affine_esp(register_inputs.get("esp"))
+    if call_esp is None:
+        return None, "call_esp_not_affine"
+
+    stack_writes: dict[int, tuple[Any, dict[str, Any]]] = {}
+    observed_call_index = -1
+    for ordered_index, raw in enumerate(ordered):
+        event = _mapping(raw)
+        kind = event.get("kind")
+        if kind in _CALL_KINDS:
+            observed_call_index += 1
+            if observed_call_index != event_index:
+                continue
+            if not _same_call(desired, event):
+                return None, "ordered_call_identity_mismatch"
+            return (call_esp, stack_writes), None
+        if kind != "write":
+            continue
+        width = event.get("width")
+        offset = _affine_esp(event.get("address"))
+        if width != 4 or offset is None:
+            return None, "non_affine_pre_call_memory_write"
+        stack_writes[offset] = (
+            copy.deepcopy(event.get("value")),
+            {
+                "ordered_event_index": ordered_index,
+                "instruction_rva": event.get("instruction_rva"),
+                "stack_offset_from_unit_input": offset,
+                "width": 4,
+            },
+        )
+    return None, "ordered_call_missing"
 
 
 def _failure(code: str) -> CallArgumentRecovery:
@@ -197,5 +253,6 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 __all__ = [
     "CALL_ARGUMENT_RECOVERY_FORMAT",
     "CallArgumentRecovery",
+    "recover_pe32_local_stack_argument_prefix",
     "recover_pe32_stack_call_arguments",
 ]

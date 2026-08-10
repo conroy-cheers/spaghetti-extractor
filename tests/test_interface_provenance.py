@@ -4014,6 +4014,208 @@ class InterfaceProvenanceTests(unittest.TestCase):
         )
         self.assertGreater(overflow["counts"]["path_context_dropped_states"], 0)
 
+    def test_bounded_call_contexts_recover_nullable_callback_table_loop(self) -> None:
+        table_a = IMAGE_BASE + 0x5000
+        table_b = IMAGE_BASE + 0x5100
+        target_a = IMAGE_BASE + 0x2000
+        target_b = IMAGE_BASE + 0x2010
+        target_c = IMAGE_BASE + 0x2020
+
+        def caller(
+            identifier: str, rva: int, start: int, entries: int
+        ) -> dict[str, object]:
+            pushed_end = sub(reg("esp"), const(4))
+            pushed_start = sub(pushed_end, const(4))
+            event = {
+                "kind": "internal_call",
+                "target_rva": 0x1800,
+                "return_rva": rva + 1,
+                "register_inputs": {name: reg(name) for name in REGISTERS},
+            }
+            event["register_inputs"]["esp"] = pushed_start
+            writes = [
+                {
+                    "kind": "write",
+                    "width": 4,
+                    "address": pushed_end,
+                    "value": const(start + entries * 4),
+                },
+                {
+                    "kind": "write",
+                    "width": 4,
+                    "address": pushed_start,
+                    "value": const(start),
+                },
+            ]
+            return unit(
+                identifier,
+                rva,
+                memory=writes,
+                events=[event],
+                ordered=[*writes, event],
+            )
+
+        def prelude(
+            identifier: str, rva: int, return_rva: int
+        ) -> dict[str, object]:
+            event = {
+                "kind": "internal_call",
+                "target_rva": 0x3000,
+                "return_rva": return_rva,
+                "register_inputs": {name: reg(name) for name in REGISTERS},
+            }
+            return unit(identifier, rva, events=[event], ordered=[event])
+
+        helper = unit(
+            "helper",
+            0x1800,
+            writes=[
+                {
+                    "register": "esi",
+                    "value": load(add(reg("esp"), const(4))),
+                },
+                {
+                    "register": "edi",
+                    "value": load(add(reg("esp"), const(8))),
+                },
+            ],
+        )
+        range_guard = {
+            "op": "ult32",
+            "args": [reg("esi"), reg("edi")],
+        }
+        load_target = unit(
+            "load-target",
+            0x1810,
+            writes=[{"register": "eax", "value": load(reg("esi"))}],
+        )
+        nonnull_guard = {
+            "op": "not",
+            "args": [{"op": "eq32", "args": [reg("eax"), const(0)]}],
+        }
+        call_event = {
+            "kind": "indirect_call",
+            "return_rva": 0x1821,
+            "target": reg("eax"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        call = unit("call", 0x1820, events=[call_event], ordered=[call_event])
+        advance = unit(
+            "advance",
+            0x1830,
+            writes=[{
+                "register": "esi",
+                "value": add(reg("esi"), const(4)),
+            }],
+        )
+        exit_row = {
+            "id": "exit:nullable-table-callback",
+            "source_unit_id": "call",
+            "source_rva": 0x1820,
+            "source_event_index": 0,
+            "kind": "indirect_call",
+            "target_expression": reg("eax"),
+        }
+        table_words = {
+            table_a: 0,
+            table_a + 4: target_a,
+            table_a + 8: target_b,
+            table_b: 0,
+            table_b + 4: target_c,
+        }
+
+        def initialized_image_reader(address: int, size: int) -> bytes | None:
+            value = table_words.get(address) if size == 4 else None
+            return None if value is None else value.to_bytes(4, "little")
+
+        units = [
+            prelude("prelude-a", 0x1000, 0x1100),
+            prelude("prelude-b", 0x1020, 0x1120),
+            caller("caller-a", 0x1100, table_a, 3),
+            caller("caller-b", 0x1120, table_b, 2),
+            helper,
+            unit("range-check", 0x180A),
+            load_target,
+            call,
+            advance,
+            unit("done", 0x1840),
+            unit("target-a", 0x2000),
+            unit("target-b", 0x2010),
+            unit("target-c", 0x2020),
+            unit("prelude-callee", 0x3000),
+        ]
+        direct = [
+            edge("prelude-a", "caller-a"),
+            edge("prelude-b", "caller-b"),
+            edge("helper", "range-check"),
+            {
+                "source_unit_id": "range-check",
+                "target_unit_id": "load-target",
+                "guard": range_guard,
+            },
+            {
+                "source_unit_id": "range-check",
+                "target_unit_id": "done",
+                "guard": {"op": "not", "args": [range_guard]},
+            },
+            {
+                "source_unit_id": "load-target",
+                "target_unit_id": "call",
+                "guard": nonnull_guard,
+            },
+            {
+                "source_unit_id": "load-target",
+                "target_unit_id": "advance",
+                "guard": {"op": "not", "args": [nonnull_guard]},
+            },
+            edge("call", "advance"),
+            {
+                "source_unit_id": "advance",
+                "target_unit_id": "load-target",
+                "guard": range_guard,
+            },
+            {
+                "source_unit_id": "advance",
+                "target_unit_id": "done",
+                "guard": {"op": "not", "args": [range_guard]},
+            },
+        ]
+        internal = [
+            {
+                "source_unit_id": prelude_id,
+                "source_event_index": 0,
+                "target_unit_id": "prelude-callee",
+            }
+            for prelude_id in ("prelude-a", "prelude-b")
+        ] + [
+            {
+                "source_unit_id": caller_id,
+                "source_event_index": 0,
+                "target_unit_id": "helper",
+            }
+            for caller_id in ("caller-a", "caller-b")
+        ]
+
+        result = self._run(
+            units,
+            direct,
+            roots=["prelude-a", "prelude-b"],
+            internal_edges=internal,
+            indirect_exits=[exit_row],
+            static_data_reader=initialized_image_reader,
+            bootstrap_unknown_call_preserved_registers=frozenset({"esi", "edi"}),
+            collect_path_recovery_proposals=True,
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "incomplete")
+        self.assertTrue(result["path_recovery_proposals"], result)
+        proposal = result["path_recovery_proposals"][0]
+        self.assertEqual(proposal["status"], "recovered", proposal)
+        self.assertEqual(proposal["target_rvas"], [0x2000, 0x2010, 0x2020])
+        self.assertEqual(proposal["context_coverage"]["status"], "complete")
+        self.assertEqual(proposal["context_coverage"]["context_count"], 2)
+        self.assertFalse(proposal["proof_authority"])
+
     def _run(
         self,
         units: list[dict[str, object]],

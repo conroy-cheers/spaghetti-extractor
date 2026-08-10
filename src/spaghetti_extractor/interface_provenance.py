@@ -21,7 +21,11 @@ from .callback_contracts import (
     parse_callback_result,
     parse_callback_source,
 )
-from .call_arguments import CallArgumentRecovery, recover_pe32_stack_call_arguments
+from .call_arguments import (
+    CallArgumentRecovery,
+    recover_pe32_local_stack_argument_prefix,
+    recover_pe32_stack_call_arguments,
+)
 from .call_site_effects import (
     CallOutput,
     CallSiteEffect,
@@ -1954,8 +1958,15 @@ def _run_contextual_target_discovery(
                             return_rva = _integer(
                                 events[event_index].get("return_rva")
                             )
-                    contribution = _enter_call_frame(
+                    contribution = _enter_context_call_frame(
                         contribution,
+                        source_state=state,
+                        source_unit=by_id[source_id],
+                        source_unit_id=source_id,
+                        event_index=event_index,
+                        inventory=inventory,
+                        known_slots=known_slots,
+                        finite_value_budget=finite_value_budget,
                         return_address=(
                             None
                             if return_rva is None
@@ -6066,6 +6077,74 @@ def _enter_call_frame(
     )
     output.registers["esp"] = _stack_location(0)
     return output
+
+
+def _enter_context_call_frame(
+    state: _State,
+    *,
+    source_state: _State,
+    source_unit: Mapping[str, Any],
+    source_unit_id: str,
+    event_index: int | None,
+    inventory: _ProfileInventory,
+    known_slots: Mapping[_MemoryLocation, _Value],
+    finite_value_budget: int,
+    return_address: int | None = None,
+) -> _State:
+    """Recover an exact local argument frame for proposal-only contexts.
+
+    A preceding unresolved call can destroy the function-entry-relative ESP
+    origin even when this call's arguments are all pushed in the current exact
+    machine-IR unit. Rebase that contiguous local prefix onto the callee frame
+    for bounded target discovery. Final authority still requires the ordinary
+    checked stack and call-frame replay; this helper is used only by the
+    non-authorizing contextual proposal pass.
+    """
+
+    framed = _enter_call_frame(state, return_address=return_address)
+    if event_index is None:
+        return framed
+    local = recover_pe32_local_stack_argument_prefix(
+        source_unit,
+        event_index=event_index,
+        max_argument_words=min(64, finite_value_budget),
+    )
+    if local.status != "complete":
+        return framed
+    stack = dict(framed.stack)
+    for argument_index, (expression, raw_witness) in enumerate(
+        zip(local.arguments, local.evidence, strict=True)
+    ):
+        value = _evaluate(
+            expression,
+            source_state,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=finite_value_budget,
+        )
+        if value is None:
+            continue
+        offset = 4 + argument_index * 4
+        witness = _StackWriteWitness(
+            unit_id=source_unit_id,
+            event_index=int(raw_witness["ordered_event_index"]),
+            instruction_rva=_integer(raw_witness.get("instruction_rva")),
+            stack_offset=offset,
+        )
+        prior = stack.get(offset)
+        if prior is not None and prior.value != value:
+            stack[offset] = _StackCell(None, prior.witnesses + (witness,))
+            continue
+        stack[offset] = _StackCell(
+            value,
+            (witness,) if prior is None else prior.witnesses + (witness,),
+        )
+    return _State(
+        dict(framed.registers),
+        dict(framed.memory),
+        stack,
+        framed.memory_invalidated,
+    )
 
 
 def _output_effects(
