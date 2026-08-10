@@ -64,6 +64,26 @@
       "callback_effect": "none"
     },
     {
+      "id": "kernel32.dll!FlushFileBuffers",
+      "import": {"dll": "kernel32.dll", "symbol": "FlushFileBuffers"},
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [{"register": "eax", "relation": "exact"}],
+      "effect_model": {
+        "kind": "exact_native_dll_callthrough_v1",
+        "prerequisites": {
+          "same_pinned_dll_implementation": true,
+          "exact_machine_arguments": true,
+          "candidate_address_space_used_directly": true
+        }
+      },
+      "memory_effect": "nativeCallthrough",
+      "memory_footprints": [],
+      "world_effect": "nativeCallthrough",
+      "callback_effect": "none"
+    },
+    {
       "id": "kernel32.dll!GetVersionExA",
       "import": {"dll": "kernel32.dll", "symbol": "GetVersionExA"},
       "abi_template": "pe32-stdcall-v1",

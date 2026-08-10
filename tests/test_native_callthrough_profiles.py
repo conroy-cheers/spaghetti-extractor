@@ -22,6 +22,7 @@ _EXPECTED_ARITIES = {
     ("kernel32.dll", "CreateFileA"): 7,
     ("kernel32.dll", "CreateFileMappingA"): 6,
     ("kernel32.dll", "CreateSemaphoreA"): 4,
+    ("kernel32.dll", "FlushFileBuffers"): 1,
     ("kernel32.dll", "GetVersionExA"): 1,
     ("kernel32.dll", "GlobalAlloc"): 2,
     ("kernel32.dll", "GlobalHandle"): 1,
