@@ -262,6 +262,7 @@ def analyze_global_slots_v2(
         units=normalized_units,
         image_base=image_base,
         candidate_addresses=frozenset(normalized_slots),
+        access_facts=access_facts,
     )
     global_issues = _deduplicate_issues(
         [
@@ -1224,6 +1225,7 @@ def _normalize_relevant_reads(
     units: Mapping[str, Mapping[str, Any]],
     image_base: int,
     candidate_addresses: frozenset[int],
+    access_facts: Mapping[str, CheckedMemoryAccessFact],
 ) -> tuple[dict[int, Mapping[str, Any]] | None, list[dict[str, Any]]]:
     """Check target-to-slot read dependencies against exact memory events."""
 
@@ -1279,11 +1281,11 @@ def _normalize_relevant_reads(
         events = units[unit_id]["semantics"]["memory_events"]
         event = events[event_index] if event_index < len(events) else None
         expected_address = address
+        node_id = _event_node(unit_id, event_index)
         if (
             not isinstance(event, Mapping)
             or event.get("kind") not in {"read", "read_write"}
             or event.get("width") not in {4, 32}
-            or _constant(event.get("address")) != expected_address
         ):
             issues.append(
                 _issue(
@@ -1295,7 +1297,19 @@ def _normalize_relevant_reads(
                 )
             )
             continue
-        entry["node_ids"].add(_event_node(unit_id, event_index))
+        constant_address = _constant(event.get("address"))
+        if constant_address is not None and constant_address != expected_address:
+            issues.append(
+                _issue(
+                    "violated",
+                    "relevant_slot_read_dependency_mismatch",
+                    index=index,
+                    unit_id=unit_id,
+                    event_index=event_index,
+                )
+            )
+            continue
+        entry["node_ids"].add(node_id)
         entry["target_dependencies"][(exit_id, unit_id, event_index, False)] = {
             "exit_id": exit_id,
             "unit_id": unit_id,
@@ -2201,12 +2215,14 @@ def _checked_access_classification(
         else "disjoint"
         for value in concrete
     }
-    if len(classifications) == 1:
-        return _Access(next(iter(classifications)), (fact.fact_id,))
     return _Access(
         "alias",
         (fact.fact_id,),
-        "checked_address_alternatives_have_mixed_alias_classes",
+        (
+            "checked_address_origins_are_not_coverage_authority"
+            if classifications <= {"exact", "disjoint"}
+            else "checked_address_alternatives_have_mixed_alias_classes"
+        ),
     )
 
 

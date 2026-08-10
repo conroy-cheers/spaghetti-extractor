@@ -444,6 +444,7 @@ class HybridAuthorityBuilderV2Tests(unittest.TestCase):
                 "role": "mutable_slot_invariant",
                 "content_id": invariant.content_id,
             }],
+            analysis_dependencies=[invariant.content_id],
         )
         _qualification, _selection, isa_authority = _authority()
 

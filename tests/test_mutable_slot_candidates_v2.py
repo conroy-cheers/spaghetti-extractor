@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from typing import cast
 
 from spaghetti_extractor.mutable_slot_candidates_v2 import (
+    derive_dependency_scoped_slot_inventory_v2,
+    derive_proposal_slot_dependencies,
     derive_recovery_slot_requirements_v2,
 )
 from spaghetti_extractor.stage_binary import StageABinary
@@ -121,6 +123,112 @@ class MutableSlotCandidatesV2Tests(unittest.TestCase):
                     }],
                 }],
             )
+
+    def test_proposal_slots_seed_only_incomplete_cold_exits(self) -> None:
+        proposal = [{
+            "slot_rva": 0x3020,
+            "exit_id": "exit:a",
+            "witness_only": True,
+            "proof_authority": False,
+        }]
+
+        slot_rvas, dependencies = derive_dependency_scoped_slot_inventory_v2(
+            _binary(),
+            [{"id": "exit:a", "status": "incomplete"}],
+            proposal_dependencies=proposal,
+        )
+        self.assertEqual(slot_rvas, (0x3020,))
+        self.assertEqual(dependencies, tuple(proposal))
+
+        slot_rvas, dependencies = derive_dependency_scoped_slot_inventory_v2(
+            _binary(),
+            [{
+                "id": "exit:a",
+                "status": "recovered",
+                "mutable_slot_dependencies": [{
+                    "slot_rva": 0x3030,
+                    "width_bytes": 4,
+                    "read_sites": [],
+                    "origin_witnessed": True,
+                }],
+            }],
+            proposal_dependencies=proposal,
+        )
+        self.assertEqual(slot_rvas, (0x3030,))
+        self.assertEqual(
+            dependencies,
+            ({
+                "slot_rva": 0x3030,
+                "exit_id": "exit:a",
+                "witness_only": True,
+                "proof_authority": False,
+            },),
+        )
+
+    def test_proposal_slot_inventory_is_strictly_non_authorizing(self) -> None:
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            derive_dependency_scoped_slot_inventory_v2(
+                _binary(),
+                [{"id": "exit:a", "status": "incomplete"}],
+                proposal_dependencies=[{
+                    "slot_rva": 0x3020,
+                    "exit_id": "exit:a",
+                    "witness_only": True,
+                    "proof_authority": True,
+                }],
+            )
+
+        with self.assertRaisesRegex(ValueError, "malformed"):
+            derive_dependency_scoped_slot_inventory_v2(
+                _binary(),
+                [{"id": "exit:a", "status": "incomplete"}],
+                proposal_dependencies=[{
+                    "slot_rva": 0x3020,
+                    "exit_id": "exit:a",
+                    "witness_only": True,
+                    "proof_authority": False,
+                    "unchecked_note": "must not survive v2 parsing",
+                }],
+            )
+
+    def test_contextual_proposal_names_exact_dynamic_read_site(self) -> None:
+        dependencies = derive_proposal_slot_dependencies(
+            _binary(),
+            [{
+                "id": "exit:a",
+                "status": "recovered",
+                "proposal_static_read_addresses": [0x403020, 0x403024],
+                "proposal_read_sites": [{
+                    "unit_id": "read:cursor",
+                    "event_index": 0,
+                    "slot_addresses": [0x403020, 0x403024],
+                }],
+            }],
+        )
+
+        self.assertEqual(dependencies, [{
+            "slot_rva": 0x3020,
+            "exit_id": "exit:a",
+            "unit_id": "read:cursor",
+            "event_index": 0,
+            "proof_authority": False,
+        }, {
+            "slot_rva": 0x3024,
+            "exit_id": "exit:a",
+            "unit_id": "read:cursor",
+            "event_index": 0,
+            "proof_authority": False,
+        }])
+
+        slot_rvas, replay_dependencies = (
+            derive_dependency_scoped_slot_inventory_v2(
+                _binary(),
+                [{"id": "exit:a", "status": "incomplete"}],
+                proposal_dependencies=dependencies,
+            )
+        )
+        self.assertEqual(slot_rvas, (0x3020, 0x3024))
+        self.assertEqual(replay_dependencies, tuple(dependencies))
 
 
 if __name__ == "__main__":

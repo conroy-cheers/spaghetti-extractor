@@ -108,7 +108,7 @@ def derive_proposal_slot_dependencies(
     value is accepted as evidence for the resulting global-slot invariant.
     """
 
-    dependencies: set[tuple[int, str]] = set()
+    dependencies: set[tuple[int, str, str, int]] = set()
     for recovery in recoveries:
         if (
             not isinstance(recovery, Mapping)
@@ -119,6 +119,49 @@ def derive_proposal_slot_dependencies(
         witnesses = recovery.get("target_origin_witnesses")
         if not isinstance(exit_id, str) or not exit_id:
             continue
+        read_sites: dict[int, set[tuple[str, int]]] = {}
+        raw_sites = recovery.get("proposal_read_sites", ())
+        if not isinstance(raw_sites, Sequence) or isinstance(
+            raw_sites, (str, bytes)
+        ):
+            raise ValueError("proposal read-site inventory is not an array")
+        for site in raw_sites:
+            unit_id = site.get("unit_id") if isinstance(site, Mapping) else None
+            event_index = (
+                site.get("event_index") if isinstance(site, Mapping) else None
+            )
+            addresses = (
+                site.get("slot_addresses") if isinstance(site, Mapping) else None
+            )
+            if (
+                not isinstance(unit_id, str)
+                or not unit_id
+                or not isinstance(event_index, int)
+                or isinstance(event_index, bool)
+                or event_index < 0
+                or not isinstance(addresses, list)
+                or not addresses
+                or any(
+                    not isinstance(address, int) or isinstance(address, bool)
+                    for address in addresses
+                )
+            ):
+                raise ValueError("proposal read site is malformed")
+            for address in addresses:
+                read_sites.setdefault(int(address), set()).add(
+                    (unit_id, event_index)
+                )
+
+        def add_dependency(address: int) -> None:
+            sites = read_sites.get(address)
+            if sites:
+                dependencies.update(
+                    (address - binary.image_base, exit_id, unit_id, event_index)
+                    for unit_id, event_index in sites
+                )
+            else:
+                dependencies.add((address - binary.image_base, exit_id, "", -1))
+
         if isinstance(witnesses, Sequence) and not isinstance(
             witnesses, (str, bytes)
         ):
@@ -142,7 +185,7 @@ def derive_proposal_slot_dependencies(
                         and not isinstance(address, bool)
                         and writable_image_span(binary, address, 4)
                     ):
-                        dependencies.add((address - binary.image_base, exit_id))
+                        add_dependency(address)
         proposal_reads = recovery.get("proposal_static_read_addresses", ())
         if isinstance(proposal_reads, Sequence) and not isinstance(
             proposal_reads, (str, bytes)
@@ -153,15 +196,19 @@ def derive_proposal_slot_dependencies(
                     and not isinstance(address, bool)
                     and writable_image_span(binary, address, 4)
                 ):
-                    dependencies.add((address - binary.image_base, exit_id))
+                    add_dependency(address)
     return [
         {
             "slot_rva": slot_rva,
             "exit_id": exit_id,
-            "witness_only": True,
+            **(
+                {"witness_only": True}
+                if not unit_id
+                else {"unit_id": unit_id, "event_index": event_index}
+            ),
             "proof_authority": False,
         }
-        for slot_rva, exit_id in sorted(dependencies)
+        for slot_rva, exit_id, unit_id, event_index in sorted(dependencies)
     ]
 
 
@@ -220,6 +267,111 @@ def derive_recovery_slot_requirements_v2(
             uses=tuple(sorted(uses.values())),
         )
         for slot_rva, uses in sorted(by_slot.items())
+    )
+
+
+def derive_dependency_scoped_slot_inventory_v2(
+    binary: StageABinary,
+    recoveries: Sequence[Mapping[str, Any]],
+    *,
+    proposal_dependencies: Sequence[Mapping[str, Any]] = (),
+) -> tuple[tuple[int, ...], tuple[dict[str, Any], ...]]:
+    """Combine exact cold requirements with temporary proposal nominations.
+
+    Proposal rows are retained only for exits that cold analysis currently
+    reports as incomplete.  Once an exit is recovered, its exact
+    ``mutable_slot_dependencies`` must reproduce every required slot.  This
+    makes proposals useful for breaking the discovery cycle without allowing
+    unused proposal slots into the final exact inventory.
+    """
+
+    requirements = derive_recovery_slot_requirements_v2(binary, recoveries)
+    rows: dict[tuple[int, str, str, int, bool], dict[str, Any]] = {}
+    slot_rvas = {requirement.slot_rva for requirement in requirements}
+    for requirement in requirements:
+        for row in requirement.dependency_rows():
+            rows[_dependency_row_key(row)] = row
+
+    recovery_status = {
+        str(row["id"]): row.get("status")
+        for row in recoveries
+        if isinstance(row, Mapping)
+        and isinstance(row.get("id"), str)
+        and row.get("id")
+    }
+    for index, raw in enumerate(proposal_dependencies):
+        if not isinstance(raw, Mapping):
+            raise ValueError(
+                f"proposal slot dependency {index} is not an object"
+            )
+        witness_only = raw.get("witness_only") is True
+        expected_fields = (
+            {"slot_rva", "exit_id", "witness_only", "proof_authority"}
+            if witness_only
+            else {
+                "slot_rva",
+                "exit_id",
+                "unit_id",
+                "event_index",
+                "proof_authority",
+            }
+        )
+        slot_rva = raw.get("slot_rva")
+        exit_id = raw.get("exit_id")
+        if (
+            set(raw) != expected_fields
+            or not isinstance(slot_rva, int)
+            or isinstance(slot_rva, bool)
+            or not isinstance(exit_id, str)
+            or not exit_id
+            or raw.get("proof_authority") is not False
+        ):
+            raise ValueError(
+                f"proposal slot dependency {index} is malformed"
+            )
+        address = binary.image_base + slot_rva
+        if not writable_image_span(binary, address, 4):
+            raise ValueError(
+                f"proposal slot dependency {slot_rva:#x} is not writable image data"
+            )
+        if recovery_status.get(exit_id) != "incomplete":
+            continue
+        unit_id = raw.get("unit_id")
+        event_index = raw.get("event_index")
+        if not witness_only and (
+            not isinstance(unit_id, str)
+            or not unit_id
+            or not isinstance(event_index, int)
+            or isinstance(event_index, bool)
+            or event_index < 0
+        ):
+            raise ValueError(
+                f"proposal slot dependency {index} has no exact read site"
+            )
+        row = {
+            "slot_rva": slot_rva,
+            "exit_id": exit_id,
+            **(
+                {"witness_only": True}
+                if witness_only
+                else {"unit_id": unit_id, "event_index": event_index}
+            ),
+            "proof_authority": False,
+        }
+        slot_rvas.add(slot_rva)
+        rows[_dependency_row_key(row)] = row
+    return tuple(sorted(slot_rvas)), tuple(rows[key] for key in sorted(rows))
+
+
+def _dependency_row_key(
+    row: Mapping[str, Any],
+) -> tuple[int, str, str, int, bool]:
+    return (
+        int(row["slot_rva"]),
+        str(row["exit_id"]),
+        str(row.get("unit_id") or ""),
+        int(row.get("event_index", -1)),
+        row.get("witness_only") is True,
     )
 
 
@@ -363,6 +515,7 @@ __all__ = [
     "MutableSlotRequirementV2",
     "MutableSlotUseV2",
     "constant_address",
+    "derive_dependency_scoped_slot_inventory_v2",
     "derive_mutable_slot_candidates",
     "derive_proposal_slot_dependencies",
     "derive_recovery_slot_requirements_v2",

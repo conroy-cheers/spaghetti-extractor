@@ -1211,6 +1211,152 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(resolution["analysis_dependencies"], [dependency])
         self.assertEqual(result["counts"]["static_interface_slots"], 0)
 
+    def test_guarded_target_carries_checked_control_dependency(self) -> None:
+        null_dependency = (
+            "hybrid-authority-v2:global_slot_invariant:" + "1" * 64
+        )
+        target_dependency = (
+            "hybrid-authority-v2:global_slot_invariant:" + "2" * 64
+        )
+        target = IMAGE_BASE + 0x1800
+        load_null = unit(
+            "load-null",
+            0x1100,
+            writes=[{"register": "eax", "value": load(const(SLOT))}],
+        )
+        load_target = unit(
+            "load-target",
+            0x1200,
+            writes=[{"register": "ebx", "value": load(const(CHILD_SLOT))}],
+        )
+        units = [
+            load_null,
+            load_target,
+            unit("dispatch", 0x1300),
+            unit("target", 0x1800),
+        ]
+        result = self._run(
+            units,
+            [
+                {
+                    "source_unit_id": "load-null",
+                    "target_unit_id": "load-target",
+                    "guard": {
+                        "op": "eq32",
+                        "args": [reg("eax"), const(0)],
+                    },
+                },
+                edge("load-target", "dispatch"),
+            ],
+            roots=["load-null"],
+            indirect_exits=[{
+                "id": "exit:dispatch",
+                "source_unit_id": "dispatch",
+                "source_rva": 0x1300,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": reg("ebx"),
+            }],
+            initial_known_slots={
+                SLOT: frozenset({
+                    ValueOrigin("exact", (0,), (null_dependency,))
+                }),
+                CHILD_SLOT: frozenset({
+                    ValueOrigin("exact", (target,), (target_dependency,))
+                }),
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        resolution = result["resolutions"][0]
+        self.assertEqual(resolution["status"], "recovered", resolution)
+        self.assertEqual(resolution["target_rvas"], [0x1800])
+        self.assertEqual(
+            resolution["analysis_dependencies"],
+            [null_dependency, target_dependency],
+        )
+
+    def test_join_unions_checked_control_dependencies(self) -> None:
+        left_dependency = (
+            "hybrid-authority-v2:global_slot_invariant:" + "3" * 64
+        )
+        right_dependency = (
+            "hybrid-authority-v2:global_slot_invariant:" + "4" * 64
+        )
+        target_dependency = (
+            "hybrid-authority-v2:global_slot_invariant:" + "5" * 64
+        )
+        other_slot = CHILD_SLOT + 4
+        target_slot = other_slot + 4
+        target = IMAGE_BASE + 0x1800
+
+        def guarded_root(identifier: str, rva: int, slot: int) -> dict[str, object]:
+            return unit(
+                identifier,
+                rva,
+                writes=[{"register": "eax", "value": load(const(slot))}],
+            )
+
+        zero_guard = {"op": "eq32", "args": [reg("eax"), const(0)]}
+        units = [
+            guarded_root("left", 0x1100, SLOT),
+            guarded_root("right", 0x1110, other_slot),
+            unit(
+                "merge",
+                0x1200,
+                writes=[{
+                    "register": "ebx",
+                    "value": load(const(target_slot)),
+                }],
+            ),
+            unit("dispatch", 0x1300),
+            unit("target", 0x1800),
+        ]
+        result = self._run(
+            units,
+            [
+                {
+                    "source_unit_id": "left",
+                    "target_unit_id": "merge",
+                    "guard": zero_guard,
+                },
+                {
+                    "source_unit_id": "right",
+                    "target_unit_id": "merge",
+                    "guard": zero_guard,
+                },
+                edge("merge", "dispatch"),
+            ],
+            roots=["left", "right"],
+            indirect_exits=[{
+                "id": "exit:dispatch",
+                "source_unit_id": "dispatch",
+                "source_rva": 0x1300,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": reg("ebx"),
+            }],
+            initial_known_slots={
+                SLOT: frozenset({
+                    ValueOrigin("exact", (0,), (left_dependency,))
+                }),
+                other_slot: frozenset({
+                    ValueOrigin("exact", (0,), (right_dependency,))
+                }),
+                target_slot: frozenset({
+                    ValueOrigin("exact", (target,), (target_dependency,))
+                }),
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        resolution = result["resolutions"][0]
+        self.assertEqual(resolution["status"], "recovered", resolution)
+        self.assertEqual(
+            resolution["analysis_dependencies"],
+            [left_dependency, right_dependency, target_dependency],
+        )
+
     def test_dynamic_allocator_result_carries_interface_field_provenance(self) -> None:
         allocator = {
             "kind": "internal_call",
@@ -3903,6 +4049,11 @@ class InterfaceProvenanceTests(unittest.TestCase):
             "load-target",
             0x1810,
             writes=[{"register": "eax", "value": load(reg("esi"))}],
+            memory=[{
+                "kind": "read",
+                "width": 4,
+                "address": reg("esi"),
+            }],
         )
         call_event = {
             "kind": "indirect_call",
@@ -4088,6 +4239,11 @@ class InterfaceProvenanceTests(unittest.TestCase):
             "load-target",
             0x1810,
             writes=[{"register": "eax", "value": load(reg("esi"))}],
+            memory=[{
+                "kind": "read",
+                "width": 4,
+                "address": reg("esi"),
+            }],
         )
         nonnull_guard = {
             "op": "not",
@@ -4216,6 +4372,22 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(proposal["context_coverage"]["context_count"], 2)
         self.assertEqual(
             proposal["proposal_static_read_addresses"],
+            sorted(table_words),
+        )
+        self.assertEqual(
+            proposal["proposal_read_sites"],
+            [{
+                "unit_id": "load-target",
+                "event_index": 0,
+                "slot_addresses": sorted(table_words),
+            }],
+        )
+        contextual_access = next(
+            row for row in result["memory_access_proposals"]
+            if row["unit_id"] == "load-target" and row["event_index"] == 0
+        )
+        self.assertEqual(
+            sorted(origin["key"][0] for origin in contextual_access["address_origins"]),
             sorted(table_words),
         )
         self.assertTrue(all(

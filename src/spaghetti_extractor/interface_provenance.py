@@ -98,6 +98,7 @@ class _State:
     memory: dict[_MemoryLocation, _Value]
     stack: dict[int, "_StackCell"]
     memory_invalidated: bool = False
+    control_dependencies: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, order=True)
@@ -269,6 +270,7 @@ class _Edge:
     target_id: str
     event_index: int | None = None
     guard_json: str | None = None
+    authority_dependency: str | None = None
 
 
 @dataclass(frozen=True)
@@ -301,6 +303,7 @@ class _RunResult:
     states: dict[str, _State]
     resolutions: list[dict[str, Any]]
     path_recovery_proposals: list[dict[str, Any]]
+    contextual_memory_access_proposals: list[dict[str, Any]]
     proposed_slots: dict[_MemoryLocation, _Value]
     tainted_slots: set[_MemoryLocation]
     issues: list[dict[str, Any]]
@@ -363,6 +366,7 @@ class _PathContext:
 @dataclass
 class _ContextDiscoveryResult:
     proposals: list[dict[str, Any]]
+    memory_access_proposals: list[dict[str, Any]]
     issues: list[dict[str, Any]]
     context_states: int
     truncated_calls: int
@@ -508,6 +512,14 @@ def recover_external_interface_targets(
         internal_call_edges=internal_call_edges,
         recovered_indirect_edges=recovered_indirect_edges,
     )
+    contextual_memory_exit_ids = frozenset(
+        str(row["id"])
+        for row in recovered_indirect_edges
+        if isinstance(row, Mapping)
+        and row.get("status") == "recovered"
+        and row.get("proposal_source") == "bounded_call_context_v1"
+        and isinstance(row.get("id"), str)
+    )
     cleanup_evidence = _infer_internal_call_cleanups(
         by_id=by_id,
         outgoing=outgoing,
@@ -592,6 +604,7 @@ def recover_external_interface_targets(
             checked_stack_entry_offsets=stack_entry_offsets,
             checked_nonimage_stack_units=checked_nonimage_stack_units,
             collect_path_recovery_proposals=collect_path_recovery_proposals,
+            contextual_memory_exit_ids=contextual_memory_exit_ids,
             preserved_register_hypotheses=parsed_call_hypotheses,
             path_context_depth=path_context_depth,
             path_context_budget=path_context_budget,
@@ -674,6 +687,11 @@ def recover_external_interface_targets(
         inventory=inventory,
         known_slots=known_slots,
         checked_stack_entry_offsets=stack_entry_offsets,
+        finite_value_budget=finite_value_budget,
+    )
+    memory_access_proposals = _merge_memory_access_proposals(
+        memory_access_proposals,
+        final.contextual_memory_access_proposals,
         finite_value_budget=finite_value_budget,
     )
     if recovered_known_slots is not None:
@@ -923,6 +941,31 @@ def _memory_access_proposals(
                 "authority_dependencies": list(value_dependencies(origins)),
             })
     return result
+
+
+def _merge_memory_access_proposals(
+    primary: Sequence[Mapping[str, Any]],
+    contextual: Sequence[Mapping[str, Any]],
+    *,
+    finite_value_budget: int,
+) -> list[dict[str, Any]]:
+    """Prefer the context-insensitive fact and fill otherwise missing events."""
+
+    by_event: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in (*primary, *contextual):
+        unit_id = row.get("unit_id") if isinstance(row, Mapping) else None
+        event_index = row.get("event_index") if isinstance(row, Mapping) else None
+        origins = row.get("address_origins") if isinstance(row, Mapping) else None
+        if (
+            not isinstance(unit_id, str)
+            or not isinstance(event_index, int)
+            or isinstance(event_index, bool)
+            or not isinstance(origins, list)
+            or not 0 < len(origins) <= finite_value_budget
+        ):
+            continue
+        by_event.setdefault((unit_id, event_index), copy.deepcopy(dict(row)))
+    return [by_event[key] for key in sorted(by_event)]
 
 
 class _ProfileInventory:
@@ -1302,6 +1345,7 @@ def _run_dataflow(
     checked_stack_entry_offsets: Mapping[str, frozenset[int]],
     checked_nonimage_stack_units: frozenset[str],
     collect_path_recovery_proposals: bool,
+    contextual_memory_exit_ids: frozenset[str],
     preserved_register_hypotheses: Mapping[
         CallSiteId, Mapping[str, PreservedRegisterHypothesis]
     ],
@@ -1480,6 +1524,10 @@ def _run_dataflow(
                 )
                 if contribution is None:
                     continue
+            if edge.authority_dependency is not None:
+                contribution = _with_control_dependencies(
+                    contribution, (edge.authority_dependency,)
+                )
             if _join_state(
                 input_states,
                 edge.target_id,
@@ -1532,16 +1580,20 @@ def _run_dataflow(
     legacy_path_proposals = _finalize_path_recovery_proposals(
         resolutions, path_recoveries
     )
+    contextual_target_exit_ids = (
+        _context_target_exit_ids(
+            legacy_path_proposals=legacy_path_proposals,
+            final_resolutions=resolutions,
+        )
+        | contextual_memory_exit_ids
+    )
     contextual = (
         _run_contextual_target_discovery(
             by_id=by_id,
             roots=roots,
             outgoing=outgoing,
             indirect_exits=indirect_exits,
-            target_exit_ids=_context_target_exit_ids(
-                legacy_path_proposals=legacy_path_proposals,
-                final_resolutions=resolutions,
-            ),
+            target_exit_ids=contextual_target_exit_ids,
             final_resolutions=resolutions,
             inventory=inventory,
             import_abis=import_abis,
@@ -1557,18 +1609,23 @@ def _run_dataflow(
             context_depth=path_context_depth,
             contexts_per_unit=path_context_budget,
         )
-        if collect_path_recovery_proposals
-        else _ContextDiscoveryResult([], [], 0, 0, 0, 0)
+        if collect_path_recovery_proposals or contextual_memory_exit_ids
+        else _ContextDiscoveryResult([], [], [], 0, 0, 0, 0)
     )
     issues.extend(contextual.issues)
     path_recovery_proposals = _merge_context_and_legacy_proposals(
         contextual.proposals,
         legacy_path_proposals,
     )
+    path_recovery_proposals = _attach_contextual_memory_read_sites(
+        path_recovery_proposals,
+        contextual.memory_access_proposals,
+    )
     return _RunResult(
         states=input_states,
         resolutions=resolutions,
         path_recovery_proposals=path_recovery_proposals,
+        contextual_memory_access_proposals=contextual.memory_access_proposals,
         proposed_slots=proposed_slots,
         tainted_slots=tainted_slots,
         issues=_deduplicate(issues),
@@ -1805,6 +1862,7 @@ def _with_expression_event_known_slots(
         {**state.memory, **selected},
         dict(state.stack),
         state.memory_invalidated,
+        state.control_dependencies,
     )
 
 
@@ -1995,6 +2053,10 @@ def _run_contextual_target_discovery(
                 )
                 if contribution is None:
                     continue
+            if edge.authority_dependency is not None:
+                contribution = _with_control_dependencies(
+                    contribution, (edge.authority_dependency,)
+                )
             target_key = (edge.target_id, next_context)
             if (
                 target_key not in states
@@ -2071,6 +2133,19 @@ def _run_contextual_target_discovery(
         for identity, rows in sorted(contextual_rows.items())
         if final_by_id.get(identity, {}).get("status") != "recovered"
     ]
+    memory_access_proposals = (
+        []
+        if dropped_contexts or work_budget_exceeded
+        else _contextual_memory_access_proposals(
+            by_id=by_id,
+            states=states,
+            relevant_units=relevant_units,
+            inventory=inventory,
+            known_slots=known_slots,
+            finite_value_budget=finite_value_budget,
+            checked_stack_entry_offsets=checked_stack_entry_offsets,
+        )
+    )
     issues: list[dict[str, Any]] = []
     if dropped_contexts:
         issues.append({
@@ -2087,12 +2162,103 @@ def _run_contextual_target_discovery(
         })
     return _ContextDiscoveryResult(
         proposals=proposals,
+        memory_access_proposals=memory_access_proposals,
         issues=issues,
         context_states=len(states),
         truncated_calls=truncated_calls,
         dropped_contexts=dropped_contexts,
         evaluations=evaluations,
     )
+
+
+def _contextual_memory_access_proposals(
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    states: Mapping[tuple[str, _PathContext], _State],
+    relevant_units: frozenset[str] | set[str],
+    inventory: _ProfileInventory,
+    known_slots: Mapping[_MemoryLocation, _Value],
+    finite_value_budget: int,
+    checked_stack_entry_offsets: Mapping[str, frozenset[int]],
+) -> list[dict[str, Any]]:
+    """Export finite event addresses from every retained call context.
+
+    A missing or non-exact address in any retained context suppresses the
+    event. The result is therefore a bounded over-approximation, not a sample
+    of whichever context happened to recover an indirect target.
+    """
+
+    grouped: dict[tuple[str, int], _Value] = {}
+    invalid: set[tuple[str, int]] = set()
+    event_rows: dict[tuple[str, int], Mapping[str, Any]] = {}
+    for (unit_id, _context), raw_state in sorted(states.items()):
+        if unit_id not in relevant_units:
+            continue
+        state = _with_checked_stack_entry(
+            raw_state,
+            unit_id=unit_id,
+            checked_stack_entry_offsets=checked_stack_entry_offsets,
+        )
+        events = _mapping(by_id[unit_id].get("semantics")).get("memory_events")
+        if not isinstance(events, list):
+            continue
+        for event_index, raw in enumerate(events):
+            event = _mapping(raw)
+            key = (unit_id, event_index)
+            if (
+                event.get("kind") not in {"read", "write", "read_write"}
+                or _integer(event.get("width")) is None
+                or _constant_u32_expression(event.get("address")) is not None
+            ):
+                continue
+            event_rows[key] = event
+            origins = _evaluate(
+                event.get("address"),
+                state,
+                inventory=inventory,
+                known_slots=known_slots,
+                budget=finite_value_budget,
+            )
+            origins = with_value_dependencies(
+                origins, state.control_dependencies
+            )
+            if (
+                origins is None
+                or not origins
+                or len(origins) > finite_value_budget
+                or any(origin.kind != "exact" for origin in origins)
+                or _has_global_slot_authority_dependency(origins)
+            ):
+                invalid.add(key)
+                continue
+            prior = grouped.get(key)
+            combined = frozenset(origins if prior is None else prior | origins)
+            if len(combined) > finite_value_budget:
+                invalid.add(key)
+                continue
+            grouped[key] = combined
+
+    result: list[dict[str, Any]] = []
+    for key in sorted(grouped):
+        if key in invalid:
+            continue
+        unit_id, event_index = key
+        event = event_rows[key]
+        origins = grouped[key]
+        if origins is None or not origins:
+            continue
+        result.append({
+            "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+            "status": "complete",
+            "unit_id": unit_id,
+            "event_index": event_index,
+            "memory_kind": event.get("kind"),
+            "width_bytes": event.get("width"),
+            "address_expression": copy.deepcopy(event.get("address")),
+            "address_origins": _origins_json(origins),
+            "authority_dependencies": list(value_dependencies(origins)),
+        })
+    return result
 
 
 def _backward_slice_units(
@@ -2425,6 +2591,79 @@ def _merge_context_and_legacy_proposals(
     return result
 
 
+def _attach_contextual_memory_read_sites(
+    recoveries: Sequence[Mapping[str, Any]],
+    memory_access_proposals: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Attach proposal-only event locations for independently checked replay."""
+
+    read_sites: list[tuple[frozenset[int], dict[str, Any]]] = []
+    for row in memory_access_proposals:
+        if (
+            not isinstance(row, Mapping)
+            or row.get("memory_kind") not in {"read", "read_write"}
+            or row.get("width_bytes") != 4
+            or not isinstance(row.get("unit_id"), str)
+            or not isinstance(row.get("event_index"), int)
+        ):
+            continue
+        addresses = _exact_origin_addresses(row.get("address_origins"))
+        if not addresses:
+            continue
+        read_sites.append((addresses, {
+            "unit_id": str(row["unit_id"]),
+            "event_index": int(row["event_index"]),
+            "slot_addresses": sorted(addresses),
+        }))
+
+    result: list[dict[str, Any]] = []
+    for raw in recoveries:
+        row = copy.deepcopy(dict(raw))
+        proposed = row.get("proposal_static_read_addresses")
+        addresses = (
+            frozenset(
+                int(value) for value in proposed
+                if isinstance(value, int) and not isinstance(value, bool)
+            )
+            if isinstance(proposed, list)
+            else frozenset()
+        )
+        if addresses:
+            sites = [
+                copy.deepcopy(site)
+                for site_addresses, site in read_sites
+                if site_addresses == addresses
+            ]
+            if sites:
+                row["proposal_read_sites"] = sorted(
+                    sites,
+                    key=lambda site: (
+                        str(site["unit_id"]), int(site["event_index"])
+                    ),
+                )
+        result.append(row)
+    return result
+
+
+def _exact_origin_addresses(value: Any) -> frozenset[int]:
+    if not isinstance(value, list) or not value:
+        return frozenset()
+    result: set[int] = set()
+    for row in value:
+        key = row.get("key") if isinstance(row, Mapping) else None
+        if (
+            not isinstance(row, Mapping)
+            or row.get("kind") != "exact"
+            or not isinstance(key, list)
+            or len(key) != 1
+            or not isinstance(key[0], int)
+            or isinstance(key[0], bool)
+        ):
+            return frozenset()
+        result.add(int(key[0]) & 0xFFFF_FFFF)
+    return frozenset(result)
+
+
 def _state_cache_key(state: _State) -> tuple[Any, ...]:
     """Canonical immutable identity for one abstract unit input state."""
 
@@ -2451,6 +2690,7 @@ def _state_cache_key(state: _State) -> tuple[Any, ...]:
             for offset, cell in sorted(state.stack.items())
         ),
         state.memory_invalidated,
+        tuple(sorted(state.control_dependencies)),
     )
 
 
@@ -2576,6 +2816,7 @@ def _with_checked_stack_entry(
         state.memory,
         state.stack,
         state.memory_invalidated,
+        state.control_dependencies,
     )
 
 
@@ -2783,6 +3024,7 @@ def _transfer_unit(
                 for offset, cell in framed_stack.items()
             },
             memory_invalidated=memory_invalidated,
+            control_dependencies=pre_call.control_dependencies,
         )
         _apply_call_stack_result(output, pre_call, facts)
         for address, origins in facts.outputs.items():
@@ -2836,6 +3078,7 @@ def _transfer_unit(
         dict(input_state.memory),
         dict(input_state.stack),
         input_state.memory_invalidated,
+        input_state.control_dependencies,
     )
     exceeded = 0
     semantics = _mapping(unit.get("semantics"))
@@ -6176,6 +6419,7 @@ def _enter_call_frame(
         dict(state.memory),
         translated_stack,
         state.memory_invalidated,
+        state.control_dependencies,
     )
     output.registers["esp"] = _stack_location(0)
     return output
@@ -6246,6 +6490,7 @@ def _enter_context_call_frame(
         dict(framed.memory),
         stack,
         framed.memory_invalidated,
+        framed.control_dependencies,
     )
 
 
@@ -6644,7 +6889,10 @@ def _resolve_exits(
             "origin_count": len(origins or ()),
             "origin_kinds": sorted(target_kinds),
             "target_origin_witnesses": origins_json(origins),
-            "analysis_dependencies": list(value_dependencies(origins)),
+            "analysis_dependencies": sorted(
+                set(value_dependencies(origins))
+                | (set() if state is None else set(state.control_dependencies))
+            ),
             "failure": None,
         })
     return result
@@ -7829,6 +8077,7 @@ def _event_state(
         dict(state.memory),
         dict(state.stack),
         state.memory_invalidated,
+        state.control_dependencies,
     )
     ordered = _mapping(unit.get("semantics")).get("ordered_events")
     if not isinstance(ordered, list):
@@ -7933,12 +8182,22 @@ def _outgoing_edges(
         source = raw.get("source_unit_id")
         targets = raw.get("target_unit_ids")
         event_index = _integer(raw.get("source_event_index"))
+        dependency = raw.get("id")
         if not isinstance(source, str) or not isinstance(targets, Sequence):
             continue
         kind = "indirect_call" if raw.get("kind") == "indirect_call" else "direct"
         for target in targets:
             if isinstance(target, str) and source in by_id and target in by_id:
-                result[source].add(_Edge(kind, target, event_index))
+                result[source].add(_Edge(
+                    kind,
+                    target,
+                    event_index,
+                    authority_dependency=(
+                        str(dependency)
+                        if isinstance(dependency, str) and dependency
+                        else None
+                    ),
+                ))
     return result
 
 
@@ -8228,6 +8487,10 @@ def _join_state(
         or memory_over_budget
     )
     changed = changed or memory_invalidated != prior.memory_invalidated
+    control_dependencies = (
+        prior.control_dependencies | contribution.control_dependencies
+    )
+    changed = changed or control_dependencies != prior.control_dependencies
     if not changed:
         return False
     joined_state = _State(
@@ -8235,6 +8498,7 @@ def _join_state(
         memory,
         stack,
         memory_invalidated,
+        control_dependencies,
     )
     states[target] = joined_state
     return True
@@ -8308,6 +8572,13 @@ def _refine_state_for_guard(
     known_slots: Mapping[_MemoryLocation, _Value] | None = None,
     finite_value_budget: int = 32,
 ) -> _State | None:
+    dependencies = _guard_value_dependencies(
+        guard,
+        state=state,
+        inventory=inventory,
+        known_slots=known_slots or {},
+        budget=finite_value_budget,
+    )
     if inventory is not None:
         truth = _finite_guard_truth(
             guard,
@@ -8319,13 +8590,17 @@ def _refine_state_for_guard(
         if truth is False:
             return None
         if truth is True:
-            return state
+            return _with_control_dependencies(state, dependencies)
     relational = _refine_relational_register_guard(state, guard)
     if relational is not state:
-        return relational
+        return (
+            None
+            if relational is None
+            else _with_control_dependencies(relational, dependencies)
+        )
     constraint = _guard_constraint(guard)
     if constraint is None:
-        return state
+        return _with_control_dependencies(state, dependencies)
     register, _relation, _value, _mask = constraint
     registers = {
         name: _refine_guarded_value(origins, constraint, constrain_exact=name == register)
@@ -8342,11 +8617,63 @@ def _refine_state_for_guard(
         for offset, cell in state.stack.items()
         if (refined := _refine_guarded_value(cell.value, constraint)) is not None
     }
+    return _with_control_dependencies(
+        _State(
+            registers,
+            memory,
+            stack,
+            state.memory_invalidated,
+            state.control_dependencies,
+        ),
+        dependencies,
+    )
+
+
+def _guard_value_dependencies(
+    guard: Mapping[str, Any],
+    *,
+    state: _State,
+    inventory: _ProfileInventory | None,
+    known_slots: Mapping[_MemoryLocation, _Value],
+    budget: int,
+) -> frozenset[str]:
+    if inventory is None:
+        return frozenset()
+    comparison = _comparison_operands(guard)
+    if comparison is None:
+        return frozenset()
+    _, left_expression, right_expression = comparison
+    left = _evaluate(
+        left_expression,
+        state,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+    )
+    right = _evaluate(
+        right_expression,
+        state,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+    )
+    return frozenset(value_dependencies(left)) | frozenset(
+        value_dependencies(right)
+    )
+
+
+def _with_control_dependencies(
+    state: _State, dependencies: Iterable[str]
+) -> _State:
+    combined = state.control_dependencies | frozenset(dependencies)
+    if combined == state.control_dependencies:
+        return state
     return _State(
-        registers,
-        memory,
-        stack,
+        state.registers,
+        state.memory,
+        state.stack,
         state.memory_invalidated,
+        combined,
     )
 
 
@@ -8522,7 +8849,13 @@ def _refine_relational_register_guard(
             selected[register] = kept
             changed = True
     return (
-        _State(selected, state.memory, state.stack, state.memory_invalidated)
+        _State(
+            selected,
+            state.memory,
+            state.stack,
+            state.memory_invalidated,
+            state.control_dependencies,
+        )
         if changed
         else state
     )

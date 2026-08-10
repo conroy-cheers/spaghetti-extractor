@@ -20,6 +20,7 @@ from spaghetti_extractor.interprocedural_analysis import (
     _call_summary_inputs,
     _call_summary_memory_preservation,
     _call_site_memory_preservation,
+    _merge_inductive_operation_provenance,
     _requires_inductive_replay,
     _transfer_mutable_state,
     analyze_interprocedural_control,
@@ -840,6 +841,36 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         )
         self.assertNotIn("memory_access_proposals", result.operation_provenance)
         self.assertEqual(result.fixed_point["checked_memory_access_fact_count"], 1)
+
+    def test_inductive_memory_fact_requires_all_accepted_dependencies(self) -> None:
+        proposal = {
+            "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+            "status": "complete",
+            "unit_id": "read:cursor",
+            "event_index": 0,
+            "memory_kind": "read",
+            "width_bytes": 4,
+            "address_expression": reg("esi"),
+            "address_origins": [
+                {"kind": "exact", "key": [SLOT]},
+                {"kind": "exact", "key": [SLOT + 4]},
+            ],
+            "authority_dependencies": ["exit:bounded-table"],
+        }
+
+        rejected = _merge_inductive_operation_provenance(
+            {},
+            {"memory_access_proposals": [proposal]},
+            available_dependencies=set(),
+        )
+        accepted = _merge_inductive_operation_provenance(
+            {},
+            {"memory_access_proposals": [proposal]},
+            available_dependencies={"exit:bounded-table"},
+        )
+
+        self.assertEqual(rejected["memory_access_proposals"], [])
+        self.assertEqual(accepted["memory_access_proposals"], [proposal])
 
     def test_operator_internal_contracts_are_proposal_only(self) -> None:
         observed: list[dict[str, dict[str, object]]] = []
@@ -1738,6 +1769,55 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 "read_sites": [{"unit_id": "load", "event_index": 0}],
                 "origin_witnessed": False,
             }],
+        )
+
+    def test_control_only_slot_dependency_is_bound_to_checked_invariant(self) -> None:
+        exit_row = indirect_exit("exit:dispatch:0", "dispatch")
+        target_invariant = slot_invariant(
+            "target-slot",
+            0x1010,
+            IMAGE_BASE + 0x2000,
+        )
+        control_invariant = slot_invariant(
+            "control-slot",
+            0x1020,
+            0,
+            slot_address=SLOT + 4,
+        )
+
+        def resolver(**_kwargs: Any) -> dict[str, object]:
+            resolution = recovered(exit_row, "target")
+            resolution["analysis_dependencies"] = [
+                control_invariant.content_id,
+                target_invariant.content_id,
+            ]
+            resolution["target_origin_witnesses"] = [{
+                "kind": "exact",
+                "key": [IMAGE_BASE + 0x2000],
+                "authority_dependencies": [target_invariant.content_id],
+            }]
+            return {"resolutions": [resolution]}
+
+        result = self._run(
+            units=[unit("dispatch", 0x1030), unit("target", 0x2000)],
+            roots=["dispatch"],
+            direct=[],
+            exits=[exit_row],
+            globals=[target_invariant, control_invariant],
+            resolver=resolver,
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        dependencies = result.recovered_targets[0][
+            "mutable_slot_dependencies"
+        ]
+        self.assertEqual(
+            {row["slot_rva"] for row in dependencies},
+            {SLOT - IMAGE_BASE, SLOT + 4 - IMAGE_BASE},
+        )
+        self.assertEqual(
+            {row["content_id"] for row in dependencies},
+            {target_invariant.content_id, control_invariant.content_id},
         )
 
     def test_cold_origin_witness_binds_symbolic_slot_address(self) -> None:

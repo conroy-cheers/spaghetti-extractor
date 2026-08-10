@@ -44,6 +44,50 @@ def _stack_binding(graph_id: str) -> dict[str, object]:
 
 
 class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
+    def _validate_slot_proposal(
+        self,
+        *,
+        recovery: dict[str, object],
+        proposal_dependencies: list[dict[str, object]],
+        slots: list[dict[str, object]],
+        evidence: list[dict[str, object]],
+        fixed_status: str,
+    ) -> dict[str, object]:
+        graph = build_proposal_control_graph_v2(
+            units=[_unit("root", 0x1000)], base_graph=_base(), recoveries=[]
+        )
+        return validate_joint_replay_v2(
+            proposal_graph=graph,
+            proposal_recoveries=[],
+            stack_range_analysis={
+                "status": "complete",
+                "binding": _stack_binding(str(graph["id"])),
+                "cold_replay": {
+                    "status": "complete",
+                    "deterministic": True,
+                    "empty_initial_state": True,
+                },
+            },
+            global_slot_analysis={
+                "status": "complete",
+                "bindings": {"image_base": 0x400000},
+                "slots": slots,
+                "global_slot_evidence": evidence,
+            },
+            global_slot_authority={"status": "complete"},
+            interprocedural={
+                "fixed_point": {
+                    "status": fixed_status,
+                    "cold_replay_validated": True,
+                    "authority_replay_validated": True,
+                },
+                "recovered_targets": [recovery],
+            },
+            cold_graph=graph,
+            authoritative_evidence_stable=True,
+            proposal_slot_dependencies=proposal_dependencies,
+        )
+
     def test_slot_inventory_binds_exact_required_read_sites(self) -> None:
         recovery = {
             "id": "exit:slot",
@@ -369,6 +413,104 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
         self.assertIn(
             "authoritative_mutable_slot_requirement_inventory_malformed",
             {row["code"] for row in result["issues"]},
+        )
+
+    def test_active_proposal_slot_is_incomplete_not_violated(self) -> None:
+        proposal = {
+            "slot_rva": 0x3000,
+            "exit_id": "exit:slot",
+            "witness_only": True,
+            "proof_authority": False,
+        }
+        result = self._validate_slot_proposal(
+            recovery={"id": "exit:slot", "status": "incomplete"},
+            proposal_dependencies=[proposal],
+            slots=[{"address": 0x403000}],
+            evidence=[{
+                "address": 0x403000,
+                "target_dependencies": [{
+                    "exit_id": "exit:slot",
+                    "witness_only": True,
+                }],
+            }],
+            fixed_status="incomplete",
+        )
+
+        self.assertEqual(result["status"], "incomplete", result["issues"])
+        self.assertTrue(
+            result["checks"]["mutable_slot_requirement_inventory_exact"]
+        )
+        self.assertFalse(
+            result["checks"]["proposal_slot_dependencies_discharged"]
+        )
+        self.assertIn(
+            "proposal_slot_dependencies_not_discharged",
+            {row["code"] for row in result["issues"]},
+        )
+
+    def test_recovered_exit_does_not_permit_leftover_proposal_slot(self) -> None:
+        proposal = {
+            "slot_rva": 0x3000,
+            "exit_id": "exit:slot",
+            "witness_only": True,
+            "proof_authority": False,
+        }
+        result = self._validate_slot_proposal(
+            recovery={"id": "exit:slot", "status": "recovered"},
+            proposal_dependencies=[proposal],
+            slots=[{"address": 0x403000}],
+            evidence=[{
+                "address": 0x403000,
+                "target_dependencies": [{
+                    "exit_id": "exit:slot",
+                    "witness_only": True,
+                }],
+            }],
+            fixed_status="complete",
+        )
+
+        self.assertEqual(result["status"], "violated")
+        self.assertTrue(
+            result["checks"]["proposal_slot_dependencies_discharged"]
+        )
+        issue = next(
+            row for row in result["issues"]
+            if row["code"].endswith("inventory_mismatch")
+        )
+        self.assertEqual(issue["extra_slot_rvas"], [0x3000])
+
+    def test_exact_cold_dependency_discharges_proposal_slot(self) -> None:
+        proposal = {
+            "slot_rva": 0x3000,
+            "exit_id": "exit:slot",
+            "witness_only": True,
+            "proof_authority": False,
+        }
+        result = self._validate_slot_proposal(
+            recovery={
+                "id": "exit:slot",
+                "status": "recovered",
+                "mutable_slot_dependencies": [{
+                    "slot_rva": 0x3000,
+                    "width_bytes": 4,
+                    "read_sites": [],
+                }],
+            },
+            proposal_dependencies=[proposal],
+            slots=[{"address": 0x403000}],
+            evidence=[{
+                "address": 0x403000,
+                "target_dependencies": [{
+                    "exit_id": "exit:slot",
+                    "witness_only": True,
+                }],
+            }],
+            fixed_status="complete",
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertTrue(
+            result["checks"]["proposal_slot_dependencies_discharged"]
         )
 
 

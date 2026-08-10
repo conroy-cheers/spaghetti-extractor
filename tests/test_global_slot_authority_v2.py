@@ -178,6 +178,96 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
         self.assertEqual(len(_invariants(authority, "finite_set")), 1)
         self.assertEqual(len(_invariants(authority, "finite_set_at_read")), 1)
 
+    def test_independent_replay_checks_temporary_proposal_slot(self) -> None:
+        _analysis, replay_inputs = self._replay_fixture()
+        binary = replay_inputs["original_binary"]
+        units = replay_inputs["units"]
+        graph = replay_inputs["graph"]
+        launch = replay_inputs["launch_assumptions"]
+        machine_sha = replay_inputs["machine_ir_sha256"]
+        slot = binary.image_base + 0x2000
+        recovery = {
+            "id": "indirect-exit:entry",
+            "status": "incomplete",
+            "mutable_slot_dependencies": [],
+        }
+        proposal_dependencies = [{
+            "slot_rva": 0x2000,
+            "exit_id": recovery["id"],
+            "witness_only": True,
+            "proof_authority": False,
+        }]
+        stack = derive_stack_range_analysis_v2(
+            units=units,
+            graph=graph,
+            launch_assumptions=launch,
+            pe_sha256=binary.sha256,
+            machine_ir_sha256=machine_sha,
+            image_base=binary.image_base,
+            size_of_image=binary.size_of_image,
+            indirect_recoveries=[recovery],
+            finite_offset_budget=32,
+        )
+        interprocedural = {
+            "recovered_targets": [recovery],
+            "call_summaries": {},
+            "operation_provenance": {"checked_memory_access_facts": []},
+        }
+        analysis = analyze_global_slots_v2(
+            units=units,
+            graph=graph,
+            candidate_slot_addresses=[slot],
+            image_base=binary.image_base,
+            size_of_image=binary.size_of_image,
+            checked_memory_spatial_facts=stack["checked_spatial_facts"],
+            range_authority_binding=stack["binding"],
+            relevant_read_dependencies=proposal_dependencies,
+            launch_initial_values={slot: 0x401000},
+            checked_memory_access_facts=[],
+            memory_range_invariant_analysis=None,
+            pe_sha256=binary.sha256,
+            machine_ir_sha256=machine_sha,
+            interprocedural_authority_sha256=None,
+            alternative_budget=32,
+        )
+
+        authority = replay_global_slot_authority_v2(
+            submitted_analysis=analysis,
+            provenance=replay_inputs["provenance"],
+            units=units,
+            graph=graph,
+            interprocedural=interprocedural,
+            stack_range_analysis=stack,
+            launch_assumptions=launch,
+            memory_range_invariant_analysis=None,
+            original_binary=binary,
+            machine_ir_sha256=machine_sha,
+            finite_value_budget=32,
+            proposal_slot_dependencies=proposal_dependencies,
+        )
+
+        self.assertEqual(authority["status"], "complete", authority["issues"])
+        self.assertEqual(len(_invariants(authority, "finite_set")), 1)
+
+    def test_independent_replay_rejects_authorizing_proposal_slot(self) -> None:
+        analysis, replay_inputs = self._replay_fixture()
+        authority = replay_global_slot_authority_v2(
+            submitted_analysis=analysis,
+            proposal_slot_dependencies=[{
+                "slot_rva": 0x2000,
+                "exit_id": "indirect-exit:entry",
+                "witness_only": True,
+                "proof_authority": True,
+            }],
+            **replay_inputs,
+        )
+
+        self.assertEqual(authority["status"], "violated")
+        self.assertIn(
+            "global_slot_replay_recovery_inventory_invalid",
+            {row["code"] for row in authority["issues"]},
+        )
+
     def test_independent_replay_rejects_removed_spatial_evidence(self) -> None:
         analysis, replay_inputs = self._replay_fixture()
         forged = copy.deepcopy(analysis)

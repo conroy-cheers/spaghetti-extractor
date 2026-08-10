@@ -31,7 +31,7 @@ from .machine_ir_authority_v2 import (
 )
 from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
 from .mutable_slot_candidates_v2 import (
-    derive_recovery_slot_requirements_v2,
+    derive_dependency_scoped_slot_inventory_v2,
 )
 from .stage_binary import StageABinary
 from .stack_range_analysis_v2 import validate_stack_range_analysis_v2
@@ -54,6 +54,7 @@ def replay_global_slot_authority_v2(
     original_binary: StageABinary,
     machine_ir_sha256: str,
     finite_value_budget: int = 32,
+    proposal_slot_dependencies: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Reconstruct slot inputs, replay analysis, then promote safe evidence."""
 
@@ -65,8 +66,10 @@ def replay_global_slot_authority_v2(
             "global_slot_replay_recovery_inventory_invalid"
         )
     try:
-        requirements = derive_recovery_slot_requirements_v2(
-            original_binary, recoveries
+        slot_rvas, relevant_reads = derive_dependency_scoped_slot_inventory_v2(
+            original_binary,
+            recoveries,
+            proposal_dependencies=proposal_slot_dependencies,
         )
     except (TypeError, ValueError) as exc:
         return _violated_replay_authority(
@@ -74,13 +77,7 @@ def replay_global_slot_authority_v2(
             detail=str(exc),
         )
     candidate_slots = [
-        original_binary.image_base + requirement.slot_rva
-        for requirement in requirements
-    ]
-    relevant_reads = [
-        row
-        for requirement in requirements
-        for row in requirement.dependency_rows()
+        original_binary.image_base + slot_rva for slot_rva in slot_rvas
     ]
     launch_initial_values: dict[int, int] = {}
     for address in candidate_slots:

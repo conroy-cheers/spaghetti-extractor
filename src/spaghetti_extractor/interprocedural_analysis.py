@@ -841,7 +841,11 @@ def _select_inductive_authority(
         dependency_edges=merged_edges,
         decomposition=decomposition,
         summaries=merged_summaries,
-        operation_provenance=cold.operation_provenance,
+        operation_provenance=_merge_inductive_operation_provenance(
+            cold.operation_provenance,
+            replay.operation_provenance,
+            available_dependencies=cold_complete | accepted,
+        ),
         value_provenance=cold.value_provenance,
         recoveries=merged_recoveries,
         call_frame_hypotheses=tuple(call_frame_hypotheses),
@@ -866,6 +870,54 @@ def _select_inductive_authority(
         ),
         "rejected_nodes": tuple(sorted(replay_complete - accepted)),
     }
+
+
+def _merge_inductive_operation_provenance(
+    cold: Mapping[str, Any],
+    replay: Mapping[str, Any],
+    *,
+    available_dependencies: set[str],
+) -> Mapping[str, Any]:
+    """Retain replayed event facts whose simultaneous hypotheses closed."""
+
+    result = copy.deepcopy(dict(cold))
+    cold_rows = cold.get("memory_access_proposals", ())
+    replay_rows = replay.get("memory_access_proposals", ())
+    by_event: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in cold_rows if isinstance(cold_rows, list) else ():
+        if not isinstance(row, Mapping):
+            continue
+        unit_id = row.get("unit_id")
+        event_index = row.get("event_index")
+        if (
+            not isinstance(unit_id, str)
+            or not isinstance(event_index, int)
+            or isinstance(event_index, bool)
+        ):
+            continue
+        by_event[(unit_id, event_index)] = copy.deepcopy(dict(row))
+    for row in replay_rows if isinstance(replay_rows, list) else ():
+        if not isinstance(row, Mapping):
+            continue
+        dependencies = row.get("authority_dependencies")
+        unit_id = row.get("unit_id")
+        event_index = row.get("event_index")
+        if (
+            not isinstance(dependencies, list)
+            or any(not isinstance(value, str) for value in dependencies)
+            or not set(dependencies) <= available_dependencies
+            or not isinstance(unit_id, str)
+            or not isinstance(event_index, int)
+            or isinstance(event_index, bool)
+        ):
+            continue
+        by_event.setdefault(
+            (unit_id, event_index), copy.deepcopy(dict(row))
+        )
+    result["memory_access_proposals"] = [
+        by_event[key] for key in sorted(by_event)
+    ]
+    return result
 
 
 def _complete_output_nodes(
@@ -3232,7 +3284,6 @@ def _bind_mutable_slot_dependencies(
             continue
         identity = row.get("id")
         influence = exit_influence.get(identity) if isinstance(identity, str) else None
-        witnessed_dependencies = _target_origin_authority_dependencies(row)
         witnessed_slot_rvas = _target_origin_writable_slot_rvas(
             row,
             writable_image_ranges=writable_image_ranges,
@@ -3243,7 +3294,6 @@ def _bind_mutable_slot_dependencies(
             for dependency in row.get("analysis_dependencies", ())
             if isinstance(dependency, str)
             and dependency in by_content_id
-            and dependency in witnessed_dependencies
         }
         if influence is None:
             influence = _MutableExitInfluence((), (), False, False)
@@ -3404,21 +3454,6 @@ def _bind_mutable_slot_dependencies(
             })
         result.append(row)
     return result
-
-
-def _target_origin_authority_dependencies(
-    recovery: Mapping[str, Any],
-) -> frozenset[str]:
-    witnesses = recovery.get("target_origin_witnesses")
-    if not isinstance(witnesses, Sequence) or isinstance(witnesses, (str, bytes)):
-        return frozenset()
-    return frozenset(
-        dependency
-        for witness in witnesses
-        if isinstance(witness, Mapping)
-        for dependency in witness.get("authority_dependencies", ())
-        if isinstance(dependency, str) and dependency
-    )
 
 
 def _target_origin_writable_slot_rvas(

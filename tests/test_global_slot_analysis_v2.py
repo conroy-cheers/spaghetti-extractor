@@ -164,8 +164,12 @@ def _analyze(
 def _checked_access_facts(
     units: list[dict[str, object]],
     *,
-    origin: dict[str, object],
+    origin: dict[str, object] | None = None,
+    origins: list[dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
+    if (origin is None) == (origins is None):
+        raise ValueError("exactly one of origin or origins is required")
+    address_origins = [origin] if origin is not None else list(origins or ())
     event = units[0]["semantics"]["memory_events"][0]
     proposal = {
         "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
@@ -175,10 +179,12 @@ def _checked_access_facts(
         "memory_kind": event["kind"],
         "width_bytes": event["width"],
         "address_expression": copy.deepcopy(event["address"]),
-        "address_origins": [origin],
-        "authority_dependencies": list(
-            origin.get("authority_dependencies", [])
-        ),
+        "address_origins": address_origins,
+        "authority_dependencies": sorted({
+            str(dependency)
+            for value in address_origins
+            for dependency in value.get("authority_dependencies", [])
+        }),
     }
     prepared = prepare_checked_memory_access_facts_v2(
         [proposal],
@@ -459,6 +465,45 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
             for row in result["global_slot_evidence"][0]["dependencies"]
         }
         self.assertIn("checked_memory_access_fact", dependency_kinds)
+
+    def test_checked_finite_origins_do_not_authorize_read_coverage(self) -> None:
+        units = [_unit("dispatch", 0x1000, [_read(_reg("esi"))])]
+        facts = _checked_access_facts(
+            units,
+            origins=[
+                {"kind": "exact", "key": [SLOT]},
+                {"kind": "exact", "key": [SLOT + 4]},
+            ],
+        )
+
+        result = _analyze(
+            units,
+            _graph(units),
+            relevant_reads=[{
+                "slot_rva": SLOT - IMAGE_BASE,
+                "exit_id": "indirect-exit:dispatch",
+                "unit_id": "dispatch",
+                "event_index": 0,
+            }],
+            launch_initial_values={SLOT: 0x401020},
+            checked_access_facts=facts,
+        )
+
+        self.assertEqual(result["status"], "incomplete", result["issues"])
+        evidence = result["global_slot_evidence"][0]
+        self.assertEqual(
+            evidence["read_inventory"][0]["classification"],
+            "alias",
+        )
+        self.assertIn("global_slot_read_alias_unresolved", _codes(result))
+        self.assertEqual(
+            evidence["target_dependencies"],
+            [{
+                "exit_id": "indirect-exit:dispatch",
+                "unit_id": "dispatch",
+                "event_index": 0,
+            }],
+        )
 
     def test_corrupt_checked_access_fact_is_violated(self) -> None:
         units = [_unit(

@@ -303,6 +303,10 @@ def build_hybrid_authority_v2(
                 _checked_call_frame_dependencies(
                     recovery,
                     call_frames_by_dependency=call_frames_by_dependency,
+                    non_call_dependency_ids=frozenset(
+                        dependency.content_id
+                        for dependency in mutable_dependencies
+                    ),
                 )
             )
             targets = [] if recovery is None else recovery.get("target_unit_ids", [])
@@ -790,6 +794,7 @@ def _checked_call_frame_dependencies(
     recovery: Mapping[str, Any] | None,
     *,
     call_frames_by_dependency: Mapping[str, CallFrameSummary],
+    non_call_dependency_ids: frozenset[str] = frozenset(),
 ) -> tuple[tuple[AuthorityDependency, ...], tuple[EvidenceIssue, ...]]:
     if recovery is None:
         return (), ()
@@ -812,6 +817,8 @@ def _checked_call_frame_dependencies(
                 "call_frame_dependency_corrupt",
                 "call-frame dependency ID is not text",
             ))
+            continue
+        if dependency_id in non_call_dependency_ids:
             continue
         frame = call_frames_by_dependency.get(dependency_id)
         if frame is None:

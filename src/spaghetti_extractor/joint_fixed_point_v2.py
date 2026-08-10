@@ -77,6 +77,7 @@ def derive_joint_fixed_point_v2(
     proposal_graph: Mapping[str, Any],
     proposal_recoveries: Sequence[Mapping[str, Any]],
     proposal_call_frame_hypotheses: Sequence[Mapping[str, Any]] = (),
+    proposal_slot_dependencies: Sequence[Mapping[str, Any]] = (),
     callbacks: JointFixedPointCallbacks,
     finite_round_budget: int = 32,
     progress: Callable[[str, Mapping[str, Any]], None] | None = None,
@@ -111,7 +112,16 @@ def derive_joint_fixed_point_v2(
                 copy.deepcopy(dict(row))
                 for row in proposal_call_frame_hypotheses
             ],
-            "signature": canonical_sha256(proposal_recoveries),
+            "slot_dependencies": [
+                copy.deepcopy(dict(row)) for row in proposal_slot_dependencies
+            ],
+            "signature": canonical_sha256({
+                "recoveries": list(proposal_recoveries),
+                "call_frame_hypotheses": list(
+                    proposal_call_frame_hypotheses
+                ),
+                "slot_dependencies": list(proposal_slot_dependencies),
+            }),
         },
     }
     bootstrap_graph: Mapping[str, Any] = proposal_graph
@@ -240,6 +250,7 @@ def derive_joint_fixed_point_v2(
         interprocedural=interprocedural,
         cold_graph=cold_graph,
         authoritative_evidence_stable=authoritative_converged,
+        proposal_slot_dependencies=proposal_slot_dependencies,
     )
     _progress(progress, "joint_replay_finished", {
         "status": payload.get("status"),
@@ -322,6 +333,9 @@ def derive_joint_fixed_point_v2(
             "fixed_point": copy.deepcopy(bootstrap.get("fixed_point")),
             "proposal_graph": copy.deepcopy(dict(proposal_graph)),
             "derived_graph": copy.deepcopy(dict(bootstrap_graph)),
+            "proposal_slot_dependencies": [
+                copy.deepcopy(dict(row)) for row in proposal_slot_dependencies
+            ],
             "converged": bootstrap_converged,
         },
     }

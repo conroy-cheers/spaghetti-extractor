@@ -742,8 +742,9 @@ let
               parse_launch_profile_v2,
           )
           from spaghetti_extractor.mutable_slot_candidates_v2 import (
+              derive_dependency_scoped_slot_inventory_v2,
               derive_mutable_slot_candidates,
-              derive_recovery_slot_requirements_v2,
+              derive_proposal_slot_dependencies,
           )
           from spaghetti_extractor.stack_range_analysis_v2 import (
               derive_stack_range_analysis_v2,
@@ -793,6 +794,10 @@ let
           proposals = merge_recovery_proposals_v2(
               exact_exits=exact["indirect_exits"],
               proposal_sets=[static_proposals, discovery],
+          )
+          proposal_slot_dependencies = derive_proposal_slot_dependencies(
+              binary,
+              proposals,
           )
           proposal_graph = build_proposal_control_graph_v2(
               units=units,
@@ -945,18 +950,13 @@ let
               stack_ranges,
               interprocedural,
           ):
-              requirements = derive_recovery_slot_requirements_v2(
+              slot_rvas, dependencies = derive_dependency_scoped_slot_inventory_v2(
                   binary,
                   interprocedural.get("recovered_targets", []),
+                  proposal_dependencies=proposal_slot_dependencies,
               )
               candidate_slots = [
-                  binary.image_base + requirement.slot_rva
-                  for requirement in requirements
-              ]
-              dependencies = [
-                  row
-                  for requirement in requirements
-                  for row in requirement.dependency_rows()
+                  binary.image_base + slot_rva for slot_rva in slot_rvas
               ]
               launch_initial_values = {}
               for address in candidate_slots:
@@ -1019,6 +1019,7 @@ let
                   original_binary=binary,
                   machine_ir_sha256=machine_ir_sha256,
                   finite_value_budget=analysis_finite_value_budget,
+                  proposal_slot_dependencies=proposal_slot_dependencies,
               )
 
           progress_started = time.monotonic()
@@ -1044,6 +1045,7 @@ let
               proposal_graph=proposal_graph,
               proposal_recoveries=proposals,
               proposal_call_frame_hypotheses=discovery_call_frames,
+              proposal_slot_dependencies=proposal_slot_dependencies,
               callbacks=JointFixedPointCallbacks(
                   derive_interprocedural=derive_interprocedural,
                   derive_stack_ranges=derive_stack_ranges,
@@ -1386,6 +1388,9 @@ let
                   inputs["machine_ir"].read_bytes()
               ).hexdigest(),
               finite_value_budget=32,
+              proposal_slot_dependencies=joint.get(
+                  "bootstrap_diagnostics", {}
+              ).get("proposal_slot_dependencies", []),
           )
           output.write_text(
               json.dumps(payload, indent=2, sort_keys=True) + "\n",

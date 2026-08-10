@@ -208,6 +208,7 @@ def validate_joint_replay_v2(
     interprocedural: Mapping[str, Any],
     cold_graph: Mapping[str, Any],
     authoritative_evidence_stable: bool,
+    proposal_slot_dependencies: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Check one graph-bound, unseeded interprocedural authority package."""
 
@@ -280,10 +281,13 @@ def validate_joint_replay_v2(
         missing_slot_dependencies,
         extra_slot_dependencies,
         slot_inventory_error,
+        active_proposal_slot_dependencies,
     ) = _slot_inventory_check(
         global_slot_analysis=global_slot_analysis,
         interprocedural=interprocedural,
+        proposal_slot_dependencies=proposal_slot_dependencies,
     )
+    proposal_slots_discharged = not active_proposal_slot_dependencies
     checks = {
         "stack_range_replay_complete": (
             stack_range_analysis.get("status") == "complete"
@@ -297,6 +301,7 @@ def validate_joint_replay_v2(
         "slot_replay_complete": global_slot_analysis.get("status") == "complete",
         "slot_authority_valid": global_slot_authority.get("status") == "complete",
         "mutable_slot_requirement_inventory_exact": slot_inventory_valid,
+        "proposal_slot_dependencies_discharged": proposal_slots_discharged,
         "interprocedural_cold_complete": cold_complete,
         "cold_rooted_graph_complete": cold_graph.get("status") == "complete",
         "authoritative_evidence_stable": authoritative_evidence_stable,
@@ -341,6 +346,15 @@ def validate_joint_replay_v2(
                 else {}
             ),
         })
+    if not proposal_slots_discharged:
+        issues.append({
+            "status": "incomplete",
+            "code": "proposal_slot_dependencies_not_discharged",
+            "dependencies": [
+                _slot_dependency_payload(key)
+                for key in sorted(active_proposal_slot_dependencies)
+            ],
+        })
     if not authoritative_evidence_stable:
         issues.append({
             "status": "incomplete",
@@ -381,6 +395,7 @@ def validate_joint_replay_v2(
             "stack_replay_bound_to_authoritative_graph": True,
             "proposal_agreement_required": False,
             "mutable_slots_promoted_to_roots": False,
+            "active_proposal_slots_are_non_authorizing": True,
         },
     }
     return {**body, "analysis_sha256": canonical_sha256(body)}
@@ -390,6 +405,7 @@ def _slot_inventory_check(
     *,
     global_slot_analysis: Mapping[str, Any],
     interprocedural: Mapping[str, Any],
+    proposal_slot_dependencies: Sequence[Mapping[str, Any]] = (),
 ) -> tuple[
     bool,
     list[int],
@@ -397,6 +413,7 @@ def _slot_inventory_check(
     list[dict[str, Any]],
     list[dict[str, Any]],
     str | None,
+    set[tuple[int, str, str, int, bool]],
 ]:
     required: frozenset[int] = frozenset()
     required_dependencies: set[tuple[int, str, str, int, bool]] = set()
@@ -408,11 +425,19 @@ def _slot_inventory_check(
             raise ValueError("interprocedural recovery inventory is not an array")
         required = required_recovery_slot_rvas_v2(raw_recoveries)
         required_dependencies = _required_slot_dependencies(raw_recoveries)
+        active_proposals = _active_proposal_slot_dependencies(
+            proposal_slot_dependencies,
+            recoveries=raw_recoveries,
+        )
+        required = required | frozenset(
+            slot_rva for slot_rva, _exit_id, _unit_id, _event_index, _witness in active_proposals
+        )
+        required_dependencies.update(active_proposals)
         raw_slots = global_slot_analysis.get("slots", ())
         if not isinstance(raw_slots, Sequence) or isinstance(raw_slots, (str, bytes)):
             raise ValueError("global-slot replay inventory is not an array")
         if not raw_slots and not required:
-            return True, [], [], [], [], None
+            return True, [], [], [], [], None, active_proposals
         bindings = global_slot_analysis.get("bindings")
         image_base = bindings.get("image_base") if isinstance(bindings, Mapping) else None
         if not isinstance(image_base, int) or isinstance(image_base, bool):
@@ -439,6 +464,7 @@ def _slot_inventory_check(
             [_slot_dependency_payload(key) for key in sorted(required_dependencies)],
             [],
             str(exc),
+            set(),
         )
     missing_dependencies = required_dependencies - analyzed_dependencies
     extra_dependencies = analyzed_dependencies - required_dependencies
@@ -451,7 +477,78 @@ def _slot_inventory_check(
         [_slot_dependency_payload(key) for key in sorted(missing_dependencies)],
         [_slot_dependency_payload(key) for key in sorted(extra_dependencies)],
         None,
+        active_proposals,
     )
+
+
+def _active_proposal_slot_dependencies(
+    dependencies: Sequence[Mapping[str, Any]],
+    *,
+    recoveries: Sequence[Mapping[str, Any]],
+) -> set[tuple[int, str, str, int, bool]]:
+    """Return canonical proposal-only rows for cold-incomplete exits.
+
+    These rows expand the diagnostic replay inventory, but the separate
+    discharge check prevents them from contributing to a complete result.
+    """
+
+    if not isinstance(dependencies, Sequence) or isinstance(
+        dependencies, (str, bytes)
+    ):
+        raise ValueError("proposal slot dependency inventory is not an array")
+    cold_status = {
+        str(row.get("id")): row.get("status")
+        for row in recoveries
+        if isinstance(row, Mapping) and isinstance(row.get("id"), str)
+    }
+    result: set[tuple[int, str, str, int, bool]] = set()
+    observed: list[tuple[int, str, str, int, bool]] = []
+    for row in dependencies:
+        witness_only = row.get("witness_only") is True if isinstance(row, Mapping) else False
+        expected_fields = (
+            {"slot_rva", "exit_id", "witness_only", "proof_authority"}
+            if witness_only
+            else {
+                "slot_rva", "exit_id", "unit_id", "event_index", "proof_authority"
+            }
+        )
+        unit_id = row.get("unit_id") if isinstance(row, Mapping) else None
+        event_index = row.get("event_index") if isinstance(row, Mapping) else None
+        if (
+            not isinstance(row, Mapping)
+            or set(row) != expected_fields
+            or not isinstance(row.get("slot_rva"), int)
+            or isinstance(row.get("slot_rva"), bool)
+            or row["slot_rva"] < 0
+            or not isinstance(row.get("exit_id"), str)
+            or not row["exit_id"]
+            or row.get("proof_authority") is not False
+            or row["exit_id"] not in cold_status
+            or (
+                not witness_only
+                and (
+                    not isinstance(unit_id, str)
+                    or not unit_id
+                    or not isinstance(event_index, int)
+                    or isinstance(event_index, bool)
+                    or event_index < 0
+                )
+            )
+        ):
+            raise ValueError("proposal slot dependency is malformed")
+        identity = (
+            int(row["slot_rva"]),
+            str(row["exit_id"]),
+            "" if witness_only else str(unit_id),
+            -1 if witness_only else int(event_index),
+            witness_only,
+        )
+        observed.append(identity)
+        if cold_status[row["exit_id"]] == "incomplete":
+            result.add(identity)
+    if observed != sorted(set(observed)):
+        raise ValueError("proposal slot dependency inventory is not canonical")
+    return result
 
 
 def _required_slot_dependencies(

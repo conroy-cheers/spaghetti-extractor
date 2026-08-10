@@ -103,8 +103,16 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("spaghetti_extractor.global_slot_analysis_v2", joint_phase)
         self.assertIn("spaghetti_extractor.mutable_slot_candidates_v2", joint_phase)
         self.assertIn("spaghetti_extractor.global_slot_authority_v2", joint_phase)
-        self.assertIn("derive_recovery_slot_requirements_v2", joint_phase)
-        self.assertNotIn("derive_proposal_slot_dependencies", joint_phase)
+        self.assertIn("derive_proposal_slot_dependencies", joint_phase)
+        self.assertIn("derive_dependency_scoped_slot_inventory_v2", joint_phase)
+        self.assertIn(
+            "proposal_dependencies=proposal_slot_dependencies",
+            joint_phase,
+        )
+        self.assertIn(
+            "proposal_slot_dependencies=proposal_slot_dependencies",
+            joint_phase,
+        )
         self.assertNotIn("spaghetti_extractor.entry_state_analysis_v2", joint_phase)
         self.assertEqual(
             projection_phases.count(
@@ -123,6 +131,10 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("artifact_projection_v2", authority_phase)
         self.assertIn("derive_rooted_control_closure_v2", authority_phase)
         self.assertIn("_parse_stage_a_pe", authority_phase)
+        self.assertIn(
+            'get("proposal_slot_dependencies", [])',
+            authority_phase,
+        )
 
     def test_stack_range_authority_is_replayed_inside_joint_phase(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
