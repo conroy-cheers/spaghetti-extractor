@@ -744,6 +744,44 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             )
         )
 
+    def test_mutable_influence_schedules_acyclic_diamond_once(self) -> None:
+        observed: list[dict[str, object]] = []
+
+        result = self._run(
+            units=[
+                unit("root", 0x1000),
+                unit("left", 0x1010),
+                unit("right", 0x1020),
+                unit("join", 0x1030),
+            ],
+            roots=["root"],
+            direct=[
+                edge("root", "left"),
+                edge("root", "right"),
+                edge("left", "join"),
+                edge("right", "join"),
+            ],
+            resolver=lambda **_kwargs: {"resolutions": []},
+            progress=lambda phase, details: (
+                observed.append(dict(details))
+                if phase == "mutable_influence_derived"
+                else None
+            ),
+        )
+
+        self.assertTrue(result.complete)
+        self.assertEqual(len(observed), 2)
+        self.assertTrue(
+            all(details["reached_units"] == 4 for details in observed)
+        )
+        self.assertTrue(
+            all(details["transfer_evaluations"] == 4 for details in observed)
+        )
+        self.assertTrue(
+            all(details["join_evaluations"] == 1 for details in observed)
+        )
+        self.assertFalse(any(details["budget_exhausted"] for details in observed))
+
     def test_cold_replay_seals_event_bound_memory_access_facts(self) -> None:
         root = unit(
             "root",

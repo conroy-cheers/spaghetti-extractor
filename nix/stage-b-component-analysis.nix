@@ -545,6 +545,9 @@ let
           graph = json.loads(inputs["base_graph"].read_text(encoding="utf-8"))
           inventory = json.loads(inputs["selected_profiles"].read_text(encoding="utf-8"))
           binary = _parse_stage_a_pe(inputs["original_pe"])
+          machine_ir_sha256 = hashlib.sha256(
+              inputs["machine_ir"].read_bytes()
+          ).hexdigest()
           internal_paths = tuple(
               pathlib.Path(path)
               for path in inventory["internal_function_contract_profiles"]
@@ -554,9 +557,7 @@ let
               units=units,
               graph=graph,
               binary=binary,
-              machine_ir_sha256=hashlib.sha256(
-                  inputs["machine_ir"].read_bytes()
-              ).hexdigest(),
+              machine_ir_sha256=machine_ir_sha256,
               global_slot_invariants=[],
               import_abis=load_selected_import_abis(
                   tuple(

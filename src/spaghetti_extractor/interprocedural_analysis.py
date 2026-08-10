@@ -131,6 +131,15 @@ class _MutableState:
     unknown_write: bool = False
 
 
+@dataclass(frozen=True)
+class _MutableInfluenceResult:
+    exits: Mapping[str, "_MutableExitInfluence"]
+    reached_units: int
+    transfer_evaluations: int
+    join_evaluations: int
+    exhausted: bool
+
+
 @dataclass(frozen=True, order=True)
 class _MutableCallTarget:
     event_index: int
@@ -1293,7 +1302,7 @@ def _run_typed_pass(
             operation_provenance,
             finite_target_budget=finite_value_budget,
         )
-        mutable_influence = _analyze_mutable_slot_influence(
+        mutable_result = _analyze_mutable_slot_influence(
             units=units,
             roots=current_roots,
             direct_edges=direct_edges,
@@ -1315,7 +1324,11 @@ def _run_typed_pass(
         _progress(progress, "mutable_influence_derived", {
             "pass_kind": pass_kind,
             "evaluation": evaluation,
-            "exit_facts": len(mutable_influence),
+            "exit_facts": len(mutable_result.exits),
+            "reached_units": mutable_result.reached_units,
+            "transfer_evaluations": mutable_result.transfer_evaluations,
+            "join_evaluations": mutable_result.join_evaluations,
+            "budget_exhausted": mutable_result.exhausted,
         })
         next_selected = _prefer_indirect_recoveries(
             static_recoveries,
@@ -1329,7 +1342,7 @@ def _run_typed_pass(
         )
         next_selected = _bind_mutable_slot_dependencies(
             next_selected,
-            exit_influence=mutable_influence,
+            exit_influence=mutable_result.exits,
             global_slot_invariants=global_slot_invariants,
             finite_value_budget=finite_value_budget,
             writable_image_ranges=writable_image_ranges,
@@ -1732,7 +1745,7 @@ def _analyze_mutable_slot_influence(
     call_memory_preservation: Mapping[str, bool],
     global_slot_invariants: Sequence[GlobalSlotInvariant],
     writable_image_ranges: Sequence[tuple[int, int]],
-) -> Mapping[str, _MutableExitInfluence]:
+) -> _MutableInfluenceResult:
     """Replay slot influence from empty root memories over reachable edges.
 
     This is deliberately not an initial-slot seed.  A slot enters the domain
@@ -1751,6 +1764,8 @@ def _analyze_mutable_slot_influence(
         by_id=by_id,
         image_base=image_base,
     )
+    transfer_evaluations = 0
+    join_evaluations = 0
     for recovery in recovered_indirect_edges:
         if (
             recovery.get("status") != "recovered"
@@ -1796,77 +1811,113 @@ def _analyze_mutable_slot_influence(
         for root in roots
         if root in by_id
     }
-    queue = deque(sorted(states))
-    in_queue = set(queue)
-    evaluations = 0
     evaluation_budget = max(
         4,
         (len(by_id) + len(indirect_exits) + 1) * (finite_value_budget + 2),
     )
-    while queue and evaluations < evaluation_budget:
-        source = queue.popleft()
-        in_queue.discard(source)
-        output = _transfer_mutable_state(
-            by_id[source],
-            states[source],
-            unit_id=source,
-            image_base=image_base,
-            image_size=image_size,
-            maximum=finite_value_budget,
-            checked_nonimage_stack=(source in checked_nonimage_stack_units),
-            call_targets=call_targets.get(source, ()),
-            call_preserved_registers=call_preserved_registers,
-            call_stack_cleanup=call_stack_cleanup,
-            call_result_relations=call_result_relations,
-            call_memory_result_relations=call_memory_result_relations,
-            calls_preserve_memory=call_memory_preservation.get(source, True),
-            writable_image_ranges=writable_image_ranges,
-        )
-        evaluations += 1
-        for target in sorted(normal_successors.get(source, ())):
-            previous = states.get(target)
-            joined = (
-                output
-                if previous is None
-                else _join_mutable_states(
-                    previous, output, maximum=finite_value_budget
+    control_edges = {
+        (source, target)
+        for source, targets in normal_successors.items()
+        for target in targets
+    } | {
+        (source, target.target_unit_id)
+        for source, targets in call_targets.items()
+        for target in targets
+        if target.target_unit_id
+    }
+    decomposition = decompose_scc(tuple(by_id), control_edges)
+    component_by_unit = {
+        unit_id: component_index
+        for component_index, component in enumerate(decomposition.components)
+        for unit_id in component
+    }
+    outputs: dict[str, _MutableState] = {}
+    exhausted = False
+
+    for component_index, component in enumerate(decomposition.components):
+        queue = deque(unit_id for unit_id in component if unit_id in states)
+        in_queue = set(queue)
+        if not queue:
+            continue
+        members = frozenset(component)
+
+        def propagate(target: str, incoming: _MutableState) -> None:
+            nonlocal join_evaluations
+            target_component = component_by_unit[target]
+            if target_component < component_index:
+                raise AssertionError(
+                    "mutable influence SCC order contains a backward edge"
                 )
-            )
-            if previous != joined:
-                states[target] = joined
-                if target not in in_queue:
-                    queue.append(target)
-                    in_queue.add(target)
-        for call_target in call_targets.get(source, ()):
-            if not call_target.target_unit_id:
-                continue
-            call_entry = _mutable_call_entry_state(
+            previous = states.get(target)
+            if previous is None:
+                joined = incoming
+            else:
+                join_evaluations += 1
+                joined = _join_mutable_states(
+                    previous,
+                    incoming,
+                    maximum=finite_value_budget,
+                )
+            if previous == joined:
+                return
+            states[target] = joined
+            if target in members and target not in in_queue:
+                queue.append(target)
+                in_queue.add(target)
+
+        while queue:
+            if transfer_evaluations >= evaluation_budget:
+                exhausted = True
+                break
+            source = queue.popleft()
+            in_queue.discard(source)
+            source_call_targets = call_targets.get(source, ())
+            output = _transfer_mutable_state(
                 by_id[source],
                 states[source],
-                event_index=call_target.event_index,
                 unit_id=source,
                 image_base=image_base,
                 image_size=image_size,
                 maximum=finite_value_budget,
+                checked_nonimage_stack=(
+                    source in checked_nonimage_stack_units
+                ),
+                call_targets=source_call_targets,
+                call_preserved_registers=call_preserved_registers,
+                call_stack_cleanup=call_stack_cleanup,
+                call_result_relations=call_result_relations,
+                call_memory_result_relations=call_memory_result_relations,
+                calls_preserve_memory=call_memory_preservation.get(
+                    source, True
+                ),
                 writable_image_ranges=writable_image_ranges,
-                checked_nonimage_stack=(source in checked_nonimage_stack_units),
             )
-            target = call_target.target_unit_id
-            previous = states.get(target)
-            joined = (
-                call_entry
-                if previous is None
-                else _join_mutable_states(
-                    previous, call_entry, maximum=finite_value_budget
+            transfer_evaluations += 1
+            outputs[source] = output
+            for target in sorted(normal_successors.get(source, ())):
+                propagate(target, output)
+            for call_target in source_call_targets:
+                if not call_target.target_unit_id:
+                    continue
+                propagate(
+                    call_target.target_unit_id,
+                    _mutable_call_entry_state(
+                        by_id[source],
+                        states[source],
+                        event_index=call_target.event_index,
+                        unit_id=source,
+                        image_base=image_base,
+                        image_size=image_size,
+                        maximum=finite_value_budget,
+                        writable_image_ranges=writable_image_ranges,
+                        checked_nonimage_stack=(
+                            source in checked_nonimage_stack_units
+                        ),
+                    ),
                 )
-            )
-            if previous != joined:
-                states[target] = joined
-                if target not in in_queue:
-                    queue.append(target)
-                    in_queue.add(target)
+        if exhausted:
+            break
 
-    exhausted = bool(queue)
     result: dict[str, _MutableExitInfluence] = {}
     for row in indirect_exits:
         identity = _required_string(row, "id")
@@ -1876,22 +1927,9 @@ def _analyze_mutable_slot_influence(
                 (), (), exhausted, exhausted
             )
             continue
-        output = _transfer_mutable_state(
-            by_id[source],
-            states[source],
-            unit_id=source,
-            image_base=image_base,
-            image_size=image_size,
-            maximum=finite_value_budget,
-            checked_nonimage_stack=(source in checked_nonimage_stack_units),
-            call_targets=call_targets.get(source, ()),
-            call_preserved_registers=call_preserved_registers,
-            call_stack_cleanup=call_stack_cleanup,
-            call_result_relations=call_result_relations,
-            call_memory_result_relations=call_memory_result_relations,
-            calls_preserve_memory=call_memory_preservation.get(source, True),
-            writable_image_ranges=writable_image_ranges,
-        )
+        output = outputs.get(source)
+        if output is None:
+            output = _unknown_mutable_state(states[source])
         target_state = output
         if row.get("kind") == "indirect_call":
             event_index = row.get("source_event_index")
@@ -1935,7 +1973,13 @@ def _analyze_mutable_slot_influence(
             influence.unsafe or exhausted,
             influence.overflow or exhausted,
         )
-    return result
+    return _MutableInfluenceResult(
+        exits=result,
+        reached_units=len(states),
+        transfer_evaluations=transfer_evaluations,
+        join_evaluations=join_evaluations,
+        exhausted=exhausted,
+    )
 
 
 def _transfer_mutable_state(

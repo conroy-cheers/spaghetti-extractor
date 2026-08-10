@@ -163,10 +163,15 @@ def decompose_scc(
 
     node_set, edge_set = _materialize_graph(nodes, edges)
     ordered_nodes, tokens = _node_order(node_set, key)
-    outgoing: dict[NodeT, tuple[NodeT, ...]] = {}
-    for node in ordered_nodes:
-        targets = {target for source, target in edge_set if source == node}
-        outgoing[node] = tuple(sorted(targets, key=tokens.__getitem__))
+    target_sets: dict[NodeT, set[NodeT]] = {
+        node: set() for node in ordered_nodes
+    }
+    for source, target in edge_set:
+        target_sets[source].add(target)
+    outgoing = {
+        node: tuple(sorted(target_sets[node], key=tokens.__getitem__))
+        for node in ordered_nodes
+    }
 
     next_index = 0
     indices: dict[NodeT, int] = {}
