@@ -123,13 +123,18 @@ let
       "${interfaceProfile}/interface-profile.json"
     ];
     namePrefix = "spaghetti-extractor-dxball-1.09-diagnostic";
-    allowDeferredPotentialTransfers = false;
+    candidateMode = "structural-diagnostic";
+    allowDeferredPotentialTransfers = true;
     diagnosticFailureTrap = true;
   };
   diagnosticRun = import ../../nix/stage-b-headless-diagnostic-run.nix {
-    inherit pkgs;
+    inherit pkgs pythonEnv;
+    pythonSource = candidatePythonSource;
     namePrefix = "spaghetti-extractor-dxball-1.09";
     candidateBinary = "${hybridDiagnostic.candidate}/candidate.exe";
+    nativeEnginePlan =
+      "${hybridDiagnostic.nativeEngine}/native-engine-plan.json";
+    nativeRuntimePackage = hybridDiagnostic.nativeRuntime;
     runtimeAssets = "${original}/runtime";
     executableName = "DXBall.exe";
     inputKeys = [ "Return" ];

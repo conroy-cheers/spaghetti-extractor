@@ -50,12 +50,14 @@
           candidateOnlySourceFiles = pkgs.lib.fileset.unions [
             ./src/spaghetti_extractor/stage_b_interpreter_backend.py
             ./src/spaghetti_extractor/stage_b_interpreter_native_build.py
+            ./src/spaghetti_extractor/stage_b_candidate_modes.py
             ./src/spaghetti_extractor/stage_b_machine_ir_scope.py
             ./src/spaghetti_extractor/stage_b_native_binding.py
             ./src/spaghetti_extractor/stage_b_native_build.py
             ./src/spaghetti_extractor/stage_b_native_engine.py
             ./src/spaghetti_extractor/stage_b_native_image.py
             ./src/spaghetti_extractor/stage_b_native_runtime.py
+            ./src/spaghetti_extractor/stage_b_native_diagnostic.py
             ./src/spaghetti_extractor/stage_b_pe_composer.py
           ];
           leanSourceFiles = ./src/spaghetti_extractor/lean;

@@ -52,8 +52,12 @@ pkgs.runCommand
       .counts.transfers + .counts.deferred_transfers == .counts.input_transfers and
       .counts.blocked_transfers == 0 and
       (if ${if allowDeferredPotentialTransfers then "true" else "false"}
-       then .execution_policy == "fail_closed_on_deferred_potential_transfer_v1"
-            and .semantic_coverage.status == "incomplete"
+       then (if .counts.deferred_transfers > 0
+             then .execution_policy == "fail_closed_on_deferred_potential_transfer_v1"
+                  and .semantic_coverage.status == "incomplete"
+             else .execution_policy == "complete_transfer_inventory_v1"
+                  and .semantic_coverage.status == "complete"
+             end)
        else .execution_policy == "complete_transfer_inventory_v1"
             and .semantic_coverage.status == "complete"
             and .counts.deferred_transfers == 0

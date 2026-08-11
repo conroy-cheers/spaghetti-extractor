@@ -1,7 +1,11 @@
 {
   pkgs,
+  pythonEnv,
+  pythonSource,
   namePrefix,
   candidateBinary,
+  nativeEnginePlan,
+  nativeRuntimePackage,
   runtimeAssets,
   executableName ? "candidate.exe",
   timeoutSeconds ? 45,
@@ -13,6 +17,13 @@
 
 let
   wine = pkgs.wineWow64Packages.stableFull;
+  diagnosticPythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.stage_b_native_diagnostic" ];
+    name = "${namePrefix}-native-diagnostic-python-closure";
+  };
+  python = "${pythonEnv}/bin/python3";
 in
 assert builtins.isString namePrefix && namePrefix != "";
 assert builtins.match "[A-Za-z0-9._-]+\\.exe" executableName != null;
@@ -34,6 +45,7 @@ let
 in
 pkgs.runCommand "${namePrefix}-headless-diagnostic-run-v1" {
   nativeBuildInputs = [
+    pythonEnv
     wine
     pkgs.coreutils
     pkgs.imagemagick
@@ -51,6 +63,7 @@ pkgs.runCommand "${namePrefix}-headless-diagnostic-run-v1" {
   export WINEPREFIX="$TMPDIR/wine"
   export WINEDEBUG=${pkgs.lib.escapeShellArg wineDebug}
   export WINEDLLOVERRIDES="mscoree,mshtml="
+  export PYTHONPATH=${diagnosticPythonSource}/src
   work="$TMPDIR/candidate"
   mkdir -p "$HOME" "$work" "$out"
   cp -a ${runtimeAssets}/. "$work/"
@@ -91,13 +104,50 @@ pkgs.runCommand "${namePrefix}-headless-diagnostic-run-v1" {
   fi
   if test -s "$work/spaghetti-extractor-diagnostic.bin"; then
     cp "$work/spaghetti-extractor-diagnostic.bin" "$out/"
+    ${python} - \
+      "$out/spaghetti-extractor-diagnostic.bin" \
+      ${nativeEnginePlan} \
+      ${nativeRuntimePackage}/native-runtime-package.json \
+      "$out/diagnostic-decoded.json" <<'PY'
+  import json
+  import pathlib
+  import sys
+
+  from spaghetti_extractor.stage_b_native_diagnostic import (
+      decode_stage_b_native_diagnostic_file,
+  )
+
+  diagnostic, engine, runtime, output = map(pathlib.Path, sys.argv[1:])
+  payload = decode_stage_b_native_diagnostic_file(
+      diagnostic,
+      native_engine_plan=engine,
+      native_runtime_package=runtime,
+  )
+  output.write_text(
+      json.dumps(payload, indent=2, sort_keys=True) + "\n",
+      encoding="ascii",
+  )
+  PY
     diagnostic_sha256="$(
       sha256sum "$out/spaghetti-extractor-diagnostic.bin" | cut -d ' ' -f 1
+    )"
+    decoded_sha256="$(
+      sha256sum "$out/diagnostic-decoded.json" | cut -d ' ' -f 1
     )"
     diagnostic_json="$(${pkgs.jq}/bin/jq -n \
       --arg path spaghetti-extractor-diagnostic.bin \
       --arg sha256 "$diagnostic_sha256" \
-      '{path: $path, sha256: $sha256}')"
+      --arg decoded_path diagnostic-decoded.json \
+      --arg decoded_sha256 "$decoded_sha256" \
+      --slurpfile decoded "$out/diagnostic-decoded.json" \
+      '{
+        path: $path,
+        sha256: $sha256,
+        decoded: {path: $decoded_path, sha256: $decoded_sha256},
+        failure: $decoded[0].failure,
+        counts: $decoded[0].counts,
+        static_context: $decoded[0].static_context
+      }')"
   else
     diagnostic_json=null
   fi
@@ -138,7 +188,8 @@ pkgs.runCommand "${namePrefix}-headless-diagnostic-run-v1" {
       oracle: {
         original_runtime_observations: $original_runtime_observations,
         candidate_only: true
-      }
+      },
+      authority: "diagnostic-only; no behavioral acceptance authority"
     }' >"$out/diagnostic-run.json"
   touch -d @1 "$out/"*
 ''

@@ -36,6 +36,10 @@ from .checked_external_site_contract import (
     ExternalSiteIdentity,
     checked_external_site_contract_from_event,
 )
+from .machine_import_profiles import (
+    MachineImportIdentity,
+    load_machine_import_profile_set,
+)
 from .stage_binary import StageAInputError
 from .stage_b_engine_layout import (
     render_stage_b_engine_layout_c,
@@ -49,6 +53,11 @@ from .stage_b_typed_x87 import (
     typed_x87_operation_from_micro_op,
 )
 from .stage_b_machine_ir_scope import partition_candidate_machine_ir_units
+from .stage_b_candidate_modes import (
+    STATIC_CLOSED_CANDIDATE_MODE,
+    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+    require_candidate_mode,
+)
 from .recovered_executable_data import (
     RecoveredExecutableDataRange,
     load_recovered_executable_data_contract,
@@ -84,7 +93,7 @@ _CALLBACK_ADAPTER_RECEIPT_FORMAT = (
     "stage-b-native-callback-adapter-receipt-v1"
 )
 _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
-    "stage-b-native-implementation-dispatch-receipt-v1"
+    "stage-b-native-implementation-dispatch-receipt-v2"
 )
 _RAW_INSTRUCTION_FIELDS = frozenset({
     "bytes", "instruction_bytes", "opcode_bytes", "raw_bytes",
@@ -453,11 +462,15 @@ class NativeImplementationTarget:
 
 @dataclass(frozen=True)
 class NativeImplementationDispatchReceipt:
+    candidate_mode: str
     semantic_input_sha256: str
     machine_ir_manifest_sha256: str | None
     reachability_status: str
     roots: tuple[str, ...]
     reachable_unit_ids: tuple[str, ...]
+    potential_unit_ids: tuple[str, ...]
+    confirmed_unreachable_unit_ids: tuple[str, ...]
+    reachability_frontiers: tuple[dict[str, Any], ...]
     entries: tuple[NativeImplementationEntry, ...]
     targets: tuple[NativeImplementationTarget, ...]
     blockers: tuple[dict[str, Any], ...]
@@ -468,6 +481,11 @@ class NativeImplementationDispatchReceipt:
             return "incomplete"
         if self.reachability_status == "complete":
             return "complete"
+        if (
+            self.candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
+            and self.reachability_status == "incomplete"
+        ):
+            return "diagnostic"
         return "unbound"
 
     def _body(self) -> dict[str, Any]:
@@ -479,12 +497,24 @@ class NativeImplementationDispatchReceipt:
                 "status": self.reachability_status,
                 "roots": list(self.roots),
                 "reachable_unit_ids": list(self.reachable_unit_ids),
+                "potential_unit_ids": list(self.potential_unit_ids),
+                "confirmed_unreachable_unit_ids": list(
+                    self.confirmed_unreachable_unit_ids
+                ),
+                "frontiers": list(self.reachability_frontiers),
             },
             "policy": {
+                "candidate_mode": self.candidate_mode,
                 "one_implementation_class_per_transfer": True,
-                "rooted_targets_require_implementation": True,
+                "rooted_targets_require_implementation": (
+                    self.candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
+                ),
+                "runtime_code_target_lookup": "exact-active-transfer-rva",
+                "unresolved_dispatch": "fail-closed-as-unimplemented",
                 "portable_component_fallback_on_unimplemented": False,
-                "static_hybrid_closure_receipt_required_for_candidate": True,
+                "static_hybrid_closure_receipt_required_for_candidate": (
+                    self.candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
+                ),
                 "acceptance_authority": False,
             },
             "counts": {
@@ -620,6 +650,7 @@ class _PEBaseRelocationEvidence:
 
 @dataclass(frozen=True)
 class NativeEnginePlan:
+    candidate_mode: str
     input_mode: str
     entry_rva: int
     transfer_count: int
@@ -637,6 +668,7 @@ class NativeEnginePlan:
     deferred_transfers: tuple[dict[str, Any], ...]
     recovered_executable_data_ranges: tuple[RecoveredExecutableDataRange, ...]
     fixed_image_base: int | None
+    diagnostic_frontiers: tuple[dict[str, Any], ...]
     blockers: tuple[dict[str, Any], ...]
 
     @property
@@ -654,6 +686,7 @@ class NativeEnginePlan:
             "format": NATIVE_ENGINE_PLAN_FORMAT,
             "status": self.status,
             "state_machine_sha256": state_machine_sha256,
+            "candidate_mode": self.candidate_mode,
             "input_mode": self.input_mode,
             "entry_rva": self.entry_rva,
             "counts": {
@@ -681,6 +714,7 @@ class NativeEnginePlan:
                     else len(self.callable_external_contract.routes)
                 ),
                 "x87_operations": len(self.x87_operations),
+                "diagnostic_frontiers": len(self.diagnostic_frontiers),
                 "blockers": len(self.blockers),
             },
             "external_sites": [site.payload() for site in self.external_sites],
@@ -764,6 +798,7 @@ class NativeEnginePlan:
                 "raw_absolute_operands": "forbidden",
                 "x87_instruction_payloads": "forbidden-after-typed-extraction",
             },
+            "diagnostic_frontiers": list(self.diagnostic_frontiers),
             "blockers": list(self.blockers),
             "authority": "candidate generation only; candidate assurance remains required",
         }
@@ -1519,16 +1554,27 @@ def _portable_component_selections(
 
 def _build_implementation_dispatch_receipt(
     *,
+    candidate_mode: str,
     semantic_input_sha256: str,
     machine_ir_manifest_payload: Mapping[str, Any] | None,
     machine_ir_manifest_sha256: str | None,
+    inventory_source_rows: Iterable[Mapping[str, Any]],
     source_rows: Iterable[Mapping[str, Any]],
     rows: Iterable[Mapping[str, Any]],
     external_sites: Iterable[NativeExternalSite],
     selected_portable_components: Iterable[Mapping[str, Any]],
 ) -> tuple[NativeImplementationDispatchReceipt, tuple[dict[str, Any], ...]]:
+    inventory_source_rows = tuple(inventory_source_rows)
     source_rows = tuple(source_rows)
     rows = tuple(rows)
+    inventory_ids: set[str] = set()
+    for index, source in enumerate(inventory_source_rows):
+        unit_id = _required_string(
+            source.get("id"), f"implementation inventory unit {index} id"
+        )
+        if unit_id in inventory_ids:
+            raise StageAInputError("duplicate implementation inventory unit id")
+        inventory_ids.add(unit_id)
     source_by_id: dict[str, Mapping[str, Any]] = {}
     transfer_by_id: dict[str, tuple[int, str]] = {}
     transfer_id_by_rva: dict[int, str] = {}
@@ -1556,6 +1602,9 @@ def _build_implementation_dispatch_receipt(
     )
     roots: tuple[str, ...] = ()
     reachable_unit_ids: tuple[str, ...] = ()
+    potential_unit_ids: tuple[str, ...] = ()
+    confirmed_unreachable_unit_ids: tuple[str, ...] = ()
+    reachability_frontiers: tuple[dict[str, Any], ...] = ()
     reachability_status = "not_bound"
     reachability_classes = {unit_id: "unbound" for unit_id in transfer_by_id}
     receipt_blockers: list[dict[str, Any]] = []
@@ -1588,10 +1637,14 @@ def _build_implementation_dispatch_receipt(
             inventories[field] = tuple(sorted(raw_values))
         roots = inventories["roots"]
         reachable_unit_ids = inventories["reachable_units"]
+        potential_unit_ids = inventories["potential_units"]
+        confirmed_unreachable_unit_ids = inventories[
+            "confirmed_unreachable_units"
+        ]
         reachable = set(reachable_unit_ids)
-        potential = set(inventories["potential_units"])
-        unreachable = set(inventories["confirmed_unreachable_units"])
-        known = set(source_by_id)
+        potential = set(potential_unit_ids)
+        unreachable = set(confirmed_unreachable_unit_ids)
+        known = inventory_ids
         if (
             not roots
             or not set(roots) <= reachable
@@ -1614,6 +1667,13 @@ def _build_implementation_dispatch_receipt(
         frontiers = reachability.get("frontiers")
         if not isinstance(frontiers, list):
             raise StageAInputError("machine-IR reachability frontiers are malformed")
+        if any(not isinstance(frontier, Mapping) for frontier in frontiers):
+            raise StageAInputError(
+                "machine-IR reachability frontier inventory is malformed"
+            )
+        reachability_frontiers = tuple(
+            dict(frontier) for frontier in frontiers
+        )
         if (
             reachability.get("status") == "complete"
             and not frontiers
@@ -1622,15 +1682,16 @@ def _build_implementation_dispatch_receipt(
             reachability_status = "complete"
         else:
             reachability_status = "incomplete"
-            receipt_blockers.append(_blocker(
-                "implementation_reachability_incomplete",
-                observed_status=reachability.get("status"),
-                potential_units=len(potential),
-                frontiers=len(frontiers),
-                next_action=(
-                    "close the prerequisite rooted static reachability receipt"
-                ),
-            ))
+            if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
+                receipt_blockers.append(_blocker(
+                    "implementation_reachability_incomplete",
+                    observed_status=reachability.get("status"),
+                    potential_units=len(potential),
+                    frontiers=len(frontiers),
+                    next_action=(
+                        "close the prerequisite rooted static reachability receipt"
+                    ),
+                ))
 
     entries = tuple(
         NativeImplementationEntry(
@@ -1967,11 +2028,15 @@ def _build_implementation_dispatch_receipt(
         ),
     ))
     receipt = NativeImplementationDispatchReceipt(
+        candidate_mode=candidate_mode,
         semantic_input_sha256=semantic_input_sha256,
         machine_ir_manifest_sha256=machine_ir_manifest_sha256,
         reachability_status=reachability_status,
         roots=roots,
         reachable_unit_ids=reachable_unit_ids,
+        potential_unit_ids=potential_unit_ids,
+        confirmed_unreachable_unit_ids=confirmed_unreachable_unit_ids,
+        reachability_frontiers=reachability_frontiers,
         entries=entries,
         targets=targets_tuple,
         blockers=blockers_tuple,
@@ -2652,6 +2717,8 @@ def plan_stage_b_native_engine(
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
     callable_external_contract: Path | str | None = None,
+    machine_import_profiles: Iterable[Path | str] = (),
+    candidate_mode: str = STATIC_CLOSED_CANDIDATE_MODE,
     allow_deferred_potential_transfers: bool = False,
     fixed_image_base: int | None = None,
     preferred_image_base: int | None = None,
@@ -2662,6 +2729,14 @@ def plan_stage_b_native_engine(
 
     if (state_machine is None) == (machine_ir is None):
         raise StageAInputError("provide exactly one of state_machine or machine_ir")
+    candidate_mode = require_candidate_mode(candidate_mode)
+    if (
+        candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
+        and allow_deferred_potential_transfers
+    ):
+        raise StageAInputError(
+            "static-closed mode cannot defer potential transfers"
+        )
     input_path = Path(state_machine if state_machine is not None else machine_ir)
     if fixed_image_base is not None:
         fixed_image_base = _required_u32(fixed_image_base, "fixed image base")
@@ -2686,6 +2761,9 @@ def plan_stage_b_native_engine(
     )
     semantic_input_sha256 = sha256_file(input_path)
     selected_portable_components = tuple(selected_portable_components)
+    selected_import_contracts = load_machine_import_profile_set(
+        tuple(machine_import_profiles)
+    ).by_identity()
     callback_targets = tuple(callback_targets)
     callable_contract = (
         None
@@ -2704,7 +2782,9 @@ def plan_stage_b_native_engine(
         else None
     )
     checked_external_contracts_required = (
-        machine_ir_mode and machine_ir_manifest_payload is not None
+        candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
+        and machine_ir_mode
+        and machine_ir_manifest_payload is not None
     )
     recovered_data_ranges: tuple[RecoveredExecutableDataRange, ...] = ()
     if recovered_executable_data is not None:
@@ -2804,6 +2884,7 @@ def plan_stage_b_native_engine(
         else {}
     )
     blockers: list[dict[str, Any]] = []
+    diagnostic_frontiers: list[dict[str, Any]] = []
     checked_termination_import = _parse_native_termination_import(
         termination_import, import_iat_vas
     )
@@ -3144,11 +3225,33 @@ def plan_stage_b_native_engine(
             protocol_target = external_interface_methods.get(
                 (transfer_id, event_index)
             )
+            selected_import_contract = None
+            resolved_machine_contract: dict[str, Any] | None = None
+            if dll is not None:
+                selected_import_contract = selected_import_contracts.get(
+                    MachineImportIdentity(
+                        dll=dll.lower(),
+                        kind="symbol" if isinstance(symbol, str) else "ordinal",
+                        value=(symbol if isinstance(symbol, str) else int(ordinal)),
+                    )
+                )
+                if selected_import_contract is not None:
+                    resolved_machine_contract = dict(
+                        selected_import_contract.contract
+                    )
+                    resolved_machine_contract["profile_binding"] = {
+                        "profile_id": selected_import_contract.profile_id,
+                        "profile_sha256": selected_import_contract.profile_sha256,
+                        "entry_key": selected_import_contract.entry_key,
+                        "entry_index": selected_import_contract.entry_index,
+                    }
             checked_external_contract: CheckedExternalSiteContract | None = None
+            checked_external_contract_error: str | None = None
             if (
                 checked_external_contracts_required
                 or protocol_target is not None
                 or isinstance(event.get("abi_contract"), Mapping)
+                or resolved_machine_contract is not None
             ) and (protocol_target is not None or dll is not None):
                 try:
                     if protocol_target is not None:
@@ -3187,12 +3290,14 @@ def plan_stage_b_native_engine(
                             disposition=disposition,
                             protocol_target=protocol_target,
                             callback_evidence=callback_evidence,
+                            resolved_machine_contract=resolved_machine_contract,
                             context=(
                                 f"{transfer_id} external event {event_index}"
                             ),
                         )
                     )
                 except CheckedExternalSiteContractError as exc:
+                    checked_external_contract_error = str(exc)
                     if checked_external_contracts_required:
                         blockers.append(_blocker(
                             "external_site_contract_incomplete",
@@ -3206,6 +3311,28 @@ def plan_stage_b_native_engine(
                                 "and callback effects"
                             ),
                         ))
+            if (
+                candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
+                and checked_external_contract is None
+                and (protocol_target is not None or dll is not None)
+            ):
+                diagnostic_frontiers.append(_frontier(
+                    "external_site_contract_deferred",
+                    transfer_id=transfer_id,
+                    event_index=event_index,
+                    instruction_rva=instruction_rva,
+                    detail=(
+                        checked_external_contract_error
+                        or "event has no exact machine ABI contract"
+                    ),
+                    runtime_disposition=(
+                        "require-exact-profile-or-fail-closed-as-unimplemented"
+                    ),
+                    next_action=(
+                        "emit an exact machine-level external-site contract before "
+                        "promoting this candidate to static-closed"
+                    ),
+                ))
 
             site = NativeExternalSite(
                 id=len(sites),
@@ -3698,6 +3825,7 @@ def plan_stage_b_native_engine(
         ))
     implementation_dispatch_receipt, implementation_blockers = (
         _build_implementation_dispatch_receipt(
+            candidate_mode=candidate_mode,
             semantic_input_sha256=semantic_input_sha256,
             machine_ir_manifest_payload=machine_ir_manifest_payload,
             machine_ir_manifest_sha256=(
@@ -3705,6 +3833,7 @@ def plan_stage_b_native_engine(
                 if machine_ir_manifest is None
                 else sha256_file(machine_ir_manifest)
             ),
+            inventory_source_rows=raw_rows,
             source_rows=implementation_source_rows,
             rows=rows,
             external_sites=sites,
@@ -3712,7 +3841,29 @@ def plan_stage_b_native_engine(
         )
     )
     blockers.extend(implementation_blockers)
+    if (
+        candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
+        and implementation_dispatch_receipt.reachability_status != "complete"
+    ):
+        diagnostic_frontiers.append(_frontier(
+            "rooted_reachability_incomplete",
+            observed_status=(
+                implementation_dispatch_receipt.reachability_status
+            ),
+            potential_units=len(
+                implementation_dispatch_receipt.potential_unit_ids
+            ),
+            frontiers=len(
+                implementation_dispatch_receipt.reachability_frontiers
+            ),
+            runtime_disposition="exact-active-target-or-unimplemented",
+            next_action=(
+                "close rooted reachability before promoting this candidate to "
+                "static-closed"
+            ),
+        ))
     return NativeEnginePlan(
+        candidate_mode=candidate_mode,
         input_mode=(
             _MACHINE_IR_INPUT_MODE if machine_ir_mode else _STRICT_INPUT_MODE
         ),
@@ -3732,6 +3883,14 @@ def plan_stage_b_native_engine(
         deferred_transfers=tuple(deferred_transfers),
         recovered_executable_data_ranges=recovered_data_ranges,
         fixed_image_base=fixed_image_base,
+        diagnostic_frontiers=tuple(sorted(
+            diagnostic_frontiers,
+            key=lambda item: (
+                str(item.get("category")),
+                str(item.get("transfer_id")),
+                str(item.get("event_index")),
+            ),
+        )),
         blockers=tuple(blockers),
     )
 
@@ -3749,6 +3908,8 @@ def write_stage_b_native_engine_package(
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
     callable_external_contract: Path | str | None = None,
+    machine_import_profiles: Iterable[Path | str] = (),
+    candidate_mode: str = STATIC_CLOSED_CANDIDATE_MODE,
     allow_deferred_potential_transfers: bool = False,
     fixed_image_base: int | None = None,
     preferred_image_base: int | None = None,
@@ -3774,6 +3935,8 @@ def write_stage_b_native_engine_package(
         termination_import=termination_import,
         base_relocation_evidence=base_relocation_evidence,
         callable_external_contract=callable_external_contract,
+        machine_import_profiles=machine_import_profiles,
+        candidate_mode=candidate_mode,
         allow_deferred_potential_transfers=allow_deferred_potential_transfers,
         fixed_image_base=fixed_image_base,
         preferred_image_base=preferred_image_base,
@@ -3845,13 +4008,17 @@ def write_stage_b_native_engine_package(
         "execution_policy": plan.payload(state_machine_sha256="")["execution_policy"],
         "deferred_transfers": list(plan.deferred_transfers),
         "image_base_policy": plan.payload(state_machine_sha256="")["image_base_policy"],
+        "diagnostic_frontiers": list(plan.diagnostic_frontiers),
         "blockers": list(plan.blockers),
         "policy": {
+            "candidate_mode": plan.candidate_mode,
             "dynamic_base": plan.fixed_image_base is None,
             "base_relocations": "complete-pe32-highlow-inventory-required",
             "raw_x87_instruction_payloads": "forbidden",
             "typed_x87_operations": TYPED_NATIVE_X87_OPERATION_FORMAT,
-            "static_hybrid_closure_receipt_required": True,
+            "static_hybrid_closure_receipt_required": (
+                plan.candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
+            ),
             "root_callback_engine_buffers": "fixed-launch-buffers",
             "nested_callback_engine_buffers": "stack-local-requires-checked-runtime-frame",
             "terminal_control": (
@@ -6115,10 +6282,16 @@ def _blocker(category: str, **fields: Any) -> dict[str, Any]:
     return {"category": category, "severity": "hard", **fields}
 
 
+def _frontier(category: str, **fields: Any) -> dict[str, Any]:
+    return {"category": category, "severity": "diagnostic", **fields}
+
+
 __all__ = [
     "NATIVE_ENGINE_PACKAGE_FORMAT",
     "NATIVE_ENGINE_PLAN_FORMAT",
     "PE32_BASE_RELOCATION_EVIDENCE_FORMAT",
+    "STATIC_CLOSED_CANDIDATE_MODE",
+    "STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE",
     "NativeEnginePlan",
     "NativeCallbackTarget",
     "NativeExternalSite",

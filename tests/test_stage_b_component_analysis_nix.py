@@ -375,13 +375,35 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             encoding="utf-8"
         )
         self.assertIn("../../nix/stage-b-component-analysis.nix", target)
-        for exported in ("inventory", "analysis", "hybrid", "diagnosticRun"):
+        for exported in (
+            "inventory",
+            "analysis",
+            "hybrid",
+            "hybridDiagnostic",
+            "diagnosticRun",
+        ):
             self.assertRegex(target, rf"(?m)^\s+{exported}$")
         self.assertIn("externalInterfaceProfiles", target)
         self.assertIn("staticAuthorityV2", target)
         self.assertIn("staticCompletenessReport", target)
         self.assertNotIn("staticCompletenessGate", target)
         self.assertIn("allowDeferredPotentialTransfers = false", target)
+        self.assertIn('candidateMode = "structural-diagnostic"', target)
+        self.assertIn("allowDeferredPotentialTransfers = true", target)
+        self.assertIn("diagnosticFailureTrap = true", target)
+        self.assertIn("nativeEnginePlan", target)
+        self.assertIn("nativeRuntimePackage", target)
+
+    def test_headless_diagnostic_run_decodes_candidate_failure_evidence(self) -> None:
+        module = (
+            ROOT / "nix" / "stage-b-headless-diagnostic-run.nix"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("spaghetti_extractor.stage_b_native_diagnostic", module)
+        self.assertIn("decode_stage_b_native_diagnostic_file", module)
+        self.assertIn("diagnostic-decoded.json", module)
+        self.assertIn("original_runtime_observations: $original_runtime_observations", module)
+        self.assertIn("no behavioral acceptance authority", module)
 
     def test_candidate_generation_has_only_v2_authority(self) -> None:
         module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
@@ -394,6 +416,10 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("require_stage_b_candidate_authority_v2", module)
         self.assertIn("final_static_hybrid_audit", module)
         self.assertIn("authority_bundle", module)
+        self.assertIn('candidateMode ? "static-closed"', module)
+        self.assertIn('"structural-diagnostic"', module)
+        self.assertIn("candidate_authority=optional_path", module)
+        self.assertIn("if staticClosed then", module)
         self.assertNotIn("write_static_hybrid_closure_receipt", module)
         self.assertNotIn("write_final_candidate_authorization", module)
         self.assertNotIn("stage-b-final-candidate-generation-authorization-v1", module)

@@ -52,6 +52,10 @@ from spaghetti_extractor.stage_b_candidate_authority_v2 import (
     STATIC_HYBRID_FINAL_AUDIT_V2_FORMAT,
     build_stage_b_candidate_authority_v2,
 )
+from spaghetti_extractor.stage_b_candidate_modes import (
+    STATIC_CLOSED_CANDIDATE_MODE,
+    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+)
 from spaghetti_extractor.stage_b_fallback_coverage import (
     FALLBACK_COVERAGE_RECEIPT_FORMAT,
 )
@@ -158,7 +162,12 @@ class _ReleaseInputs(TypedDict):
 
 
 class _Packages:
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        candidate_mode: str = STATIC_CLOSED_CANDIDATE_MODE,
+    ) -> None:
         self.root = root
         self.interpreter = root / "interpreter"
         self.engine = root / "engine"
@@ -260,6 +269,7 @@ class _Packages:
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.machine_ir_manifest,
             entry_rva=0x1000,
+            candidate_mode=candidate_mode,
             out=self.engine,
         )
         write_stage_b_native_runtime_package(
@@ -417,6 +427,52 @@ class _Packages:
 
 
 class StageBInterpreterNativeBuildValidationTests(unittest.TestCase):
+    def test_structural_mode_requires_failure_trap_before_compilation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            packages = _Packages(
+                Path(temporary) / "inputs",
+                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+            )
+            with self.assertRaisesRegex(
+                StageBInterpreterNativeBuildError, "require the failure trap"
+            ):
+                build_stage_b_interpreter_native_candidate(
+                    interpreter_package=packages.interpreter,
+                    native_engine_package=packages.engine,
+                    native_runtime_package=packages.runtime,
+                    candidate_authority=None,
+                    final_static_hybrid_audit=None,
+                    authority_bundle=None,
+                    machine_ir=packages.machine_ir,
+                    machine_ir_manifest=packages.machine_ir_manifest,
+                    fallback_coverage_receipt=None,
+                    load_image_contract=packages.contract,
+                    candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+                    out_dir=Path(temporary) / "candidate",
+                    compiler="compiler-must-not-be-consulted",
+                )
+
+    def test_structural_mode_rejects_acceptance_authority_before_compilation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            packages = _Packages(
+                Path(temporary) / "inputs",
+                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+            )
+            with self.assertRaisesRegex(
+                StageBInterpreterNativeBuildError,
+                "must not consume acceptance authority",
+            ):
+                build_stage_b_interpreter_native_candidate(
+                    interpreter_package=packages.interpreter,
+                    native_engine_package=packages.engine,
+                    native_runtime_package=packages.runtime,
+                    **packages.release_inputs(),
+                    candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+                    diagnostic_failure_trap=True,
+                    out_dir=Path(temporary) / "candidate",
+                    compiler="compiler-must-not-be-consulted",
+                )
+
     def test_rejects_v1_receipt_before_compilation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             packages = _Packages(Path(temporary) / "inputs")
@@ -516,6 +572,44 @@ class StageBInterpreterNativeBuildValidationTests(unittest.TestCase):
     shutil.which("i686-w64-mingw32-gcc"), "i686 MinGW compiler unavailable"
 )
 class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
+    def test_builds_non_authorizing_structural_diagnostic_candidate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packages = _Packages(
+                root / "inputs",
+                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+            )
+            manifest = build_stage_b_interpreter_native_candidate(
+                interpreter_package=packages.interpreter,
+                native_engine_package=packages.engine,
+                native_runtime_package=packages.runtime,
+                candidate_authority=None,
+                final_static_hybrid_audit=None,
+                authority_bundle=None,
+                machine_ir=packages.machine_ir,
+                machine_ir_manifest=packages.machine_ir_manifest,
+                fallback_coverage_receipt=None,
+                load_image_contract=packages.contract,
+                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+                diagnostic_failure_trap=True,
+                out_dir=root / "candidate",
+            )
+
+            self.assertIsNone(manifest["inputs"]["candidate_authority"])
+            scope = manifest["inputs"]["execution_scope"]
+            self.assertEqual(scope["candidate_mode"], "structural-diagnostic")
+            self.assertEqual(scope["acceptance_authority"], "none")
+            self.assertEqual(
+                scope["runtime_unknown_target_disposition"],
+                "fail-closed-as-unimplemented",
+            )
+            self.assertEqual(
+                manifest["policy"]["candidate_class"],
+                "structural-diagnostic",
+            )
+            self.assertTrue(manifest["policy"]["diagnostic_failure_trap"])
+            self.assertTrue((root / "candidate" / "candidate.exe").is_file())
+
     def test_compile_keys_track_only_transitive_source_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

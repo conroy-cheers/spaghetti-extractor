@@ -1070,6 +1070,16 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertEqual(rules[0]["action"], "add_result_range")
             self.assertEqual(rules[0]["instruction_rva"], 0x1000)
             self.assertEqual(rules[0]["target_iat_rva"], 0x3219C)
+            self.assertEqual(
+                package["inputs"]["external_dispatch"][
+                    "authorized_instruction_rvas"
+                ],
+                [0x1000],
+            )
+            self.assertEqual(
+                package["inputs"]["external_dispatch"]["blocked_sites"],
+                [],
+            )
 
     def test_anonymous_dynamic_call_is_not_expanded_across_import_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1102,6 +1112,24 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             }])
             rules = package["inputs"]["external_range_contracts"]["rules"]
             self.assertEqual(rules, [])
+            dispatch = package["inputs"]["external_dispatch"]
+            self.assertEqual(dispatch["authorized_instruction_rvas"], [])
+            self.assertEqual(dispatch["unknown_site_disposition"], "fail-closed-before-call")
+            self.assertEqual(len(dispatch["blocked_sites"]), 1)
+            self.assertEqual(
+                dispatch["blocked_sites"][0]["category"],
+                "uncontracted_dynamic_external_target",
+            )
+            self.assertEqual(
+                dispatch["blocked_sites"][0]["runtime_disposition"],
+                "fail-closed-as-unimplemented-before-call",
+            )
+            source = (root / "runtime/native-runtime.c").read_text(
+                encoding="ascii"
+            )
+            self.assertIn("stage_b_native_external_site_authorized", source)
+            self.assertIn("stage_b_native_diagnostic_reason = 0x2009U", source)
+            self.assertIn("stage_b_native_diagnostic_reason = 0x200aU", source)
 
     def test_external_range_size_can_be_read_from_checked_call_stack(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1197,6 +1225,9 @@ class StageBNativeRuntimeTests(unittest.TestCase):
                 {
                     "transfers": 1,
                     "implementation_dispatches": 1,
+                    "diagnostic_frontiers": 0,
+                    "authorized_external_sites": 0,
+                    "blocked_external_sites": 0,
                     "callable_external_routes": 0,
                 },
             )

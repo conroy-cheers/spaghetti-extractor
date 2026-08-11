@@ -12,6 +12,7 @@ import pefile
 
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.stage_b_native_engine import (
+    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
     plan_stage_b_native_engine,
     write_stage_b_native_engine_package,
 )
@@ -506,6 +507,7 @@ class StageBNativeEngineTests(unittest.TestCase):
             plan = plan_stage_b_native_engine(
                 machine_ir=machine_ir,
                 entry_rva=0x1420,
+                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
                 allow_deferred_potential_transfers=True,
             )
             self.assertEqual(plan.status, "ready", plan.blockers)
@@ -516,6 +518,65 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertEqual(
                 payload["execution_policy"],
                 "fail_closed_on_deferred_potential_transfer_v1",
+            )
+            self.assertEqual(
+                payload["candidate_mode"],
+                STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+            )
+
+    def test_incomplete_rooted_scope_is_diagnostic_but_not_static_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            entry = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="nop")
+            potential = _machine_ir_transfer(rva=0x2000, size=1, mnemonic="ret")
+            potential["reachable"] = False
+            potential["reachability"] = "potential"
+            machine_ir = self._write(root, [entry, potential])
+            manifest = root / "machine-ir-manifest.json"
+            manifest.write_text(json.dumps(_implementation_manifest(
+                machine_ir,
+                roots=[entry["id"]],
+                reachable=[entry["id"]],
+                potential=[potential["id"]],
+            ), sort_keys=True), encoding="utf-8")
+
+            strict = plan_stage_b_native_engine(
+                machine_ir=machine_ir,
+                machine_ir_manifest=manifest,
+                entry_rva=0x1000,
+            )
+            diagnostic = plan_stage_b_native_engine(
+                machine_ir=machine_ir,
+                machine_ir_manifest=manifest,
+                entry_rva=0x1000,
+                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+            )
+
+            self.assertEqual(strict.status, "incomplete")
+            self.assertIn(
+                "implementation_reachability_incomplete",
+                {blocker["category"] for blocker in strict.blockers},
+            )
+            self.assertEqual(diagnostic.status, "ready", diagnostic.blockers)
+            self.assertEqual(
+                diagnostic.implementation_dispatch_receipt.status,
+                "diagnostic",
+            )
+            self.assertEqual(
+                diagnostic.implementation_dispatch_receipt.potential_unit_ids,
+                (potential["id"],),
+            )
+            self.assertIn(
+                "rooted_reachability_incomplete",
+                {
+                    frontier["category"]
+                    for frontier in diagnostic.diagnostic_frontiers
+                },
+            )
+            self.assertFalse(
+                diagnostic.implementation_dispatch_receipt.payload()["policy"][
+                    "static_hybrid_closure_receipt_required_for_candidate"
+                ]
             )
 
     def test_callback_result_saved_to_a_dominating_slot_is_passed_through(self) -> None:

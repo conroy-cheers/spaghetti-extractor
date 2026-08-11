@@ -45,6 +45,11 @@ from .stage_b_candidate_authority_v2 import (
     CandidateAuthorityV2Receipt,
     validate_stage_b_candidate_authority_v2,
 )
+from .stage_b_candidate_modes import (
+    STATIC_CLOSED_CANDIDATE_MODE,
+    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+    require_candidate_mode,
+)
 from .util import sha256_file
 
 
@@ -366,12 +371,12 @@ def build_stage_b_interpreter_native_candidate(
     interpreter_package: Path | str,
     native_engine_package: Path | str,
     native_runtime_package: Path | str,
-    candidate_authority: Path | str,
-    final_static_hybrid_audit: Path | str,
-    authority_bundle: Path | str,
+    candidate_authority: Path | str | None,
+    final_static_hybrid_audit: Path | str | None,
+    authority_bundle: Path | str | None,
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
-    fallback_coverage_receipt: Path | str,
+    fallback_coverage_receipt: Path | str | None,
     region_override_package: Path | str | None = None,
     load_image_contract: Path | str,
     recovered_executable_data: Path | str | None = None,
@@ -381,27 +386,59 @@ def build_stage_b_interpreter_native_candidate(
     entry_symbol: str = "stage_b_payload_entry",
     payload_rva: int | None = None,
     diagnostic_failure_trap: bool = False,
+    candidate_mode: str = STATIC_CLOSED_CANDIDATE_MODE,
     precompiled_objects: Path | str | None = None,
 ) -> dict[str, Any]:
-    """Compile and compose one statically closed interpreter-backed candidate."""
+    """Compile and compose one explicitly classified interpreter candidate."""
 
     if not isinstance(diagnostic_failure_trap, bool):
         raise StageBInterpreterNativeBuildError(
             "diagnostic_failure_trap must be a boolean"
+        )
+    try:
+        candidate_mode = require_candidate_mode(candidate_mode)
+    except ValueError as exc:
+        raise StageBInterpreterNativeBuildError(str(exc)) from exc
+    if (
+        candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
+        and not diagnostic_failure_trap
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "structural-diagnostic candidates require the failure trap"
         )
     if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
         raise StageBInterpreterNativeBuildError(
             "payload entry symbol is not a C identifier"
         )
 
-    receipt = _validate_candidate_authority_v2(
-        receipt=candidate_authority,
-        final_static_hybrid_audit=final_static_hybrid_audit,
-        authority_bundle=authority_bundle,
-        machine_ir=machine_ir,
-        machine_ir_manifest=machine_ir_manifest,
-        fallback_coverage_receipt=fallback_coverage_receipt,
-    )
+    receipt: CandidateAuthorityV2Receipt | None = None
+    if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
+        if any(value is None for value in (
+            candidate_authority,
+            final_static_hybrid_audit,
+            authority_bundle,
+            fallback_coverage_receipt,
+        )):
+            raise StageBInterpreterNativeBuildError(
+                "static-closed candidates require complete v2 authority inputs"
+            )
+        receipt = _validate_candidate_authority_v2(
+            receipt=candidate_authority,
+            final_static_hybrid_audit=final_static_hybrid_audit,
+            authority_bundle=authority_bundle,
+            machine_ir=machine_ir,
+            machine_ir_manifest=machine_ir_manifest,
+            fallback_coverage_receipt=fallback_coverage_receipt,
+        )
+    elif any(value is not None for value in (
+        candidate_authority,
+        final_static_hybrid_audit,
+        authority_bundle,
+        fallback_coverage_receipt,
+    )):
+        raise StageBInterpreterNativeBuildError(
+            "structural-diagnostic candidates must not consume acceptance authority"
+        )
 
     interpreter = _load_package(
         interpreter_package,
@@ -424,8 +461,19 @@ def build_stage_b_interpreter_native_candidate(
         expected_format=NATIVE_RUNTIME_PACKAGE_FORMAT,
         require_roles=True,
     )
-    _validate_candidate_authority_package_bindings(receipt, interpreter, engine)
     runtime_plan = _validate_package_closure(interpreter, engine, runtime)
+    if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
+        assert receipt is not None
+        _validate_candidate_authority_package_bindings(receipt, interpreter, engine)
+    structural_binding = _validate_candidate_mode_package_bindings(
+        candidate_mode=candidate_mode,
+        machine_ir=machine_ir,
+        machine_ir_manifest=machine_ir_manifest,
+        interpreter=interpreter,
+        engine=engine,
+        runtime=runtime,
+        runtime_plan=runtime_plan,
+    )
     region_overrides = (
         None
         if region_override_package is None
@@ -766,17 +814,36 @@ def build_stage_b_interpreter_native_candidate(
         raise StageBInterpreterNativeBuildError(
             "compiler runtime changed during compilation"
         )
-    repeated_receipt = _validate_candidate_authority_v2(
-        receipt=candidate_authority,
-        final_static_hybrid_audit=final_static_hybrid_audit,
-        authority_bundle=authority_bundle,
+    if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
+        assert receipt is not None
+        assert candidate_authority is not None
+        assert final_static_hybrid_audit is not None
+        assert authority_bundle is not None
+        assert fallback_coverage_receipt is not None
+        repeated_receipt = _validate_candidate_authority_v2(
+            receipt=candidate_authority,
+            final_static_hybrid_audit=final_static_hybrid_audit,
+            authority_bundle=authority_bundle,
+            machine_ir=machine_ir,
+            machine_ir_manifest=machine_ir_manifest,
+            fallback_coverage_receipt=fallback_coverage_receipt,
+        )
+        if repeated_receipt != receipt:
+            raise StageBInterpreterNativeBuildError(
+                "v2 candidate-authority inputs changed during compilation"
+            )
+    repeated_structural_binding = _validate_candidate_mode_package_bindings(
+        candidate_mode=candidate_mode,
         machine_ir=machine_ir,
         machine_ir_manifest=machine_ir_manifest,
-        fallback_coverage_receipt=fallback_coverage_receipt,
+        interpreter=interpreter,
+        engine=engine,
+        runtime=runtime,
+        runtime_plan=runtime_plan,
     )
-    if repeated_receipt != receipt:
+    if repeated_structural_binding != structural_binding:
         raise StageBInterpreterNativeBuildError(
-            "v2 candidate-authority inputs changed during compilation"
+            "candidate execution-scope inputs changed during compilation"
         )
     composition = compose_stage_b_pe(
         load_image_contract=contract_path,
@@ -793,11 +860,20 @@ def build_stage_b_interpreter_native_candidate(
         "format": INTERPRETER_NATIVE_BUILD_FORMAT,
         "status": "candidate-generated",
         "acceptance_authority": "none",
-        "assurance": "candidate static and behavioral validation required",
+        "assurance": (
+            "non-authorizing fail-closed diagnostic candidate"
+            if candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
+            else "candidate static and behavioral validation required"
+        ),
         "inputs": {
-            "candidate_authority": _candidate_authority_manifest_binding(
-                candidate_authority, receipt
+            "candidate_authority": (
+                None
+                if receipt is None
+                else _candidate_authority_manifest_binding(
+                    candidate_authority, receipt
+                )
             ),
+            "execution_scope": structural_binding,
             "interpreter_package": interpreter.binding(),
             "native_engine_package": engine.binding(),
             "native_runtime_package": runtime.binding(),
@@ -841,11 +917,15 @@ def build_stage_b_interpreter_native_candidate(
         "policy": {
             "architecture": "i686-pe32",
             "candidate_class": (
-                "diagnostic-static-closed"
+                "structural-diagnostic"
+                if candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
+                else "diagnostic-static-closed"
                 if diagnostic_failure_trap
                 else "release-static-closed"
             ),
-            "allow_deferred_potential_transfers": False,
+            "allow_deferred_potential_transfers": (
+                structural_binding["deferred_transfers"] > 0
+            ),
             "entry_symbol": entry_symbol,
             "image_base": contract.identity.preferred_base,
             "payload_rva": selected_rva,
@@ -997,6 +1077,146 @@ def _validate_candidate_authority_package_bindings(
             "native_engine package binds a different machine-IR manifest than "
             "the v2 candidate-authority receipt"
         )
+
+
+def _validate_candidate_mode_package_bindings(
+    *,
+    candidate_mode: str,
+    machine_ir: Path | str,
+    machine_ir_manifest: Path | str,
+    interpreter: _Package,
+    engine: _Package,
+    runtime: _Package,
+    runtime_plan: Any,
+) -> dict[str, Any]:
+    """Bind executable scope without granting behavioral acceptance authority."""
+
+    machine_ir_path = _file(machine_ir, "machine IR")
+    manifest_path = _file(machine_ir_manifest, "machine-IR manifest")
+    machine_ir_sha256 = sha256_file(machine_ir_path)
+    manifest_sha256 = sha256_file(manifest_path)
+    for package in (interpreter, engine):
+        if package.payload.get("input_mode") != "sanitized_machine_ir_v2":
+            raise StageBInterpreterNativeBuildError(
+                f"{package.owner} package is not derived from strict machine IR"
+            )
+        binding = package.payload.get("machine_ir")
+        if (
+            not isinstance(binding, Mapping)
+            or binding.get("sha256") != machine_ir_sha256
+        ):
+            raise StageBInterpreterNativeBuildError(
+                f"{package.owner} package binds a different machine IR"
+            )
+
+    engine_manifest = engine.payload.get("machine_ir_manifest")
+    if (
+        not isinstance(engine_manifest, Mapping)
+        or engine_manifest.get("sha256") != manifest_sha256
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "native_engine package binds a different machine-IR manifest"
+        )
+    engine_policy = engine.payload.get("policy")
+    runtime_policy = runtime.payload.get("policy")
+    runtime_inputs = runtime.payload.get("inputs")
+    if (
+        not isinstance(engine_policy, Mapping)
+        or not isinstance(runtime_policy, Mapping)
+        or not isinstance(runtime_inputs, Mapping)
+        or engine_policy.get("candidate_mode") != candidate_mode
+        or runtime_policy.get("candidate_mode") != candidate_mode
+        or runtime_inputs.get("candidate_mode") != candidate_mode
+        or getattr(runtime_plan, "candidate_mode", None) != candidate_mode
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "native package closure does not bind one candidate execution mode"
+        )
+
+    interpreter_coverage = interpreter.payload.get("semantic_coverage")
+    engine_coverage = engine.payload.get("semantic_coverage")
+    if not isinstance(interpreter_coverage, Mapping) or not isinstance(
+        engine_coverage, Mapping
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "candidate package closure omits semantic coverage"
+        )
+    interpreter_deferred = interpreter_coverage.get("deferred_transfers")
+    engine_deferred = engine_coverage.get("deferred_transfers")
+    if (
+        isinstance(interpreter_deferred, bool)
+        or not isinstance(interpreter_deferred, int)
+        or interpreter_deferred < 0
+        or engine_deferred != interpreter_deferred
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "candidate package closure has inconsistent deferred-transfer counts"
+        )
+
+    dispatch = engine.payload.get("implementation_dispatch_receipt")
+    if not isinstance(dispatch, Mapping):
+        raise StageBInterpreterNativeBuildError(
+            "native_engine package omits its implementation-dispatch receipt"
+        )
+    dispatch_policy = dispatch.get("policy")
+    reachability = dispatch.get("reachability")
+    if (
+        not isinstance(dispatch_policy, Mapping)
+        or not isinstance(reachability, Mapping)
+        or dispatch_policy.get("candidate_mode") != candidate_mode
+        or dispatch_policy.get("acceptance_authority") is not False
+        or dispatch.get("blockers") != []
+    ):
+        raise StageBInterpreterNativeBuildError(
+            "implementation-dispatch receipt cannot authorize this execution mode"
+        )
+    diagnostic_frontiers = engine.payload.get("diagnostic_frontiers")
+    if not isinstance(diagnostic_frontiers, list):
+        raise StageBInterpreterNativeBuildError(
+            "native_engine package omits diagnostic frontier inventory"
+        )
+
+    if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
+        if (
+            interpreter_deferred != 0
+            or interpreter_coverage.get("status") != "complete"
+            or engine_coverage.get("status") != "complete"
+            or dispatch.get("status") != "complete"
+            or reachability.get("status") != "complete"
+            or diagnostic_frontiers
+        ):
+            raise StageBInterpreterNativeBuildError(
+                "static-closed package closure retains incomplete execution scope"
+            )
+    else:
+        if (
+            dispatch.get("status") not in {"complete", "diagnostic"}
+            or reachability.get("status") not in {"complete", "incomplete"}
+            or interpreter_coverage.get("status")
+            not in {"complete", "incomplete"}
+            or engine_coverage.get("status")
+            not in {"complete", "incomplete"}
+        ):
+            raise StageBInterpreterNativeBuildError(
+                "structural-diagnostic package closure is not fail-closed runnable"
+            )
+
+    core = {
+        "format": "stage-b-candidate-execution-scope-v1",
+        "candidate_mode": candidate_mode,
+        "acceptance_authority": "none",
+        "machine_ir_sha256": machine_ir_sha256,
+        "machine_ir_manifest_sha256": manifest_sha256,
+        "interpreter_package_sha256": interpreter.manifest_sha256,
+        "native_engine_package_sha256": engine.manifest_sha256,
+        "native_runtime_package_sha256": runtime.manifest_sha256,
+        "dispatch_receipt_sha256": dispatch.get("receipt_sha256"),
+        "reachability_status": reachability.get("status"),
+        "deferred_transfers": interpreter_deferred,
+        "diagnostic_frontiers": len(diagnostic_frontiers),
+        "runtime_unknown_target_disposition": "fail-closed-as-unimplemented",
+    }
+    return {**core, "binding_sha256": native_build._canonical_sha256(core)}
 
 
 def _candidate_input_sha256(

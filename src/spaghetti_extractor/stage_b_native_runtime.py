@@ -41,6 +41,11 @@ from .stage_b_interpreter_backend import (
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PROGRAM_FORMAT,
 )
+from .stage_b_candidate_modes import (
+    STATIC_CLOSED_CANDIDATE_MODE,
+    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+    require_candidate_mode,
+)
 from .util import sha256_bytes, sha256_file, write_json
 
 
@@ -60,7 +65,7 @@ _CALLBACK_ADAPTER_RECEIPT_FORMAT = (
     "stage-b-native-callback-adapter-receipt-v1"
 )
 _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
-    "stage-b-native-implementation-dispatch-receipt-v1"
+    "stage-b-native-implementation-dispatch-receipt-v2"
 )
 
 
@@ -195,6 +200,7 @@ class NativeExternalRangeRule:
 class NativeRuntimePlan:
     """Checked immutable inputs used to render one native runtime."""
 
+    candidate_mode: str
     entry_rva: int
     transfer_rvas: tuple[int, ...]
     recovered_executable_data_ranges: tuple[tuple[int, int], ...]
@@ -202,10 +208,13 @@ class NativeRuntimePlan:
     callback_adapter_receipts: tuple[dict[str, Any], ...]
     implementation_dispatch_receipt: dict[str, Any]
     implementation_dispatches: tuple[NativeImplementationDispatch, ...]
+    diagnostic_frontiers: tuple[dict[str, Any], ...]
     callable_external_contract: CallableExternalRuntimeContract | None
     callable_external_contract_path: Path | None
     callable_external_contract_sha256: str | None
     external_range_rules: tuple[NativeExternalRangeRule, ...]
+    authorized_external_site_rvas: tuple[int, ...]
+    blocked_external_sites: tuple[dict[str, Any], ...]
     diagnostic_writer_iat_rvas: tuple[int, int, int] | None
     external_profile_path: Path | None
     external_profile_sha256: str | None
@@ -236,6 +245,7 @@ class NativeRuntimePlan:
 
     def payload(self) -> dict[str, Any]:
         return {
+            "candidate_mode": self.candidate_mode,
             "entry_rva": self.entry_rva,
             "transfer_rvas": list(self.transfer_rvas),
             "recovered_executable_data_ranges": [
@@ -252,6 +262,9 @@ class NativeRuntimePlan:
             "implementation_dispatch_receipt": dict(
                 self.implementation_dispatch_receipt
             ),
+            "diagnostic_frontiers": [
+                dict(frontier) for frontier in self.diagnostic_frontiers
+            ],
             "callable_external": (
                 None
                 if self.callable_external_contract is None
@@ -288,6 +301,15 @@ class NativeRuntimePlan:
                     for path, profile_id, sha256 in self.external_profile_graph
                 ],
                 "rules": [rule.payload() for rule in self.external_range_rules],
+            },
+            "external_dispatch": {
+                "authorized_instruction_rvas": list(
+                    self.authorized_external_site_rvas
+                ),
+                "blocked_sites": [
+                    dict(site) for site in self.blocked_external_sites
+                ],
+                "unknown_site_disposition": "fail-closed-before-call",
             },
             "diagnostic_writer": (
                 None
@@ -440,6 +462,12 @@ def plan_stage_b_native_runtime(
         native_manifest_path.parent, plan_ref, "native-engine plan"
     )
     native_plan = _read_json_object(native_plan_path, "native-engine plan")
+    candidate_mode = require_candidate_mode(native_plan.get("candidate_mode"))
+    native_policy = _required_object(native.get("policy"), "native-engine policy")
+    if native_policy.get("candidate_mode") != candidate_mode:
+        raise StageBNativeRuntimeError(
+            "native-engine manifest and plan use different candidate modes"
+        )
     if native.get("callback_adapter_receipts") != native_plan.get(
         "callback_adapter_receipts"
     ):
@@ -532,6 +560,10 @@ def plan_stage_b_native_runtime(
         recovered_executable_data_ranges,
     ) = _validate_native_plan(
         native_plan,
+        candidate_mode=candidate_mode,
+        deferred_transfer_ids=frozenset(
+            str(row["transfer_id"]) for row in interpreter_deferred
+        ),
         state_machine_sha256=state_machine_sha256,
         input_mode=input_mode,
         transfer_rvas=transfer_rvas,
@@ -561,12 +593,19 @@ def plan_stage_b_native_runtime(
                 ) from exc
             graph.append((profile.path, profile.profile_id, profile.sha256))
         external_profile_graph = tuple(graph)
-    external_range_rules = _external_range_rules(
-        native_plan, external_profile_path
+    (
+        external_range_rules,
+        authorized_external_site_rvas,
+        blocked_external_sites,
+    ) = _external_range_rules(
+        native_plan,
+        external_profile_path,
+        candidate_mode=candidate_mode,
     )
     diagnostic_writer_iat_rvas = _diagnostic_writer_iat_rvas(native_plan)
 
     return NativeRuntimePlan(
+        candidate_mode=candidate_mode,
         entry_rva=entry_rva,
         transfer_rvas=transfer_rvas,
         recovered_executable_data_ranges=recovered_executable_data_ranges,
@@ -574,6 +613,13 @@ def plan_stage_b_native_runtime(
         callback_adapter_receipts=callback_adapter_receipts,
         implementation_dispatch_receipt=implementation_dispatch_receipt,
         implementation_dispatches=implementation_dispatches,
+        diagnostic_frontiers=tuple(
+            dict(frontier)
+            for frontier in _required_list(
+                native_plan.get("diagnostic_frontiers"),
+                "native-engine diagnostic frontiers",
+            )
+        ),
         callable_external_contract=callable_contract,
         callable_external_contract_path=callable_contract_path,
         callable_external_contract_sha256=(
@@ -582,6 +628,8 @@ def plan_stage_b_native_runtime(
             else sha256_file(callable_contract_path)
         ),
         external_range_rules=external_range_rules,
+        authorized_external_site_rvas=authorized_external_site_rvas,
+        blocked_external_sites=blocked_external_sites,
         diagnostic_writer_iat_rvas=diagnostic_writer_iat_rvas,
         external_profile_path=external_profile_path,
         external_profile_sha256=(
@@ -718,6 +766,11 @@ def write_stage_b_native_runtime_package(
         "counts": {
             "transfers": len(plan.transfer_rvas),
             "implementation_dispatches": len(plan.implementation_dispatches),
+            "diagnostic_frontiers": len(plan.diagnostic_frontiers),
+            "authorized_external_sites": len(
+                plan.authorized_external_site_rvas
+            ),
+            "blocked_external_sites": len(plan.blocked_external_sites),
             "callable_external_routes": (
                 0
                 if plan.callable_external_contract is None
@@ -726,8 +779,11 @@ def write_stage_b_native_runtime_package(
         },
         "policy": {
             "architecture": "i686-pe32",
+            "candidate_mode": plan.candidate_mode,
             "freestanding": True,
-            "static_hybrid_closure_receipt_required": True,
+            "static_hybrid_closure_receipt_required": (
+                plan.candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
+            ),
             "implementation_dispatch": (
                 "exact-linked-class-per-interpreter-transfer-v1"
             ),
@@ -1380,6 +1436,8 @@ def _canonical_json_sha256(value: Any) -> str:
 def _validate_implementation_dispatch_receipt(
     payload: dict[str, Any],
     *,
+    candidate_mode: str,
+    deferred_transfer_ids: frozenset[str],
     state_machine_sha256: str,
     transfer_bindings: tuple[_InterpreterTransferBinding, ...],
 ) -> tuple[dict[str, Any], tuple[NativeImplementationDispatch, ...]]:
@@ -1431,13 +1489,21 @@ def _validate_implementation_dispatch_receipt(
     policy = _required_object(
         raw.get("policy"), "implementation dispatch policy"
     )
-    if policy != {
+    expected_policy = {
+        "candidate_mode": candidate_mode,
         "one_implementation_class_per_transfer": True,
-        "rooted_targets_require_implementation": True,
+        "rooted_targets_require_implementation": (
+            candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
+        ),
+        "runtime_code_target_lookup": "exact-active-transfer-rva",
+        "unresolved_dispatch": "fail-closed-as-unimplemented",
         "portable_component_fallback_on_unimplemented": False,
-        "static_hybrid_closure_receipt_required_for_candidate": True,
+        "static_hybrid_closure_receipt_required_for_candidate": (
+            candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
+        ),
         "acceptance_authority": False,
-    }:
+    }
+    if policy != expected_policy:
         raise StageBNativeRuntimeError(
             "native-engine implementation dispatch policy is unsupported"
         )
@@ -1445,7 +1511,14 @@ def _validate_implementation_dispatch_receipt(
     reachability = _required_object(
         raw.get("reachability"), "implementation dispatch reachability"
     )
-    if set(reachability) != {"status", "roots", "reachable_unit_ids"}:
+    if set(reachability) != {
+        "status",
+        "roots",
+        "reachable_unit_ids",
+        "potential_unit_ids",
+        "confirmed_unreachable_unit_ids",
+        "frontiers",
+    }:
         raise StageBNativeRuntimeError(
             "implementation dispatch reachability fields are not canonical"
         )
@@ -1453,11 +1526,28 @@ def _validate_implementation_dispatch_receipt(
     reachable = _required_list(
         reachability.get("reachable_unit_ids"), "implementation reachable units"
     )
+    potential = _required_list(
+        reachability.get("potential_unit_ids"), "implementation potential units"
+    )
+    unreachable = _required_list(
+        reachability.get("confirmed_unreachable_unit_ids"),
+        "implementation confirmed-unreachable units",
+    )
+    frontiers = _required_list(
+        reachability.get("frontiers"), "implementation reachability frontiers"
+    )
+    inventories = roots + reachable + potential + unreachable
     if (
-        any(not isinstance(value, str) or not value for value in roots + reachable)
+        any(not isinstance(value, str) or not value for value in inventories)
         or roots != sorted(set(roots))
         or reachable != sorted(set(reachable))
+        or potential != sorted(set(potential))
+        or unreachable != sorted(set(unreachable))
         or not set(roots) <= set(reachable)
+        or set(reachable) & set(potential)
+        or set(reachable) & set(unreachable)
+        or set(potential) & set(unreachable)
+        or any(not isinstance(frontier, Mapping) for frontier in frontiers)
     ):
         raise StageBNativeRuntimeError(
             "implementation dispatch rooted reachability is malformed"
@@ -1470,10 +1560,25 @@ def _validate_implementation_dispatch_receipt(
             receipt_status != "complete"
             or not roots
             or not reachable
+            or potential
+            or frontiers
             or _SHA256_RE.fullmatch(str(manifest_sha256 or "")) is None
         ):
             raise StageBNativeRuntimeError(
                 "complete implementation dispatch lacks rooted manifest evidence"
+            )
+    elif (
+        reachability_status == "incomplete"
+        and candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
+    ):
+        if (
+            receipt_status != "diagnostic"
+            or not roots
+            or not reachable
+            or _SHA256_RE.fullmatch(str(manifest_sha256 or "")) is None
+        ):
+            raise StageBNativeRuntimeError(
+                "structural diagnostic dispatch lacks bound reachability evidence"
             )
     elif reachability_status == "not_bound":
         if receipt_status != "unbound" or roots or reachable:
@@ -1490,6 +1595,22 @@ def _validate_implementation_dispatch_receipt(
         )
 
     entries = _required_list(raw.get("entries"), "implementation dispatch entries")
+    active_unit_ids = {binding.unit_id for binding in transfer_bindings}
+    partition_unit_ids = set(reachable) | set(potential) | set(unreachable)
+    if (
+        reachability_status != "not_bound"
+        and partition_unit_ids != active_unit_ids | set(deferred_transfer_ids)
+    ):
+        raise StageBNativeRuntimeError(
+            "implementation reachability does not partition active and deferred transfers"
+        )
+    if (
+        reachability_status != "not_bound"
+        and not deferred_transfer_ids <= set(potential)
+    ):
+        raise StageBNativeRuntimeError(
+            "implementation dispatch defers a non-potential transfer"
+        )
     entry_fields = {
         "unit_id",
         "rva",
@@ -1550,8 +1671,10 @@ def _validate_implementation_dispatch_receipt(
             if unit_id in roots
             else "reachable"
             if unit_id in reachable
+            else "potential"
+            if unit_id in potential
             else "confirmed_unreachable"
-            if reachability_status == "complete"
+            if unit_id in unreachable
             else "unbound"
         )
         if reachability_class != expected_reachability:
@@ -1682,9 +1805,9 @@ def _validate_implementation_dispatch_receipt(
                 "implementation target has no unique rooted executable dispatch"
             )
         seen_targets.add(key)
-    if reachability_status == "not_bound" and targets:
+    if reachability_status != "complete" and targets:
         raise StageBNativeRuntimeError(
-            "unbound implementation dispatch contains rooted targets"
+            "non-closed implementation dispatch contains rooted target claims"
         )
 
     counts = _required_object(raw.get("counts"), "implementation dispatch counts")
@@ -1976,6 +2099,8 @@ def _validate_callback_adapter_receipts(
 def _validate_native_plan(
     payload: dict[str, Any],
     *,
+    candidate_mode: str,
+    deferred_transfer_ids: frozenset[str],
     state_machine_sha256: str,
     input_mode: str,
     transfer_rvas: tuple[int, ...],
@@ -1990,6 +2115,10 @@ def _validate_native_plan(
 ]:
     if payload.get("format") != NATIVE_ENGINE_PLAN_FORMAT:
         raise StageBNativeRuntimeError("native-engine plan has an unsupported format")
+    if payload.get("candidate_mode") != candidate_mode:
+        raise StageBNativeRuntimeError(
+            "native-engine plan candidate mode changed during validation"
+        )
     if payload.get("status") != "ready":
         raise StageBNativeRuntimeError("native-engine plan is not ready")
     if payload.get("state_machine_sha256") != state_machine_sha256:
@@ -2002,9 +2131,30 @@ def _validate_native_plan(
         )
     if _required_list(payload.get("blockers"), "native-engine blockers"):
         raise StageBNativeRuntimeError("ready native-engine plan contains blockers")
+    diagnostic_frontiers = _required_list(
+        payload.get("diagnostic_frontiers"),
+        "native-engine diagnostic frontiers",
+    )
+    if any(
+        not isinstance(frontier, Mapping)
+        or frontier.get("severity") != "diagnostic"
+        for frontier in diagnostic_frontiers
+    ):
+        raise StageBNativeRuntimeError(
+            "native-engine diagnostic frontier inventory is malformed"
+        )
+    if (
+        candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
+        and diagnostic_frontiers
+    ):
+        raise StageBNativeRuntimeError(
+            "static-closed native engine contains diagnostic frontiers"
+        )
     implementation_dispatch_receipt, implementation_dispatches = (
         _validate_implementation_dispatch_receipt(
             payload,
+            candidate_mode=candidate_mode,
+            deferred_transfer_ids=deferred_transfer_ids,
             state_machine_sha256=state_machine_sha256,
             transfer_bindings=transfer_bindings,
         )
@@ -2267,8 +2417,15 @@ def _diagnostic_writer_iat_rvas(
 
 
 def _external_range_rules(
-    native_plan: dict[str, Any], profile_path: Path | None
-) -> tuple[NativeExternalRangeRule, ...]:
+    native_plan: dict[str, Any],
+    profile_path: Path | None,
+    *,
+    candidate_mode: str,
+) -> tuple[
+    tuple[NativeExternalRangeRule, ...],
+    tuple[int, ...],
+    tuple[dict[str, Any], ...],
+]:
     if profile_path is None:
         profile_set = None
         selected_contracts = {}
@@ -2305,6 +2462,39 @@ def _external_range_rules(
     expanded_sites: list[
         tuple[dict[str, Any], int | None, dict[str, Any], int, str]
     ] = []
+    authorized_sites: set[int] = set()
+    blocked_sites: list[dict[str, Any]] = []
+    dispatch_receipt = _required_object(
+        native_plan.get("implementation_dispatch_receipt"),
+        "native-engine implementation dispatch receipt",
+    )
+    dispatch_reachability = _required_object(
+        dispatch_receipt.get("reachability"),
+        "native-engine implementation reachability",
+    )
+    strict_closed_scope = (
+        candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
+        and dispatch_reachability.get("status") == "complete"
+    )
+
+    def block_site(
+        *, site_index: int, site: Mapping[str, Any], category: str, detail: str
+    ) -> None:
+        if strict_closed_scope:
+            raise StageBNativeRuntimeError(detail)
+        instruction_rva = _required_u32(
+            site.get("instruction_rva"),
+            f"native-engine external site {site_index} instruction RVA",
+        )
+        blocked_sites.append({
+            "category": category,
+            "severity": "diagnostic",
+            "site_index": site_index,
+            "instruction_rva": instruction_rva,
+            "detail": detail,
+            "runtime_disposition": "fail-closed-as-unimplemented-before-call",
+        })
+
     for site_index, raw_site in enumerate(
         _required_list(native_plan.get("external_sites"), "native-engine external sites")
     ):
@@ -2314,8 +2504,15 @@ def _external_range_rules(
             or isinstance(site.get("external_protocol"), Mapping)
         )
         if not is_external:
-            # Internal indirect calls and separately hash-bound callable routes do
-            # not acquire anonymous import effects from the available profiles.
+            block_site(
+                site_index=site_index,
+                site=site,
+                category="uncontracted_dynamic_external_target",
+                detail=(
+                    f"native-engine external site {site_index} has no checked "
+                    "import, interface, or callable target identity"
+                ),
+            )
             continue
         raw_contract = site.get("checked_external_contract")
         if not isinstance(raw_contract, Mapping):
@@ -2325,11 +2522,26 @@ def _external_range_rules(
                     f"native-engine external site {site_index} has invalid contract policy"
                 )
             if required or isinstance(site.get("external_protocol"), Mapping):
-                raise StageBNativeRuntimeError(
-                    f"native-engine external site {site_index} has no checked external contract"
+                block_site(
+                    site_index=site_index,
+                    site=site,
+                    category="checked_external_contract_missing",
+                    detail=(
+                        f"native-engine external site {site_index} has no checked "
+                        "external contract"
+                    ),
                 )
+                continue
             imported = site.get("import")
             if not isinstance(imported, Mapping) or profile_set is None:
+                block_site(
+                    site_index=site_index,
+                    site=site,
+                    category="external_profile_missing",
+                    detail=(
+                        f"legacy external site {site_index} has no selected exact profile"
+                    ),
+                )
                 continue
             try:
                 outer_identity = ExternalSiteIdentity.imported(
@@ -2349,9 +2561,30 @@ def _external_range_rules(
             )
             selected = selected_contracts.get(profile_identity)
             if selected is None:
-                raise StageBNativeRuntimeError(
-                    f"legacy external site {site_index} has no selected exact profile"
+                block_site(
+                    site_index=site_index,
+                    site=site,
+                    category="external_profile_missing",
+                    detail=(
+                        f"legacy external site {site_index} has no selected exact profile"
+                    ),
                 )
+                continue
+            callback_effect = selected.contract.get("callback_effect")
+            if (
+                callback_effect not in {None, "none"}
+                or selected.contract.get("world_effect") == "callbackRegistration"
+            ):
+                block_site(
+                    site_index=site_index,
+                    site=site,
+                    category="callback_adapter_contract_missing",
+                    detail=(
+                        f"legacy external site {site_index} may register or invoke a "
+                        "callback without a checked adapter"
+                    ),
+                )
+                continue
             binding_identity = (
                 profile_identity.dll,
                 profile_identity.kind,
@@ -2379,6 +2612,9 @@ def _external_range_rules(
                 4 if disposition == "tail_jump" else 0,
                 str(selected.contract.get("id")),
             ))
+            authorized_sites.add(
+                _required_u32(site.get("instruction_rva"), "external site RVA")
+            )
             continue
         try:
             checked = parse_checked_external_site_contract(
@@ -2451,6 +2687,9 @@ def _external_range_rules(
             checked.argument_base_offset,
             checked.contract_id,
         ))
+        authorized_sites.add(
+            _required_u32(site.get("instruction_rva"), "external site RVA")
+        )
 
     rules: list[NativeExternalRangeRule] = []
     for (
@@ -2858,7 +3097,7 @@ def _external_range_rules(
                     contract_id=contract_id,
                 )
             )
-    return tuple(
+    sorted_rules = tuple(
         sorted(
             rules,
             key=lambda item: (
@@ -2874,6 +3113,17 @@ def _external_range_rules(
                 item.contract_id,
             ),
         )
+    )
+    return (
+        sorted_rules,
+        tuple(sorted(authorized_sites)),
+        tuple(sorted(
+            blocked_sites,
+            key=lambda item: (
+                int(item["instruction_rva"]),
+                str(item["category"]),
+            ),
+        )),
     )
 
 
@@ -3062,6 +3312,9 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
     }
     diagnostic_iat_rvas = plan.diagnostic_writer_iat_rvas or (0, 0, 0)
     diagnostic_writer_available = 1 if plan.diagnostic_writer_iat_rvas else 0
+    authorized_external_site_rows = "\n".join(
+        f"  0x{rva:08x}U," for rva in plan.authorized_external_site_rvas
+    ) or "  0U,"
     external_range_rows = "\n".join(
         "  {{ 0x{rva:08x}U, 0x{target_iat_rva:08x}U, {action}U, {argument_base_offset}U, "
         "{argument_count}U, {register}U, {argument}U, "
@@ -3206,6 +3459,11 @@ static const stage_b_native_undefined_policy stage_b_native_undefined_policies[]
 {undefined_rows}
 }};
 static const uint32_t stage_b_native_undefined_policy_count = {len(plan.undefined_policies)}U;
+
+static const uint32_t stage_b_native_authorized_external_sites[] = {{
+{authorized_external_site_rows}
+}};
+static const uint32_t stage_b_native_authorized_external_site_count = {len(plan.authorized_external_site_rvas)}U;
 
 typedef struct stage_b_native_external_range_rule {{
   uint32_t instruction_rva, target_iat_rva, action;
@@ -3848,6 +4106,19 @@ static void stage_b_native_record_external_trace(
 }}
 #endif
 
+static uint32_t stage_b_native_external_site_authorized(uint32_t rva) {{
+  uint32_t low = 0U, high = stage_b_native_authorized_external_site_count;
+  while (low < high) {{
+    uint32_t middle = low + (high - low) / 2U;
+    if (stage_b_native_authorized_external_sites[middle] < rva)
+      low = middle + 1U;
+    else
+      high = middle;
+  }}
+  return low < stage_b_native_authorized_external_site_count &&
+      stage_b_native_authorized_external_sites[low] == rva;
+}}
+
 stage_b_call_status stage_b_native_runtime_capture_external_call(
     const stage_b_call_event *event, const stage_b_machine_state *input,
     stage_b_external_call_snapshot *snapshot) {{
@@ -3855,6 +4126,21 @@ stage_b_call_status stage_b_native_runtime_capture_external_call(
   if (event == 0 || input == 0 || snapshot == 0 ||
       stage_b_native_context_value.initialized == 0U) {{
     stage_b_native_diagnostic_reason = 0x2003U;
+    return STAGE_B_CALL_UNIMPLEMENTED;
+  }}
+  if (!stage_b_native_external_site_authorized(event->instruction_rva)) {{
+    stage_b_native_diagnostic_reason = 0x2009U;
+    stage_b_native_diagnostic_value = event->instruction_rva;
+    stage_b_native_diagnostic_aux = event->target_rva;
+    return STAGE_B_CALL_UNIMPLEMENTED;
+  }}
+  if (event->kind == STAGE_B_CALL_INDIRECT &&
+      event->target_rva >= stage_b_native_context_value.image_base &&
+      event->target_rva - stage_b_native_context_value.image_base <
+          stage_b_native_context_value.image_size) {{
+    stage_b_native_diagnostic_reason = 0x200aU;
+    stage_b_native_diagnostic_value = event->instruction_rva;
+    stage_b_native_diagnostic_aux = event->target_rva;
     return STAGE_B_CALL_UNIMPLEMENTED;
   }}
   snapshot->instruction_rva = event->instruction_rva;

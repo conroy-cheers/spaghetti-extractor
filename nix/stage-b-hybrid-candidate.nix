@@ -4,21 +4,50 @@
   pythonSource,
   machineIr,
   staticExport,
-  staticCompletenessReport,
-  staticAuthorityV2,
+  staticCompletenessReport ? null,
+  staticAuthorityV2 ? null,
   machineImportProfiles,
   namePrefix,
   compiler ? pkgs.pkgsCross.mingw32.stdenv.cc,
-  allowDeferredPotentialTransfers ? false,
+  candidateMode ? "static-closed",
+  allowDeferredPotentialTransfers ? candidateMode == "structural-diagnostic",
   diagnosticFailureTrap ? false,
   portableReplacements ? null,
 }:
 
-assert pkgs.lib.assertMsg (!allowDeferredPotentialTransfers)
-  "static-hybrid candidates require allowDeferredPotentialTransfers = false";
+assert pkgs.lib.assertMsg
+  (builtins.elem candidateMode [ "static-closed" "structural-diagnostic" ])
+  "candidateMode must be static-closed or structural-diagnostic";
+assert pkgs.lib.assertMsg
+  ((candidateMode == "static-closed") == (!allowDeferredPotentialTransfers))
+  "only structural-diagnostic candidates may defer potential transfers";
+assert pkgs.lib.assertMsg
+  (candidateMode != "structural-diagnostic" || diagnosticFailureTrap)
+  "structural-diagnostic candidates require diagnosticFailureTrap = true";
+assert pkgs.lib.assertMsg
+  (candidateMode != "static-closed" ||
+    (staticCompletenessReport != null && staticAuthorityV2 != null))
+  "static-closed candidates require v2 static authority inputs";
 
 let
   lib = pkgs.lib;
+  staticClosed = candidateMode == "static-closed";
+  candidateAuthorityArg = lib.escapeShellArg (
+    if staticClosed then
+      "${candidateAuthorityGate}/candidate-authority.json"
+    else ""
+  );
+  finalAuditArg = lib.escapeShellArg (
+    if staticClosed then toString staticAuthorityV2.finalAudit.artifact else ""
+  );
+  authorityBundleArg = lib.escapeShellArg (
+    if staticClosed then toString staticAuthorityV2.authorityBundle.artifact else ""
+  );
+  fallbackCoverageArg = lib.escapeShellArg (
+    if staticClosed then
+      "${fallbackCoverageReceipt}/fallback-coverage-receipt.json"
+    else ""
+  );
   python = "${pythonEnv}/bin/python3";
   loadImageContract = "${staticExport}/load-image-contract.json";
   mkPythonClosure = suffix: modules: import ./python-module-closure.nix {
@@ -253,16 +282,19 @@ let
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${nativeEnginePythonSource}/src
-    jq -e '
-      .format == "spaghetti-extractor-stage-b-candidate-authority-v2" and
-      .status == "authorized"
-    ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
+    ${lib.optionalString staticClosed ''
+      jq -e '
+        .format == "spaghetti-extractor-stage-b-candidate-authority-v2" and
+        .status == "authorized"
+      ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
+    ''}
     ${python} - \
       ${machineIr}/machine-ir.jsonl \
       ${machineIr}/machine-ir-manifest.json \
       ${machineIr}/recovered-executable-data.json \
       ${loadImageContract} \
       ${portableReplacementArg} \
+      ${machineImportProfileBundle}/profile.json \
       "$out" ${profileArgs} <<'PY'
     import json
     import pathlib
@@ -281,8 +313,9 @@ let
     recovered_executable_data = pathlib.Path(sys.argv[3])
     load_contract = pathlib.Path(sys.argv[4])
     portable_path = sys.argv[5]
-    output = pathlib.Path(sys.argv[6])
-    profiles = tuple(pathlib.Path(value) for value in sys.argv[7:])
+    profile_bundle = pathlib.Path(sys.argv[6])
+    output = pathlib.Path(sys.argv[7])
+    profiles = tuple(pathlib.Path(value) for value in sys.argv[8:])
     selected_portable_components = ()
     if portable_path:
         portable_payload = json.loads(
@@ -323,6 +356,8 @@ let
         base_relocation_evidence=inputs.base_relocation_evidence,
         fixed_image_base=inputs.fixed_image_base,
         preferred_image_base=inputs.image_base,
+        machine_import_profiles=(profile_bundle,),
+        candidate_mode=${builtins.toJSON candidateMode},
         allow_deferred_potential_transfers=${if allowDeferredPotentialTransfers then "True" else "False"},
         out=output,
         initial_zero_ranges=inputs.initial_zero_ranges,
@@ -334,8 +369,10 @@ let
       .status == "ready" and
       .counts.input_transfers > 0 and
       .counts.transfers + .counts.deferred_transfers == .counts.input_transfers and
-      .counts.deferred_transfers == 0 and
+      ${if staticClosed then ".counts.deferred_transfers == 0" else ".counts.deferred_transfers >= 0"} and
       .counts.blockers == 0 and
+      .policy.candidate_mode == "${candidateMode}" and
+      .policy.static_hybrid_closure_receipt_required == ${if staticClosed then "true" else "false"} and
       (.authority | contains("candidate generation only"))
     ' "$out/native-engine-package.json" >/dev/null
   '';
@@ -370,6 +407,8 @@ let
     jq -e '
       .format == "stage-b-native-runtime-package-v1" and
       .status == "ready" and
+      .policy.candidate_mode == "${candidateMode}" and
+      .policy.static_hybrid_closure_receipt_required == ${if staticClosed then "true" else "false"} and
       (.acceptance_authority | not)
     ' "$out/native-runtime-package.json" >/dev/null
   '';
@@ -394,18 +433,20 @@ let
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${nativeBuildPythonSource}/src
-    jq -e '
-      .format == "spaghetti-extractor-stage-b-candidate-authority-v2" and
-      .status == "authorized"
-    ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
+    ${lib.optionalString staticClosed ''
+      jq -e '
+        .format == "spaghetti-extractor-stage-b-candidate-authority-v2" and
+        .status == "authorized"
+      ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
+    ''}
     ${python} - \
       ${interpreter} ${nativeEngine} ${nativeRuntime} \
-      ${candidateAuthorityGate}/candidate-authority.json \
-      ${staticAuthorityV2.finalAudit.artifact} \
-      ${staticAuthorityV2.authorityBundle.artifact} \
+      ${candidateAuthorityArg} \
+      ${finalAuditArg} \
+      ${authorityBundleArg} \
       ${machineIr}/machine-ir.jsonl \
       ${machineIr}/machine-ir-manifest.json \
-      ${fallbackCoverageReceipt}/fallback-coverage-receipt.json \
+      ${fallbackCoverageArg} \
       ${loadImageContract} \
       ${machineIr}/recovered-executable-data.json \
       ${nativeObjects.package} \
@@ -416,21 +457,25 @@ let
         build_stage_b_interpreter_native_candidate,
     )
 
+    def optional_path(value):
+        return pathlib.Path(value) if value else None
+
     build_stage_b_interpreter_native_candidate(
         interpreter_package=pathlib.Path(sys.argv[1]),
         native_engine_package=pathlib.Path(sys.argv[2]),
         native_runtime_package=pathlib.Path(sys.argv[3]),
-        candidate_authority=pathlib.Path(sys.argv[4]),
-        final_static_hybrid_audit=pathlib.Path(sys.argv[5]),
-        authority_bundle=pathlib.Path(sys.argv[6]),
+        candidate_authority=optional_path(sys.argv[4]),
+        final_static_hybrid_audit=optional_path(sys.argv[5]),
+        authority_bundle=optional_path(sys.argv[6]),
         machine_ir=pathlib.Path(sys.argv[7]),
         machine_ir_manifest=pathlib.Path(sys.argv[8]),
-        fallback_coverage_receipt=pathlib.Path(sys.argv[9]),
+        fallback_coverage_receipt=optional_path(sys.argv[9]),
         load_image_contract=pathlib.Path(sys.argv[10]),
         recovered_executable_data=pathlib.Path(sys.argv[11]),
         precompiled_objects=pathlib.Path(sys.argv[12]),
         compiler=pathlib.Path(sys.argv[13]),
         diagnostic_failure_trap=${if diagnosticFailureTrap then "True" else "False"},
+        candidate_mode=${builtins.toJSON candidateMode},
         out_dir=pathlib.Path(sys.argv[14]),
       )
     PY
@@ -438,9 +483,10 @@ let
       .format == "stage-b-interpreter-native-build-v1" and
       .status == "candidate-generated" and
       .acceptance_authority == "none" and
-      .inputs.candidate_authority.status == "authorized" and
-      (.policy.allow_deferred_potential_transfers | not) and
-      .policy.candidate_class == "${if diagnosticFailureTrap then "diagnostic-static-closed" else "release-static-closed"}"
+      ${if staticClosed then ".inputs.candidate_authority.status == \"authorized\"" else ".inputs.candidate_authority == null"} and
+      .inputs.execution_scope.candidate_mode == "${candidateMode}" and
+      .inputs.execution_scope.acceptance_authority == "none" and
+      .policy.candidate_class == "${if staticClosed then (if diagnosticFailureTrap then "diagnostic-static-closed" else "release-static-closed") else "structural-diagnostic"}"
     ' "$out/interpreter-native-build-manifest.json" >/dev/null
     test -s "$out/candidate.exe"
   '';
