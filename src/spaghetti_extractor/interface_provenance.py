@@ -13,7 +13,7 @@ import json
 from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
 from hashlib import sha256
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Hashable, Iterable, Mapping, Sequence
 
 from .callback_contracts import (
     parse_callback_abi,
@@ -21,7 +21,7 @@ from .callback_contracts import (
     parse_callback_result,
     parse_callback_source,
 )
-from .analysis.scc_worklist import strongly_connected_components
+from .analysis.scc_worklist import decompose_scc, strongly_connected_components
 from .call_arguments import (
     CallArgumentRecovery,
     recover_pe32_local_stack_argument_prefix,
@@ -384,6 +384,15 @@ class _RunResult:
     cross_run_transfer_cache_hits: int
     transfer_cache_entries: int
     transfer_cache_evictions: int
+    scc_cache_requests: int
+    scc_cache_hits: int
+    cross_run_scc_cache_hits: int
+    scc_cache_entries: int
+    scc_cache_evictions: int
+    dataflow_transfer_evaluations: int
+    finalization_transfer_evaluations: int
+    contextual_transfer_evaluations: int
+    postprocess_transfer_evaluations: int
     budget_exceeded: int
     context_states: int
     context_evaluations: int
@@ -484,13 +493,25 @@ _UnitTransfer = tuple[
 
 
 @dataclass(frozen=True)
+class _DataflowSCCSummary:
+    """Exact converged transfer evidence for one control SCC."""
+
+    states: tuple[tuple[str, _State], ...]
+    final_transfers: tuple[tuple[str, _UnitTransfer], ...]
+    outgoing: tuple[tuple[str, str, _State], ...]
+    transfer_observations: tuple[
+        tuple[str, tuple[Any, ...], int], ...
+    ]
+
+
+@dataclass(frozen=True)
 class _TransferCacheEntry:
     generation: int
     transfer: _UnitTransfer
 
 
 class InterfaceTransferCache:
-    """Bounded in-memory cache for one immutable provenance-analysis pass.
+    """Bounded unit and SCC cache for one immutable provenance-analysis pass.
 
     The cache is deliberately not serialized and carries no authority.  Its
     owner must scope it to one binary, machine-IR inventory, profile set, and
@@ -510,6 +531,9 @@ class InterfaceTransferCache:
         self._entries: OrderedDict[
             tuple[int, str, tuple[Any, ...]], _TransferCacheEntry
         ] = OrderedDict()
+        self._scc_entries: OrderedDict[
+            Hashable, tuple[int, _DataflowSCCSummary]
+        ] = OrderedDict()
         self._environment_ids: dict[tuple[Any, ...], int] = {}
         self._generation = 0
         self._local_environment_id: int | None = None
@@ -517,6 +541,10 @@ class InterfaceTransferCache:
         self.run_hits = 0
         self.run_cross_run_hits = 0
         self.run_evictions = 0
+        self.run_scc_requests = 0
+        self.run_scc_hits = 0
+        self.run_cross_run_scc_hits = 0
+        self.run_scc_evictions = 0
 
     @classmethod
     def for_unit_count(cls, unit_count: int) -> "InterfaceTransferCache":
@@ -531,6 +559,10 @@ class InterfaceTransferCache:
     @property
     def entries(self) -> int:
         return len(self._entries)
+
+    @property
+    def scc_entries(self) -> int:
+        return len(self._scc_entries)
 
     def begin_run(
         self,
@@ -548,6 +580,10 @@ class InterfaceTransferCache:
         self.run_hits = 0
         self.run_cross_run_hits = 0
         self.run_evictions = 0
+        self.run_scc_requests = 0
+        self.run_scc_hits = 0
+        self.run_cross_run_scc_hits = 0
+        self.run_scc_evictions = 0
 
     def get(
         self,
@@ -585,6 +621,35 @@ class InterfaceTransferCache:
         while len(self._entries) > self.capacity:
             self._entries.popitem(last=False)
             self.run_evictions += 1
+
+    def get_scc(
+        self,
+        *,
+        key: Hashable,
+    ) -> _DataflowSCCSummary | None:
+        self.run_scc_requests += 1
+        entry = self._scc_entries.get(key)
+        if entry is None:
+            return None
+        generation, summary = entry
+        self._scc_entries.move_to_end(key)
+        self.run_scc_hits += 1
+        if generation != self._generation:
+            self.run_cross_run_scc_hits += 1
+            self._scc_entries[key] = (self._generation, summary)
+        return summary
+
+    def put_scc(
+        self,
+        *,
+        key: Hashable,
+        summary: _DataflowSCCSummary,
+    ) -> None:
+        self._scc_entries[key] = (self._generation, summary)
+        self._scc_entries.move_to_end(key)
+        while len(self._scc_entries) > self.capacity:
+            self._scc_entries.popitem(last=False)
+            self.run_scc_evictions += 1
 
     def _environment_id(self, key: tuple[Any, ...]) -> int:
         existing = self._environment_ids.get(key)
@@ -1123,6 +1188,25 @@ def recover_external_interface_targets(
             ),
             "transfer_cache_entries": final.transfer_cache_entries,
             "transfer_cache_evictions": final.transfer_cache_evictions,
+            "scc_cache_requests": final.scc_cache_requests,
+            "scc_cache_hits": final.scc_cache_hits,
+            "cross_run_scc_cache_hits": (
+                final.cross_run_scc_cache_hits
+            ),
+            "scc_cache_entries": final.scc_cache_entries,
+            "scc_cache_evictions": final.scc_cache_evictions,
+            "dataflow_transfer_evaluations": (
+                final.dataflow_transfer_evaluations
+            ),
+            "finalization_transfer_evaluations": (
+                final.finalization_transfer_evaluations
+            ),
+            "contextual_transfer_evaluations": (
+                final.contextual_transfer_evaluations
+            ),
+            "postprocess_transfer_evaluations": (
+                final.postprocess_transfer_evaluations
+            ),
             "indirect_exits": len(final.resolutions),
             "recovered_method_exits": recovered_interface,
             "recovered_operation_exits": recovered_operation,
@@ -2289,6 +2373,183 @@ def _normalize_internal_call_memory_frames(
     return result
 
 
+def _dataflow_scc_input_key(
+    *,
+    component: tuple[str, ...],
+    states: Mapping[str, _State],
+    outgoing: Mapping[str, set[_Edge]],
+    checked_stack_entry_offsets: Mapping[str, frozenset[int]],
+    checked_nonimage_stack_units: frozenset[str],
+    local_environment: Hashable,
+    call_environment: Hashable,
+) -> Hashable:
+    """Return the exact changing inputs consumed by one control SCC.
+
+    Unit semantics and profile inventories are immutable within the owning
+    pass workspace.  Entry states capture all predecessor contributions;
+    local control and stack authority are included because both may change
+    between joint-authority rounds.
+    """
+
+    return (
+        "interface-provenance-scc-v1",
+        component,
+        tuple(
+            (unit_id, _state_cache_key(states[unit_id]))
+            for unit_id in component
+            if unit_id in states
+        ),
+        tuple(
+            (
+                unit_id,
+                tuple(
+                    (
+                        edge.kind,
+                        edge.target_id,
+                        edge.event_index,
+                        edge.guard_json,
+                    )
+                    for edge in sorted(
+                        outgoing.get(unit_id, ()),
+                        key=lambda item: (
+                            item.target_id,
+                            item.kind,
+                            -1 if item.event_index is None else item.event_index,
+                            item.guard_json or "",
+                        ),
+                    )
+                ),
+                tuple(sorted(checked_stack_entry_offsets.get(unit_id, ()))),
+                unit_id in checked_nonimage_stack_units,
+            )
+            for unit_id in component
+        ),
+        local_environment,
+        call_environment,
+    )
+
+
+def _component_local_environment_key(
+    *,
+    component: tuple[str, ...],
+    known_slots: Mapping[_MemoryLocation, _Value],
+    event_known_slots: _EventKnownSlots,
+    checked_write_footprints: Mapping[
+        tuple[str, int], _CheckedWriteFootprint
+    ],
+    finite_value_budget: int,
+    static_slot_budget: int,
+    stack_slot_budget: int,
+) -> Hashable:
+    members = frozenset(component)
+    return _transfer_local_environment_key(
+        # A computed load may select any checked global slot. Until expression
+        # dependencies are exported explicitly, retaining this inventory is the
+        # conservative projection.
+        known_slots=known_slots,
+        event_known_slots={
+            unit_id: reads
+            for unit_id, reads in event_known_slots.items()
+            if unit_id in members
+        },
+        checked_write_footprints={
+            site: footprint
+            for site, footprint in checked_write_footprints.items()
+            if site[0] in members
+        },
+        finite_value_budget=finite_value_budget,
+        static_slot_budget=static_slot_budget,
+        stack_slot_budget=stack_slot_budget,
+    )
+
+
+def _component_call_environment_key(
+    *,
+    component: tuple[str, ...],
+    by_id: Mapping[str, Mapping[str, Any]],
+    image_base: int,
+    internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_stack_cleanup: Mapping[int, int],
+    internal_call_result_relations: Mapping[
+        int, Mapping[str, Sequence[Mapping[str, Any]]]
+    ],
+    internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_frames: _InternalCallMemoryFrames,
+    internal_call_memory_result_relations: _InternalCallMemoryResults,
+    internal_call_dependency_ids: Mapping[
+        tuple[str, int], frozenset[str]
+    ],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
+    normal_call_abi_premise: NormalCallABIPremise | None,
+    preserved_register_hypotheses: Mapping[
+        CallSiteId, Mapping[str, PreservedRegisterHypothesis]
+    ],
+) -> Hashable:
+    sites: set[tuple[str, int]] = set()
+    direct_targets: set[int] = set()
+    has_indirect_call = False
+    for unit_id in component:
+        for event_index, event in enumerate(_events(by_id[unit_id])):
+            kind = event.get("kind")
+            if kind not in _CALL_KINDS:
+                continue
+            sites.add((unit_id, event_index))
+            if kind == "indirect_call":
+                has_indirect_call = True
+            elif kind == "internal_call":
+                target_rva = _integer(event.get("target_rva"))
+                if target_rva is not None:
+                    direct_targets.add(
+                        (image_base + target_rva) & 0xFFFFFFFF
+                    )
+    if not sites:
+        return ("no-calls",)
+
+    def project_targets(value: Mapping[int, Any]) -> Mapping[int, Any]:
+        if has_indirect_call:
+            return value
+        return {
+            target: item
+            for target, item in value.items()
+            if target in direct_targets
+        }
+
+    return _freeze_transfer_cache_value((
+        project_targets(internal_call_preserved_registers),
+        project_targets(internal_call_stack_cleanup),
+        project_targets(internal_call_result_relations),
+        project_targets(internal_call_memory_preservation),
+        project_targets(internal_call_memory_frames),
+        project_targets(internal_call_memory_result_relations),
+        {
+            site: dependencies
+            for site, dependencies in internal_call_dependency_ids.items()
+            if site in sites
+        },
+        {
+            site: recovery
+            for site, recovery in recovered_calls.items()
+            if site in sites
+        },
+        (
+            bootstrap_unknown_call_preserved_registers
+            if has_indirect_call
+            else None
+        ),
+        (
+            normal_call_abi_premise.dependency_id
+            if has_indirect_call and normal_call_abi_premise is not None
+            else None
+        ),
+        {
+            site: hypotheses
+            for site, hypotheses in preserved_register_hypotheses.items()
+            if (site.unit_id, site.event_index) in sites
+        },
+    ))
+
+
 def _run_dataflow(
     *,
     by_id: Mapping[str, Mapping[str, Any]],
@@ -2340,10 +2601,6 @@ def _run_dataflow(
         )
         for root in roots
     }
-    priorities = _reverse_postorder_priorities(roots, outgoing)
-    work = [(priorities[root], root) for root in sorted(roots)]
-    heapq.heapify(work)
-    queued = set(roots)
     proposed_slots: dict[_MemoryLocation, _Value] = {}
     tainted_slots: set[_MemoryLocation] = set()
     issues: list[dict[str, Any]] = []
@@ -2353,6 +2610,9 @@ def _run_dataflow(
     transfer_requests = 0
     budget_exceeded = 0
     observed_transfer_keys: set[tuple[str, tuple[Any, ...]]] = set()
+    observed_transfer_exceeded: dict[
+        tuple[str, tuple[Any, ...]], int
+    ] = {}
     call_sensitive_units = frozenset(
         unit_id
         for unit_id, unit in by_id.items()
@@ -2395,6 +2655,7 @@ def _run_dataflow(
         if isinstance(source, str):
             exits_by_source[source].append(exit_record)
     path_recoveries: dict[str, dict[str, dict[str, Any]]] = defaultdict(dict)
+    final_transfers: dict[str, _UnitTransfer] = {}
 
     def transfer_state(source_id: str, input_state: _State) -> _UnitTransfer:
         nonlocal evaluations, transfer_requests, budget_exceeded
@@ -2422,6 +2683,7 @@ def _run_dataflow(
         if cached is not None:
             if first_request:
                 budget_exceeded += cached[-1]
+                observed_transfer_exceeded[request_key] = cached[-1]
             return cached
         result = _transfer_unit(
             unit_id=source_id,
@@ -2466,115 +2728,332 @@ def _run_dataflow(
         evaluations += 1
         if first_request:
             budget_exceeded += result[-1]
+            observed_transfer_exceeded[request_key] = result[-1]
         return result
 
     def transfer_unit(source_id: str) -> _UnitTransfer:
         return transfer_state(source_id, input_states[source_id])
 
-    while work:
-        _, source_id = heapq.heappop(work)
-        queued.remove(source_id)
-        if collect_path_recovery_proposals and exits_by_source.get(source_id):
-            checked_state = _with_checked_stack_entry(
-                input_states[source_id],
-                unit_id=source_id,
-                checked_stack_entry_offsets=checked_stack_entry_offsets,
+    def edge_contribution(
+        source_id: str,
+        edge: _Edge,
+        unit_transfer: _UnitTransfer,
+    ) -> _State | None:
+        transfer = unit_transfer[0]
+        contribution = transfer[0]
+        if edge.kind in {"internal_call", "indirect_call"}:
+            index = edge.event_index
+            contribution = (
+                transfer[1].get(index) if index is not None else None
             )
-            for proposal in _resolve_exits(
-                exits_by_source[source_id],
-                by_id=by_id,
-                states={source_id: checked_state},
-                inventory=inventory,
-                import_abis=import_abis,
-                known_slots=known_slots,
-                event_known_slots=event_known_slots,
-                finite_value_budget=finite_value_budget,
-            ):
-                if proposal.get("status") != "recovered":
-                    continue
-                identity = str(proposal.get("id") or "")
-                projection = _recovery_target_projection(proposal)
-                key = json.dumps(
-                    projection,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=True,
-                    allow_nan=False,
+            if contribution is None:
+                contribution = _unknown_state()
+            else:
+                return_rva = None
+                if index is not None:
+                    events = _events(by_id[source_id])
+                    if 0 <= index < len(events):
+                        return_rva = _integer(events[index].get("return_rva"))
+                contribution = _enter_call_frame(
+                    contribution,
+                    return_address=(
+                        None
+                        if return_rva is None
+                        else (image_base + return_rva) & 0xFFFFFFFF
+                    ),
                 )
-                existing = path_recoveries[identity].get(key)
-                path_recoveries[identity][key] = _merge_path_recovery_proposal(
-                    existing,
-                    proposal,
-                    finite_value_budget=finite_value_budget,
-                )
-        (
-            transfer,
-            _,
-            _,
-            _,
-            _,
-            _,
-            exceeded,
-        ) = transfer_unit(source_id)
-        for edge in sorted(
-            outgoing.get(source_id, ()),
-            key=lambda item: (
-                item.target_id,
-                item.kind,
-                item.event_index or -1,
-                item.guard_json or "",
-            ),
+        if edge.guard_json is None:
+            return contribution
+        guard = _guard_in_post_state(
+            by_id[source_id], json.loads(edge.guard_json)
+        )
+        return _refine_state_for_guard(
+            contribution,
+            guard,
+            inventory=inventory,
+            known_slots=known_slots,
+            finite_value_budget=finite_value_budget,
+        )
+
+    def collect_path_recoveries(source_id: str) -> None:
+        if not exits_by_source.get(source_id):
+            return
+        checked_state = _with_checked_stack_entry(
+            input_states[source_id],
+            unit_id=source_id,
+            checked_stack_entry_offsets=checked_stack_entry_offsets,
+        )
+        for proposal in _resolve_exits(
+            exits_by_source[source_id],
+            by_id=by_id,
+            states={source_id: checked_state},
+            inventory=inventory,
+            import_abis=import_abis,
+            known_slots=known_slots,
+            event_known_slots=event_known_slots,
+            finite_value_budget=finite_value_budget,
         ):
-            contribution = transfer[0]
-            if edge.kind in {"internal_call", "indirect_call"}:
-                index = edge.event_index
-                contribution = (
-                    transfer[1].get(index)
-                    if index is not None
-                    else None
-                )
+            if proposal.get("status") != "recovered":
+                continue
+            identity = str(proposal.get("id") or "")
+            projection = _recovery_target_projection(proposal)
+            key = json.dumps(
+                projection,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            )
+            existing = path_recoveries[identity].get(key)
+            path_recoveries[identity][key] = _merge_path_recovery_proposal(
+                existing,
+                proposal,
+                finite_value_budget=finite_value_budget,
+            )
+
+    edge_key = lambda item: (
+        item.target_id,
+        item.kind,
+        -1 if item.event_index is None else item.event_index,
+        item.guard_json or "",
+    )
+    if collect_path_recovery_proposals:
+        # Proposal discovery intentionally observes finite transient states.
+        # Keep its established worklist order; SCC summaries authorize only
+        # the ordinary converged dataflow used by cold and inductive passes.
+        priorities = _reverse_postorder_priorities(roots, outgoing)
+        work = [(priorities[root], root) for root in sorted(roots)]
+        heapq.heapify(work)
+        queued = set(roots)
+        while work:
+            _, source_id = heapq.heappop(work)
+            queued.remove(source_id)
+            collect_path_recoveries(source_id)
+            transfer = transfer_unit(source_id)
+            for edge in sorted(outgoing.get(source_id, ()), key=edge_key):
+                contribution = edge_contribution(source_id, edge, transfer)
                 if contribution is None:
-                    contribution = _unknown_state()
-                else:
-                    return_rva = None
-                    if index is not None:
-                        events = _events(by_id[source_id])
-                        if 0 <= index < len(events):
-                            return_rva = _integer(events[index].get("return_rva"))
-                    contribution = _enter_call_frame(
-                        contribution,
-                        return_address=(
-                            None
-                            if return_rva is None
-                            else (image_base + return_rva) & 0xFFFFFFFF
+                    continue
+                if _join_state(
+                    input_states,
+                    edge.target_id,
+                    contribution,
+                    finite_value_budget,
+                    static_slot_budget,
+                    stack_slot_budget,
+                ) and edge.target_id not in queued:
+                    heapq.heappush(
+                        work,
+                        (
+                            priorities.get(edge.target_id, len(priorities)),
+                            edge.target_id,
                         ),
                     )
-            if edge.guard_json is not None:
-                guard = _guard_in_post_state(
-                    by_id[source_id], json.loads(edge.guard_json)
-                )
-                contribution = _refine_state_for_guard(
+                    queued.add(edge.target_id)
+    else:
+        control_edges = {
+            (source_id, edge.target_id)
+            for source_id, edges in outgoing.items()
+            for edge in edges
+        }
+        decomposition = decompose_scc(tuple(by_id), control_edges)
+        component_by_unit = {
+            unit_id: component_index
+            for component_index, component in enumerate(
+                decomposition.components
+            )
+            for unit_id in component
+        }
+
+        for component_index, component in enumerate(decomposition.components):
+            queue = deque(
+                unit_id for unit_id in component if unit_id in input_states
+            )
+            in_queue = set(queue)
+            if not queue:
+                continue
+            members = frozenset(component)
+
+            def propagate(
+                target_id: str,
+                contribution: _State,
+                *,
+                enqueue_internal: bool,
+            ) -> None:
+                target_component = component_by_unit[target_id]
+                if target_component < component_index:
+                    raise AssertionError(
+                        "interface provenance SCC order contains a backward edge"
+                    )
+                changed = _join_state(
+                    input_states,
+                    target_id,
                     contribution,
-                    guard,
-                    inventory=inventory,
+                    finite_value_budget,
+                    static_slot_budget,
+                    stack_slot_budget,
+                )
+                if (
+                    changed
+                    and enqueue_internal
+                    and target_id in members
+                    and target_id not in in_queue
+                ):
+                    queue.append(target_id)
+                    in_queue.add(target_id)
+
+            cache_key = _dataflow_scc_input_key(
+                component=component,
+                states=input_states,
+                outgoing=outgoing,
+                checked_stack_entry_offsets=checked_stack_entry_offsets,
+                checked_nonimage_stack_units=checked_nonimage_stack_units,
+                local_environment=_component_local_environment_key(
+                    component=component,
                     known_slots=known_slots,
+                    event_known_slots=event_known_slots,
+                    checked_write_footprints=checked_write_footprints,
                     finite_value_budget=finite_value_budget,
-                )
-                if contribution is None:
-                    continue
-            if _join_state(
-                input_states,
-                edge.target_id,
-                contribution,
-                finite_value_budget,
-                static_slot_budget,
-                stack_slot_budget,
-            ) and edge.target_id not in queued:
-                heapq.heappush(
-                    work,
-                    (priorities.get(edge.target_id, len(priorities)), edge.target_id),
-                )
-                queued.add(edge.target_id)
+                    static_slot_budget=static_slot_budget,
+                    stack_slot_budget=stack_slot_budget,
+                ),
+                call_environment=_component_call_environment_key(
+                    component=component,
+                    by_id=by_id,
+                    image_base=image_base,
+                    internal_call_preserved_registers=(
+                        internal_call_preserved_registers
+                    ),
+                    internal_call_stack_cleanup=(
+                        internal_call_stack_cleanup
+                    ),
+                    internal_call_result_relations=(
+                        internal_call_result_relations
+                    ),
+                    internal_call_memory_preservation=(
+                        internal_call_memory_preservation
+                    ),
+                    internal_call_memory_frames=internal_call_memory_frames,
+                    internal_call_memory_result_relations=(
+                        internal_call_memory_result_relations
+                    ),
+                    internal_call_dependency_ids=(
+                        internal_call_dependency_ids
+                    ),
+                    recovered_calls=recovered_calls,
+                    bootstrap_unknown_call_preserved_registers=(
+                        bootstrap_unknown_call_preserved_registers
+                    ),
+                    normal_call_abi_premise=normal_call_abi_premise,
+                    preserved_register_hypotheses=(
+                        preserved_register_hypotheses
+                    ),
+                ),
+            )
+            cached_summary = transfer_cache.get_scc(
+                key=cache_key,
+            )
+            if cached_summary is not None:
+                input_states.update(cached_summary.states)
+                final_transfers.update(cached_summary.final_transfers)
+                for unit_id, state_key, exceeded in (
+                    cached_summary.transfer_observations
+                ):
+                    request_key = (unit_id, state_key)
+                    if request_key in observed_transfer_keys:
+                        continue
+                    observed_transfer_keys.add(request_key)
+                    observed_transfer_exceeded[request_key] = exceeded
+                    budget_exceeded += exceeded
+                for _source_id, target_id, contribution in (
+                    cached_summary.outgoing
+                ):
+                    propagate(
+                        target_id,
+                        contribution,
+                        enqueue_internal=False,
+                    )
+                continue
+
+            observations_before = set(observed_transfer_keys)
+            while queue:
+                source_id = queue.popleft()
+                in_queue.discard(source_id)
+                transfer = transfer_unit(source_id)
+                for edge in sorted(
+                    outgoing.get(source_id, ()), key=edge_key
+                ):
+                    if edge.target_id not in members:
+                        continue
+                    contribution = edge_contribution(
+                        source_id, edge, transfer
+                    )
+                    if contribution is not None:
+                        propagate(
+                            edge.target_id,
+                            contribution,
+                            enqueue_internal=True,
+                        )
+
+            component_transfers = {
+                source_id: transfer_unit(source_id)
+                for source_id in component
+                if source_id in input_states
+            }
+            final_transfers.update(component_transfers)
+            outgoing_contributions: list[tuple[str, str, _State]] = []
+            for source_id, transfer in component_transfers.items():
+                for edge in sorted(
+                    outgoing.get(source_id, ()), key=edge_key
+                ):
+                    if edge.target_id in members:
+                        continue
+                    contribution = edge_contribution(
+                        source_id, edge, transfer
+                    )
+                    if contribution is None:
+                        continue
+                    outgoing_contributions.append((
+                        source_id, edge.target_id, contribution
+                    ))
+                    propagate(
+                        edge.target_id,
+                        contribution,
+                        enqueue_internal=False,
+                    )
+            new_observations = observed_transfer_keys - observations_before
+            transfer_cache.put_scc(
+                key=cache_key,
+                summary=_DataflowSCCSummary(
+                    states=tuple(
+                        (unit_id, input_states[unit_id])
+                        for unit_id in component
+                        if unit_id in input_states
+                    ),
+                    final_transfers=tuple(component_transfers.items()),
+                    outgoing=tuple(outgoing_contributions),
+                    transfer_observations=tuple(
+                        (
+                            unit_id,
+                            state_key,
+                            observed_transfer_exceeded.get(
+                                (unit_id, state_key), 0
+                            ),
+                        )
+                        for unit_id, state_key in sorted(
+                            new_observations,
+                            key=lambda item: (item[0], repr(item[1])),
+                        )
+                    ),
+                ),
+            )
+
+    dataflow_transfer_evaluations = evaluations
+    finalization_start = evaluations
+    for source_id in sorted(input_states):
+        if source_id not in final_transfers:
+            final_transfers[source_id] = transfer_unit(source_id)
+    finalization_transfer_evaluations = evaluations - finalization_start
 
     # Diagnostics and global-slot proposals must describe the converged input
     # states, not transient worklist states observed on the way to the fixed
@@ -2588,7 +3067,7 @@ def _run_dataflow(
             unit_argument_recoveries,
             unit_call_site_effects,
             exceeded,
-        ) = transfer_unit(source_id)
+        ) = final_transfers[source_id]
         issues.extend(transfer_issues)
         argument_recoveries.extend(unit_argument_recoveries)
         call_site_effects.extend(unit_call_site_effects)
@@ -2633,6 +3112,7 @@ def _run_dataflow(
         if run_contextual_recovery is None
         else contextual_required and run_contextual_recovery
     )
+    contextual_start = evaluations
     contextual = (
         _run_contextual_target_discovery(
             by_id=by_id,
@@ -2658,6 +3138,7 @@ def _run_dataflow(
         if contextual_enabled
         else _ContextDiscoveryResult([], [], [], 0, 0, 0, 0)
     )
+    contextual_transfer_evaluations = evaluations - contextual_start
     issues.extend(contextual.issues)
     path_recovery_proposals = _merge_context_and_legacy_proposals(
         contextual.proposals,
@@ -2667,17 +3148,19 @@ def _run_dataflow(
         path_recovery_proposals,
         contextual.memory_address_domain_proposals,
     )
+    postprocess_start = evaluations
     loop_memory_access_proposals = _loop_memory_access_proposals(
         by_id=by_id,
         states=input_states,
         outgoing=outgoing,
-        transfer_unit=transfer_unit,
+        transfer_unit=final_transfers.__getitem__,
         inventory=inventory,
         known_slots=known_slots,
         finite_value_budget=finite_value_budget,
         static_slot_budget=static_slot_budget,
         stack_slot_budget=stack_slot_budget,
     )
+    postprocess_transfer_evaluations = evaluations - postprocess_start
     return _RunResult(
         states=input_states,
         resolutions=resolutions,
@@ -2703,6 +3186,17 @@ def _run_dataflow(
         cross_run_transfer_cache_hits=transfer_cache.run_cross_run_hits,
         transfer_cache_entries=transfer_cache.entries,
         transfer_cache_evictions=transfer_cache.run_evictions,
+        scc_cache_requests=transfer_cache.run_scc_requests,
+        scc_cache_hits=transfer_cache.run_scc_hits,
+        cross_run_scc_cache_hits=transfer_cache.run_cross_run_scc_hits,
+        scc_cache_entries=transfer_cache.scc_entries,
+        scc_cache_evictions=transfer_cache.run_scc_evictions,
+        dataflow_transfer_evaluations=dataflow_transfer_evaluations,
+        finalization_transfer_evaluations=(
+            finalization_transfer_evaluations
+        ),
+        contextual_transfer_evaluations=contextual_transfer_evaluations,
+        postprocess_transfer_evaluations=postprocess_transfer_evaluations,
         budget_exceeded=budget_exceeded,
         context_states=contextual.context_states,
         context_evaluations=contextual.evaluations,

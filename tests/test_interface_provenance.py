@@ -398,6 +398,24 @@ class InterfaceProvenanceTests(unittest.TestCase):
         protocol = resolution["external_targets"][0]["external_protocol"]
         self.assertEqual((protocol["interface_id"], protocol["method"]), ("IThing", "Release"))
         self.assertEqual(result["counts"]["static_interface_slots"], 1)
+        self.assertEqual(
+            result["counts"]["transfer_evaluations"],
+            sum(
+                result["counts"][field]
+                for field in (
+                    "dataflow_transfer_evaluations",
+                    "finalization_transfer_evaluations",
+                    "contextual_transfer_evaluations",
+                    "postprocess_transfer_evaluations",
+                )
+            ),
+        )
+        self.assertEqual(
+            result["counts"]["finalization_transfer_evaluations"], 0
+        )
+        self.assertEqual(
+            result["counts"]["postprocess_transfer_evaluations"], 0
+        )
 
     def test_shared_transfer_cache_reuses_unchanged_local_transfers(self) -> None:
         units = [
@@ -429,8 +447,12 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(first["issues"], second["issues"])
         self.assertEqual(first["call_site_effects"], second["call_site_effects"])
         self.assertEqual(second["counts"]["transfer_evaluations"], 0)
+        self.assertEqual(second["counts"]["cross_run_transfer_cache_hits"], 0)
+        self.assertEqual(second["counts"]["scc_cache_requests"], 2)
+        self.assertEqual(second["counts"]["scc_cache_hits"], 2)
+        self.assertEqual(second["counts"]["cross_run_scc_cache_hits"], 2)
         self.assertEqual(
-            second["counts"]["cross_run_transfer_cache_hits"], 2
+            second["counts"]["finalization_transfer_evaluations"], 0
         )
 
     def test_shared_transfer_cache_invalidates_call_environment_changes(self) -> None:
@@ -467,7 +489,12 @@ class InterfaceProvenanceTests(unittest.TestCase):
         )
         self.assertEqual(unchanged["counts"]["transfer_evaluations"], 0)
         self.assertEqual(
-            unchanged["counts"]["cross_run_transfer_cache_hits"], 1
+            unchanged["counts"]["cross_run_transfer_cache_hits"], 0
+        )
+        self.assertEqual(changed["counts"]["scc_cache_hits"], 0)
+        self.assertEqual(unchanged["counts"]["scc_cache_hits"], 1)
+        self.assertEqual(
+            unchanged["counts"]["finalization_transfer_evaluations"], 0
         )
 
     def test_shared_transfer_cache_invalidates_stack_authority_changes(self) -> None:
@@ -502,7 +529,11 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertGreater(changed["counts"]["transfer_evaluations"], 0)
         self.assertEqual(changed["counts"]["cross_run_transfer_cache_hits"], 0)
         self.assertEqual(unchanged["counts"]["transfer_evaluations"], 0)
-        self.assertEqual(unchanged["counts"]["cross_run_transfer_cache_hits"], 1)
+        self.assertEqual(unchanged["counts"]["cross_run_transfer_cache_hits"], 0)
+        self.assertEqual(unchanged["counts"]["scc_cache_hits"], 1)
+        self.assertEqual(
+            unchanged["counts"]["finalization_transfer_evaluations"], 0
+        )
 
     def test_stack_authority_change_preserves_unaffected_unit_transfers(self) -> None:
         cache = InterfaceTransferCache(capacity=16)
@@ -531,7 +562,95 @@ class InterfaceProvenanceTests(unittest.TestCase):
         )
 
         self.assertEqual(changed["counts"]["transfer_evaluations"], 1)
-        self.assertEqual(changed["counts"]["cross_run_transfer_cache_hits"], 1)
+        self.assertEqual(changed["counts"]["cross_run_transfer_cache_hits"], 0)
+        self.assertEqual(changed["counts"]["scc_cache_requests"], 2)
+        self.assertEqual(changed["counts"]["scc_cache_hits"], 1)
+        self.assertEqual(changed["counts"]["cross_run_scc_cache_hits"], 1)
+        self.assertEqual(
+            changed["counts"]["finalization_transfer_evaluations"], 0
+        )
+
+    def test_scc_cache_invalidates_changed_control_edges(self) -> None:
+        cache = InterfaceTransferCache(capacity=16)
+        units = [unit("root", 0x1100), unit("leaf", 0x1200)]
+        first = self._run(
+            units,
+            [edge("root", "leaf")],
+            roots=["root"],
+            indirect_exits=[],
+            transfer_cache=cache,
+        )
+        changed = self._run(
+            units,
+            [],
+            roots=["root"],
+            indirect_exits=[],
+            transfer_cache=cache,
+        )
+
+        self.assertEqual(first["counts"]["reached_units"], 2)
+        self.assertEqual(changed["counts"]["reached_units"], 1)
+        self.assertEqual(changed["counts"]["scc_cache_requests"], 1)
+        self.assertEqual(changed["counts"]["scc_cache_hits"], 0)
+
+    def test_scc_cache_projects_direct_call_facts_to_consumers(self) -> None:
+        def caller(identifier: str, rva: int, target_rva: int) -> dict[str, object]:
+            event = {
+                "kind": "internal_call",
+                "target_rva": target_rva,
+                "return_rva": rva + 1,
+                "register_inputs": {name: reg(name) for name in REGISTERS},
+            }
+            return unit(identifier, rva, events=[event], ordered=[event])
+
+        cache = InterfaceTransferCache(capacity=32)
+        units = [
+            caller("left-call", 0x1000, 0x1100),
+            unit("left-body", 0x1100),
+            caller("right-call", 0x2000, 0x2100),
+            unit("right-body", 0x2100),
+        ]
+        internal_edges = [
+            {
+                "source_unit_id": "left-call",
+                "source_event_index": 0,
+                "target_unit_id": "left-body",
+            },
+            {
+                "source_unit_id": "right-call",
+                "source_event_index": 0,
+                "target_unit_id": "right-body",
+            },
+        ]
+        initial_facts = {
+            IMAGE_BASE + 0x1100: frozenset({"ebx"}),
+            IMAGE_BASE + 0x2100: frozenset({"esi"}),
+        }
+        self._run(
+            units,
+            [],
+            roots=["left-call", "right-call"],
+            internal_edges=internal_edges,
+            indirect_exits=[],
+            internal_call_preserved_registers=initial_facts,
+            transfer_cache=cache,
+        )
+        changed = self._run(
+            units,
+            [],
+            roots=["left-call", "right-call"],
+            internal_edges=internal_edges,
+            indirect_exits=[],
+            internal_call_preserved_registers={
+                **initial_facts,
+                IMAGE_BASE + 0x1100: frozenset({"ebx", "esi"}),
+            },
+            transfer_cache=cache,
+        )
+
+        self.assertEqual(changed["counts"]["scc_cache_requests"], 4)
+        self.assertEqual(changed["counts"]["scc_cache_hits"], 3)
+        self.assertEqual(changed["counts"]["cross_run_scc_cache_hits"], 3)
 
     def test_normal_call_premise_preserves_only_nonvolatile_registers(self) -> None:
         premise = build_pe32_normal_call_abi_premise()
@@ -672,6 +791,8 @@ class InterfaceProvenanceTests(unittest.TestCase):
 
         self.assertEqual(result["counts"]["transfer_cache_entries"], 1)
         self.assertGreater(result["counts"]["transfer_cache_evictions"], 0)
+        self.assertEqual(result["counts"]["scc_cache_entries"], 1)
+        self.assertGreater(result["counts"]["scc_cache_evictions"], 0)
 
     def test_receiver_only_method_preserves_factory_interface_slot(self) -> None:
         units = [

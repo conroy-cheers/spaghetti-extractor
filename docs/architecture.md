@@ -238,12 +238,14 @@ transfer function consumes. Changes confined to provenance hypotheses do not
 replay that graph; changes to any mutable-analysis dependency invalidate the
 memo. Within a replay, independently converged SCC summaries are also retained
 under exact incoming-state, local-control, target, and consumed-call-fact keys.
-A hit restores the checked final member states and replays only final
-condensation-edge contributions; changed edges or predecessor facts invalidate
-the affected SCC and descendants. These caches are intermediate optimizations,
-are discarded between discovery, cold, and inductive passes, and carry no
-authority. The durable boundary remains independently realizable SCC summaries
-and their true condensation-graph descendants.
+A hit restores the checked final member states, outgoing contributions, and
+the final per-unit transfers used by diagnostics and mutable-slot proposal
+extraction. Finalization therefore consumes converged transfer evidence without
+executing every reached unit again. Changed edges or predecessor facts
+invalidate the affected SCC and descendants. These caches are intermediate
+optimizations, are discarded between discovery, cold, and inductive passes,
+and carry no authority. The durable boundary remains independently realizable
+SCC summaries and their true condensation-graph descendants.
 
 Each joint fixed-point round runs dependency-scoped global-slot analysis once.
 The round promotes that already cold-replayed artifact to obtain the invariant

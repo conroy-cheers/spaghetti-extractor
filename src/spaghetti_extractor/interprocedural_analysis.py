@@ -1974,6 +1974,12 @@ def _run_typed_pass(
             )
         )
         contextual_probes += int(contextual_executed)
+        operation_counts = operation_provenance.get("counts")
+        operation_counts = (
+            operation_counts
+            if isinstance(operation_counts, Mapping)
+            else {}
+        )
         _progress(progress, "operation_provenance_derived", {
             "pass_kind": pass_kind,
             "evaluation": evaluation,
@@ -1983,6 +1989,28 @@ def _run_typed_pass(
             ),
             "callback_registrations": _row_count(
                 operation_provenance.get("callback_registrations")
+            ),
+            "transfer_evaluations": operation_counts.get(
+                "transfer_evaluations", 0
+            ),
+            "dataflow_transfer_evaluations": operation_counts.get(
+                "dataflow_transfer_evaluations", 0
+            ),
+            "finalization_transfer_evaluations": operation_counts.get(
+                "finalization_transfer_evaluations", 0
+            ),
+            "contextual_transfer_evaluations": operation_counts.get(
+                "contextual_transfer_evaluations", 0
+            ),
+            "postprocess_transfer_evaluations": operation_counts.get(
+                "postprocess_transfer_evaluations", 0
+            ),
+            "scc_cache_requests": operation_counts.get(
+                "scc_cache_requests", 0
+            ),
+            "scc_cache_hits": operation_counts.get("scc_cache_hits", 0),
+            "cross_run_scc_cache_hits": operation_counts.get(
+                "cross_run_scc_cache_hits", 0
             ),
         })
         mutable_replay_requests += 1
