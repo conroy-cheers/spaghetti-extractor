@@ -165,11 +165,13 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_native_engine.py` | IA-32 ABI bridge and typed x87 native operations. |
 | `stage_b_native_image.py` | Derives entry, callback, relocation, import, and zero-fill inputs from a checked load-image contract. |
 | `stage_b_native_runtime.py` | Candidate external runtime package. |
+| `stage_b_native_diagnostic.py` | Decodes candidate-only native runtime diagnostics into source- and contract-mapped repair evidence. |
 | `stage_b_native_binding.py` | Runtime-boundary inventory and adapters. |
 | `stage_b_native_build.py` | Generic native compile/compose pipeline. |
 | `stage_b_pe_composer.py` | PE image composition, anchors, and relocation checks. |
 | `stage_b_typed_x87.py` | Typed, byte-free x87 replay records. |
 | `stage_b_provenance.py` | Candidate source/build/output hash binding. |
+| `stage_b_candidate_modes.py` | Stable fail-closed identifiers for static-closed and structural-diagnostic candidate builds. |
 | `stage_b_hybrid_completeness.py` | Legacy v1 diagnostic/proposal inventory; it cannot authorize candidate generation. |
 | `recovered_executable_data.py` | Checked classification of immutable initialized data embedded in executable sections. |
 
@@ -208,6 +210,7 @@ and interfaces; it does not erase unresolved whole-program reconstruction gaps.
 | `internal_call_summaries.py` | Interprocedural call effect proposals. |
 | `call_frame_hypotheses.py` | Typed, non-authorizing preserved-register hypotheses used by cold interprocedural replay. |
 | `call_site_effects.py` | Canonical typed summaries of stack, register, result, and memory effects at call sites. |
+| `intrinsic_call_site_effects.py` | State-independent direct-import ABI frames and fail-closed merging with stateful call evidence. |
 | `callback_contracts.py` | Callback registration, ABI, lifetime, and activation protocol validation. |
 | `checked_external_site_contract.py` | Canonical fail-closed machine contract shared by native external-call planning and runtime. |
 | `value_provenance.py` | Static/dynamic/code/data/import/resource value origins. |

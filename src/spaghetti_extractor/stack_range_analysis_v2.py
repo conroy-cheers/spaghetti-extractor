@@ -490,6 +490,12 @@ def _successor_offsets(
         return transitions, frontiers
 
     if kind == "external_call":
+        # A terminal external transfer has no local continuation whose stack
+        # state must be reconstructed.  Its external-site contract remains
+        # responsible for the transfer itself, but stack closure must not
+        # invent a returning frame obligation for a tail jump.
+        if not normal_targets:
+            return transitions, frontiers
         cleanup = _call_effect_cleanup(effect)
         checked_effect = effect is not None
         if effect is None:

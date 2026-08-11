@@ -793,6 +793,7 @@
         "spaghetti_extractor.external_interface_profiles",
         "spaghetti_extractor.external_operation_profiles",
         "spaghetti_extractor.import_abi",
+        "spaghetti_extractor.intrinsic_call_site_effects",
         "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_import_profiles",
         "spaghetti_extractor.provenance_domain"
@@ -865,6 +866,15 @@
         "spaghetti_extractor.static_indirect_replay_v2"
       ],
       "path": "src/spaghetti_extractor/interprocedural_phase_v2.py"
+    },
+    "spaghetti_extractor.intrinsic_call_site_effects": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.call_site_effects",
+        "spaghetti_extractor.import_abi",
+        "spaghetti_extractor.machine_import_profiles"
+      ],
+      "path": "src/spaghetti_extractor/intrinsic_call_site_effects.py"
     },
     "spaghetti_extractor.isa_campaign": {
       "dependencies": [

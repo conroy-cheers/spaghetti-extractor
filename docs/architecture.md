@@ -260,6 +260,17 @@ frame or ABI, and is killed by an unrepresented write. This lets ordinary
 frame pointer as a special binary pattern; an unknown frame pointer still
 stops propagation as `incomplete`.
 
+Exact direct-import events also project their state-independent machine-ABI
+families before provenance replay: preserved registers and fixed stack cleanup
+come from the selected import profile even when an upstream unresolved target
+prevents abstract state from reaching the site. Argument-dependent memory
+writes and result origins remain stateful and therefore incomplete until their
+inputs are recovered. If a reached site's stateful frame disagrees with the
+intrinsic ABI projection, the merged effect fails closed instead of selecting
+either result. An external tail transfer with no local continuation does not
+create a fictitious returning-stack obligation; its external-site contract
+still governs the terminal transfer itself.
+
 Generated files belong under Nix outputs or ignored `build/` workspaces. Authored
 intent and source belong in target bundles. Private binaries belong under the
 ignored `private/` tree and must never be copied into source or target data.

@@ -599,6 +599,53 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
             {row["code"] for row in result["frontiers"]},
         )
 
+    def test_terminal_external_transfer_needs_no_return_frame(self) -> None:
+        call = {
+            "kind": "external_call",
+            "register_inputs": {"esp": _reg("esp")},
+        }
+        units = [
+            _unit(
+                "tail",
+                0x1000,
+                target_rvas=[],
+                stack_delta=None,
+                external_events=[call],
+            ),
+        ]
+
+        result = _derive(units)
+
+        self.assertEqual(result["entry_offsets"]["tail"], [0])
+        self.assertNotIn(
+            "external_call_frame_incomplete",
+            {row["code"] for row in result["frontiers"]},
+        )
+
+    def test_returning_external_transfer_still_needs_a_frame(self) -> None:
+        call = {
+            "kind": "external_call",
+            "register_inputs": {"esp": _reg("esp")},
+        }
+        units = [
+            _unit(
+                "call",
+                0x1000,
+                target_rvas=[0x1010],
+                stack_delta=None,
+                external_events=[call],
+            ),
+            _unit("continuation", 0x1010, memory_offsets=[0]),
+        ]
+
+        result = _derive(units)
+
+        self.assertNotIn("continuation", result["entry_offsets"])
+        self.assertIn(
+            "external_call_frame_incomplete",
+            {row["code"] for row in result["frontiers"]},
+        )
+
     def test_incomplete_external_call_effect_cannot_use_raw_fallback(self) -> None:
         call = {
             "kind": "external_call",

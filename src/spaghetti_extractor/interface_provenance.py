@@ -65,6 +65,10 @@ from .external_operation_profiles import (
     SuccessGuard,
 )
 from .import_abi import SelectedImportABI
+from .intrinsic_call_site_effects import (
+    derive_intrinsic_import_call_site_effects,
+    merge_intrinsic_call_site_effects,
+)
 from .machine_abi import MachineCallABI, resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity, MachineImportProfileError
 from .checked_memory_access_v2 import (
@@ -703,6 +707,9 @@ def recover_external_interface_targets(
         import_abis,
         inventory.observed_import_abis,
     )
+    intrinsic_call_site_effects = derive_intrinsic_import_call_site_effects(
+        by_id.values(), import_abis=effective_import_abis
+    )
     outgoing = _outgoing_edges(
         by_id,
         direct_edges=direct_edges,
@@ -823,6 +830,7 @@ def recover_external_interface_targets(
             path_context_depth=path_context_depth,
             path_context_budget=path_context_budget,
             transfer_cache=effective_transfer_cache,
+            intrinsic_call_site_effects=intrinsic_call_site_effects,
         )
         proposed = {
             address: origins
@@ -2269,6 +2277,7 @@ def _run_dataflow(
     path_context_depth: int,
     path_context_budget: int,
     transfer_cache: InterfaceTransferCache,
+    intrinsic_call_site_effects: Mapping[CallSiteId, CallSiteEffect],
 ) -> _RunResult:
     input_states = {
         root: _initial_root_state(
@@ -2534,6 +2543,12 @@ def _run_dataflow(
                 finite_value_budget,
                 missing_is_identity=True,
             )
+
+    call_site_effects, intrinsic_issues = merge_intrinsic_call_site_effects(
+        intrinsic_call_site_effects,
+        call_site_effects,
+    )
+    issues.extend(intrinsic_issues)
 
     resolutions = _resolve_exits(
         indirect_exits,
