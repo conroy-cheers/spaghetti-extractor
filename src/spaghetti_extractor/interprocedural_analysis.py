@@ -1518,18 +1518,10 @@ def _run_typed_pass(
         memory_preservation = _call_summary_memory_preservation(
             summaries, image_base=image_base
         )
-        memory_frames = _call_summary_memory_frames(
+        internal_memory_frames = _call_summary_memory_frames(
             summaries,
             image_base=image_base,
             finite_value_budget=finite_value_budget,
-        )
-        call_memory_preservation = _call_site_memory_preservation(
-            units=units,
-            internal_call_edges=internal_call_edges,
-            recoveries=selected,
-            internal_memory_preservation=memory_preservation,
-            import_abis=import_abis,
-            image_base=image_base,
         )
 
         def derive_operation_provenance(
@@ -1552,7 +1544,7 @@ def _run_typed_pass(
                 internal_call_result_relations=results,
                 internal_call_memory_result_relations=memory_results,
                 internal_call_memory_preservation=memory_preservation,
-                internal_call_memory_frames=memory_frames,
+                internal_call_memory_frames=internal_memory_frames,
                 prepared_memory_access_facts=validated_memory_access_facts,
                 image_base=image_base,
                 image_size=image_size,
@@ -1580,6 +1572,10 @@ def _run_typed_pass(
 
         operation_provenance = derive_operation_provenance(
             run_contextual_recovery=False
+        )
+        call_memory_frames = _call_site_memory_frames(
+            operation_provenance.get("call_site_effects", ()),
+            finite_value_budget=finite_value_budget,
         )
         base_memory_access_facts = _prepare_pass_memory_access_facts(
             operation_provenance,
@@ -1617,7 +1613,7 @@ def _run_typed_pass(
             call_stack_cleanup=cleanup,
             call_result_relations=results,
             call_memory_result_relations=memory_results,
-            call_memory_preservation=call_memory_preservation,
+            call_memory_frames=call_memory_frames,
         )
         mutable_scc_requests_before = mutable_scc_cache.requests
         mutable_scc_hits_before = mutable_scc_cache.hits
@@ -1640,7 +1636,7 @@ def _run_typed_pass(
                 call_stack_cleanup=cleanup,
                 call_result_relations=results,
                 call_memory_result_relations=memory_results,
-                call_memory_preservation=call_memory_preservation,
+                call_memory_frames=call_memory_frames,
                 global_slot_invariants=global_slot_invariants,
                 writable_image_ranges=writable_image_ranges,
                 scc_cache=mutable_scc_cache,
@@ -2387,7 +2383,7 @@ def _mutable_influence_input_key(
     call_memory_result_relations: Mapping[
         int, Sequence[Mapping[str, Any]]
     ],
-    call_memory_preservation: Mapping[str, bool],
+    call_memory_frames: Mapping[CallSiteId, tuple[CallWriteSpan, ...]],
 ) -> Hashable:
     """Exact changing inputs for one pass-scoped mutable replay."""
 
@@ -2398,8 +2394,20 @@ def _mutable_influence_input_key(
         _freeze_value(call_stack_cleanup),
         _freeze_value(call_result_relations),
         _freeze_value(call_memory_result_relations),
-        _freeze_value(call_memory_preservation),
+        _freeze_value(call_memory_frames),
     )
+
+
+def _mutable_call_memory_frames_by_unit(
+    frames: Mapping[CallSiteId, tuple[CallWriteSpan, ...]],
+) -> dict[str, dict[int, tuple[CallWriteSpan, ...]]]:
+    result: dict[str, dict[int, tuple[CallWriteSpan, ...]]] = defaultdict(dict)
+    for site, writes in frames.items():
+        result[site.unit_id][site.event_index] = writes
+    return {
+        unit_id: dict(sorted(sites.items()))
+        for unit_id, sites in sorted(result.items())
+    }
 
 
 def _mutable_scc_input_key(
@@ -2417,7 +2425,9 @@ def _mutable_scc_input_key(
     call_memory_result_relations: Mapping[
         int, Sequence[Mapping[str, Any]]
     ],
-    call_memory_preservation: Mapping[str, bool],
+    call_memory_frames: Mapping[
+        str, Mapping[int, tuple[CallWriteSpan, ...]]
+    ],
     finite_value_budget: int,
 ) -> Hashable:
     """Return exactly the changing inputs consumed by one SCC transfer.
@@ -2442,7 +2452,7 @@ def _mutable_scc_input_key(
             tuple(sorted(normal_successors.get(source, ()))),
             source_call_targets,
             source in checked_nonimage_stack_units,
-            call_memory_preservation.get(source, True),
+            _freeze_value(call_memory_frames.get(source, {})),
         ))
     call_facts = tuple(
         (
@@ -2488,7 +2498,7 @@ def _analyze_mutable_slot_influence(
     call_memory_result_relations: Mapping[
         int, Sequence[Mapping[str, Any]]
     ],
-    call_memory_preservation: Mapping[str, bool],
+    call_memory_frames: Mapping[CallSiteId, tuple[CallWriteSpan, ...]],
     global_slot_invariants: Sequence[GlobalSlotInvariant],
     writable_image_ranges: Sequence[tuple[int, int]],
     scc_cache: _MutableSCCCache | None = None,
@@ -2508,6 +2518,9 @@ def _analyze_mutable_slot_influence(
     cache_requests_before = cache.requests
     cache_hits_before = cache.hits
     cache_evictions_before = cache.evictions
+    call_memory_frames_by_unit = _mutable_call_memory_frames_by_unit(
+        call_memory_frames
+    )
     by_id = {_unit_id(unit): unit for unit in units}
     normal_successors: dict[str, set[str]] = {
         source: set(targets)
@@ -2640,7 +2653,7 @@ def _analyze_mutable_slot_influence(
             call_stack_cleanup=call_stack_cleanup,
             call_result_relations=call_result_relations,
             call_memory_result_relations=call_memory_result_relations,
-            call_memory_preservation=call_memory_preservation,
+            call_memory_frames=call_memory_frames_by_unit,
             finite_value_budget=finite_value_budget,
         )
         cached_summary = cache.get(cache_key)
@@ -2673,9 +2686,7 @@ def _analyze_mutable_slot_influence(
                 call_stack_cleanup=call_stack_cleanup,
                 call_result_relations=call_result_relations,
                 call_memory_result_relations=call_memory_result_relations,
-                calls_preserve_memory=call_memory_preservation.get(
-                    source, True
-                ),
+                call_memory_frames=call_memory_frames_by_unit.get(source, {}),
                 writable_image_ranges=writable_image_ranges,
             )
             transfer_evaluations += 1
@@ -2843,7 +2854,7 @@ def _transfer_mutable_state(
     call_memory_result_relations: Mapping[
         int, Sequence[Mapping[str, Any]]
     ],
-    calls_preserve_memory: bool,
+    call_memory_frames: Mapping[int, tuple[CallWriteSpan, ...]],
     writable_image_ranges: Sequence[tuple[int, int]],
 ) -> _MutableState:
     input_registers = dict(state.registers)
@@ -2994,24 +3005,30 @@ def _transfer_mutable_state(
     pre_call_memory = tuple(sorted(memory.items()))
     pre_call_stack = tuple(sorted(stack.items()))
     pre_call_unknown_write = unknown_write
-    if not calls_preserve_memory:
-        unknown_write = True
-        memory = {
-            slot: _MutableCell(
-                cell.value,
-                initialized=cell.initialized,
-                tainted=True,
+    for event_index, event in enumerate(_events(unit)):
+        if event.get("kind") not in {
+            "external_call",
+            "internal_call",
+            "indirect_call",
+        }:
+            continue
+        frame = call_memory_frames.get(event_index)
+        if frame is None:
+            unknown_write = _invalidate_mutable_call_memory(
+                memory,
+                stack,
+                unknown_write=True,
             )
-            for slot, cell in memory.items()
-        }
-        stack = {
-            offset: _MutableCell(
-                cell.value,
-                initialized=cell.initialized,
-                tainted=True,
-            )
-            for offset, cell in stack.items()
-        }
+            continue
+        unknown_write = _apply_mutable_call_memory_frame(
+            frame,
+            memory=memory,
+            stack=stack,
+            image_base=image_base,
+            image_size=image_size,
+            checked_nonimage_stack=checked_nonimage_stack,
+            unknown_write=unknown_write,
+        )
 
     if call_targets and len(call_events) == 1:
         event_index = next(iter(call_events))
@@ -3127,6 +3144,130 @@ def _transfer_mutable_state(
         stack=tuple(sorted(stack.items())),
         esp_offset=esp_offset,
         unknown_write=unknown_write,
+    )
+
+
+def _apply_mutable_call_memory_frame(
+    writes: Sequence[CallWriteSpan],
+    *,
+    memory: dict[int, _MutableCell],
+    stack: dict[int, _MutableCell],
+    image_base: int,
+    image_size: int,
+    checked_nonimage_stack: bool,
+    unknown_write: bool,
+) -> bool:
+    """Apply one call-site-instantiated bounded write footprint."""
+
+    for span in writes:
+        base = span.base
+        size = span.size
+        if size == 0:
+            continue
+        if base.kind == "exact" and len(base.key) == 1:
+            address = base.key[0]
+            if not isinstance(address, int) or isinstance(address, bool):
+                return _invalidate_mutable_call_memory(
+                    memory, stack, unknown_write=True
+                )
+            if size is None:
+                return _invalidate_mutable_call_memory(
+                    memory, stack, unknown_write=True
+                )
+            for slot, cell in tuple(memory.items()):
+                slot_address = image_base + slot
+                if _u32_ranges_overlap(address, size, slot_address, 4):
+                    memory[slot] = _MutableCell(
+                        cell.value,
+                        initialized=cell.initialized,
+                        tainted=True,
+                    )
+            if not checked_nonimage_stack:
+                for offset, cell in tuple(stack.items()):
+                    stack[offset] = _MutableCell(
+                        cell.value,
+                        initialized=cell.initialized,
+                        tainted=True,
+                    )
+            continue
+        if base.kind == "stack_location" and len(base.key) == 1:
+            offset = base.key[0]
+            if (
+                not checked_nonimage_stack
+                or not isinstance(offset, int)
+                or isinstance(offset, bool)
+            ):
+                return _invalidate_mutable_call_memory(
+                    memory, stack, unknown_write=True
+                )
+            if size is None:
+                for existing, cell in tuple(stack.items()):
+                    stack[existing] = _MutableCell(
+                        cell.value,
+                        initialized=cell.initialized,
+                        tainted=True,
+                    )
+                continue
+            for existing, cell in tuple(stack.items()):
+                if offset < existing + 4 and existing < offset + size:
+                    stack[existing] = _MutableCell(
+                        cell.value,
+                        initialized=cell.initialized,
+                        tainted=True,
+                    )
+            continue
+        if base.kind in {"dynamic_range", "dynamic_location"}:
+            continue
+        return _invalidate_mutable_call_memory(
+            memory, stack, unknown_write=True
+        )
+    return unknown_write
+
+
+def _invalidate_mutable_call_memory(
+    memory: dict[int, _MutableCell],
+    stack: dict[int, _MutableCell],
+    *,
+    unknown_write: bool,
+) -> bool:
+    for slot, cell in tuple(memory.items()):
+        memory[slot] = _MutableCell(
+            cell.value,
+            initialized=cell.initialized,
+            tainted=True,
+        )
+    for offset, cell in tuple(stack.items()):
+        stack[offset] = _MutableCell(
+            cell.value,
+            initialized=cell.initialized,
+            tainted=True,
+        )
+    return unknown_write
+
+
+def _u32_ranges_overlap(
+    left_start: int,
+    left_size: int,
+    right_start: int,
+    right_size: int,
+) -> bool:
+    modulus = 1 << 32
+    if min(left_size, right_size) <= 0:
+        return False
+    if left_size >= modulus or right_size >= modulus:
+        return True
+
+    def intervals(start: int, size: int) -> tuple[tuple[int, int], ...]:
+        normalized = start & 0xFFFF_FFFF
+        end = normalized + size
+        if end <= modulus:
+            return ((normalized, end),)
+        return ((normalized, modulus), (0, end - modulus))
+
+    return any(
+        left < right_end and right < left_end
+        for left, left_end in intervals(left_start, left_size)
+        for right, right_end in intervals(right_start, right_size)
     )
 
 
@@ -5272,142 +5413,23 @@ def _call_summary_memory_frames(
     return result
 
 
-def _call_site_memory_preservation(
+def _call_site_memory_frames(
+    rows: Any,
     *,
-    units: Sequence[Mapping[str, Any]],
-    internal_call_edges: Sequence[Mapping[str, Any]],
-    recoveries: Sequence[Mapping[str, Any]],
-    internal_memory_preservation: Mapping[int, bool],
-    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
-    image_base: int,
-) -> dict[str, bool]:
-    """Classify each unit's calls by checked memory-effect evidence."""
+    finite_value_budget: int,
+) -> dict[CallSiteId, tuple[CallWriteSpan, ...]]:
+    """Select independently complete, call-site-instantiated write frames."""
 
-    by_id = {_unit_id(unit): unit for unit in units}
-    direct_targets: dict[tuple[str, int], set[str]] = defaultdict(set)
-    for edge in internal_call_edges:
-        source = edge.get("source_unit_id")
-        event_index = edge.get("source_event_index")
-        target = edge.get("target_unit_id")
-        if (
-            isinstance(source, str)
-            and isinstance(event_index, int)
-            and not isinstance(event_index, bool)
-            and isinstance(target, str)
-            and target in by_id
-        ):
-            direct_targets[(source, event_index)].add(target)
-    recovery_by_site = {
-        (str(row.get("source_unit_id")), int(row.get("source_event_index"))): row
-        for row in recoveries
-        if row.get("status") == "recovered"
-        and isinstance(row.get("source_unit_id"), str)
-        and isinstance(row.get("source_event_index"), int)
-        and not isinstance(row.get("source_event_index"), bool)
-    }
-
-    def internal_targets_preserve(targets: Sequence[Any]) -> bool:
-        addresses = []
-        for target in targets:
-            if not isinstance(target, str) or target not in by_id:
-                return False
-            rva = _unit_rva(by_id[target])
-            if rva is None:
-                return False
-            addresses.append((image_base + rva) & 0xFFFFFFFF)
-        return bool(addresses) and all(
-            internal_memory_preservation.get(address) is True
-            for address in addresses
-        )
-
-    result: dict[str, bool] = {}
-    for unit_id, unit in by_id.items():
-        calls = [
-            (index, event)
-            for index, event in enumerate(_events(unit))
-            if event.get("kind") in {
-                "external_call",
-                "internal_call",
-                "indirect_call",
-            }
-        ]
-        preserved = True
-        for event_index, event in calls:
-            kind = event.get("kind")
-            if kind == "internal_call":
-                preserved = preserved and internal_targets_preserve(
-                    tuple(direct_targets.get((unit_id, event_index), ()))
-                )
-                continue
-            if kind == "external_call":
-                identity = _machine_import_identity(event)
-                selected = import_abis.get(identity) if identity is not None else None
-                contract = selected.contract if selected is not None else None
-                preserved = preserved and isinstance(contract, Mapping) and (
-                    contract.get("memory_effect") in {"none", "read_only"}
-                )
-                continue
-            recovery = recovery_by_site.get((unit_id, event_index))
-            if not isinstance(recovery, Mapping):
-                preserved = False
-                continue
-            raw_internal = recovery.get("target_unit_ids", ())
-            raw_external = recovery.get("external_targets", ())
-            if (
-                not isinstance(raw_internal, Sequence)
-                or isinstance(raw_internal, (str, bytes))
-                or not isinstance(raw_external, Sequence)
-                or isinstance(raw_external, (str, bytes))
-            ):
-                preserved = False
-                continue
-            internal_ok = not raw_internal or internal_targets_preserve(raw_internal)
-            external_ok = all(
-                _external_target_memory_preserved(target, import_abis)
-                for target in raw_external
-                if isinstance(target, Mapping)
-            ) and all(isinstance(target, Mapping) for target in raw_external)
-            preserved = preserved and bool(raw_internal or raw_external)
-            preserved = preserved and internal_ok and external_ok
-        result[unit_id] = preserved
-    return result
-
-
-def _machine_import_identity(
-    value: Mapping[str, Any],
-) -> MachineImportIdentity | None:
-    dll = value.get("dll")
-    symbol = value.get("symbol")
-    ordinal = value.get("ordinal")
-    if not isinstance(dll, str) or not dll:
-        return None
-    if isinstance(symbol, str) and symbol and ordinal is None:
-        return MachineImportIdentity(dll.lower(), "symbol", symbol)
-    if (
-        symbol is None
-        and isinstance(ordinal, int)
-        and not isinstance(ordinal, bool)
-        and ordinal >= 0
-    ):
-        return MachineImportIdentity(dll.lower(), "ordinal", ordinal)
-    return None
-
-
-def _external_target_memory_preserved(
-    target: Mapping[str, Any],
-    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
-) -> bool:
-    identity_source = target.get("import")
-    identity = (
-        _machine_import_identity(identity_source)
-        if isinstance(identity_source, Mapping)
-        else None
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        raise ValueError("call-site effect inventory is invalid")
+    effects = parse_call_site_effects(
+        rows,
+        finite_value_budget=finite_value_budget,
     )
-    selected = import_abis.get(identity) if identity is not None else None
-    contract = selected.contract if selected is not None else None
-    return isinstance(contract, Mapping) and contract.get("memory_effect") in {
-        "none",
-        "read_only",
+    return {
+        site: effect.memory_writes
+        for site, effect in effects.items()
+        if effect.memory_frame_status == "complete"
     }
 
 
@@ -5904,6 +5926,21 @@ def _recovery_projection(row: Mapping[str, Any]) -> Mapping[str, Any]:
 def _freeze_value(value: Any) -> Hashable:
     if value is None or isinstance(value, (bool, int, str, bytes)):
         return value
+    if isinstance(value, CallSiteId):
+        return ("call-site", value.unit_id, value.event_index)
+    if isinstance(value, ValueOrigin):
+        return (
+            "value-origin",
+            value.kind,
+            _freeze_value(value.key),
+            value.dependencies,
+        )
+    if isinstance(value, CallWriteSpan):
+        return (
+            "call-write-span",
+            _freeze_value(value.base),
+            value.size,
+        )
     if isinstance(value, Mapping):
         return (
             "mapping",

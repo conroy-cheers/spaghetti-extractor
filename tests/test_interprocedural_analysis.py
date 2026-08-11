@@ -26,7 +26,7 @@ from spaghetti_extractor.interprocedural_analysis import (
     _call_summary_inputs,
     _call_summary_memory_frames,
     _call_summary_memory_preservation,
-    _call_site_memory_preservation,
+    _call_site_memory_frames,
     _merge_inductive_operation_provenance,
     _requires_inductive_replay,
     _transfer_mutable_state,
@@ -414,7 +414,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             call_stack_cleanup={},
             call_result_relations={},
             call_memory_result_relations={},
-            call_memory_preservation={},
+            call_memory_frames={},
             global_slot_invariants=[],
             writable_image_ranges=(),
             scc_cache=cache,
@@ -470,28 +470,54 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             for _roots, arguments in observed
         ))
 
-    def test_mutable_facts_cross_only_memory_preserving_call_sites(self) -> None:
-        units = [unit("caller", 0x1000, calls=(0x2000,)), unit("callee", 0x2000)]
-        call_edges = [call_edge("caller", "callee")]
-        common = {
-            "units": units,
-            "internal_call_edges": call_edges,
-            "recoveries": [],
-            "import_abis": {},
-            "image_base": IMAGE_BASE,
-        }
+    def test_call_site_memory_frames_use_independent_family_status(self) -> None:
+        abi = resolve_machine_call_abi("pe32-cdecl-v1")
+        assert abi is not None
 
-        unsafe = _call_site_memory_preservation(
-            internal_memory_preservation={}, **common
-        )
-        framed = _call_site_memory_preservation(
-            internal_memory_preservation={IMAGE_BASE + 0x2000: True},
-            **common,
+        def effect(
+            unit_id: str,
+            *,
+            memory_status: str,
+            writes: tuple[CallWriteSpan, ...] = (),
+        ) -> dict[str, object]:
+            complete = memory_status == "complete"
+            return CallSiteEffect(
+                site=CallSiteId(unit_id, 0),
+                transfer_kind="internal_call",
+                status="incomplete",
+                register_frame_status="incomplete",
+                preserved_registers=frozenset(),
+                stack_frame_status="complete",
+                stack_cleanup_bytes=0,
+                result_status="complete",
+                outputs=(),
+                memory_frame_status=memory_status,
+                memory_preserved=complete and not writes,
+                memory_writes=writes if complete else (),
+                abi=abi,
+                argument_words=0,
+                failure_codes=("register_frame_unknown",),
+            ).as_json()
+
+        frames = _call_site_memory_frames(
+            [
+                effect("preserved", memory_status="complete"),
+                effect(
+                    "writer",
+                    memory_status="complete",
+                    writes=(CallWriteSpan(ValueOrigin("exact", (SLOT,)), 4),),
+                ),
+                effect("unknown", memory_status="incomplete"),
+            ],
+            finite_value_budget=4,
         )
 
-        self.assertFalse(unsafe["caller"])
-        self.assertTrue(framed["caller"])
-        self.assertTrue(unsafe["callee"])
+        self.assertEqual(frames, {
+            CallSiteId("preserved", 0): (),
+            CallSiteId("writer", 0): (
+                CallWriteSpan(ValueOrigin("exact", (SLOT,)), 4),
+            ),
+        })
 
     def test_memory_preservation_requires_framed_effect_closure(self) -> None:
         def summary(
@@ -704,7 +730,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                     "value": {"kind": "input_stack_word", "offset": 4},
                 },),
             },
-            calls_preserve_memory=False,
+            call_memory_frames={},
             writable_image_ranges=((SLOT, SLOT + 8),),
         )
 
@@ -714,6 +740,82 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             destination.value.slot_rvas,
             frozenset({destination_rva, source_rva}),
         )
+
+    def test_mutable_call_frame_taints_only_overlapping_image_slots(self) -> None:
+        destination_rva = SLOT - IMAGE_BASE
+        child_rva = destination_rva + 4
+        state = _MutableState(
+            registers=tuple((register, _Influence()) for register in REGISTERS),
+            memory=(
+                (destination_rva, _MutableCell(_Influence())),
+                (child_rva, _MutableCell(_Influence())),
+            ),
+            esp_offset=0,
+        )
+        helper_address = IMAGE_BASE + 0x2000
+        common = {
+            "unit": unit("call", 0x1000, calls=(0x2000,)),
+            "state": state,
+            "unit_id": "call",
+            "image_base": IMAGE_BASE,
+            "image_size": 0x100000,
+            "maximum": 8,
+            "checked_nonimage_stack": True,
+            "call_targets": (
+                _MutableCallTarget(0, "helper", helper_address),
+            ),
+            "call_preserved_registers": {},
+            "call_stack_cleanup": {helper_address: 0},
+            "call_result_relations": {},
+            "call_memory_result_relations": {},
+            "writable_image_ranges": ((SLOT, SLOT + 8),),
+        }
+
+        disjoint = _transfer_mutable_state(
+            call_memory_frames={
+                0: (
+                    CallWriteSpan(ValueOrigin("exact", (SLOT + 4,)), 4),
+                ),
+            },
+            **common,
+        )
+        overlapping = _transfer_mutable_state(
+            call_memory_frames={
+                0: (
+                    CallWriteSpan(ValueOrigin("exact", (SLOT,)), 4),
+                ),
+            },
+            **common,
+        )
+        unknown = _transfer_mutable_state(
+            call_memory_frames={},
+            **common,
+        )
+        parametric = _transfer_mutable_state(
+            call_memory_frames={
+                0: (
+                    CallWriteSpan(
+                        ValueOrigin(
+                            "parametric_location",
+                            (0, (("input_stack_word", 4, 1),)),
+                        ),
+                        4,
+                    ),
+                ),
+            },
+            **common,
+        )
+
+        disjoint_memory = dict(disjoint.memory)
+        overlapping_memory = dict(overlapping.memory)
+        self.assertFalse(disjoint_memory[destination_rva].tainted)
+        self.assertTrue(disjoint_memory[child_rva].tainted)
+        self.assertTrue(overlapping_memory[destination_rva].tainted)
+        self.assertFalse(overlapping_memory[child_rva].tainted)
+        self.assertTrue(all(cell.tainted for _, cell in unknown.memory))
+        self.assertTrue(unknown.unknown_write)
+        self.assertTrue(all(cell.tainted for _, cell in parametric.memory))
+        self.assertTrue(parametric.unknown_write)
 
     def test_partial_stack_overwrite_taints_overlapping_argument_word(self) -> None:
         source_rva = SLOT - IMAGE_BASE
@@ -751,7 +853,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             call_stack_cleanup={},
             call_result_relations={},
             call_memory_result_relations={},
-            calls_preserve_memory=True,
+            call_memory_frames={},
             writable_image_ranges=(),
         )
 

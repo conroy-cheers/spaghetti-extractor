@@ -63,6 +63,19 @@ class CallSiteEffectTests(unittest.TestCase):
                 [payload, copy.deepcopy(payload)], finite_value_budget=4
             )
 
+    def test_complete_memory_frame_rejects_contradictory_preservation(self) -> None:
+        payload = self._effect().as_json()
+        payload["memory_frame"] = {
+            "status": "complete",
+            "preserved": True,
+            "writes": payload["memory_frame"]["writes"],
+        }
+
+        with self.assertRaisesRegex(
+            ValueError, "preservation must match its write set"
+        ):
+            parse_call_site_effect(payload, finite_value_budget=4)
+
     def test_parser_rejects_noncanonical_abi(self) -> None:
         payload = self._effect().as_json()
         payload["abi"]["preserved_registers"] = ["ebp"]

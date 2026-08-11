@@ -256,7 +256,11 @@ def _call_site_effect(
         ),
         memory_frame_status=memory_status,
         memory_preserved=(
-            facts.memory_preserved if memory_status == "complete" else False
+            (
+                facts.memory_preserved or facts.memory_writes == ()
+            )
+            if memory_status == "complete"
+            else False
         ),
         memory_writes=(
             tuple(

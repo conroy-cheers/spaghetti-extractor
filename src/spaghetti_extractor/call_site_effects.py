@@ -138,6 +138,12 @@ class CallSiteEffect:
             self.memory_preserved or self.memory_writes
         ):
             raise ValueError("incomplete memory frame cannot carry effects")
+        if self.memory_frame_status == "complete" and (
+            self.memory_preserved != (not self.memory_writes)
+        ):
+            raise ValueError(
+                "complete memory frame preservation must match its write set"
+            )
         if self.argument_words is not None and self.argument_words < 0:
             raise ValueError("call argument-word count must not be negative")
         if tuple(sorted(set(self.dependencies))) != self.dependencies:
