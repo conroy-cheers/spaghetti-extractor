@@ -736,6 +736,7 @@
         "spaghetti_extractor.analysis.scc_worklist",
         "spaghetti_extractor.authority_bindings_v2",
         "spaghetti_extractor.authority_dependencies_v2",
+        "spaghetti_extractor.authority_record_core_v2",
         "spaghetti_extractor.hybrid_authority_v2",
         "spaghetti_extractor.isa_kernel_selection",
         "spaghetti_extractor.machine_ir_authority_v2",
@@ -748,6 +749,7 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.authority_bindings_v2",
+        "spaghetti_extractor.authority_dependencies_v2",
         "spaghetti_extractor.authority_record_core_v2",
         "spaghetti_extractor.entry_state_contract_v2",
         "spaghetti_extractor.global_slot_contract_v2"

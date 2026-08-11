@@ -61,6 +61,10 @@ from .authority_record_core_v2 import (
     _parse_record_parts,
     _record_core,
 )
+from .authority_dependencies_v2 import (
+    CALL_SUMMARY_FAMILY_NODE_PREFIX,
+    call_summary_family_node_id,
+)
 from .entry_state_contract_v2 import (
     ENTRY_STATE_CONTRACT_FORMAT,
     EntryStateContract,
@@ -78,6 +82,30 @@ INDIRECT_EXIT_CERTIFICATE_FORMAT = (
 )
 CHECKED_EXTERNAL_SITE_FORMAT = "spaghetti-extractor-checked-external-site-v2"
 AUTHORITY_BUNDLE_FORMAT = "spaghetti-extractor-hybrid-authority-bundle-v2"
+
+
+def _parse_call_summary_family_node_id(
+    value: object,
+) -> tuple[str, str, str | None] | None:
+    if not isinstance(value, str) or not value.startswith(
+        CALL_SUMMARY_FAMILY_NODE_PREFIX
+    ):
+        return None
+    try:
+        payload = parse_canonical_json(
+            value.removeprefix(CALL_SUMMARY_FAMILY_NODE_PREFIX)
+        )
+    except AuthorityDataError:
+        return None
+    if not isinstance(payload, list) or len(payload) != 3:
+        return None
+    try:
+        canonical = call_summary_family_node_id(
+            payload[0], payload[1], payload[2]
+        )
+    except ValueError:
+        return None
+    return tuple(payload) if canonical == value else None
 
 @dataclass(frozen=True)
 class ValueFact(_AuthorityRecordMixin):
@@ -174,11 +202,45 @@ class CallFrameSummary(_AuthorityRecordMixin):
 
     @property
     def status(self) -> AuthorityStatus:
+        family_scope = _parse_call_summary_family_node_id(self.analysis_fact_id)
+        malformed_family_scope = self.analysis_fact_id.startswith(
+            CALL_SUMMARY_FAMILY_NODE_PREFIX
+        ) and (
+            family_scope is None
+            or self.callee is None
+            or self.callee.unit_id != family_scope[0]
+        )
         corrupt_alternative = self.alternatives is not None and any(
             _call_frame_alternative_corrupt(
                 value.to_value(), source=self.call_site.unit
             )
             for value in self.alternatives.values
+        )
+        mismatched_callee = (
+            self.callee is not None
+            and self.alternatives is not None
+            and any(
+                _call_frame_alternative_callee(value.to_value()) != self.callee
+                for value in self.alternatives.values
+            )
+        )
+        corrupt_family_alternative = (
+            family_scope is not None
+            and self.callee is not None
+            and self.alternatives is not None
+            and (
+                self.alternatives.maximum != 1
+                or len(self.alternatives.values) != 1
+                or any(
+                    _call_frame_family_alternative_corrupt(
+                        value.to_value(),
+                        callee=self.callee,
+                        family=family_scope[1],
+                        subject=family_scope[2],
+                    )
+                    for value in self.alternatives.values
+                )
+            )
         )
         incomplete_alternative = self.alternatives is not None and any(
             not _call_frame_alternative_complete(value.to_value())
@@ -200,7 +262,14 @@ class CallFrameSummary(_AuthorityRecordMixin):
                     self.alternatives, self.dependencies
                 )
             ),
-            violated=corrupt_alternative or contradictory_binding or wrong_event,
+            violated=(
+                corrupt_alternative
+                or mismatched_callee
+                or malformed_family_scope
+                or corrupt_family_alternative
+                or contradictory_binding
+                or wrong_event
+            ),
             issues=self.issues,
         )
 
@@ -319,6 +388,96 @@ def _call_frame_alternative_complete(value: Any) -> bool:
             "world_effects",
         )
     )
+
+
+def _call_frame_alternative_callee(value: Any) -> UnitBinding | None:
+    if not isinstance(value, dict):
+        return None
+    try:
+        return UnitBinding.parse(value.get("callee"))
+    except AuthorityDataError:
+        return None
+
+
+def _call_frame_family_alternative_corrupt(
+    value: Any,
+    *,
+    callee: UnitBinding,
+    family: str,
+    subject: str | None,
+) -> bool:
+    if _call_frame_alternative_corrupt(value):
+        return True
+    assert isinstance(value, dict)
+    if _call_frame_alternative_callee(value) != callee:
+        return True
+
+    selected = {
+        "memory": "memory_effects",
+        "register": "register_preservation",
+        "result": "result_origins",
+        "return": "return_behavior",
+        "stack": "stack_cleanup",
+    }[family]
+    family_fields = (
+        "return_behavior",
+        "stack_cleanup",
+        "register_preservation",
+        "result_origins",
+        "memory_effects",
+        "callback_effects",
+        "world_effects",
+    )
+    if any(
+        value[field] != {"status": "not_applicable"}
+        for field in family_fields
+        if field != selected
+    ):
+        return True
+    if value.get("target_dependencies") != []:
+        return True
+
+    projection = value[selected]
+    if value["status"] == "complete" and projection.get("status") != "complete":
+        return True
+    if family == "register":
+        return (
+            set(projection) != {"status", "registers"}
+            or projection.get("registers")
+            != ([] if projection.get("status") != "complete" else [subject])
+        )
+    if family == "stack":
+        delta = projection.get("stack_delta")
+        return set(projection) != {"status", "stack_delta"} or (
+            projection.get("status") == "complete"
+            and (
+                not isinstance(delta, int)
+                or isinstance(delta, bool)
+                or not 0 <= delta <= 0xFFFF_FFFF
+            )
+        )
+    if family == "return":
+        return projection.get("status") == "complete" and (
+            set(projection) != {"status", "may_return", "may_not_return"}
+            or not isinstance(projection.get("may_return"), bool)
+            or not isinstance(projection.get("may_not_return"), bool)
+        )
+    if family == "result":
+        if projection.get("status") != "complete":
+            return set(projection) != {
+                "status", "registers", "memory_locations"
+            }
+        registers = projection.get("registers")
+        locations = projection.get("memory_locations")
+        return (
+            set(projection) != {"status", "registers", "memory_locations"}
+            or not isinstance(registers, dict)
+            or not isinstance(locations, list)
+            or not (registers or locations)
+        )
+    return projection.get("status") not in {
+        "complete", "incomplete", "violated"
+    }
 
 
 def internal_target(unit: UnitBinding) -> CanonicalJson:
@@ -676,6 +835,13 @@ def _record_subject(record: AuthorityRecord) -> bytes:
         }
     elif isinstance(record, CallFrameSummary):
         value = {"kind": record.KIND, "binding": record.call_site.to_payload()}
+        family_scope = _parse_call_summary_family_node_id(record.analysis_fact_id)
+        if family_scope is not None:
+            value["family_scope"] = {
+                "target_unit_id": family_scope[0],
+                "family": family_scope[1],
+                "subject": family_scope[2],
+            }
     elif isinstance(record, IndirectExitCertificate):
         value = {"kind": record.KIND, "binding": record.exit_site.to_payload()}
     elif isinstance(record, CheckedExternalSite):

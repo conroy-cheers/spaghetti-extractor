@@ -4,6 +4,10 @@ import copy
 import hashlib
 import unittest
 
+from spaghetti_extractor.authority_dependencies_v2 import (
+    call_frame_family_dependency_id,
+    call_summary_family_node_id,
+)
 from spaghetti_extractor.hybrid_authority_builder_v2 import (
     build_hybrid_authority_v2,
     build_machine_ir_authority_bindings,
@@ -11,6 +15,7 @@ from spaghetti_extractor.hybrid_authority_builder_v2 import (
     recompute_unit_binding,
 )
 from spaghetti_extractor.hybrid_authority_v2 import (
+    AuthorityDependency,
     AuthorityStatus,
     BinaryBinding,
     CallFrameSummary,
@@ -147,6 +152,18 @@ def _indirect_row(unit_id: str, rva: int, register: str) -> dict:
         "instruction_rva": rva,
         "target": {"op": "reg", "name": register, "width": 32},
     })
+    row["id"] = unit_id
+    row["source"]["original"] = {
+        "rva_start": rva,
+        "rva_end": rva + 1,
+    }
+    row["instructions"][0]["rva_start"] = rva
+    row["instructions"][0]["rva_end"] = rva + 1
+    return row
+
+
+def _at(row: dict, unit_id: str, rva: int) -> dict:
+    row = copy.deepcopy(row)
     row["id"] = unit_id
     row["source"]["original"] = {
         "rva_start": rva,
@@ -342,6 +359,232 @@ class HybridAuthorityBuilderV2Tests(unittest.TestCase):
             if isinstance(record, CallFrameSummary)
         )
         self.assertEqual(frame.status, AuthorityStatus.COMPLETE)
+
+    def test_complete_stack_family_authorizes_indirect_provenance(self) -> None:
+        rows = [
+            _at(_row(
+                outcome={
+                    "kind": "indirect_jump",
+                    "instruction_rva": 0x1000,
+                    "target": {"op": "reg", "name": "eax", "width": 32},
+                },
+                external_events=[{
+                    "kind": "internal_call",
+                    "instruction_rva": 0x1000,
+                    "target_rva": 0x2000,
+                }],
+            ), "unit:entry", 0x1000),
+            _at(_row(), "unit:callee", 0x2000),
+        ]
+        dependency = call_frame_family_dependency_id(
+            "unit:entry", 0, "unit:callee", "stack"
+        )
+        recovery = _recovery_for(
+            rows,
+            "unit:entry",
+            target_unit_ids=["unit:entry"],
+            analysis_dependencies=[dependency],
+        )
+        interprocedural = _interprocedural(recoveries=[recovery])
+        interprocedural["call_summaries"] = {"summaries": [{
+            "target_unit_id": "unit:callee",
+            "status": "incomplete",
+            "preserved_registers": [],
+            "register_preservation": {"status": "incomplete"},
+            "stack_cleanup": {"status": "complete", "stack_delta": 0},
+            "return_instruction_cleanup": {
+                "status": "complete",
+                "cleanup_bytes": 0,
+            },
+            "result_register_origins": {
+                "status": "incomplete",
+                "registers": {},
+            },
+            "result_memory_origins": {
+                "status": "incomplete",
+                "locations": [],
+            },
+            "return_behavior": {"status": "incomplete"},
+            "memory_effects": {"status": "incomplete"},
+            "callback_effects": {"status": "incomplete"},
+            "world_effects": {"status": "incomplete"},
+        }]}
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=interprocedural,
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        family_frame = next(
+            record
+            for record in bundle.records
+            if isinstance(record, CallFrameSummary)
+            and record.analysis_fact_id
+            == call_summary_family_node_id("unit:callee", "stack")
+        )
+        certificate = next(
+            record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+        )
+        self.assertEqual(family_frame.status, AuthorityStatus.COMPLETE)
+        self.assertEqual(
+            certificate.dependencies,
+            (AuthorityDependency(
+                "call_frame_summary", family_frame.content_id
+            ),),
+        )
+        self.assertNotIn(
+            "analysis_dependency_kind_unsupported",
+            {issue.code for issue in certificate.issues},
+        )
+        self.assertNotIn("contradictory_subject_claims", bundle.diagnostics)
+
+    def test_missing_global_slot_is_not_reclassified_as_unknown_call_fact(self) -> None:
+        rows = [_indirect_row("unit:entry", 0x1000, "eax")]
+        missing_slot_id = (
+            "hybrid-authority-v2:global_slot_invariant:" + "1" * 64
+        )
+        recovery = _recovery_for(
+            rows,
+            "unit:entry",
+            target_unit_ids=["unit:entry"],
+            analysis_dependencies=[missing_slot_id],
+            authority_dependencies=[{
+                "role": "mutable_slot_invariant",
+                "content_id": missing_slot_id,
+            }],
+            mutable_slot_dependencies=[{
+                "slot_rva": 0x3000,
+                "width_bytes": 4,
+                "content_id": missing_slot_id,
+            }],
+        )
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=_interprocedural(recoveries=[recovery]),
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        certificate = next(
+            record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+        )
+        codes = {issue.code for issue in certificate.issues}
+        self.assertIn("mutable_slot_invariant_missing", codes)
+        self.assertNotIn("analysis_dependency_kind_unsupported", codes)
+
+    def test_incomplete_family_dependency_fails_closed(self) -> None:
+        rows = [
+            _at(_row(
+                outcome={
+                    "kind": "indirect_jump",
+                    "instruction_rva": 0x1000,
+                    "target": {"op": "reg", "name": "eax", "width": 32},
+                },
+                external_events=[{
+                    "kind": "internal_call",
+                    "instruction_rva": 0x1000,
+                    "target_rva": 0x2000,
+                }],
+            ), "unit:entry", 0x1000),
+            _at(_row(), "unit:callee", 0x2000),
+        ]
+        dependency = call_frame_family_dependency_id(
+            "unit:entry", 0, "unit:callee", "stack"
+        )
+        recovery = _recovery_for(
+            rows,
+            "unit:entry",
+            target_unit_ids=["unit:entry"],
+            analysis_dependencies=[dependency],
+        )
+        interprocedural = _interprocedural(recoveries=[recovery])
+        interprocedural["call_summaries"] = {"summaries": [{
+            "target_unit_id": "unit:callee",
+            "status": "incomplete",
+            "preserved_registers": [],
+            "register_preservation": {"status": "incomplete"},
+            "stack_cleanup": {"status": "incomplete"},
+            "return_instruction_cleanup": {"status": "incomplete"},
+            "result_register_origins": {"status": "incomplete"},
+            "result_memory_origins": {"status": "incomplete"},
+            "return_behavior": {"status": "incomplete"},
+            "memory_effects": {"status": "incomplete"},
+            "callback_effects": {"status": "incomplete"},
+            "world_effects": {"status": "incomplete"},
+        }]}
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=interprocedural,
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        certificate = next(
+            record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+        )
+        self.assertIn(
+            "call_frame_dependency_incomplete",
+            {issue.code for issue in certificate.issues},
+        )
+        self.assertNotIn(
+            "analysis_dependency_kind_unsupported",
+            {issue.code for issue in certificate.issues},
+        )
+
+    def test_malformed_family_dependency_is_violated(self) -> None:
+        rows = [_indirect_row("unit:entry", 0x1000, "eax")]
+        recovery = _recovery_for(
+            rows,
+            "unit:entry",
+            target_unit_ids=["unit:entry"],
+            analysis_dependencies=[
+                'call-frame-family:["unit:entry",0,"unit:callee","stack","esp"]'
+            ],
+        )
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=_interprocedural(recoveries=[recovery]),
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        certificate = next(
+            record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+        )
+        self.assertEqual(certificate.status, AuthorityStatus.VIOLATED)
+        self.assertIn(
+            "analysis_dependency_kind_unsupported",
+            {issue.code for issue in certificate.issues},
+        )
 
     def test_byte_free_machine_ir_has_exact_v2_bindings(self) -> None:
         rows = [_row()]

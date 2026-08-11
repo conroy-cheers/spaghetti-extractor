@@ -5,6 +5,9 @@ import hashlib
 import unittest
 from dataclasses import FrozenInstanceError
 
+from spaghetti_extractor.authority_dependencies_v2 import (
+    call_summary_family_node_id,
+)
 from spaghetti_extractor.hybrid_authority_v2 import (
     AuthorityBundle,
     AuthorityDataError,
@@ -363,6 +366,53 @@ class HybridAuthorityV2SchemaTests(unittest.TestCase):
 
 
 class HybridAuthorityV2ClosureTests(unittest.TestCase):
+    def test_call_frame_family_is_a_distinct_checked_subject(self) -> None:
+        binary = _binary()
+        unit = _unit(binary)
+        aggregate = CallFrameSummary(
+            call_site=_event(unit, "internal_call", 1),
+            analysis_fact_id="call-frame:unit:fixture:1",
+            callee=unit,
+            abi="pe32-cdecl-v1",
+            alternatives=_alternatives(_call_alternative(unit)),
+        )
+        family_value = _call_alternative(unit)
+        family_value.update({
+            "return_behavior": {"status": "not_applicable"},
+            "stack_cleanup": {"status": "complete", "stack_delta": 0},
+            "register_preservation": {"status": "not_applicable"},
+            "result_origins": {"status": "not_applicable"},
+            "memory_effects": {"status": "not_applicable"},
+            "callback_effects": {"status": "not_applicable"},
+            "world_effects": {"status": "not_applicable"},
+        })
+        family = CallFrameSummary(
+            call_site=aggregate.call_site,
+            analysis_fact_id=call_summary_family_node_id(
+                unit.unit_id, "stack"
+            ),
+            callee=unit,
+            abi=aggregate.abi,
+            alternatives=FiniteAlternatives.of([family_value], maximum=1),
+        )
+        bundle = AuthorityBundle.of(
+            binary=binary,
+            records=(aggregate, family),
+            required_content_ids=(aggregate.content_id, family.content_id),
+        )
+
+        self.assertEqual(family.status, AuthorityStatus.COMPLETE)
+        self.assertNotIn("contradictory_subject_claims", bundle.diagnostics)
+
+        malformed = CallFrameSummary(
+            call_site=aggregate.call_site,
+            analysis_fact_id='call-summary-family:["other","stack",null]',
+            callee=unit,
+            abi=aggregate.abi,
+            alternatives=family.alternatives,
+        )
+        self.assertEqual(malformed.status, AuthorityStatus.VIOLATED)
+
     def test_complete_dependency_closure_is_the_only_authorizing_state(self) -> None:
         binary, records = _complete_records()
         roots = tuple(

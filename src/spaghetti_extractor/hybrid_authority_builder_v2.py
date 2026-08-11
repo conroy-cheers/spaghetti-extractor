@@ -30,12 +30,17 @@ from .hybrid_authority_v2 import (
     parse_authority_record,
 )
 from .authority_bindings_v2 import (
+    AuthorityDataError,
     IndirectExitBinding,
     match_indirect_recovery_v2,
 )
+from .authority_record_core_v2 import _content_id_kind
 from .authority_dependencies_v2 import (
+    call_frame_family_dependency_id,
     call_frame_dependency_id,
+    call_summary_family_node_id,
     parse_call_frame_dependency,
+    parse_call_frame_family_dependency,
 )
 from .machine_ir_authority_v2 import (
     MACHINE_IR_AUTHORITY_BINDINGS_FORMAT,
@@ -211,6 +216,26 @@ def build_hybrid_authority_v2(
         recoveries=recoveries,
     )
 
+    requested_call_families: dict[
+        tuple[str, int, str], set[tuple[str, str | None]]
+    ] = {}
+    for recovery in recoveries:
+        if not isinstance(recovery, Mapping):
+            continue
+        raw_dependencies = recovery.get("analysis_dependencies", ())
+        if not isinstance(raw_dependencies, Sequence) or isinstance(
+            raw_dependencies, (str, bytes)
+        ):
+            continue
+        for dependency_id in raw_dependencies:
+            parsed = parse_call_frame_family_dependency(dependency_id)
+            if parsed is None:
+                continue
+            source_unit_id, event_index, target_unit_id, family, subject = parsed
+            requested_call_families.setdefault(
+                (source_unit_id, event_index, target_unit_id), set()
+            ).add((family, subject))
+
     call_frames_by_dependency: dict[str, CallFrameSummary] = {}
     for event in events:
         binding = event["binding"]
@@ -289,6 +314,64 @@ def build_hybrid_authority_v2(
                         binding.event_index,
                         target.unit_id,
                     )] = frame
+                for target, summary in zip(
+                    callees, frame_summaries, strict=True
+                ):
+                    requests = requested_call_families.get((
+                        binding.unit.unit_id,
+                        binding.event_index,
+                        target.unit_id,
+                    ), ())
+                    for family, subject in sorted(
+                        requests,
+                        key=lambda item: (item[0], item[1] or ""),
+                    ):
+                        alternative = (
+                            _call_frame_family_alternative(
+                                summary, target, family, subject
+                            )
+                            if isinstance(summary, Mapping)
+                            else None
+                        )
+                        family_issues: tuple[EvidenceIssue, ...] = ()
+                        if not replay_authoritative:
+                            family_issues = (_missing(
+                                "interprocedural_replay_invalid",
+                                "cold interprocedural replay is not authoritative",
+                            ),)
+                        elif alternative is None or alternative.get(
+                            "status"
+                        ) != "complete":
+                            family_issues = (_missing(
+                                "call_summary_family_missing",
+                                f"callee has no complete {family} frame family",
+                            ),)
+                        family_frame = CallFrameSummary(
+                            call_site=binding,
+                            analysis_fact_id=call_summary_family_node_id(
+                                target.unit_id, family, subject
+                            ),
+                            callee=target,
+                            abi=_call_abi(raw),
+                            alternatives=(
+                                FiniteAlternatives.of([alternative], maximum=1)
+                                if alternative is not None
+                                else None
+                            ),
+                            issues=_issues(family_issues),
+                        )
+                        # Family projections are rooted only when an indirect
+                        # certificate consumes them. The aggregate frame above
+                        # remains the independent whole-call requirement.
+                        add(family_frame, is_required=False)
+                        dependency_id = call_frame_family_dependency_id(
+                            binding.unit.unit_id,
+                            binding.event_index,
+                            target.unit_id,
+                            family,
+                            subject,
+                        )
+                        call_frames_by_dependency[dependency_id] = family_frame
 
     indirect_events: dict[
         str,
@@ -348,8 +431,11 @@ def build_hybrid_authority_v2(
                     recovery,
                     call_frames_by_dependency=call_frames_by_dependency,
                     non_call_dependency_ids=frozenset(
-                        dependency.content_id
-                        for dependency in mutable_dependencies
+                        {
+                            dependency.content_id
+                            for dependency in mutable_dependencies
+                        }
+                        | set(_global_slot_analysis_dependency_ids(recovery))
                     ),
                 )
             )
@@ -876,7 +962,10 @@ def _checked_call_frame_dependencies(
             continue
         if dependency_id.startswith("indirect-exit:"):
             continue
-        if parse_call_frame_dependency(dependency_id) is None:
+        if (
+            parse_call_frame_dependency(dependency_id) is None
+            and parse_call_frame_family_dependency(dependency_id) is None
+        ):
             issues.append(_contradiction(
                 "analysis_dependency_kind_unsupported",
                 f"target provenance has unknown dependency {dependency_id}",
@@ -1087,6 +1176,29 @@ def _checked_mutable_dependencies(
     return tuple(sorted(dependencies)), _issues(issues)
 
 
+def _global_slot_analysis_dependency_ids(
+    recovery: Mapping[str, Any] | None,
+) -> tuple[str, ...]:
+    """Classify well-formed slot IDs even when their evidence is unavailable."""
+
+    if recovery is None:
+        return ()
+    values = recovery.get("analysis_dependencies", ())
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+        return ()
+    result: set[str] = set()
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        try:
+            kind = _content_id_kind(value)
+        except AuthorityDataError:
+            continue
+        if kind == GlobalSlotInvariant.KIND:
+            result.add(value)
+    return tuple(sorted(result))
+
+
 def _call_targets(
     event: Mapping[str, Any],
     by_id: Mapping[str, UnitBinding],
@@ -1172,6 +1284,182 @@ def _call_frame_alternative(
             if isinstance(value, str)
         ),
     }
+
+
+def _call_frame_family_alternative(
+    summary: Mapping[str, Any],
+    callee: UnitBinding,
+    family: str,
+    subject: str | None,
+) -> dict[str, Any]:
+    """Project one independently checked call family into the v2 frame shape."""
+
+    projection = _call_frame_family_projection(summary, family, subject)
+    not_applicable = {"status": "not_applicable"}
+    fields = {
+        "return_behavior": dict(not_applicable),
+        "stack_cleanup": dict(not_applicable),
+        "register_preservation": dict(not_applicable),
+        "result_origins": dict(not_applicable),
+        "memory_effects": dict(not_applicable),
+        "callback_effects": dict(not_applicable),
+        "world_effects": dict(not_applicable),
+    }
+    field = {
+        "memory": "memory_effects",
+        "register": "register_preservation",
+        "result": "result_origins",
+        "return": "return_behavior",
+        "stack": "stack_cleanup",
+    }[family]
+    fields[field] = projection
+    complete = projection.get("status") == "complete"
+    return {
+        "format": "spaghetti-extractor-call-frame-families-v2",
+        "status": "complete" if complete else "incomplete",
+        "callee": callee.to_payload(),
+        **fields,
+        "target_dependencies": [],
+        "blocker_codes": [] if complete else [f"{family}_frame_unknown"],
+    }
+
+
+def _call_frame_family_projection(
+    summary: Mapping[str, Any],
+    family: str,
+    subject: str | None,
+) -> dict[str, Any]:
+    if family == "register":
+        preserved = summary.get("preserved_registers")
+        preservation = _mapping_or_empty(summary.get("register_preservation"))
+        checked = preservation.get("checked_preserved_registers")
+        if preservation.get("status") == "complete":
+            checked = preserved
+        if (
+            isinstance(subject, str)
+            and isinstance(preserved, list)
+            and isinstance(checked, list)
+            and all(isinstance(register, str) for register in preserved)
+            and all(isinstance(register, str) for register in checked)
+            and len(preserved) == len(set(preserved))
+            and len(checked) == len(set(checked))
+            and set(preserved) == set(checked)
+            and subject in checked
+        ):
+            return {"status": "complete", "registers": [subject]}
+        return {"status": "incomplete", "registers": []}
+
+    if family == "stack":
+        stack = _mapping_or_empty(summary.get("stack_cleanup"))
+        instruction = _mapping_or_empty(
+            summary.get("return_instruction_cleanup")
+        )
+        values = {
+            value
+            for value in (
+                stack.get("stack_delta")
+                if stack.get("status") == "complete"
+                else None,
+                instruction.get("cleanup_bytes")
+                if instruction.get("status") == "complete"
+                else None,
+            )
+            if isinstance(value, int)
+            and not isinstance(value, bool)
+            and 0 <= value <= 0xFFFFFFFF
+        }
+        if len(values) == 1:
+            return {"status": "complete", "stack_delta": next(iter(values))}
+        return {"status": "incomplete", "stack_delta": None}
+
+    if family == "result":
+        registers_row = _mapping_or_empty(
+            summary.get("result_register_origins")
+        )
+        memory_row = _mapping_or_empty(summary.get("result_memory_origins"))
+        registers = registers_row.get("registers")
+        locations = memory_row.get("locations")
+        registers_valid = (
+            registers_row.get("status") == "complete"
+            and isinstance(registers, Mapping)
+            and all(
+                isinstance(register, str)
+                and register
+                and isinstance(origin, Mapping)
+                for register, origin in registers.items()
+            )
+        )
+        checked_registers = (
+            {
+                str(register): dict(origin)
+                for register, origin in registers.items()
+            }
+            if registers_valid
+            else {}
+        )
+        checked_locations = (
+            [dict(location) for location in locations]
+            if memory_row.get("status") == "complete"
+            and isinstance(locations, list)
+            and all(isinstance(location, Mapping) for location in locations)
+            else []
+        )
+        if checked_registers or checked_locations:
+            return {
+                "status": "complete",
+                "registers": checked_registers,
+                "memory_locations": checked_locations,
+            }
+        return {
+            "status": "incomplete",
+            "registers": {},
+            "memory_locations": [],
+        }
+
+    if family == "memory":
+        frame = _mapping_or_empty(summary.get("caller_memory_frame"))
+        writes = frame.get("writes")
+        if (
+            set(frame) == {"status", "preserved", "writes"}
+            and frame.get("status") == "complete"
+            and isinstance(frame.get("preserved"), bool)
+            and isinstance(writes, list)
+            and all(
+                isinstance(write, Mapping)
+                and set(write) == {"base", "size"}
+                and isinstance(write.get("base"), Mapping)
+                and (
+                    write.get("size") is None
+                    or isinstance(write.get("size"), int)
+                    and not isinstance(write.get("size"), bool)
+                    and write["size"] >= 0
+                )
+                for write in writes
+            )
+        ):
+            return {
+                "status": "complete",
+                "preserved": frame["preserved"],
+                "writes": [dict(write) for write in writes],
+            }
+        legacy = _mapping_or_empty(summary.get("memory_effects"))
+        if legacy.get("status") == "complete":
+            return dict(legacy)
+        return {"status": "incomplete"}
+
+    if family == "return":
+        behavior = _mapping_or_empty(summary.get("return_behavior"))
+        if (
+            behavior.get("status") == "complete"
+            and isinstance(behavior.get("may_return"), bool)
+            and isinstance(behavior.get("may_not_return"), bool)
+        ):
+            return dict(behavior)
+        return {"status": "incomplete"}
+
+    raise HybridAuthorityBuilderV2Error(
+        f"unsupported call-summary family {family!r}"
+    )
 
 
 def _call_frame_families_complete(summary: Mapping[str, Any]) -> bool:
