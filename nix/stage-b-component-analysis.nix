@@ -534,6 +534,7 @@ let
           from spaghetti_extractor.external_operation_profiles import load_external_operation_profile
           from spaghetti_extractor.import_abi import load_selected_import_abis
           from spaghetti_extractor.internal_function_contracts import load_internal_function_contracts
+          from spaghetti_extractor.interprocedural_analysis import InterproceduralAnalysisWorkspace
           from spaghetti_extractor.interprocedural_phase_v2 import derive_interprocedural_result_v2
           from spaghetti_extractor.machine_abi import load_normal_call_abi_premise
           from spaghetti_extractor.stage_binary import _parse_stage_a_pe
@@ -765,6 +766,7 @@ let
           )
           from spaghetti_extractor.import_abi import load_selected_import_abis
           from spaghetti_extractor.internal_function_contracts import load_internal_function_contracts
+          from spaghetti_extractor.interprocedural_analysis import InterproceduralAnalysisWorkspace
           from spaghetti_extractor.interprocedural_phase_v2 import derive_interprocedural_result_v2
           from spaghetti_extractor.joint_fixed_point_v2 import (
               JointFixedPointCallbacks,
@@ -842,6 +844,7 @@ let
           # alternatives.  Keep their resource bound independent so ordinary
           # control-flow joins do not consume the tighter provenance budget.
           analysis_stack_offset_budget = 64
+          interprocedural_workspace = InterproceduralAnalysisWorkspace()
           exact = exact_control_inventory_v2(units)
           control = manifest.get("control", {})
           static_proposals = control.get("recovered_indirect_targets", [])
@@ -930,6 +933,7 @@ let
                   proposal_only=static_recoveries is not None,
                   authority_only=static_recoveries is None,
                   progress=emit_progress,
+                  workspace=interprocedural_workspace,
               )
 
           def derive_inductive_interprocedural(
@@ -964,6 +968,7 @@ let
                   proposal_only=False,
                   authority_only=True,
                   progress=emit_progress,
+                  workspace=interprocedural_workspace,
               )
 
           def derive_stack_ranges(graph, interprocedural):

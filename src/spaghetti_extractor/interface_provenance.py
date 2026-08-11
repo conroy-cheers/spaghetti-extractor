@@ -2404,7 +2404,13 @@ def _run_dataflow(
             unit_id=source_id,
             checked_stack_entry_offsets=checked_stack_entry_offsets,
         )
-        state_key = _state_cache_key(checked_state)
+        state_key = (
+            *_state_cache_key(checked_state),
+            (
+                "checked-nonimage-stack-v1",
+                source_id in checked_nonimage_stack_units,
+            ),
+        )
         request_key = (source_id, state_key)
         first_request = request_key not in observed_transfer_keys
         observed_transfer_keys.add(request_key)

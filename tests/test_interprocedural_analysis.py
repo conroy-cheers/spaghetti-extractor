@@ -4,6 +4,8 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
+import spaghetti_extractor.interprocedural_analysis as interprocedural_analysis
+
 from spaghetti_extractor.call_frame_hypotheses import (
     PreservedRegisterHypothesis,
     hypothesis_id as call_frame_hypothesis_id,
@@ -19,6 +21,7 @@ from spaghetti_extractor.authority_dependencies_v2 import (
     call_summary_family_node_id,
 )
 from spaghetti_extractor.interprocedural_analysis import (
+    InterproceduralAnalysisWorkspace,
     _Influence,
     _MutableCallTarget,
     _MutableCell,
@@ -30,6 +33,7 @@ from spaghetti_extractor.interprocedural_analysis import (
     _call_summary_memory_preservation,
     _call_site_memory_frames,
     _derive_dependency_edges,
+    _merge_bootstrap_callback_arguments,
     _merge_inductive_operation_provenance,
     _requires_inductive_replay,
     _summary_register_state,
@@ -955,6 +959,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         bind_memory_accesses: bool = False,
         progress=None,
         normal_call_abi_premise: NormalCallABIPremise | None = None,
+        workspace: InterproceduralAnalysisWorkspace | None = None,
     ):
         exit_rows = exits or []
         static = [incomplete_recovery(row) for row in exit_rows]
@@ -1003,6 +1008,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 authority_only=authority_only,
                 internal_function_contracts=internal_contracts,
                 progress=progress,
+                workspace=workspace,
             )
 
     def test_progress_reports_each_pass_and_evaluation(self) -> None:
@@ -1041,6 +1047,94 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 if phase == "evaluation_finished"
             )
         )
+
+    def test_workspace_reuses_exact_results_across_invocations(self) -> None:
+        workspace = InterproceduralAnalysisWorkspace()
+        observed: list[tuple[str, dict[str, object]]] = []
+        summary_calls = 0
+
+        def summaries(**kwargs: object) -> dict[str, object]:
+            nonlocal summary_calls
+            summary_calls += 1
+            return summary_adapter(**kwargs)
+
+        arguments = {
+            "units": [unit("root", 0x1000)],
+            "roots": ["root"],
+            "resolver": lambda **_kwargs: {"resolutions": []},
+            "summary_resolver": summaries,
+            "workspace": workspace,
+        }
+        first = self._run(**arguments)
+        first_summary_calls = summary_calls
+        second = self._run(
+            **arguments,
+            progress=lambda phase, details: observed.append(
+                (phase, dict(details))
+            ),
+        )
+
+        self.assertEqual(
+            first.fixed_point["authority_artifact_sha256"],
+            second.fixed_point["authority_artifact_sha256"],
+        )
+        self.assertEqual(first.recovered_targets, second.recovered_targets)
+        self.assertEqual(summary_calls, first_summary_calls)
+        self.assertTrue([
+            details
+            for phase, details in observed
+            if phase == "call_summaries_derived"
+        ])
+        self.assertTrue(all(
+            details["cache_hit"] is True
+            for phase, details in observed
+            if phase == "call_summaries_derived"
+        ))
+        self.assertTrue(all(
+            details["cache_hit"] is True
+            for phase, details in observed
+            if phase == "mutable_influence_derived"
+        ))
+
+    def test_workspace_invalidates_changed_slot_authority(self) -> None:
+        workspace = InterproceduralAnalysisWorkspace()
+        arguments = {
+            "units": [unit("root", 0x1000)],
+            "roots": ["root"],
+            "resolver": lambda **_kwargs: {"resolutions": []},
+            "workspace": workspace,
+        }
+        original = interprocedural_analysis._analyze_mutable_slot_influence
+        with patch(
+            "spaghetti_extractor.interprocedural_analysis."
+            "_analyze_mutable_slot_influence",
+            side_effect=lambda **kwargs: original(**kwargs),
+        ) as replay:
+            self._run(**arguments)
+            first_calls = replay.call_count
+            self._run(
+                **arguments,
+                globals=[slot_invariant("root", 0x1000, IMAGE_BASE + 0x2000)],
+            )
+
+        self.assertGreater(replay.call_count, first_calls)
+
+    def test_workspace_rejects_another_immutable_context(self) -> None:
+        workspace = InterproceduralAnalysisWorkspace()
+        self._run(
+            units=[unit("root", 0x1000)],
+            roots=["root"],
+            resolver=lambda **_kwargs: {"resolutions": []},
+            workspace=workspace,
+        )
+
+        with self.assertRaisesRegex(ValueError, "different immutable"):
+            self._run(
+                units=[unit("root", 0x1004)],
+                roots=["root"],
+                resolver=lambda **_kwargs: {"resolutions": []},
+                workspace=workspace,
+            )
 
     def test_contextual_recovery_runs_only_after_ordinary_stability(self) -> None:
         requests: list[bool] = []
@@ -1181,16 +1275,22 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 },
             }
 
-        result = self._run(
-            units=[unit("root", 0x1000), unit("target", 0x2000)],
-            roots=["root"],
-            exits=[exit_row],
-            resolver=resolver,
-            proposal_only=True,
-        )
+        with patch(
+            "spaghetti_extractor.interprocedural_analysis."
+            "_materialize_typed_authority_graph",
+            wraps=interprocedural_analysis._materialize_typed_authority_graph,
+        ) as materialize:
+            result = self._run(
+                units=[unit("root", 0x1000), unit("target", 0x2000)],
+                roots=["root"],
+                exits=[exit_row],
+                resolver=resolver,
+                proposal_only=True,
+            )
 
         self.assertEqual(requests, [False, True, False])
         self.assertEqual(result.fixed_point["discovery_rounds"], 2)
+        self.assertEqual(materialize.call_count, 1)
         self.assertEqual(result.fixed_point["contextual_probe_requests"], 1)
         self.assertEqual(result.fixed_point["contextual_probes"], 1)
         self.assertEqual(result.recovered_targets[0]["status"], "recovered")
@@ -1249,6 +1349,81 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             result.recovered_targets[0]["proposal_failure"]["code"],
             "mutable_slot_invariant_missing",
         )
+
+    def test_contextual_checkpoints_accumulate_bounded_proposals(self) -> None:
+        first_exit = indirect_exit("exit:root:0", "root", event_index=0)
+        second_exit = indirect_exit("exit:root:1", "root", event_index=1)
+        first_hint = recovered(first_exit, "first")
+        second_hint = recovered(second_exit, "second")
+        for hint in (first_hint, second_hint):
+            hint.update({
+                "proposal_source": "bounded_call_context_v1",
+                "proof_authority": False,
+                "target_origin_witnesses": [{
+                    "kind": "static_code",
+                    "key": [IMAGE_BASE + 0x2000, 0],
+                }],
+            })
+        probes = 0
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            nonlocal probes
+            requested = kwargs.get("run_contextual_recovery") is True
+            proposals: list[dict[str, object]] = []
+            if requested:
+                probes += 1
+                proposals = [first_hint if probes == 1 else second_hint]
+            return {
+                "resolutions": [
+                    incomplete_recovery(first_exit),
+                    incomplete_recovery(second_exit),
+                ],
+                "path_recovery_proposals": proposals,
+                "contextual_recovery": {
+                    "required": True,
+                    "executed": requested,
+                },
+            }
+
+        result = self._run(
+            units=[
+                unit("root", 0x1000),
+                unit("first", 0x2000),
+                unit("second", 0x3000),
+            ],
+            roots=["root"],
+            exits=[first_exit, second_exit],
+            resolver=resolver,
+            proposal_only=True,
+        )
+
+        self.assertEqual(probes, 3)
+        self.assertEqual(
+            {
+                row["id"]
+                for row in result.recovered_targets
+                if row["status"] == "recovered"
+            },
+            {first_exit["id"], second_exit["id"]},
+        )
+        self.assertLessEqual(result.fixed_point["discovery_rounds"], 3)
+
+    def test_bootstrap_callback_arguments_join_or_fail_closed(self) -> None:
+        first = ValueOrigin("exact", (1,))
+        second = ValueOrigin("exact", (2,))
+
+        merged = _merge_bootstrap_callback_arguments(
+            {"callback": {0: frozenset({first}), 1: frozenset({first})}},
+            {
+                "callback": {0: frozenset({second})},
+                "new": {0: frozenset({first})},
+            },
+            finite_value_budget=1,
+        )
+
+        self.assertNotIn(0, merged["callback"])
+        self.assertEqual(merged["callback"][1], frozenset({first}))
+        self.assertEqual(merged["new"][0], frozenset({first}))
 
     def test_transient_proposal_failure_is_not_final_authority(self) -> None:
         exit_row = indirect_exit("exit:root:0", "root")

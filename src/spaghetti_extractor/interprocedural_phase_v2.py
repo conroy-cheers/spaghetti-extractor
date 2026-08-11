@@ -22,6 +22,7 @@ from .global_slot_image_v2 import (
 from .import_abi import SelectedImportABI
 from .interprocedural_analysis import (
     INTERPROCEDURAL_ANALYSIS_FORMAT,
+    InterproceduralAnalysisWorkspace,
     InterproceduralAnalysisResult,
     analyze_interprocedural_control,
 )
@@ -63,6 +64,7 @@ def derive_interprocedural_result_v2(
     proposal_only: bool = False,
     authority_only: bool = False,
     progress: Callable[[str, Mapping[str, Any]], None] | None = None,
+    workspace: InterproceduralAnalysisWorkspace | None = None,
 ) -> dict[str, Any]:
     """Replay the unified analyzer instead of inheriting manifest authority."""
 
@@ -241,6 +243,11 @@ def derive_interprocedural_result_v2(
         proposal_only=proposal_only,
         authority_only=authority_only,
         progress=progress,
+        workspace=workspace,
+        static_data_source_identity=(
+            "stage-a-exact-pe-data-readers-v1",
+            binary.sha256,
+        ),
     )
     payload = _interprocedural_result_payload(result, control=control)
     return _validate_interprocedural_mutable_handoff(

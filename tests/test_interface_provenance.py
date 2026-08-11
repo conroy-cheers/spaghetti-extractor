@@ -470,6 +470,69 @@ class InterfaceProvenanceTests(unittest.TestCase):
             unchanged["counts"]["cross_run_transfer_cache_hits"], 1
         )
 
+    def test_shared_transfer_cache_invalidates_stack_authority_changes(self) -> None:
+        cache = InterfaceTransferCache(capacity=16)
+        units = [unit("root", 0x1100, writes=[{
+            "register": "eax", "value": const(7),
+        }])]
+        self._run(
+            units,
+            [],
+            roots=["root"],
+            indirect_exits=[],
+            transfer_cache=cache,
+        )
+        changed = self._run(
+            units,
+            [],
+            roots=["root"],
+            indirect_exits=[],
+            checked_nonimage_stack_units=frozenset({"root"}),
+            transfer_cache=cache,
+        )
+        unchanged = self._run(
+            units,
+            [],
+            roots=["root"],
+            indirect_exits=[],
+            checked_nonimage_stack_units=frozenset({"root"}),
+            transfer_cache=cache,
+        )
+
+        self.assertGreater(changed["counts"]["transfer_evaluations"], 0)
+        self.assertEqual(changed["counts"]["cross_run_transfer_cache_hits"], 0)
+        self.assertEqual(unchanged["counts"]["transfer_evaluations"], 0)
+        self.assertEqual(unchanged["counts"]["cross_run_transfer_cache_hits"], 1)
+
+    def test_stack_authority_change_preserves_unaffected_unit_transfers(self) -> None:
+        cache = InterfaceTransferCache(capacity=16)
+        units = [
+            unit("root", 0x1100, writes=[{
+                "register": "eax", "value": const(7),
+            }]),
+            unit("leaf", 0x1200, writes=[{
+                "register": "ebx", "value": reg("eax"),
+            }]),
+        ]
+        self._run(
+            units,
+            [edge("root", "leaf")],
+            roots=["root"],
+            indirect_exits=[],
+            transfer_cache=cache,
+        )
+        changed = self._run(
+            units,
+            [edge("root", "leaf")],
+            roots=["root"],
+            indirect_exits=[],
+            checked_nonimage_stack_units=frozenset({"leaf"}),
+            transfer_cache=cache,
+        )
+
+        self.assertEqual(changed["counts"]["transfer_evaluations"], 1)
+        self.assertEqual(changed["counts"]["cross_run_transfer_cache_hits"], 1)
+
     def test_normal_call_premise_preserves_only_nonvolatile_registers(self) -> None:
         premise = build_pe32_normal_call_abi_premise()
         edi_target = IMAGE_BASE + 0x2000

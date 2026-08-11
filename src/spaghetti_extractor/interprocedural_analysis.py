@@ -28,7 +28,7 @@ from .analysis.interprocedural_lattice import (
     Taint,
     Top,
 )
-from .analysis.scc_worklist import SCCDecomposition, SCCWorklist, decompose_scc
+from .analysis.scc_worklist import SCCDecomposition, decompose_scc
 from .analysis_schema_v2 import interprocedural_authority_signature_v2
 from .address_expression_v2 import affine_register_offset, constant_u32
 from .authority_dependencies_v2 import (
@@ -79,6 +79,7 @@ from .provenance_domain import (
     PROVENANCE_KINDS,
     ValueOrigin,
     is_persistent_origin,
+    join_finite_values,
     parse_finite_value,
     parse_value_origin,
 )
@@ -215,6 +216,96 @@ class _MutableInfluenceResult:
     scc_cache_evictions: int = 0
 
 
+class _BoundedResultCache:
+    """Small non-authorizing LRU for exact whole-analysis results."""
+
+    def __init__(self, maximum_entries: int) -> None:
+        if maximum_entries <= 0:
+            raise ValueError("analysis result-cache capacity must be positive")
+        self.maximum_entries = maximum_entries
+        self.requests = 0
+        self.hits = 0
+        self.evictions = 0
+        self._entries: OrderedDict[Hashable, Any] = OrderedDict()
+
+    def get(self, key: Hashable) -> Any | None:
+        self.requests += 1
+        result = self._entries.get(key)
+        if result is None:
+            return None
+        self.hits += 1
+        self._entries.move_to_end(key)
+        return result
+
+    def put(self, key: Hashable, value: Any) -> None:
+        if key in self._entries:
+            self._entries.move_to_end(key)
+            self._entries[key] = value
+            return
+        self._entries[key] = value
+        while len(self._entries) > self.maximum_entries:
+            self._entries.popitem(last=False)
+            self.evictions += 1
+
+
+@dataclass
+class _PassAnalysisWorkspace:
+    interface_transfers: InterfaceTransferCache
+    mutable_sccs: _MutableSCCCache
+    mutable_replays: _BoundedResultCache
+    call_summaries: _BoundedResultCache
+
+    @classmethod
+    def for_unit_count(cls, unit_count: int) -> "_PassAnalysisWorkspace":
+        return cls(
+            interface_transfers=InterfaceTransferCache.for_unit_count(
+                max(1, unit_count)
+            ),
+            mutable_sccs=_MutableSCCCache.for_unit_count(unit_count),
+            mutable_replays=_BoundedResultCache(128),
+            call_summaries=_BoundedResultCache(128),
+        )
+
+
+class InterproceduralAnalysisWorkspace:
+    """Context-bound caches shared by repeated joint-authority rounds.
+
+    Cached values carry no authority.  A workspace binds to one exact immutable
+    analysis context and rejects accidental reuse for another binary, machine
+    IR, profile inventory, graph, or resource policy.  Discovery, cold, and
+    inductive passes have separate namespaces because their static-data and
+    hypothesis policies differ.
+    """
+
+    def __init__(self) -> None:
+        self._context_key: Hashable | None = None
+        self._passes: dict[str, _PassAnalysisWorkspace] = {}
+
+    @property
+    def bound(self) -> bool:
+        return self._context_key is not None
+
+    def bind(self, context_key: Hashable) -> None:
+        if self._context_key is None:
+            self._context_key = context_key
+            return
+        if self._context_key != context_key:
+            raise ValueError(
+                "interprocedural analysis workspace belongs to a different "
+                "immutable analysis context"
+            )
+
+    def pass_workspace(
+        self, pass_kind: str, *, unit_count: int
+    ) -> _PassAnalysisWorkspace:
+        existing = self._passes.get(pass_kind)
+        if existing is not None:
+            return existing
+        created = _PassAnalysisWorkspace.for_unit_count(unit_count)
+        self._passes[pass_kind] = created
+        return created
+
+
 @dataclass(frozen=True, order=True)
 class _MutableCallTarget:
     event_index: int
@@ -316,6 +407,13 @@ class _OperationOutputs:
 
 
 @dataclass(frozen=True)
+class _TypedAuthorityGraph:
+    facts: Mapping[str, _NodeState]
+    dependency_edges: frozenset[tuple[str, str]]
+    decomposition: SCCDecomposition[str]
+
+
+@dataclass(frozen=True)
 class InterproceduralAnalysisResult:
     value_provenance: Mapping[str, Any]
     operation_provenance: Mapping[str, Any]
@@ -369,6 +467,8 @@ def analyze_interprocedural_control(
     proposal_only: bool = False,
     authority_only: bool = False,
     progress: Callable[[str, Mapping[str, Any]], None] | None = None,
+    workspace: InterproceduralAnalysisWorkspace | None = None,
+    static_data_source_identity: Hashable | None = None,
 ) -> InterproceduralAnalysisResult:
     """Compute summaries and targets together, then reproduce them cold.
 
@@ -456,6 +556,41 @@ def analyze_interprocedural_control(
             machine_ir_sha256=machine_ir_sha256,
         )
     )
+    effective_workspace = (
+        InterproceduralAnalysisWorkspace() if workspace is None else workspace
+    )
+    effective_workspace.bind(
+        _interprocedural_workspace_context_key(
+            units=units,
+            roots=roots,
+            direct_edges=direct_edges,
+            internal_call_edges=internal_call_edges,
+            indirect_exits=indirect_exits,
+            imports=imports,
+            import_abis=import_abis,
+            image_base=image_base,
+            image_size=normalized_image_size,
+            writable_image_ranges=normalized_writable_ranges,
+            interface_profiles=interface_profiles,
+            operation_profiles=operation_profiles,
+            callable_profiles=callable_profiles,
+            internal_function_contracts=internal_function_contracts or {},
+            normal_call_abi_premise=normal_call_abi_premise,
+            finite_value_budget=finite_value_budget,
+            stack_entry_offset_budget=effective_stack_entry_offset_budget,
+            max_evaluations=evaluation_budget,
+            pe_sha256=pe_sha256,
+            machine_ir_sha256=machine_ir_sha256,
+            static_data_source_identity=(
+                static_data_source_identity
+                if static_data_source_identity is not None
+                else (
+                    id(static_data_reader),
+                    id(proposal_static_data_reader),
+                )
+            ),
+        )
+    )
 
     discovery = None if authority_only else _run_typed_pass(
         pass_kind="discovery",
@@ -487,6 +622,9 @@ def analyze_interprocedural_control(
         normal_call_abi_premise=normal_call_abi_premise,
         allow_bootstrap=True,
         progress=progress,
+        workspace=effective_workspace.pass_workspace(
+            "discovery", unit_count=len(units)
+        ),
     )
     cold = None if proposal_only else _run_typed_pass(
         pass_kind="cold",
@@ -518,6 +656,9 @@ def analyze_interprocedural_control(
         normal_call_abi_premise=normal_call_abi_premise,
         allow_bootstrap=False,
         progress=progress,
+        workspace=effective_workspace.pass_workspace(
+            "cold", unit_count=len(units)
+        ),
     )
     inductive_required = bool(
         not proposal_only
@@ -578,6 +719,9 @@ def analyze_interprocedural_control(
             normal_call_abi_premise=normal_call_abi_premise,
             allow_bootstrap=False,
             progress=progress,
+            workspace=effective_workspace.pass_workspace(
+                "inductive", unit_count=len(units)
+            ),
         )
     )
 
@@ -1627,6 +1771,7 @@ def _run_typed_pass(
     writable_image_ranges: tuple[tuple[int, int], ...],
     normal_call_abi_premise: NormalCallABIPremise | None,
     progress: Callable[[str, Mapping[str, Any]], None] | None,
+    workspace: _PassAnalysisWorkspace,
 ) -> _PassResult:
     known_unit_ids = frozenset(_unit_id(unit) for unit in units)
     selected = _prefer_indirect_recoveries(
@@ -1648,8 +1793,8 @@ def _run_typed_pass(
     contextual_probes = 0
     mutable_replay_requests = 0
     mutable_replay_cache_hits = 0
-    mutable_replay_cache: dict[Hashable, _MutableInfluenceResult] = {}
-    mutable_scc_cache = _MutableSCCCache.for_unit_count(len(units))
+    mutable_replay_cache = workspace.mutable_replays
+    mutable_scc_cache = workspace.mutable_sccs
     decomposition: SCCDecomposition[str] = decompose_scc(tuple[str]())
     active_roots = set(roots)
     callback_root_arguments: Mapping[
@@ -1660,9 +1805,7 @@ def _run_typed_pass(
         image_base=image_base,
         finite_value_budget=finite_value_budget,
     )
-    interface_transfer_cache = InterfaceTransferCache.for_unit_count(
-        max(1, len(units))
-    )
+    interface_transfer_cache = workspace.interface_transfers
     _progress(progress, "pass_started", {
         "pass_kind": pass_kind,
         "units": len(units),
@@ -1704,34 +1847,46 @@ def _run_typed_pass(
             if binary_binding is not None
             else {}
         )
-        summaries = derive_internal_call_preservation_summaries(
-            units=units,
+        declared_summaries = (
+            internal_function_contracts if allow_bootstrap else {}
+        )
+        summary_key = _call_summary_input_key(
             roots=current_roots,
-            direct_edges=direct_edges,
-            internal_call_edges=internal_call_edges,
-            recovered_indirect_targets=selected,
-            indirect_exits=indirect_exits,
-            import_abis=import_abis,
+            recoveries=selected,
             call_site_effects=call_site_effects,
             prepared_memory_access_facts=prepared_memory_access_facts,
-            binary_binding=binary_binding,
-            image_base=image_base,
-            image_size=image_size,
-            # Reviewed source/RE contracts are discovery hints.  They have not
-            # been replayed against the machine semantics, so allowing them in
-            # the unseeded pass would turn an operator assertion into v2 call
-            # authority.  Cold and inductive authority passes must derive the
-            # same families from exact machine IR or remain incomplete.
-            declared_summaries=(
-                internal_function_contracts if allow_bootstrap else {}
-            ),
-            max_value_alternatives=finite_value_budget,
+            declared_summaries=declared_summaries,
         )
+        summaries = workspace.call_summaries.get(summary_key)
+        summary_cache_hit = summaries is not None
+        if summaries is None:
+            summaries = derive_internal_call_preservation_summaries(
+                units=units,
+                roots=current_roots,
+                direct_edges=direct_edges,
+                internal_call_edges=internal_call_edges,
+                recovered_indirect_targets=selected,
+                indirect_exits=indirect_exits,
+                import_abis=import_abis,
+                call_site_effects=call_site_effects,
+                prepared_memory_access_facts=prepared_memory_access_facts,
+                binary_binding=binary_binding,
+                image_base=image_base,
+                image_size=image_size,
+                # Reviewed source/RE contracts are discovery hints.  They have
+                # not been replayed against the machine semantics, so allowing
+                # them in the unseeded pass would turn an operator assertion
+                # into v2 call authority.
+                declared_summaries=declared_summaries,
+                max_value_alternatives=finite_value_budget,
+            )
+            workspace.call_summaries.put(summary_key, summaries)
         _progress(progress, "call_summaries_derived", {
             "pass_kind": pass_kind,
             "evaluation": evaluation,
             "summaries": _row_count(summaries.get("summaries")),
             "status": summaries.get("status"),
+            "cache_hit": summary_cache_hit,
         })
         preserved, cleanup, results, memory_results = _call_summary_inputs(
             summaries,
@@ -1839,6 +1994,8 @@ def _run_typed_pass(
             call_result_relations=results,
             call_memory_result_relations=memory_results,
             call_memory_frames=call_memory_frames,
+            global_slot_invariants=global_slot_invariants,
+            checked_nonimage_stack_units=checked_nonimage_stack_units,
         )
         mutable_scc_requests_before = mutable_scc_cache.requests
         mutable_scc_hits_before = mutable_scc_cache.hits
@@ -1866,7 +2023,7 @@ def _run_typed_pass(
                 writable_image_ranges=writable_image_ranges,
                 scc_cache=mutable_scc_cache,
             )
-            mutable_replay_cache[mutable_key] = mutable_result
+            mutable_replay_cache.put(mutable_key, mutable_result)
         else:
             mutable_replay_cache_hits += 1
             mutable_result = cached_mutable
@@ -1910,60 +2067,16 @@ def _run_typed_pass(
         )
         next_call_site_effects = operation_outputs.call_site_effects
         next_callback_root_arguments = operation_outputs.callback_root_arguments
+        if allow_bootstrap:
+            next_callback_root_arguments = _merge_bootstrap_callback_arguments(
+                callback_root_arguments,
+                next_callback_root_arguments,
+                finite_value_budget=finite_value_budget,
+            )
         next_roots = set(operation_outputs.roots)
         value_provenance = operation_outputs.value_provenance
         next_selected = list(operation_outputs.recoveries)
         next_call_frame_hypotheses = operation_outputs.call_frame_hypotheses
-        used_global_slots = _used_global_slot_invariants(
-            next_selected, global_slot_invariants
-        )
-        proposals = _typed_proposals(
-            summaries=summaries,
-            recoveries=next_selected,
-            global_slot_invariants=used_global_slots,
-            call_frame_hypotheses=next_call_frame_hypotheses,
-            call_site_effects=next_call_site_effects,
-            prepared_memory_access_facts=next_memory_access_facts,
-            normal_call_abi_premise=normal_call_abi_premise,
-            finite_value_budget=finite_value_budget,
-        )
-        proposed_edges = _derive_dependency_edges(
-            units=units,
-            roots=current_roots,
-            direct_edges=direct_edges,
-            internal_call_edges=internal_call_edges,
-            indirect_exits=indirect_exits,
-            summaries=summaries,
-            recoveries=next_selected,
-            call_frame_hypotheses=next_call_frame_hypotheses,
-            call_site_effects=next_call_site_effects,
-            normal_call_abi_premise=normal_call_abi_premise,
-            finite_value_budget=finite_value_budget,
-            memory_access_fact_ids=frozenset(
-                str(row["id"]) for row in next_memory_access_facts
-            ),
-        )
-        # Each outer evaluation is a successively more precise proposal graph,
-        # not an additional execution alternative.  Retaining facts or edges
-        # from transient evaluations makes authority depend on scheduling order.
-        # Certify only the current graph; the driving recoveries, summaries,
-        # effects, roots, and callback inputs are separately required to reach
-        # a fixed point below.
-        next_edges = proposed_edges
-        nodes = set(proposals)
-        nodes.update(node for edge in next_edges for node in edge)
-        worklist = SCCWorklist(nodes, next_edges)
-        next_facts: dict[str, _NodeState] = {}
-        while worklist:
-            component = worklist.pop()
-            scc_evaluations += 1
-            for node in component:
-                proposal = proposals.get(node)
-                if proposal is None:
-                    continue
-                next_facts[node] = proposal
-        decomposition = worklist.decomposition
-
         transfer_stable = _freeze_recovery_inputs(next_selected) == input_recoveries
         call_effects_stable = (
             _freeze_call_site_effects(next_call_site_effects)
@@ -2027,7 +2140,13 @@ def _run_typed_pass(
                 prior_call_frame_hypotheses=call_frame_hypotheses,
                 finite_value_budget=finite_value_budget,
                 allow_bootstrap=allow_bootstrap,
-                retain_contextual_hypotheses=False,
+                # Discovery proposals are deliberately monotone.  A contextual
+                # checkpoint may expose only the contexts enabled by the
+                # current proposal graph; retracting earlier bounded hints can
+                # make alternating checkpoints oscillate forever.  Cold and
+                # inductive passes have allow_bootstrap=False and therefore
+                # still require unseeded exact reproduction.
+                retain_contextual_hypotheses=allow_bootstrap,
                 accept_contextual_replay=True,
             )
             stable = _operation_outputs_stable(
@@ -2049,6 +2168,14 @@ def _run_typed_pass(
             next_callback_root_arguments = (
                 checkpoint_outputs.callback_root_arguments
             )
+            if allow_bootstrap:
+                next_callback_root_arguments = (
+                    _merge_bootstrap_callback_arguments(
+                        callback_root_arguments,
+                        next_callback_root_arguments,
+                        finite_value_budget=finite_value_budget,
+                    )
+                )
             next_roots = set(checkpoint_outputs.roots)
             value_provenance = checkpoint_outputs.value_provenance
             next_selected = list(checkpoint_outputs.recoveries)
@@ -2060,13 +2187,34 @@ def _run_typed_pass(
                 and _freeze_value(list(next_memory_access_facts))
                 == input_memory_access_facts
             )
+        typed_graph = None
+        if stable:
+            typed_graph = _materialize_typed_authority_graph(
+                units=units,
+                roots=current_roots,
+                direct_edges=direct_edges,
+                internal_call_edges=internal_call_edges,
+                indirect_exits=indirect_exits,
+                summaries=summaries,
+                recoveries=next_selected,
+                global_slot_invariants=global_slot_invariants,
+                call_frame_hypotheses=next_call_frame_hypotheses,
+                call_site_effects=next_call_site_effects,
+                prepared_memory_access_facts=next_memory_access_facts,
+                normal_call_abi_premise=normal_call_abi_premise,
+                finite_value_budget=finite_value_budget,
+            )
+            scc_evaluations += len(typed_graph.decomposition.components)
         _progress(progress, "evaluation_finished", {
             "pass_kind": pass_kind,
             "evaluation": evaluation,
             "stable": stable,
-            "typed_facts": len(next_facts),
-            "dependency_edges": len(next_edges),
+            "typed_facts": 0 if typed_graph is None else len(typed_graph.facts),
+            "dependency_edges": (
+                0 if typed_graph is None else len(typed_graph.dependency_edges)
+            ),
             "scc_evaluations": scc_evaluations,
+            "typed_authority_deferred": typed_graph is None,
             "selected_recoveries": len(next_selected),
             "call_site_effects": len(next_call_site_effects),
             "roots": len(next_roots),
@@ -2086,8 +2234,6 @@ def _run_typed_pass(
                 "sites": call_effect_changes[:16],
             },
         })
-        facts = next_facts
-        dependency_edges = next_edges
         selected = next_selected
         call_frame_hypotheses = next_call_frame_hypotheses
         active_roots = next_roots
@@ -2098,6 +2244,10 @@ def _run_typed_pass(
         # transfer would emit the same proposals; lattice joins and edge unions
         # are idempotent, so the state below is already the least fixed point.
         if stable:
+            assert typed_graph is not None
+            facts = dict(typed_graph.facts)
+            dependency_edges = typed_graph.dependency_edges
+            decomposition = typed_graph.decomposition
             _progress(progress, "pass_finished", {
                 "pass_kind": pass_kind,
                 "converged": True,
@@ -2129,6 +2279,25 @@ def _run_typed_pass(
             )
         call_site_effects = next_call_site_effects
 
+    typed_graph = _materialize_typed_authority_graph(
+        units=units,
+        roots=tuple(sorted(active_roots)),
+        direct_edges=direct_edges,
+        internal_call_edges=internal_call_edges,
+        indirect_exits=indirect_exits,
+        summaries=summaries,
+        recoveries=selected,
+        global_slot_invariants=global_slot_invariants,
+        call_frame_hypotheses=call_frame_hypotheses,
+        call_site_effects=call_site_effects,
+        prepared_memory_access_facts=prepared_memory_access_facts,
+        normal_call_abi_premise=normal_call_abi_premise,
+        finite_value_budget=finite_value_budget,
+    )
+    facts = dict(typed_graph.facts)
+    dependency_edges = typed_graph.dependency_edges
+    decomposition = typed_graph.decomposition
+    scc_evaluations += len(decomposition.components)
     _progress(progress, "pass_finished", {
         "pass_kind": pass_kind,
         "converged": False,
@@ -2157,6 +2326,69 @@ def _run_typed_pass(
         mutable_scc_cache.hits,
         mutable_scc_cache.entry_count,
         mutable_scc_cache.evictions,
+    )
+
+
+def _materialize_typed_authority_graph(
+    *,
+    units: Sequence[Mapping[str, Any]],
+    roots: Sequence[str],
+    direct_edges: Sequence[Mapping[str, Any]],
+    internal_call_edges: Sequence[Mapping[str, Any]],
+    indirect_exits: Sequence[Mapping[str, Any]],
+    summaries: Mapping[str, Any],
+    recoveries: Sequence[Mapping[str, Any]],
+    global_slot_invariants: Sequence[GlobalSlotInvariant],
+    call_frame_hypotheses: Sequence[PreservedRegisterHypothesis],
+    call_site_effects: Sequence[Mapping[str, Any]],
+    prepared_memory_access_facts: Sequence[Mapping[str, Any]],
+    normal_call_abi_premise: NormalCallABIPremise | None,
+    finite_value_budget: int,
+) -> _TypedAuthorityGraph:
+    """Materialize the final authority graph once per completed pass.
+
+    Typed proposals and their SCC decomposition are a projection of the
+    converged semantic state.  They do not drive summary, provenance, mutable
+    memory, root, or callback convergence.  Computing this projection for every
+    transient state therefore adds no evidence and can dominate large binaries.
+    """
+
+    used_global_slots = _used_global_slot_invariants(
+        recoveries, global_slot_invariants
+    )
+    proposals = _typed_proposals(
+        summaries=summaries,
+        recoveries=recoveries,
+        global_slot_invariants=used_global_slots,
+        call_frame_hypotheses=call_frame_hypotheses,
+        call_site_effects=call_site_effects,
+        prepared_memory_access_facts=prepared_memory_access_facts,
+        normal_call_abi_premise=normal_call_abi_premise,
+        finite_value_budget=finite_value_budget,
+    )
+    dependency_edges = _derive_dependency_edges(
+        units=units,
+        roots=roots,
+        direct_edges=direct_edges,
+        internal_call_edges=internal_call_edges,
+        indirect_exits=indirect_exits,
+        summaries=summaries,
+        recoveries=recoveries,
+        call_frame_hypotheses=call_frame_hypotheses,
+        call_site_effects=call_site_effects,
+        normal_call_abi_premise=normal_call_abi_premise,
+        finite_value_budget=finite_value_budget,
+        memory_access_fact_ids=frozenset(
+            str(row["id"]) for row in prepared_memory_access_facts
+        ),
+    )
+    nodes = set(proposals)
+    nodes.update(node for edge in dependency_edges for node in edge)
+    decomposition = decompose_scc(nodes, dependency_edges)
+    return _TypedAuthorityGraph(
+        facts=dict(proposals),
+        dependency_edges=dependency_edges,
+        decomposition=decomposition,
     )
 
 
@@ -2334,6 +2566,39 @@ def _operation_outputs_stable(
         and outputs.roots == input_roots
         and outputs.callback_root_arguments == input_callback_root_arguments
     )
+
+
+def _merge_bootstrap_callback_arguments(
+    prior: Mapping[str, Mapping[int, FiniteValue]],
+    current: Mapping[str, Mapping[int, FiniteValue]],
+    *,
+    finite_value_budget: int,
+) -> dict[str, dict[int, FiniteValue]]:
+    """Retain bounded callback-entry proposals during discovery only.
+
+    Contextual registrations are untrusted hints.  Taking their finite union
+    avoids proposal-graph oscillation while the separate cold replay remains
+    solely responsible for authority.  An overflowing argument becomes unknown
+    and is omitted rather than widened to an arbitrary machine value.
+    """
+
+    merged: dict[str, dict[int, FiniteValue]] = {}
+    for root in sorted(set(prior) | set(current)):
+        arguments: dict[int, FiniteValue] = {}
+        left = prior.get(root, {})
+        right = current.get(root, {})
+        for argument_index in sorted(set(left) | set(right)):
+            value = join_finite_values(
+                left.get(argument_index),
+                right.get(argument_index),
+                finite_value_budget,
+                missing_is_identity=True,
+            )
+            if value:
+                arguments[argument_index] = value
+        if arguments:
+            merged[root] = arguments
+    return merged
 
 
 def _contextual_recovery_hypotheses(
@@ -2628,8 +2893,10 @@ def _mutable_influence_input_key(
         int, Sequence[Mapping[str, Any]]
     ],
     call_memory_frames: Mapping[CallSiteId, tuple[CallWriteSpan, ...]],
+    global_slot_invariants: Sequence[GlobalSlotInvariant],
+    checked_nonimage_stack_units: frozenset[str],
 ) -> Hashable:
-    """Exact changing inputs for one pass-scoped mutable replay."""
+    """Exact changing inputs for one context-bound mutable replay."""
 
     return (
         tuple(sorted(roots)),
@@ -2639,6 +2906,30 @@ def _mutable_influence_input_key(
         _freeze_value(call_result_relations),
         _freeze_value(call_memory_result_relations),
         _freeze_value(call_memory_frames),
+        _freeze_value([
+            invariant.to_payload() for invariant in global_slot_invariants
+        ]),
+        tuple(sorted(checked_nonimage_stack_units)),
+    )
+
+
+def _call_summary_input_key(
+    *,
+    roots: Sequence[str],
+    recoveries: Sequence[Mapping[str, Any]],
+    call_site_effects: Sequence[Mapping[str, Any]],
+    prepared_memory_access_facts: Sequence[Mapping[str, Any]],
+    declared_summaries: Mapping[str, Mapping[str, Any]],
+) -> Hashable:
+    """Exact changing inputs to one whole call-summary derivation."""
+
+    return (
+        "internal-call-summaries-v1",
+        tuple(sorted(roots)),
+        _freeze_recovery_inputs(recoveries),
+        _freeze_call_site_effects(call_site_effects),
+        _freeze_value(list(prepared_memory_access_facts)),
+        _freeze_value(declared_summaries),
     )
 
 
@@ -6458,6 +6749,81 @@ def _freeze_value(value: Any) -> Hashable:
     if isinstance(value, (set, frozenset)):
         return ("set", tuple(sorted((_freeze_value(item) for item in value), key=repr)))
     raise TypeError(f"interprocedural facts cannot freeze {type(value).__name__}")
+
+
+def _interprocedural_workspace_context_key(
+    *,
+    units: Sequence[Mapping[str, Any]],
+    roots: Sequence[str],
+    direct_edges: Sequence[Mapping[str, Any]],
+    internal_call_edges: Sequence[Mapping[str, Any]],
+    indirect_exits: Sequence[Mapping[str, Any]],
+    imports: Sequence[Mapping[str, Any]],
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    image_base: int,
+    image_size: int,
+    writable_image_ranges: Sequence[tuple[int, int]],
+    interface_profiles: Sequence[ExternalInterfaceProfile],
+    operation_profiles: Sequence[ExternalOperationProfile],
+    callable_profiles: Sequence[CallableExternalProfile],
+    internal_function_contracts: Mapping[str, Mapping[str, Any]],
+    normal_call_abi_premise: NormalCallABIPremise | None,
+    finite_value_budget: int,
+    stack_entry_offset_budget: int,
+    max_evaluations: int,
+    pe_sha256: str | None,
+    machine_ir_sha256: str | None,
+    static_data_source_identity: Hashable,
+) -> Hashable:
+    """Bind reusable caches to every immutable transfer dependency."""
+
+    try:
+        hash(static_data_source_identity)
+    except TypeError as exc:
+        raise ValueError(
+            "interprocedural static-data source identity must be hashable"
+        ) from exc
+    selected_imports = sorted(
+        (selected.as_json() for selected in import_abis.values()),
+        key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":")),
+    )
+    return (
+        "interprocedural-analysis-workspace-v1",
+        pe_sha256,
+        machine_ir_sha256,
+        image_base,
+        image_size,
+        tuple(writable_image_ranges),
+        finite_value_budget,
+        stack_entry_offset_budget,
+        max_evaluations,
+        static_data_source_identity,
+        _freeze_value(list(units)),
+        tuple(sorted(roots)),
+        _freeze_value(list(direct_edges)),
+        _freeze_value(list(internal_call_edges)),
+        _freeze_value(list(indirect_exits)),
+        _freeze_value(list(imports)),
+        _freeze_value(selected_imports),
+        tuple(sorted(
+            (profile.profile_id, profile.sha256)
+            for profile in interface_profiles
+        )),
+        tuple(sorted(
+            (profile.profile_id, profile.sha256)
+            for profile in operation_profiles
+        )),
+        tuple(sorted(
+            (profile.profile_id, profile.sha256)
+            for profile in callable_profiles
+        )),
+        _freeze_value(internal_function_contracts),
+        (
+            None
+            if normal_call_abi_premise is None
+            else normal_call_abi_premise.dependency_id
+        ),
+    )
 
 
 def _dependency_inventory(

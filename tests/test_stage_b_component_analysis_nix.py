@@ -158,6 +158,14 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("stackRangeAnalysis = {", module)
         self.assertIn("derive_joint_fixed_point_v2", joint_phase)
         self.assertIn("JointFixedPointCallbacks", joint_phase)
+        self.assertIn(
+            "from spaghetti_extractor.interprocedural_analysis import "
+            "InterproceduralAnalysisWorkspace",
+            joint_phase,
+        )
+        self.assertEqual(
+            joint_phase.count("workspace=interprocedural_workspace"), 2
+        )
         self.assertIn("merge_recovery_proposals_v2", joint_phase)
         self.assertIn("derive_stack_range_analysis_v2", joint_phase)
         self.assertIn("discovery_call_frames", joint_phase)
