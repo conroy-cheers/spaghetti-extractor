@@ -693,6 +693,33 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             },),
         )
 
+    def test_checked_partial_register_atoms_remain_usable(self) -> None:
+        preserved, cleanup, results, memory_results = _call_summary_inputs(
+            {
+                "summaries": [{
+                    "target_rva": 0x2000,
+                    "status": "incomplete",
+                    "preserved_registers": ["esi"],
+                    "register_preservation": {
+                        "status": "incomplete",
+                        "checked_preserved_registers": ["esi"],
+                    },
+                    "stack_cleanup": {"status": "incomplete"},
+                    "result_register_origins": {"status": "incomplete"},
+                    "result_memory_origins": {"status": "incomplete"},
+                }],
+            },
+            image_base=IMAGE_BASE,
+        )
+
+        self.assertEqual(
+            preserved,
+            {IMAGE_BASE + 0x2000: frozenset({"esi"})},
+        )
+        self.assertEqual(cleanup, {})
+        self.assertEqual(results, {})
+        self.assertEqual(memory_results, {})
+
     def test_mixed_internal_external_call_keeps_opaque_memory_alternative(self) -> None:
         source_rva = SLOT + 4 - IMAGE_BASE
         destination_rva = SLOT - IMAGE_BASE

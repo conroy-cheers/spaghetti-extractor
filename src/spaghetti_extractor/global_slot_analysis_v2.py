@@ -52,6 +52,7 @@ from .launch_memory_ranges_v2 import (
     validate_launch_memory_range_analysis_v2,
 )
 from .stack_range_analysis_v2 import (
+    CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT,
     CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT,
     CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
 )
@@ -297,6 +298,7 @@ def analyze_global_slots_v2(
         checked_memory_spatial_facts,
         units=normalized_units,
         access_facts=access_facts,
+        call_site_effects=normalized_call_effects,
         image_base=image_base,
         size_of_image=size_of_image,
         authority_binding=range_authority_binding,
@@ -339,7 +341,7 @@ def analyze_global_slots_v2(
         ),
     )
     access_spatial_facts = {
-        _event_node(str(row["unit_id"]), int(row["event_index"])): row
+        _spatial_fact_node(row): row
         for row in spatial_facts
     }
     if len(access_spatial_facts) != len(spatial_facts):
@@ -1752,6 +1754,7 @@ def _normalize_spatial_facts(
     *,
     units: Mapping[str, Mapping[str, Any]],
     access_facts: Mapping[str, CheckedMemoryAccessFact],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     image_base: int,
     size_of_image: int,
     authority_binding: Mapping[str, Any] | None,
@@ -1759,7 +1762,7 @@ def _normalize_spatial_facts(
     result: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    seen_events: set[tuple[str, int]] = set()
+    seen_nodes: set[str] = set()
     esp_fields = {
         "format",
         "status",
@@ -1798,12 +1801,36 @@ def _normalize_spatial_facts(
         "id",
         "fact_sha256",
     }
+    call_write_fields = {
+        "format",
+        "status",
+        "unit_id",
+        "event_index",
+        "write_index",
+        "memory_kind",
+        "width_bytes",
+        "address_origin",
+        "call_site_effect_sha256",
+        "frame_base_offsets",
+        "address_frame_offset",
+        "minimum_start_offset",
+        "maximum_start_offset",
+        "stack_contract",
+        "disjoint_from_image",
+        "authority_binding",
+        "id",
+        "fact_sha256",
+    }
     for index, raw in enumerate(facts):
         try:
             if not isinstance(raw, Mapping):
                 raise ValueError("spatial fact has noncanonical fields")
             fields = frozenset(raw)
-            if fields not in {frozenset(esp_fields), frozenset(origin_fields)}:
+            if fields not in {
+                frozenset(esp_fields),
+                frozenset(origin_fields),
+                frozenset(call_write_fields),
+            }:
                 raise ValueError("spatial fact has noncanonical fields")
             identity = raw.get("id")
             unit_id = raw.get("unit_id")
@@ -1811,6 +1838,7 @@ def _normalize_spatial_facts(
             fact_format = raw.get("format")
             if (
                 fact_format not in {
+                    CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT,
                     CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
                     CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT,
                 }
@@ -1823,25 +1851,39 @@ def _normalize_spatial_facts(
                 or not isinstance(event_index, int)
                 or isinstance(event_index, bool)
                 or event_index < 0
-                or (unit_id, event_index) in seen_events
             ):
                 raise ValueError("spatial fact identity or event binding is invalid")
-            events = units[unit_id]["semantics"].get("memory_events")
-            if not isinstance(events, list) or event_index >= len(events):
-                raise ValueError("spatial fact references an unknown event")
-            event = events[event_index]
-            width = raw.get("width_bytes")
-            if (
-                not isinstance(event, Mapping)
-                or raw.get("memory_kind") != event.get("kind")
-                or width != event.get("width")
-                or raw.get("address_expression") != event.get("address")
-                or not isinstance(width, int)
-                or isinstance(width, bool)
-                or not 0 < width <= 4096
-            ):
-                raise ValueError("spatial fact contradicts its exact memory event")
-            if fact_format == CHECKED_STACK_SPATIAL_FACT_V2_FORMAT:
+            if fact_format == CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT:
+                if set(raw) != call_write_fields:
+                    raise ValueError("call-write spatial fact has noncanonical fields")
+                starts, width, node_id = _call_write_spatial_starts(
+                    raw, call_site_effects=call_site_effects
+                )
+                id_prefix = "checked-call-stack-write-spatial-v2:"
+            else:
+                events = units[unit_id]["semantics"].get("memory_events")
+                if not isinstance(events, list) or event_index >= len(events):
+                    raise ValueError("spatial fact references an unknown event")
+                event = events[event_index]
+                width = raw.get("width_bytes")
+                if (
+                    not isinstance(event, Mapping)
+                    or raw.get("memory_kind") != event.get("kind")
+                    or width != event.get("width")
+                    or raw.get("address_expression") != event.get("address")
+                    or not isinstance(width, int)
+                    or isinstance(width, bool)
+                    or not 0 < width <= 4096
+                ):
+                    raise ValueError(
+                        "spatial fact contradicts its exact memory event"
+                    )
+                node_id = _event_node(unit_id, event_index)
+            if node_id in seen_nodes:
+                raise ValueError("spatial fact event binding is duplicated")
+            if fact_format == CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT:
+                pass
+            elif fact_format == CHECKED_STACK_SPATIAL_FACT_V2_FORMAT:
                 if set(raw) != esp_fields:
                     raise ValueError("ESP spatial fact has noncanonical fields")
                 starts = _esp_spatial_starts(raw)
@@ -1900,7 +1942,7 @@ def _normalize_spatial_facts(
             ):
                 raise ValueError("spatial fact digest is stale")
             seen_ids.add(identity)
-            seen_events.add((unit_id, event_index))
+            seen_nodes.add(node_id)
             result.append(copy.deepcopy(dict(raw)))
         except (TypeError, ValueError) as exc:
             issues.append(_issue(
@@ -1912,9 +1954,90 @@ def _normalize_spatial_facts(
     return sorted(
         result,
         key=lambda row: (
-            str(row["unit_id"]), int(row["event_index"]), str(row["id"])
+            str(row["unit_id"]),
+            int(row["event_index"]),
+            int(row.get("write_index", -1)),
+            str(row["id"]),
         ),
     ), _deduplicate_issues(issues)
+
+
+def _call_write_spatial_starts(
+    raw: Mapping[str, Any],
+    *,
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+) -> tuple[list[int], int, str]:
+    unit_id = str(raw["unit_id"])
+    event_index = int(raw["event_index"])
+    write_index = raw.get("write_index")
+    if (
+        not isinstance(write_index, int)
+        or isinstance(write_index, bool)
+        or write_index < 0
+    ):
+        raise ValueError("call-write spatial fact index is invalid")
+    effect = call_site_effects.get(CallSiteId(unit_id, event_index))
+    if (
+        effect is None
+        or effect.memory_frame_status != "complete"
+        or write_index >= len(effect.memory_writes)
+    ):
+        raise ValueError("call-write spatial fact lacks a checked call effect")
+    span = effect.memory_writes[write_index]
+    width = span.size
+    offset = _signed_stack_origin_offset(span.base)
+    if (
+        raw.get("memory_kind") != "write"
+        or not isinstance(width, int)
+        or isinstance(width, bool)
+        or not 0 < width <= 4096
+        or raw.get("width_bytes") != width
+        or raw.get("address_origin") != span.base.as_json()
+        or raw.get("call_site_effect_sha256")
+        != canonical_sha256(effect.as_json())
+        or offset is None
+        or raw.get("address_frame_offset") != offset
+    ):
+        raise ValueError("call-write spatial fact contradicts its call effect")
+    frame_offsets = raw.get("frame_base_offsets")
+    if (
+        not isinstance(frame_offsets, list)
+        or not frame_offsets
+        or any(
+            not isinstance(value, int) or isinstance(value, bool)
+            for value in frame_offsets
+        )
+        or frame_offsets != sorted(set(frame_offsets))
+    ):
+        raise ValueError("call-write spatial fact frame bases are not canonical")
+    return (
+        [int(frame_base) + offset for frame_base in frame_offsets],
+        width,
+        _call_memory_write_node(unit_id, event_index, write_index),
+    )
+
+
+def _signed_stack_origin_offset(origin: Any) -> int | None:
+    if origin.kind != "stack_location" or len(origin.key) != 1:
+        return None
+    raw = origin.key[0]
+    if (
+        not isinstance(raw, int)
+        or isinstance(raw, bool)
+        or not 0 <= raw < _UINT32_LIMIT
+    ):
+        return None
+    return raw if raw < (1 << 31) else raw - _UINT32_LIMIT
+
+
+def _spatial_fact_node(raw: Mapping[str, Any]) -> str:
+    unit_id = str(raw["unit_id"])
+    event_index = int(raw["event_index"])
+    if raw.get("format") == CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT:
+        return _call_memory_write_node(
+            unit_id, event_index, int(raw["write_index"])
+        )
+    return _event_node(unit_id, event_index)
 
 
 def _esp_spatial_starts(raw: Mapping[str, Any]) -> list[int]:

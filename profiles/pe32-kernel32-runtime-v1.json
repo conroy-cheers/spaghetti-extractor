@@ -341,6 +341,36 @@
       "world_effect": "opaqueResources"
     },
     {
+      "id": "kernel32.dll!SetUnhandledExceptionFilter",
+      "import": {
+        "dll": "kernel32.dll",
+        "symbol": "SetUnhandledExceptionFilter"
+      },
+      "abi_template": "pe32-stdcall-v1",
+      "arity": {"kind": "fixed", "words": 1},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "callbackRegistration",
+      "callback_effect": "explicit",
+      "callback_source": {"kind": "argument_word", "argument": 0},
+      "callback_lifetime": "until_replaced_or_process_exit",
+      "callback_result": {
+        "register": "eax",
+        "origin": "previous_registered_callback",
+        "nullable": true
+      },
+      "callback_abi": {
+        "kind": "generic_callback",
+        "argument_words": 1,
+        "stack_cleanup_bytes": 4,
+        "nullable": true
+      }
+    },
+    {
       "import": {"dll": "kernel32.dll", "symbol": "SetStdHandle"},
       "abi_template": "pe32-stdcall-v1",
       "arity": {"kind": "fixed", "words": 2},

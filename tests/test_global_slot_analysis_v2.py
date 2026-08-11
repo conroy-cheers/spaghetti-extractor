@@ -275,6 +275,7 @@ def _call_effect(
     unit_id: str,
     *,
     output_address: int | None = None,
+    memory_writes: list[dict[str, object]] | None = None,
     memory_complete: bool = True,
     transfer_kind: str = "external_call",
 ) -> dict[str, object]:
@@ -292,6 +293,8 @@ def _call_effect(
             "base": {"kind": "exact", "key": [output_address]},
             "size": 4,
         })
+    if memory_writes is not None:
+        writes.extend(copy.deepcopy(memory_writes))
     failure_codes = [] if memory_complete else ["memory_frame_unknown"]
     return {
         "format": "stage-a-call-site-effect-v2",
@@ -540,6 +543,61 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
         self.assertEqual(result["counts"]["call_site_effects"], 1)
         self.assertEqual(result["cold_replay"]["status"], "complete")
 
+    def test_callback_token_call_output_survives_point_sensitive_replay(
+        self,
+    ) -> None:
+        register = _unit(
+            "register",
+            0x1000,
+            [],
+            external_events=[{
+                "kind": "external_call",
+                "instruction_rva": 0x1000,
+            }],
+        )
+        restore = _unit("restore", 0x1010, [_read()])
+        effect = _call_effect("register", output_address=SLOT)
+        effect["result_frame"]["outputs"][0]["origins"] = [{
+            "kind": "callback_token",
+            "key": [
+                "kernel32.dll!SetUnhandledExceptionFilter",
+                "profile-binding",
+                "generic_callback",
+                1,
+                4,
+                True,
+                "until_replaced_or_process_exit",
+            ],
+        }]
+
+        result = _analyze(
+            [register, restore],
+            _graph(
+                [register, restore],
+                edges=[("register", "restore")],
+            ),
+            launch_initial_values={SLOT: 0},
+            relevant_reads=[{
+                "slot_rva": SLOT - IMAGE_BASE,
+                "exit_id": "indirect-exit:restore-callback",
+                "unit_id": "restore",
+                "event_index": 0,
+            }],
+            call_site_effects=[effect],
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        evidence = result["global_slot_evidence"][0]
+        self.assertEqual(
+            {row["kind"] for row in evidence["alternatives"]},
+            {"callback_token", "exact_bits"},
+        )
+        incoming = _incoming(result, "restore", 0)
+        self.assertIn(
+            "callback_token",
+            {row["kind"] for row in incoming["alternatives"]},
+        )
+
     def test_incomplete_call_memory_frame_taints_slot(self) -> None:
         call = _unit(
             "call",
@@ -646,6 +704,90 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
             units,
             graph,
             launch_initial_values={SLOT: 0},
+            checked_spatial_facts=corrupted,
+            range_binding=stack["binding"],
+        )
+        self.assertEqual(rejected["status"], "violated")
+        self.assertIn("checked_memory_spatial_fact_invalid", _codes(rejected))
+
+    def test_checked_call_summary_stack_write_excludes_image_slot(self) -> None:
+        call = _unit(
+            "call",
+            0x1000,
+            [],
+            external_events=[{
+                "kind": "external_call",
+                "instruction_rva": 0x1000,
+                "register_inputs": {"esp": _reg("esp")},
+            }],
+        )
+        units = [call]
+        graph = _graph(units)
+        launch = {
+            "assumptions": {
+                "initial_stack": {
+                    "contract": "private-non-image-stack-range-v2",
+                    "mapped_separately_from_image": True,
+                    "minimum_accessible_bytes_below": 0x1000,
+                    "minimum_accessible_bytes_above": 0x1000,
+                }
+            }
+        }
+        effect = _call_effect(
+            "call",
+            memory_writes=[{
+                "base": {"kind": "stack_location", "key": [0xFFFFFFDC]},
+                "size": 4,
+            }],
+        )
+        stack = derive_stack_range_analysis_v2(
+            units=units,
+            graph=graph,
+            launch_assumptions=launch,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_ir_sha256(units),
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            call_site_effects=[effect],
+        )
+
+        without_fact = _analyze(
+            units,
+            graph,
+            launch_initial_values={SLOT: 0},
+            call_site_effects=[effect],
+        )
+        with_fact = _analyze(
+            units,
+            graph,
+            launch_initial_values={SLOT: 0},
+            call_site_effects=[effect],
+            checked_spatial_facts=stack["checked_spatial_facts"],
+            range_binding=stack["binding"],
+        )
+
+        self.assertEqual(
+            len(without_fact["global_slot_evidence"][0][
+                "reachable_write_inventory"
+            ]["aliasing_writes"]),
+            1,
+        )
+        self.assertEqual(with_fact["status"], "complete", with_fact["issues"])
+        self.assertEqual(
+            with_fact["global_slot_evidence"][0][
+                "reachable_write_inventory"
+            ]["aliasing_writes"],
+            [],
+        )
+        self.assertEqual(with_fact["counts"]["checked_memory_spatial_facts"], 1)
+
+        corrupted = copy.deepcopy(stack["checked_spatial_facts"])
+        corrupted[0]["write_index"] += 1
+        rejected = _analyze(
+            units,
+            graph,
+            launch_initial_values={SLOT: 0},
+            call_site_effects=[effect],
             checked_spatial_facts=corrupted,
             range_binding=stack["binding"],
         )

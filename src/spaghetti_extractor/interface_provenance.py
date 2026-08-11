@@ -1785,6 +1785,10 @@ class _ProfileInventory:
         self.interfaces: dict[tuple[str, str], Any] = {}
         self.iat: dict[int, MachineImportIdentity] = {}
         self.unit_targets: dict[int, list[tuple[int, str]]] = defaultdict(list)
+        self.instruction_targets: dict[
+            int, list[tuple[int, str, int]]
+        ] = defaultdict(list)
+        self.image_base = image_base
         self.observed_import_abis: dict[
             MachineImportIdentity, SelectedImportABI
         ] = {}
@@ -1871,11 +1875,25 @@ class _ProfileInventory:
         for unit in units:
             source = _mapping(_mapping(unit.get("source")).get("original"))
             rva = _integer(source.get("rva_start"))
+            rva_end = _integer(source.get("rva_end"))
             identifier = unit.get("id")
             if rva is not None and isinstance(identifier, str):
                 self.unit_targets[(image_base + rva) & 0xFFFFFFFF].append(
                     (rva, identifier)
                 )
+                for instruction in unit.get("instructions", []):
+                    if not isinstance(instruction, Mapping):
+                        continue
+                    instruction_rva = _integer(instruction.get("rva_start"))
+                    if (
+                        instruction_rva is None
+                        or rva_end is None
+                        or not rva <= instruction_rva < rva_end
+                    ):
+                        continue
+                    self.instruction_targets[
+                        (image_base + instruction_rva) & 0xFFFFFFFF
+                    ].append((instruction_rva, identifier, rva))
             for event in _events(unit):
                 selected = _selected_site_import_abi(event)
                 if selected is None:
@@ -1887,6 +1905,42 @@ class _ProfileInventory:
                         f"{selected.identity}"
                     )
                 self.observed_import_abis[selected.identity] = selected
+
+    def canonical_code_target(
+        self, address: int
+    ) -> tuple[tuple[int, str] | None, dict[str, Any] | None]:
+        """Resolve one exact code address without accepting interior aliases."""
+
+        address &= 0xFFFFFFFF
+        candidates = self.unit_targets.get(address, ())
+        if len(candidates) == 1:
+            return candidates[0], None
+        target_rva = (address - self.image_base) & 0xFFFFFFFF
+        if len(candidates) > 1:
+            return None, {
+                "code": "callback_target_code_view_ambiguous",
+                "target_rva": target_rva,
+                "candidate_unit_ids": sorted(candidate[1] for candidate in candidates),
+            }
+        boundaries = self.instruction_targets.get(address, ())
+        if len(boundaries) == 1:
+            instruction_rva, owner_id, owner_rva = boundaries[0]
+            return None, {
+                "code": "callback_target_cutpoint_unmaterialized",
+                "target_rva": instruction_rva,
+                "owner_unit_id": owner_id,
+                "owner_rva": owner_rva,
+            }
+        if len(boundaries) > 1:
+            return None, {
+                "code": "callback_target_code_view_ambiguous",
+                "target_rva": target_rva,
+                "candidate_unit_ids": sorted({candidate[1] for candidate in boundaries}),
+            }
+        return None, {
+            "code": "callback_target_not_canonical_code",
+            "target_rva": target_rva,
+        }
 
     def method(
         self, profile_sha256: str, interface_id: str, offset: int
@@ -7014,15 +7068,15 @@ def _interface_method_callback_registration(
         address = int(origin.key[0]) & 0xFFFFFFFF
         if address == 0 and nullable:
             continue
-        candidates = inventory.unit_targets.get(address, ())
-        if len(candidates) != 1:
+        candidate, failure = inventory.canonical_code_target(address)
+        if candidate is None:
             return {
                 **base,
                 "status": "incomplete",
                 "origins": _origins_json(origins),
-                "failure": {"code": "callback_target_not_canonical_code"},
+                "failure": failure,
             }
-        targets.add(candidates[0])
+        targets.add(candidate)
     if not targets and not nullable:
         return {
             **base,
@@ -7323,16 +7377,16 @@ def _machine_callback_registration(
         address = int(origin.key[0]) & 0xFFFFFFFF
         if address == 0 and callback_abi.nullable:
             continue
-        candidates = inventory.unit_targets.get(address, ())
-        if len(candidates) != 1:
+        candidate, failure = inventory.canonical_code_target(address)
+        if candidate is None:
             return ({
                 **base,
                 "status": "incomplete",
                 "origins": _origins_json(origins),
                 "source_locations": locations,
-                "failure": {"code": "callback_target_not_canonical_code"},
+                "failure": failure,
             }, recovery)
-        targets.add(candidates[0])
+        targets.add(candidate)
     if not targets and not callback_abi.nullable:
         return ({
             **base,
@@ -8613,6 +8667,7 @@ def _operation_world_effect_evidence(
             continue
         origins = arguments[effect.argument_index]
         targets: set[tuple[int, str]] = set()
+        target_failure: dict[str, Any] | None = None
         if origins is None or not origins:
             complete = False
         else:
@@ -8621,19 +8676,21 @@ def _operation_world_effect_evidence(
                 if origin.kind != "exact":
                     complete = False
                     break
-                candidates = inventory.unit_targets.get(
-                    int(origin.key[0]) & 0xFFFFFFFF, ()
+                candidate, target_failure = inventory.canonical_code_target(
+                    int(origin.key[0]) & 0xFFFFFFFF
                 )
-                if len(candidates) != 1:
+                if candidate is None:
                     complete = False
                     break
-                targets.add(candidates[0])
+                targets.add(candidate)
         if not complete or not targets:
             result.append({
                 **row,
                 "status": "incomplete",
                 "origins": _origins_json(origins),
-                "failure": {"code": "callback_target_not_canonical_code"},
+                "failure": target_failure or {
+                    "code": "callback_target_not_canonical_code"
+                },
             })
             continue
         result.append({

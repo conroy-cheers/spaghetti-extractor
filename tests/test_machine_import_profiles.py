@@ -15,6 +15,7 @@ from spaghetti_extractor.external_profile_authority_v2 import (
     build_external_profile_authority_v2,
 )
 from spaghetti_extractor.machine_import_profiles import (
+    MachineImportIdentity,
     MachineImportProfileError,
     load_machine_import_profile_set,
 )
@@ -60,6 +61,7 @@ _RUNTIME_PROFILE_ARITIES = {
     ("kernel32.dll", "SetEndOfFile"): 1,
     ("kernel32.dll", "SetFilePointer"): 4,
     ("kernel32.dll", "SetHandleCount"): 1,
+    ("kernel32.dll", "SetUnhandledExceptionFilter"): 1,
     ("kernel32.dll", "SetStdHandle"): 2,
     ("kernel32.dll", "TerminateProcess"): 2,
     ("kernel32.dll", "UnmapViewOfFile"): 1,
@@ -426,6 +428,34 @@ class MachineImportProfileTests(unittest.TestCase):
                 expected,
                 contract.contract.get("id"),
             )
+
+    def test_kernel32_exception_filter_has_exact_callback_contract(self) -> None:
+        profile_set = load_machine_import_profile_set([
+            _REPOSITORY_ROOT / "profiles/pe32-kernel32-runtime-v1.json"
+        ])
+        identity = MachineImportIdentity(
+            "kernel32.dll", "symbol", "SetUnhandledExceptionFilter"
+        )
+        contract = profile_set.by_identity()[identity].contract
+
+        self.assertEqual(contract["argument_words"], 1)
+        self.assertEqual(contract["world_effect"], "callbackRegistration")
+        self.assertEqual(contract["callback_effect"], "explicit")
+        self.assertEqual(
+            contract["callback_source"],
+            {"kind": "argument_word", "argument": 0},
+        )
+        self.assertEqual(contract["callback_abi"], {
+            "kind": "generic_callback",
+            "argument_words": 1,
+            "stack_cleanup_bytes": 4,
+            "nullable": True,
+        })
+        self.assertEqual(contract["callback_result"], {
+            "register": "eax",
+            "origin": "previous_registered_callback",
+            "nullable": True,
+        })
 
     def test_reviewed_dll_policy_expands_to_exact_pe_import_abi(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

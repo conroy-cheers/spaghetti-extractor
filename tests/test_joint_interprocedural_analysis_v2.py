@@ -84,7 +84,7 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
                 "recovered_targets": [recovery],
             },
             cold_graph=graph,
-            authoritative_evidence_stable=True,
+            authoritative_semantics_stable=True,
             proposal_slot_dependencies=proposal_dependencies,
         )
 
@@ -274,7 +274,7 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
                 "recovered_targets": [cold],
             },
             cold_graph=graph,
-            authoritative_evidence_stable=True,
+            authoritative_semantics_stable=True,
         )
 
         self.assertEqual(result["status"], "complete", result["issues"])
@@ -311,7 +311,7 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
                 "recovered_targets": [],
             },
             cold_graph=graph,
-            authoritative_evidence_stable=True,
+            authoritative_semantics_stable=True,
         )
 
         self.assertEqual(result["status"], "violated")
@@ -359,7 +359,7 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
                 }],
             },
             cold_graph=graph,
-            authoritative_evidence_stable=True,
+            authoritative_semantics_stable=True,
         )
 
         self.assertEqual(result["status"], "violated")
@@ -406,7 +406,7 @@ class JointInterproceduralAnalysisV2Tests(unittest.TestCase):
                 }],
             },
             cold_graph=graph,
-            authoritative_evidence_stable=True,
+            authoritative_semantics_stable=True,
         )
 
         self.assertEqual(result["status"], "violated")

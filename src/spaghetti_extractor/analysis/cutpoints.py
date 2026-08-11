@@ -55,6 +55,15 @@ def _instruction_is_semantic_stop(instruction: Any) -> bool:
     )
 
 
+def _instruction_can_follow_alignment_padding(instruction: Any) -> bool:
+    """Recognize conservative IA-32 function-entry forms after NOP padding."""
+
+    return (
+        instruction.mnemonic == "push"
+        and instruction.op_str.lower() in {"ebp", "ebx", "esi", "edi"}
+    )
+
+
 def decode_semantic_cutpoint_span(
     binary: StageABinary,
     span: dict[str, int],
@@ -82,14 +91,24 @@ def semantic_cutpoint_spans_for_side(
     block_id: str,
     *,
     periodic: bool = True,
+    split_nop_padding: bool = False,
 ) -> list[dict[str, int]]:
     decoded = decode_semantic_cutpoint_span(binary, span, block_id)
     boundaries = [0]
+    preceding_nop = False
     for instruction_index, instruction in enumerate(decoded, start=1):
         instruction_start = int(
             instruction.address - binary.image_base - span["rva_start"]
         )
         instruction_stop = instruction_start + int(instruction.size)
+        if (
+            split_nop_padding
+            and preceding_nop
+            and _instruction_can_follow_alignment_padding(instruction)
+            and instruction_start > boundaries[-1]
+        ):
+            boundaries.append(instruction_start)
+        preceding_nop = instruction.mnemonic == "nop"
         if instruction_is_x87(instruction):
             if instruction_start > boundaries[-1]:
                 boundaries.append(instruction_start)

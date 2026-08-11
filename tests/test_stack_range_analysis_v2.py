@@ -12,6 +12,7 @@ from spaghetti_extractor.checked_memory_access_v2 import (
 )
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
 from spaghetti_extractor.stack_range_analysis_v2 import (
+    CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT,
     CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT,
     CHECKED_STACK_SPATIAL_FACT_V2_FORMAT,
     STACK_RANGE_ANALYSIS_V2_FORMAT,
@@ -150,8 +151,10 @@ def _call_effect(
     *,
     transfer_kind: str,
     cleanup_bytes: int | None,
+    memory_writes: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     complete = cleanup_bytes is not None
+    writes = [] if memory_writes is None else copy.deepcopy(memory_writes)
     return {
         "format": "stage-a-call-site-effect-v2",
         "unit_id": unit_id,
@@ -168,9 +171,9 @@ def _call_effect(
         },
         "result_frame": {"status": "not_applicable", "outputs": []},
         "memory_frame": {
-            "status": "not_applicable",
-            "preserved": False,
-            "writes": [],
+            "status": "complete" if memory_writes is not None else "not_applicable",
+            "preserved": memory_writes == [],
+            "writes": writes,
         },
         "abi": None,
         "argument_words": None,
@@ -263,6 +266,134 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
                 image_base=IMAGE_BASE,
                 size_of_image=IMAGE_SIZE,
             )
+
+    def test_call_summary_stack_writes_receive_event_bound_spatial_facts(
+        self,
+    ) -> None:
+        call = {
+            "kind": "external_call",
+            "register_inputs": {"esp": _reg("esp")},
+            "abi_contract": {
+                "template": "pe32-cdecl-v1",
+                "argument_words": 0,
+                "disposition": "returns",
+            },
+        }
+        unit = _unit(
+            "call",
+            0x1000,
+            stack_delta=None,
+            external_events=[call],
+        )
+        effect = _call_effect(
+            "call",
+            transfer_kind="external_call",
+            cleanup_bytes=0,
+            memory_writes=[
+                {
+                    "base": {"kind": "stack_location", "key": [0xFFFFFFDC]},
+                    "size": 4,
+                },
+                {
+                    "base": {"kind": "stack_location", "key": [0xFFFFFFE4]},
+                    "size": 2,
+                },
+            ],
+        )
+
+        result = _derive([unit], call_site_effects=[effect])
+        facts = result["checked_spatial_facts"]
+
+        self.assertEqual(len(facts), 2)
+        self.assertTrue(all(
+            row["format"] == CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT
+            for row in facts
+        ))
+        self.assertEqual(
+            [(row["write_index"], row["address_frame_offset"], row["width_bytes"])
+             for row in facts],
+            [(0, -36, 4), (1, -28, 2)],
+        )
+        self.assertTrue(all(row["frame_base_offsets"] == [0] for row in facts))
+        replayed = validate_stack_range_analysis_v2(
+            result,
+            units=[unit],
+            graph=_graph("call"),
+            launch_assumptions=_launch(),
+            pe_sha256=PE_SHA,
+            machine_ir_sha256=MACHINE_SHA,
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            call_site_effects=[effect],
+        )
+        self.assertEqual(
+            set(replayed),
+            {"call-memory-write:call:0:0", "call-memory-write:call:0:1"},
+        )
+
+        corrupted = copy.deepcopy(result)
+        corrupted["checked_spatial_facts"][0]["write_index"] = 1
+        with self.assertRaisesRegex(ValueError, "does not replay exactly"):
+            validate_stack_range_analysis_v2(
+                corrupted,
+                units=[unit],
+                graph=_graph("call"),
+                launch_assumptions=_launch(),
+                pe_sha256=PE_SHA,
+                machine_ir_sha256=MACHINE_SHA,
+                image_base=IMAGE_BASE,
+                size_of_image=IMAGE_SIZE,
+                call_site_effects=[effect],
+            )
+
+    def test_call_summary_stack_write_requires_checked_frame_and_span(
+        self,
+    ) -> None:
+        call = {
+            "kind": "external_call",
+            "register_inputs": {"esp": _reg("esp")},
+            "abi_contract": {
+                "template": "pe32-cdecl-v1",
+                "argument_words": 0,
+                "disposition": "returns",
+            },
+        }
+        entry = _unit("entry", 0x1000, target_rvas=[0x1010], stack_delta=None)
+        call_unit = _unit(
+            "call",
+            0x1010,
+            stack_delta=None,
+            external_events=[call],
+        )
+        checked = _call_effect(
+            "call",
+            transfer_kind="external_call",
+            cleanup_bytes=0,
+            memory_writes=[{
+                "base": {"kind": "stack_location", "key": [12]},
+                "size": 4,
+            }],
+        )
+
+        no_frame = _derive([entry, call_unit], call_site_effects=[checked])
+        self.assertEqual(no_frame["checked_spatial_facts"], [])
+
+        malformed_spans = (
+            {"base": {"kind": "stack_location", "key": [12]}, "size": None},
+            {"base": {"kind": "exact", "key": [0x500000]}, "size": 4},
+            {"base": {"kind": "stack_location", "key": [0xFFFFE000]}, "size": 4},
+        )
+        rooted_call = copy.deepcopy(call_unit)
+        for span in malformed_spans:
+            with self.subTest(span=span):
+                effect = _call_effect(
+                    "call",
+                    transfer_kind="external_call",
+                    cleanup_bytes=0,
+                    memory_writes=[span],
+                )
+                result = _derive([rooted_call], call_site_effects=[effect])
+                self.assertEqual(result["checked_spatial_facts"], [])
 
     def test_checked_range_facts_replay_exactly_and_reject_corruption(self) -> None:
         units = [_unit("entry", 0x1000, memory_offsets=[-4])]

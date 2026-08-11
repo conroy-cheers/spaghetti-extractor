@@ -207,7 +207,7 @@ def validate_joint_replay_v2(
     global_slot_authority: Mapping[str, Any],
     interprocedural: Mapping[str, Any],
     cold_graph: Mapping[str, Any],
-    authoritative_evidence_stable: bool,
+    authoritative_semantics_stable: bool,
     proposal_slot_dependencies: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Check one graph-bound, unseeded interprocedural authority package."""
@@ -304,7 +304,7 @@ def validate_joint_replay_v2(
         "proposal_slot_dependencies_discharged": proposal_slots_discharged,
         "interprocedural_cold_complete": cold_complete,
         "cold_rooted_graph_complete": cold_graph.get("status") == "complete",
-        "authoritative_evidence_stable": authoritative_evidence_stable,
+        "authoritative_semantics_stable": authoritative_semantics_stable,
     }
     issues: list[dict[str, Any]] = []
     if not stack_binding_valid:
@@ -355,10 +355,10 @@ def validate_joint_replay_v2(
                 for key in sorted(active_proposal_slot_dependencies)
             ],
         })
-    if not authoritative_evidence_stable:
+    if not authoritative_semantics_stable:
         issues.append({
             "status": "incomplete",
-            "code": "authoritative_joint_evidence_not_stable",
+            "code": "authoritative_joint_semantics_not_stable",
         })
     component_statuses = {
         str(value.get("status"))
@@ -396,6 +396,8 @@ def validate_joint_replay_v2(
             "proposal_agreement_required": False,
             "mutable_slots_promoted_to_roots": False,
             "active_proposal_slots_are_non_authorizing": True,
+            "semantic_fixed_point_is_extensional": True,
+            "exact_output_evidence_replay_required": True,
         },
     }
     return {**body, "analysis_sha256": canonical_sha256(body)}

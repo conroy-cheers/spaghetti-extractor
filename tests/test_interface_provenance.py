@@ -3804,6 +3804,80 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(native_evidence["status"], "complete", native_evidence)
         self.assertEqual(native_evidence["target_unit_ids"], ["callback"])
 
+    def test_callback_instruction_boundary_requires_materialized_cutpoint(self) -> None:
+        identity = MachineImportIdentity(
+            "kernel32.dll", "symbol", "SetUnhandledExceptionFilter"
+        )
+        selected = self._selected_abi(
+            identity,
+            argument_words=1,
+            contract={
+                "id": "set-unhandled-exception-filter",
+                "memory_effect": "sameNativeTargetCallThrough",
+                "world_effect": "callbackRegistration",
+                "callback_effect": "explicit",
+                "callback_source": {"kind": "argument_word", "argument": 0},
+                "callback_lifetime": "until_replaced_or_process_exit",
+                "callback_abi": {
+                    "kind": "generic_callback",
+                    "argument_words": 1,
+                    "stack_cleanup_bytes": 4,
+                    "nullable": True,
+                },
+            },
+        )
+        call_esp = sub(reg("esp"), const(4))
+        write = {
+            "kind": "write",
+            "width": 4,
+            "address": call_esp,
+            "value": const(IMAGE_BASE + 0x1801),
+            "instruction_rva": 0x1500,
+        }
+        event = {
+            "kind": "external_call",
+            "return_rva": 0x1502,
+            "dll": identity.dll,
+            "symbol": identity.value,
+            "ordinal": None,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        event["register_inputs"]["esp"] = call_esp
+        registration = unit(
+            "registration",
+            0x1500,
+            memory=[write],
+            events=[event],
+            ordered=[write, {**event, "instruction_rva": 0x1501}],
+        )
+        callback_owner = unit("callback-owner", 0x1800)
+        callback_owner["source"]["original"]["rva_end"] = 0x1802
+        callback_owner["instructions"] = [
+            {"rva_start": 0x1800, "rva_end": 0x1801},
+            {"rva_start": 0x1801, "rva_end": 0x1802},
+        ]
+
+        result = self._run(
+            [registration, callback_owner, indirect_call()],
+            [edge("registration", "call")],
+            roots=["registration"],
+            extra_import_abis={identity: selected},
+        )
+
+        evidence = result["callback_registrations"][0]
+        self.assertEqual(evidence["status"], "incomplete", evidence)
+        self.assertEqual(
+            evidence["failure"],
+            {
+                "code": "callback_target_cutpoint_unmaterialized",
+                "target_rva": 0x1801,
+                "owner_unit_id": "callback-owner",
+                "owner_rva": 0x1800,
+            },
+        )
+        self.assertEqual(evidence["target_rvas"], [])
+        self.assertEqual(evidence["target_unit_ids"], [])
+
     def test_interface_callback_method_requires_finite_argument_target(self) -> None:
         abi = resolve_machine_call_abi("pe32-stdcall-v1")
         assert abi is not None

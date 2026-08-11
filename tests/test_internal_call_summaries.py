@@ -738,6 +738,105 @@ class InternalCallSummaryTests(unittest.TestCase):
         self.assertIn("esi", self._summary(result, "inner")["preserved_registers"])
         self.assertIn("esi", self._summary(result, "outer")["preserved_registers"])
 
+    def test_checked_register_atom_crosses_incomplete_nested_summary(self) -> None:
+        partial = {
+            "status": "incomplete",
+            "preserved_registers": ["esi"],
+            "register_preservation": {
+                "status": "incomplete",
+                "checked_preserved_registers": ["esi"],
+            },
+            "result_register_origins": {"status": "incomplete", "registers": {}},
+            "result_memory_origins": {"status": "incomplete", "locations": []},
+            "caller_memory_frame": {
+                "status": "incomplete",
+                "preserved": False,
+                "writes": [],
+            },
+            "stack_cleanup": {
+                "status": "complete",
+                "stack_delta": 0,
+                "return_stack_offset": 4,
+            },
+            "return_behavior": {
+                "status": "complete",
+                "may_return": True,
+                "may_not_return": False,
+            },
+            "reached_units": 0,
+            "transfer_evaluations": 0,
+            "return_nodes": 1,
+            "return_unit_ids": ["leaf"],
+            "nonreturning_nodes": 0,
+            "blocker_codes": ["memory_frame_unknown"],
+        }
+        result = derive_internal_call_preservation_summaries(
+            units=[
+                unit("root", 0x1000, outcome="fallthrough", events=[internal_call(0x2000)]),
+                unit("wrapper", 0x2000, outcome="fallthrough", events=[internal_call(0x3000)]),
+                unit("wrapper-return", 0x2001, outcome="return"),
+                unit("leaf", 0x3000, outcome="return"),
+                unit("done", 0x1001, outcome="return"),
+            ],
+            roots=["root"],
+            direct_edges=[
+                self._edge("root", "done"),
+                self._edge("wrapper", "wrapper-return"),
+            ],
+            internal_call_edges=[
+                self._call_edge("root", "wrapper", 0),
+                self._call_edge("wrapper", "leaf", 0),
+            ],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+            declared_summaries={"leaf": partial},
+        )
+
+        wrapper = self._summary(result, "wrapper")
+        self.assertEqual(wrapper["register_preservation"]["status"], "incomplete")
+        self.assertEqual(
+            wrapper["register_preservation"]["checked_preserved_registers"],
+            ["esi"],
+        )
+        self.assertEqual(wrapper["preserved_registers"], ["esi"])
+        self.assertEqual(self._summary(result, "root")["preserved_registers"], ["esi"])
+
+    def test_malformed_partial_register_inventory_fails_closed(self) -> None:
+        partial = {
+            "status": "incomplete",
+            "preserved_registers": ["esi"],
+            "register_preservation": {
+                "status": "incomplete",
+                "checked_preserved_registers": ["edi"],
+            },
+            "result_register_origins": {"status": "incomplete", "registers": {}},
+            "result_memory_origins": {"status": "incomplete", "locations": []},
+            "stack_cleanup": {"status": "complete", "stack_delta": 0},
+            "return_behavior": {
+                "status": "complete",
+                "may_return": True,
+                "may_not_return": False,
+            },
+            "blocker_codes": ["fixture_incomplete"],
+        }
+        result = derive_internal_call_preservation_summaries(
+            units=[
+                unit("root", 0x1000, outcome="fallthrough", events=[internal_call(0x2000)]),
+                unit("leaf", 0x2000, outcome="return"),
+                unit("done", 0x1001, outcome="return"),
+            ],
+            roots=["root"],
+            direct_edges=[self._edge("root", "done")],
+            internal_call_edges=[self._call_edge("root", "leaf", 0)],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+            declared_summaries={"leaf": partial},
+        )
+
+        self.assertEqual(self._summary(result, "root")["preserved_registers"], [])
+
     def test_exact_direct_call_event_does_not_require_redundant_edge(self) -> None:
         result = self._derive(
             units=[

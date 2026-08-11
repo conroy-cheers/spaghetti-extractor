@@ -36,6 +36,11 @@ from .checked_external_site_contract import (
     CheckedExternalSiteContractError,
     ExternalSiteIdentity,
     checked_external_site_contract_from_event,
+    parse_checked_external_site_contract,
+)
+from .external_site_proposals_v2 import (
+    ExternalSiteProposalsV2Error,
+    parse_external_site_proposals_v2,
 )
 from .machine_import_profiles import (
     MachineImportIdentity,
@@ -1618,6 +1623,144 @@ def _machine_ir_manifest_payload(
     return payload
 
 
+def _diagnostic_external_site_proposal_index(
+    *,
+    source: Path | str | None,
+    machine_ir_sha256: str,
+    machine_ir_manifest: Mapping[str, Any] | None,
+    candidate_mode: str,
+) -> tuple[dict[tuple[str, int], tuple[Mapping[str, Any], ...]], str | None]:
+    """Load exact machine-IR-bound site proposals for diagnostic execution.
+
+    These rows remain proposal evidence: they can make a structural diagnostic
+    candidate executable, but can never satisfy the static-closed authority
+    gate.  The v2 artifact hash and binary bindings prevent stale rows from
+    being attached to another candidate.
+    """
+
+    if source is None:
+        return {}, None
+    if candidate_mode != STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE:
+        raise StageAInputError(
+            "proposal-only external-site evidence is restricted to "
+            "structural-diagnostic candidates"
+        )
+    if machine_ir_manifest is None:
+        raise StageAInputError(
+            "diagnostic external-site proposals require a bound machine-IR manifest"
+        )
+    binary = machine_ir_manifest.get("binary")
+    if not isinstance(binary, Mapping):
+        raise StageAInputError(
+            "machine-IR manifest has no exact original PE binding"
+        )
+    pe_sha256 = _required_sha256(
+        binary.get("sha256"), "machine-IR original PE SHA-256"
+    )
+    path = Path(source)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping):
+            raise ExternalSiteProposalsV2Error(
+                "external-site proposal artifact is not an object"
+            )
+        rows = parse_external_site_proposals_v2(
+            payload,
+            pe_sha256=pe_sha256,
+            machine_ir_sha256=machine_ir_sha256,
+        )
+    except (OSError, json.JSONDecodeError, ExternalSiteProposalsV2Error) as exc:
+        raise StageAInputError(
+            f"cannot load diagnostic external-site proposals: {exc}"
+        ) from exc
+
+    indexed: dict[tuple[str, int], list[Mapping[str, Any]]] = {}
+    for row in rows:
+        key = (str(row["unit_id"]), int(row["event_index"]))
+        indexed.setdefault(key, []).append(row)
+    return {
+        key: tuple(sorted(
+            values,
+            key=lambda value: int(value["target_alternative_index"]),
+        ))
+        for key, values in indexed.items()
+    }, sha256_file(path)
+
+
+def _diagnostic_direct_external_site_contract(
+    *,
+    proposals: Mapping[tuple[str, int], tuple[Mapping[str, Any], ...]],
+    proposal_sha256: str | None,
+    transfer_id: str,
+    event_index: int,
+    identity: ExternalSiteIdentity,
+    transfer_kind: str,
+    disposition: str,
+) -> tuple[CheckedExternalSiteContract | None, Mapping[str, Any] | None]:
+    """Select one exact direct-site proposal and recheck its local identity."""
+
+    rows = proposals.get((transfer_id, event_index), ())
+    if not rows:
+        return None, None
+    if len(rows) != 1 or rows[0].get("target_alternative_index") != 0:
+        raise StageAInputError(
+            f"{transfer_id} external event {event_index} has ambiguous direct-site proposals"
+        )
+    row = rows[0]
+    try:
+        contract = parse_checked_external_site_contract(row.get("contract"))
+    except CheckedExternalSiteContractError as exc:
+        raise StageAInputError(
+            f"{transfer_id} external event {event_index} proposal is malformed: {exc}"
+        ) from exc
+    expected_alternative = _canonical_sha256(identity.payload())
+    if (
+        row.get("target_alternative_sha256") != expected_alternative
+        or contract.identity != identity
+        or contract.transfer_kind != transfer_kind
+        or contract.disposition != disposition
+    ):
+        raise StageAInputError(
+            f"{transfer_id} external event {event_index} proposal disagrees with exact control"
+        )
+    return contract, {
+        "kind": "diagnostic-external-site-proposal-v2",
+        "proof_authority": False,
+        "artifact_sha256": proposal_sha256,
+        "unit_id": transfer_id,
+        "event_index": event_index,
+        "target_alternative_index": 0,
+        "target_alternative_sha256": expected_alternative,
+        "runtime_guard": "exact-unit-event-and-import-identity",
+    }
+
+
+def _checked_contract_callback_registration(
+    contract: CheckedExternalSiteContract,
+    *,
+    context: str,
+) -> tuple[CallbackSource, int, CallbackABI] | None:
+    adapter = contract.callback_adapter
+    if contract.callback_effect != "explicit":
+        return None
+    if adapter is None:
+        raise StageAInputError(f"{context} has no checked callback adapter")
+    source = parse_callback_source(
+        {"callback_source": adapter.source},
+        argument_words=contract.argument_words,
+        context=context,
+    )
+    abi = parse_callback_abi(
+        {"callback_abi": adapter.abi},
+        context=context,
+    )
+    return (
+        source,
+        source.stack_argument_offset(contract.argument_base_offset),
+        abi,
+    )
+
+
 def _portable_component_selections(
     values: Iterable[Mapping[str, Any]],
     *,
@@ -2914,6 +3057,7 @@ def plan_stage_b_native_engine(
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
     callable_external_contract: Path | str | None = None,
+    external_site_proposals: Path | str | None = None,
     machine_import_profiles: Iterable[Path | str] = (),
     candidate_mode: str = STATIC_CLOSED_CANDIDATE_MODE,
     allow_deferred_potential_transfers: bool = False,
@@ -2992,6 +3136,15 @@ def plan_stage_b_native_engine(
         )
         if machine_ir_mode
         else None
+    )
+    (
+        diagnostic_external_site_proposals,
+        diagnostic_external_site_proposals_sha256,
+    ) = _diagnostic_external_site_proposal_index(
+        source=external_site_proposals,
+        machine_ir_sha256=semantic_input_sha256,
+        machine_ir_manifest=machine_ir_manifest_payload,
+        candidate_mode=candidate_mode,
     )
     checked_external_contracts_required = (
         candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
@@ -3499,36 +3652,71 @@ def plan_stage_b_native_engine(
                     }
             checked_external_contract: CheckedExternalSiteContract | None = None
             checked_external_contract_error: str | None = None
+            external_identity: ExternalSiteIdentity | None = None
+            try:
+                if protocol_target is not None:
+                    raw_protocol = protocol_target.get("external_protocol")
+                    if not isinstance(raw_protocol, Mapping):
+                        raise CheckedExternalSiteContractError(
+                            "resolved external target has no protocol identity"
+                        )
+                    external_identity = ExternalSiteIdentity.interface(
+                        raw_protocol,
+                        context=f"{transfer_id} external event {event_index}",
+                    )
+                elif dll is not None:
+                    external_identity = ExternalSiteIdentity.imported(
+                        {
+                            "dll": dll,
+                            "symbol": symbol,
+                            "ordinal": ordinal,
+                        },
+                        context=f"{transfer_id} external event {event_index}",
+                    )
+            except CheckedExternalSiteContractError as exc:
+                checked_external_contract_error = str(exc)
+
+            if external_identity is not None and not dynamic_target:
+                try:
+                    (
+                        checked_external_contract,
+                        proposal_resolution_evidence,
+                    ) = _diagnostic_direct_external_site_contract(
+                        proposals=diagnostic_external_site_proposals,
+                        proposal_sha256=(
+                            diagnostic_external_site_proposals_sha256
+                        ),
+                        transfer_id=transfer_id,
+                        event_index=event_index,
+                        identity=external_identity,
+                        transfer_kind=(
+                            "jump" if disposition == "tail_jump" else "call"
+                        ),
+                        disposition=disposition,
+                    )
+                except StageAInputError as exc:
+                    checked_external_contract_error = str(exc)
+                    raise
+                if proposal_resolution_evidence is not None:
+                    if target_resolution_evidence is not None:
+                        raise StageAInputError(
+                            f"{transfer_id} external event {event_index} has "
+                            "conflicting target-resolution evidence"
+                        )
+                    target_resolution_evidence = dict(
+                        proposal_resolution_evidence
+                    )
             if (
+                checked_external_contract is None
+                and external_identity is not None
+                and (
                 checked_external_contracts_required
                 or protocol_target is not None
                 or isinstance(event.get("abi_contract"), Mapping)
                 or resolved_machine_contract is not None
-            ) and (protocol_target is not None or dll is not None):
+                )
+            ):
                 try:
-                    if protocol_target is not None:
-                        raw_protocol = protocol_target.get("external_protocol")
-                        if not isinstance(raw_protocol, Mapping):
-                            raise CheckedExternalSiteContractError(
-                                "resolved external target has no protocol identity"
-                            )
-                        external_identity = ExternalSiteIdentity.interface(
-                            raw_protocol,
-                            context=(
-                                f"{transfer_id} external event {event_index}"
-                            ),
-                        )
-                    else:
-                        external_identity = ExternalSiteIdentity.imported(
-                            {
-                                "dll": dll,
-                                "symbol": symbol,
-                                "ordinal": ordinal,
-                            },
-                            context=(
-                                f"{transfer_id} external event {event_index}"
-                            ),
-                        )
                     callback_evidence = callback_registration_evidence.get(
                         (transfer_id, event_index)
                     )
@@ -3563,6 +3751,62 @@ def plan_stage_b_native_engine(
                                 "and callback effects"
                             ),
                         ))
+            if checked_external_contract is not None:
+                checked_registration = _checked_contract_callback_registration(
+                    checked_external_contract,
+                    context=f"{transfer_id} external event {event_index}",
+                )
+                if (
+                    callback_registration is not None
+                    and checked_registration is not None
+                    and callback_registration != checked_registration
+                ):
+                    raise StageAInputError(
+                        f"{transfer_id} external event {event_index} callback "
+                        "metadata disagrees with its checked site contract"
+                    )
+                if checked_registration is not None:
+                    callback_registration = checked_registration
+                    adapter = checked_external_contract.callback_adapter
+                    assert adapter is not None
+                    proposal_callback_evidence = {
+                        "format": "stage-a-callback-registration-provenance-v1",
+                        "record_kind": "callback_registration",
+                        "status": "complete",
+                        "unit_id": transfer_id,
+                        "event_index": event_index,
+                        "instruction_rva": instruction_rva,
+                        "callback_source": checked_registration[0].as_json(),
+                        "callback_abi": checked_registration[2].as_json(),
+                        "callback_lifetime": adapter.lifetime,
+                        "callback_behavior": adapter.behavior,
+                        "target_rvas": list(adapter.target_rvas),
+                        "failure": None,
+                    }
+                    prior_callback_evidence = callback_registration_evidence.get(
+                        (transfer_id, event_index)
+                    )
+                    if (
+                        prior_callback_evidence is not None
+                        and (
+                            prior_callback_evidence.get("status") != "complete"
+                            or prior_callback_evidence.get("instruction_rva")
+                            != instruction_rva
+                            or prior_callback_evidence.get("callback_source")
+                            != proposal_callback_evidence["callback_source"]
+                            or prior_callback_evidence.get("callback_abi")
+                            != proposal_callback_evidence["callback_abi"]
+                            or prior_callback_evidence.get("target_rvas")
+                            != proposal_callback_evidence["target_rvas"]
+                        )
+                    ):
+                        raise StageAInputError(
+                            f"{transfer_id} external event {event_index} checked "
+                            "callback evidence is contradictory"
+                        )
+                    callback_registration_evidence[
+                        (transfer_id, event_index)
+                    ] = proposal_callback_evidence
             if (
                 candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
                 and checked_external_contract is None
@@ -4161,6 +4405,7 @@ def write_stage_b_native_engine_package(
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
     callable_external_contract: Path | str | None = None,
+    external_site_proposals: Path | str | None = None,
     machine_import_profiles: Iterable[Path | str] = (),
     candidate_mode: str = STATIC_CLOSED_CANDIDATE_MODE,
     allow_deferred_potential_transfers: bool = False,
@@ -4188,6 +4433,7 @@ def write_stage_b_native_engine_package(
         termination_import=termination_import,
         base_relocation_evidence=base_relocation_evidence,
         callable_external_contract=callable_external_contract,
+        external_site_proposals=external_site_proposals,
         machine_import_profiles=machine_import_profiles,
         candidate_mode=candidate_mode,
         allow_deferred_potential_transfers=allow_deferred_potential_transfers,
@@ -4243,6 +4489,15 @@ def write_stage_b_native_engine_package(
                 "path": Path(callable_external_contract).name,
                 "sha256": sha256_file(callable_external_contract),
                 "identity": plan.callable_external_contract.identity,
+            }
+        ),
+        "diagnostic_external_site_proposals": (
+            None
+            if external_site_proposals is None
+            else {
+                "path": Path(external_site_proposals).name,
+                "sha256": sha256_file(external_site_proposals),
+                "authority": "diagnostic-proposal-only",
             }
         ),
         "sources": [

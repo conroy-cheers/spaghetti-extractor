@@ -229,6 +229,17 @@ submitted analysis, and compares it byte-for-byte before those invariants can
 authorize any downstream artifact. Iteration therefore avoids duplicate work
 without moving the authority boundary or trusting the joint-phase cache.
 
+Joint convergence is extensional over the facts consumed by the next typed
+analysis pass. Global-slot record identities remain part of that state because
+target evidence refers to them directly. Checked stack-range record IDs and
+their prior graph/call-effect hashes do not: the interprocedural adapter first
+replays those records, then consumes only the accepted unit set and exact entry
+offsets. Treating evidence-lineage hashes as lattice coordinates creates an
+unbounded `H(previous evidence)` chain after the represented stack state has
+already stabilized. The joint artifact records both semantic and full-evidence
+signatures, while the final replay still binds the exact output stack artifact
+to the current graph and current call-effect inventory.
+
 Generated files belong under Nix outputs or ignored `build/` workspaces. Authored
 intent and source belong in target bundles. Private binaries belong under the
 ignored `private/` tree and must never be copied into source or target data.

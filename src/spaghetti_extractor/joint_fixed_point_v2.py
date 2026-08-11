@@ -14,6 +14,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .analysis_schema_v2 import CHECKED_MEMORY_RANGE_FACT_V2_FORMAT
 from .artifact_identity_v2 import canonical_sha256
 from .global_slot_hypotheses_v2 import (
     GlobalSlotHypothesisV2Error,
@@ -24,6 +25,9 @@ from .joint_interprocedural_analysis_v2 import validate_joint_replay_v2
 
 JOINT_FIXED_POINT_V2_FORMAT = (
     "spaghetti-extractor-joint-interprocedural-fixed-point-v2"
+)
+JOINT_AUTHORITY_SEMANTIC_STATE_V2_FORMAT = (
+    "spaghetti-extractor-joint-authority-semantic-state-v2"
 )
 
 
@@ -158,6 +162,7 @@ def derive_joint_fixed_point_v2(
     slot_analysis: Mapping[str, Any] = {}
     slot_authority: Mapping[str, Any] = {}
     final_signature: str | None = None
+    final_evidence_stable = False
     bootstrap_authority_invariants: tuple[Mapping[str, Any], ...] = ()
 
     if proposal_interprocedural is not None:
@@ -224,8 +229,15 @@ def derive_joint_fixed_point_v2(
     )
 
     for round_index in range(1, finite_round_budget + 1):
-        input_signature = _authority_state_signature(
+        input_semantic_state = _authority_semantic_state(
             invariants, stack_entry_offsets, stack_range_facts
+        )
+        input_signature = canonical_sha256(input_semantic_state)
+        input_evidence_signature = _authority_evidence_signature(
+            invariants, stack_entry_offsets, stack_range_facts
+        )
+        input_family_signatures = _authority_family_signatures(
+            input_semantic_state
         )
         _progress(progress, "round_started", {
             "round": round_index,
@@ -233,6 +245,7 @@ def derive_joint_fixed_point_v2(
             "stack_entry_units": len(stack_entry_offsets),
             "checked_stack_ranges": len(stack_range_facts),
             "input_authority_signature": input_signature,
+            "input_authority_evidence_signature": input_evidence_signature,
         })
         target_hypotheses = tuple(
             copy.deepcopy(dict(row)) for row in proposal_recoveries
@@ -286,10 +299,29 @@ def derive_joint_fixed_point_v2(
         next_stack_range_facts = _mapping_rows(
             stack_ranges.get("checked_range_facts")
         )
-        output_signature = _authority_state_signature(
+        output_semantic_state = _authority_semantic_state(
             next_invariants,
             next_stack_entry_offsets,
             next_stack_range_facts,
+        )
+        output_signature = canonical_sha256(output_semantic_state)
+        output_evidence_signature = _authority_evidence_signature(
+            next_invariants,
+            next_stack_entry_offsets,
+            next_stack_range_facts,
+        )
+        output_family_signatures = _authority_family_signatures(
+            output_semantic_state
+        )
+        changed_semantic_families = sorted(
+            family
+            for family in input_family_signatures
+            if input_family_signatures[family]
+            != output_family_signatures[family]
+        )
+        semantic_state_stable = output_signature == input_signature
+        evidence_stable = (
+            output_evidence_signature == input_evidence_signature
         )
         final_signature = _iteration_signature(
             bootstrap=interprocedural,
@@ -310,15 +342,25 @@ def derive_joint_fixed_point_v2(
             "stack_entry_units": len(next_stack_entry_offsets),
             "input_authority_signature": input_signature,
             "output_authority_signature": output_signature,
+            "input_authority_evidence_signature": (
+                input_evidence_signature
+            ),
+            "output_authority_evidence_signature": (
+                output_evidence_signature
+            ),
+            "semantic_state_stable": semantic_state_stable,
+            "evidence_identity_stable": evidence_stable,
+            "changed_semantic_families": changed_semantic_families,
         })
         _progress(progress, "round_finished", {
             **authoritative_rounds[-1],
-            "converged": output_signature == input_signature,
+            "converged": semantic_state_stable,
         })
         invariants = next_invariants
         stack_entry_offsets = next_stack_entry_offsets
         stack_range_facts = next_stack_range_facts
-        if output_signature == input_signature:
+        final_evidence_stable = evidence_stable
+        if semantic_state_stable:
             authoritative_converged = True
             break
 
@@ -334,7 +376,7 @@ def derive_joint_fixed_point_v2(
         global_slot_authority=slot_authority,
         interprocedural=interprocedural,
         cold_graph=cold_graph,
-        authoritative_evidence_stable=authoritative_converged,
+        authoritative_semantics_stable=authoritative_converged,
         proposal_slot_dependencies=proposal_slot_dependencies,
     )
     _progress(progress, "joint_replay_finished", {
@@ -375,6 +417,8 @@ def derive_joint_fixed_point_v2(
         "converged": authoritative_converged,
         "bootstrap_converged": bootstrap_converged,
         "authoritative_converged": authoritative_converged,
+        "convergence_basis": JOINT_AUTHORITY_SEMANTIC_STATE_V2_FORMAT,
+        "final_evidence_identity_stable": final_evidence_stable,
         "round_budget": finite_round_budget,
         "rounds": bootstrap_rounds,
         "authoritative_rounds": authoritative_rounds,
@@ -635,7 +679,7 @@ def _sequence_len(value: Any) -> int:
     return len(value)
 
 
-def _authority_state_signature(
+def _authority_evidence_signature(
     invariants: Sequence[Mapping[str, Any]],
     stack_entry_offsets: Mapping[str, Sequence[int]],
     stack_range_facts: Sequence[Mapping[str, Any]],
@@ -645,6 +689,105 @@ def _authority_state_signature(
         "stack_entry_offsets": stack_entry_offsets,
         "stack_range_facts": list(stack_range_facts),
     })
+
+
+def _authority_semantic_state(
+    invariants: Sequence[Mapping[str, Any]],
+    stack_entry_offsets: Mapping[str, Sequence[int]],
+    stack_range_facts: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Project exactly the authority facts consumed by the next pass.
+
+    Global-slot record identities remain significant because target and call
+    evidence names those records directly.  Checked stack-range identities do
+    not: ``derive_interprocedural_result_v2`` validates each record and passes
+    only the accepted unit set plus ``stack_entry_offsets`` to the typed
+    analyzer.  Their graph/effect hashes therefore record evidence lineage,
+    not another abstract-state coordinate.  Comparing those hashes here forms
+    an artificial ``H(previous evidence)`` chain even after the stack facts
+    have reached a post-fixed point.
+
+    Malformed or unknown stack records retain their complete payload so this
+    projection cannot hide corruption.  The final joint replay still checks
+    the exact current stack binding against the current graph and call-effect
+    inventory.
+    """
+
+    return {
+        "format": JOINT_AUTHORITY_SEMANTIC_STATE_V2_FORMAT,
+        "global_slot_invariants": [
+            copy.deepcopy(dict(row)) for row in invariants
+        ],
+        "stack_entry_offsets": {
+            unit_id: list(offsets)
+            for unit_id, offsets in sorted(stack_entry_offsets.items())
+        },
+        "checked_stack_ranges": sorted(
+            (_stack_range_semantic_projection(row) for row in stack_range_facts),
+            key=canonical_sha256,
+        ),
+    }
+
+
+def _stack_range_semantic_projection(
+    row: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected = {
+        "format",
+        "status",
+        "source_kind",
+        "range_kind",
+        "base_expression",
+        "offset_start",
+        "offset_end",
+        "applies_to_unit_ids",
+        "disjoint_from_image",
+        "authority_binding",
+        "id",
+    }
+    binding = row.get("authority_binding")
+    if (
+        set(row) != expected
+        or row.get("format") != CHECKED_MEMORY_RANGE_FACT_V2_FORMAT
+        or not isinstance(binding, Mapping)
+    ):
+        return {
+            "malformed_or_unknown_record": copy.deepcopy(dict(row)),
+        }
+    return {
+        "format": row["format"],
+        "status": row["status"],
+        "source_kind": row["source_kind"],
+        "range_kind": row["range_kind"],
+        "base_expression": copy.deepcopy(row["base_expression"]),
+        "offset_start": row["offset_start"],
+        "offset_end": row["offset_end"],
+        "applies_to_unit_ids": copy.deepcopy(row["applies_to_unit_ids"]),
+        "disjoint_from_image": copy.deepcopy(row["disjoint_from_image"]),
+        "binary_and_launch_binding": {
+            field: copy.deepcopy(binding.get(field))
+            for field in (
+                "pe_sha256",
+                "machine_ir_sha256",
+                "launch_assumptions_sha256",
+                "image_base",
+                "size_of_image",
+            )
+        },
+    }
+
+
+def _authority_family_signatures(
+    semantic_state: Mapping[str, Any],
+) -> dict[str, str]:
+    return {
+        family: canonical_sha256(semantic_state.get(family))
+        for family in (
+            "global_slot_invariants",
+            "stack_entry_offsets",
+            "checked_stack_ranges",
+        )
+    }
 
 
 def _stack_entry_offsets(
@@ -678,6 +821,7 @@ def _deduplicate(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "JOINT_AUTHORITY_SEMANTIC_STATE_V2_FORMAT",
     "JOINT_FIXED_POINT_V2_FORMAT",
     "JointFixedPointCallbacks",
     "derive_joint_fixed_point_v2",

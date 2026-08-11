@@ -35,6 +35,9 @@ CHECKED_STACK_SPATIAL_FACT_V2_FORMAT = (
 CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT = (
     "stage-a-checked-stack-origin-spatial-fact-v2"
 )
+CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT = (
+    "stage-a-checked-call-stack-write-spatial-fact-v2"
+)
 _STACK_BASE = {"op": "reg", "name": "esp", "width": 32}
 _UINT32 = 1 << 32
 _StackState = tuple[int, int]  # (launch-relative ESP, active frame base)
@@ -135,6 +138,7 @@ def derive_stack_range_analysis_v2(
         units=normalized_units,
         entry_offsets=first["entry_offsets"],
         frame_base_offsets=first["frame_base_offsets"],
+        call_site_effects=effects,
         checked_memory_access_facts=access_facts,
         binding=binding,
         stack_contract=stack_contract,
@@ -548,6 +552,7 @@ def _spatial_facts(
     units: Mapping[str, Mapping[str, Any]],
     entry_offsets: Mapping[str, Sequence[int]],
     frame_base_offsets: Mapping[str, Sequence[int]],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
     checked_memory_access_facts: Mapping[str, CheckedMemoryAccessFact],
     binding: Mapping[str, Any],
     stack_contract: Mapping[str, int],
@@ -665,12 +670,105 @@ def _spatial_facts(
             result.append(_seal_spatial_fact(
                 core, prefix="checked-stack-origin-spatial-v2:"
             ))
+    result.extend(_call_stack_write_spatial_facts(
+        frame_base_offsets=frame_base_offsets,
+        call_site_effects=call_site_effects,
+        binding=binding,
+        stack_contract=stack_contract,
+        image_base=image_base,
+        size_of_image=size_of_image,
+    ))
     return sorted(
         result,
         key=lambda row: (
-            str(row["unit_id"]), int(row["event_index"]), str(row["id"])
+            str(row["unit_id"]),
+            int(row["event_index"]),
+            int(row.get("write_index", -1)),
+            str(row["id"]),
         ),
     )
+
+
+def _call_stack_write_spatial_facts(
+    *,
+    frame_base_offsets: Mapping[str, Sequence[int]],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+    binding: Mapping[str, Any],
+    stack_contract: Mapping[str, int],
+    image_base: int,
+    size_of_image: int,
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    lower_bound = -int(stack_contract["bytes_below"])
+    upper_bound = int(stack_contract["bytes_above"])
+    for site, effect in sorted(
+        call_site_effects.items(),
+        key=lambda item: (item[0].unit_id, item[0].event_index),
+    ):
+        frame_offsets = frame_base_offsets.get(site.unit_id, ())
+        if effect.memory_frame_status != "complete" or not frame_offsets:
+            continue
+        effect_payload = effect.as_json()
+        effect_sha256 = canonical_sha256(effect_payload)
+        for write_index, span in enumerate(effect.memory_writes):
+            offset = _signed_stack_origin_offset(span.base)
+            width = span.size
+            if (
+                offset is None
+                or not isinstance(width, int)
+                or isinstance(width, bool)
+                or not 0 < width <= 4096
+            ):
+                continue
+            starts = [int(frame_base) + offset for frame_base in frame_offsets]
+            if not starts or any(
+                start < lower_bound or start + width > upper_bound
+                for start in starts
+            ):
+                continue
+            core = {
+                "format": CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT,
+                "status": "complete",
+                "unit_id": site.unit_id,
+                "event_index": site.event_index,
+                "write_index": write_index,
+                "memory_kind": "write",
+                "width_bytes": width,
+                "address_origin": span.base.as_json(),
+                "call_site_effect_sha256": effect_sha256,
+                "frame_base_offsets": sorted(
+                    set(int(value) for value in frame_offsets)
+                ),
+                "address_frame_offset": offset,
+                "minimum_start_offset": min(starts),
+                "maximum_start_offset": max(starts),
+                "stack_contract": {
+                    "lower_bound": lower_bound,
+                    "upper_bound_exclusive": upper_bound,
+                },
+                "disjoint_from_image": {
+                    "image_base": image_base,
+                    "size_of_image": size_of_image,
+                },
+                "authority_binding": copy.deepcopy(dict(binding)),
+            }
+            result.append(_seal_spatial_fact(
+                core, prefix="checked-call-stack-write-spatial-v2:"
+            ))
+    return result
+
+
+def _signed_stack_origin_offset(origin: Any) -> int | None:
+    if origin.kind != "stack_location" or len(origin.key) != 1:
+        return None
+    raw = origin.key[0]
+    if (
+        not isinstance(raw, int)
+        or isinstance(raw, bool)
+        or not 0 <= raw < _UINT32
+    ):
+        return None
+    return raw if raw < (1 << 31) else raw - _UINT32
 
 
 def _seal_spatial_fact(
@@ -812,11 +910,20 @@ def validate_stack_range_analysis_v2(
         raise ValueError("stack-range analysis does not replay exactly")
     result: dict[str, Mapping[str, Any]] = {}
     for row in expected["checked_spatial_facts"]:
-        event_id = f"event:{row['unit_id']}:{row['event_index']}"
+        event_id = _spatial_fact_event_id(row)
         if event_id in result:
             raise ValueError("stack spatial facts duplicate an exact event")
         result[event_id] = row
     return dict(sorted(result.items()))
+
+
+def _spatial_fact_event_id(row: Mapping[str, Any]) -> str:
+    if row.get("format") == CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT:
+        return (
+            f"call-memory-write:{row['unit_id']}:{row['event_index']}:"
+            f"{row['write_index']}"
+        )
+    return f"event:{row['unit_id']}:{row['event_index']}"
 
 
 def _normalize_units(
@@ -1111,6 +1218,7 @@ def _deduplicate(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
 
 
 __all__ = [
+    "CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT",
     "CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT",
     "CHECKED_STACK_SPATIAL_FACT_V2_FORMAT",
     "STACK_RANGE_ANALYSIS_V2_FORMAT",

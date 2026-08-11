@@ -65,7 +65,10 @@ from .interface_provenance import (
     callback_root_argument_origins,
     recover_external_interface_targets,
 )
-from .internal_call_summaries import derive_internal_call_preservation_summaries
+from .internal_call_summaries import (
+    checked_summary_preserved_registers,
+    derive_internal_call_preservation_summaries,
+)
 from .machine_import_profiles import MachineImportIdentity
 from .provenance_domain import (
     FiniteValue,
@@ -4663,16 +4666,8 @@ def _summary_state(raw: Mapping[str, Any]) -> _NodeState:
         )
     )
     hard_conflict = any(_is_conflict_reason(code) for code in blockers)
-    preservation_row = raw.get("register_preservation")
-    preservation_complete = (
-        isinstance(preservation_row, Mapping)
-        and preservation_row.get("status") == "complete"
-    )
-    preserved = raw.get("preserved_registers")
     preserved_fact = MustPreservedRegisters(
-        frozenset(str(register).lower() for register in preserved)
-        if preservation_complete and isinstance(preserved, list)
-        else _REGISTER_UNIVERSE
+        checked_summary_preserved_registers(raw)
     )
     stack_row = raw.get("stack_cleanup")
     stack_fact: Any = NoExactValue()
@@ -5115,14 +5110,13 @@ def _call_summary_inputs(
         if not isinstance(rva, int) or isinstance(rva, bool):
             continue
         address = (image_base + rva) & 0xFFFFFFFF
-        raw_preserved = raw.get("preserved_registers")
+        checked_preserved = checked_summary_preserved_registers(raw)
         preservation = raw.get("register_preservation")
-        if (
+        if checked_preserved or (
             isinstance(preservation, Mapping)
             and preservation.get("status") == "complete"
-            and isinstance(raw_preserved, list)
         ):
-            preserved[address] = frozenset(str(register) for register in raw_preserved)
+            preserved[address] = checked_preserved
         stack = raw.get("stack_cleanup")
         return_instruction = raw.get("return_instruction_cleanup")
         cleanup_values = {

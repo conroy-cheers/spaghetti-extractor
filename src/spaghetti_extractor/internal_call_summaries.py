@@ -1184,7 +1184,7 @@ def _analyze_callee(
         "multiple_calls_in_unit",
         "register_write_inventory_invalid",
     } & blockers
-    register_control_complete = register_frames_complete and not {
+    register_paths_complete = not {
         "callee_summary_budget_exceeded",
         "unresolved_direct_control",
         "unresolved_indirect_jump",
@@ -1194,6 +1194,8 @@ def _analyze_callee(
         "multiple_calls_in_unit",
         "register_write_inventory_invalid",
     } & blockers
+    register_control_complete = register_frames_complete and register_paths_complete
+    checked_preserved = preserved if register_paths_complete else []
     return_esp_values = {state.registers.get("esp") for state in return_states}
     exact_return_esp = (
         next(iter(return_esp_values)) if len(return_esp_values) == 1 else None
@@ -1279,14 +1281,20 @@ def _analyze_callee(
     )
     return {
         "status": "complete" if summary_complete else "incomplete",
-        "preserved_registers": (
-            preserved if register_control_complete else []
+        # Positive preservation claims remain useful when another register or
+        # call-frame atom is unknown. Structural control frontiers erase the
+        # complete set because an omitted returning path could contradict any
+        # claim. The nested field distinguishes these checked positive atoms
+        # from legacy incomplete summaries, whose top-level list is ignored.
+        "preserved_registers": checked_preserved,
+        "register_preservation": (
+            {"status": "complete"}
+            if register_control_complete
+            else {
+                "status": "incomplete",
+                "checked_preserved_registers": checked_preserved,
+            }
         ),
-        "register_preservation": {
-            "status": (
-                "complete" if register_control_complete else "incomplete"
-            ),
-        },
         "result_register_origins": {
             "status": "complete" if control_complete else "incomplete",
             "registers": result_registers if control_complete else {},
@@ -1588,9 +1596,7 @@ def _summary_call_frame(
         may_return=may_return,
         may_not_return=may_not_return,
         register_frame_complete=register_frame_complete,
-        preserved_registers=(
-            _summary_preserved(summary) if register_frame_complete else frozenset()
-        ),
+        preserved_registers=_summary_preserved(summary),
         stack_frame_complete=stack_frame_complete,
         stack_cleanup=stack_cleanup,
         result_frame_complete=result_frame_complete,
@@ -1747,7 +1753,7 @@ def _recovered_indirect_call_frame(
     )
     preserved = (
         set(possible_returning[0].preserved_registers)
-        if register_frame_complete
+        if possible_returning
         else set()
     )
     for alternative in possible_returning[1:]:
@@ -2573,19 +2579,46 @@ def _transfer(
     ), stack_blockers, memory_fact_dependencies
 
 
-def _summary_preserved(summary: Mapping[str, Any] | None) -> frozenset[str]:
+def checked_summary_preserved_registers(
+    summary: Mapping[str, Any] | None,
+) -> frozenset[str]:
+    """Return only preservation atoms explicitly checked by the summary.
+
+    Legacy summaries authorize their top-level inventory only when the whole
+    register family is complete. New summaries may retain a bounded positive
+    subset while the family remains incomplete; the duplicated inventories
+    must agree exactly so a malformed proposal fails closed.
+    """
+
     if summary is None:
         return frozenset()
     preservation = _mapping(summary.get("register_preservation"))
-    if preservation:
-        if preservation.get("status") != "complete":
-            return frozenset()
-    elif summary.get("status") != "complete":
-        return frozenset()
     raw = summary.get("preserved_registers")
-    if not isinstance(raw, list):
+    if not isinstance(raw, list) or len(raw) != len(set(map(str, raw))):
         return frozenset()
-    return frozenset(str(register) for register in raw if register in _SUMMARY_REGISTERS)
+    normalized = frozenset(
+        str(register) for register in raw if register in _SUMMARY_REGISTERS
+    )
+    if len(normalized) != len(raw):
+        return frozenset()
+    if preservation:
+        if preservation.get("status") == "complete":
+            return normalized
+        checked = preservation.get("checked_preserved_registers")
+        if (
+            not isinstance(checked, list)
+            or len(checked) != len(set(map(str, checked)))
+            or frozenset(str(register) for register in checked) != normalized
+        ):
+            return frozenset()
+        return normalized
+    if summary.get("status") != "complete":
+        return frozenset()
+    return normalized
+
+
+def _summary_preserved(summary: Mapping[str, Any] | None) -> frozenset[str]:
+    return checked_summary_preserved_registers(summary)
 
 
 def _selected_import_stack_cleanup(selected: SelectedImportABI | None) -> int | None:

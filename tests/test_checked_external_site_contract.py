@@ -142,6 +142,7 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
         }
         event = {
             "kind": "indirect_call",
+            "arguments": [],
             "register_inputs": {
                 "esp": {"op": "reg", "name": "esp", "width": 32}
             },
@@ -176,6 +177,37 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
                 },
             },
         )
+
+    def test_nonempty_wrong_sized_argument_inventory_remains_invalid(self) -> None:
+        contract = _profile_entry()
+        contract["profile_binding"] = {
+            "profile_id": "fixture-profile",
+            "profile_sha256": "0" * 64,
+            "entry_key": "machine_import_signatures",
+            "entry_index": 0,
+        }
+        event = {
+            "kind": "indirect_call",
+            "arguments": [{"op": "const", "value": 1, "width": 32}],
+            "register_inputs": {
+                "esp": {"op": "reg", "name": "esp", "width": 32}
+            },
+        }
+
+        with self.assertRaisesRegex(
+            CheckedExternalSiteContractError, "argument inventory is not exact"
+        ):
+            checked_external_site_contract_from_event(
+                event=event,
+                identity=ExternalSiteIdentity.imported(
+                    {"dll": "fixture.dll", "symbol": "Exact"},
+                    context="fixture",
+                ),
+                transfer_kind="call",
+                disposition="returns_here",
+                resolved_machine_contract=contract,
+                context="resolved fixture",
+            )
 
     def test_missing_event_and_resolved_contract_fails_closed(self) -> None:
         with self.assertRaisesRegex(
@@ -536,6 +568,9 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
                 "checked_external_contract": checked.payload(),
             }
             native_plan = {
+                "implementation_dispatch_receipt": {
+                    "reachability": {"status": "complete"}
+                },
                 "import_bindings": [{
                     "dll": "fixture.dll",
                     "symbol": "Exact",
@@ -545,7 +580,12 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
                 }],
                 "external_sites": [site],
             }
-            self.assertEqual(_external_range_rules(native_plan, profile), ())
+            self.assertEqual(
+                _external_range_rules(
+                    native_plan, profile, candidate_mode="static-closed"
+                ),
+                ((), (0x1000,), ()),
+            )
 
             missing = copy.deepcopy(native_plan)
             del missing["external_sites"][0]["checked_external_contract"]
@@ -555,11 +595,16 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 StageBNativeRuntimeError, "no checked external contract"
             ):
-                _external_range_rules(missing, profile)
-
-            self.assertEqual(
                 _external_range_rules(
-                    {"import_bindings": [], "external_sites": [{
+                    missing, profile, candidate_mode="static-closed"
+                )
+
+            deferred = _external_range_rules(
+                    {
+                        "implementation_dispatch_receipt": {
+                            "reachability": {"status": "incomplete"}
+                        },
+                        "import_bindings": [], "external_sites": [{
                         "instruction_rva": 0x2000,
                         "site_kind": "dynamic_target",
                         "disposition": "returns_here",
@@ -567,8 +612,13 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
                         "external_protocol": None,
                     }]},
                     profile,
-                ),
-                (),
+                    candidate_mode="structural-diagnostic",
+                )
+            self.assertEqual(deferred[0], ())
+            self.assertEqual(deferred[1], ())
+            self.assertEqual(
+                deferred[2][0]["category"],
+                "uncontracted_dynamic_external_target",
             )
 
 

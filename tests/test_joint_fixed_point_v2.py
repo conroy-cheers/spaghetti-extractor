@@ -3,6 +3,9 @@ from __future__ import annotations
 import unittest
 
 from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
+from spaghetti_extractor.analysis_schema_v2 import (
+    CHECKED_MEMORY_RANGE_FACT_V2_FORMAT,
+)
 from spaghetti_extractor.authority_bindings_v2 import (
     BinaryBinding,
     ImageSpanBinding,
@@ -66,6 +69,41 @@ def _stack(
             "deterministic": True,
             "empty_initial_state": True,
         },
+    }
+
+
+def _checked_stack_fact(*, lineage: str) -> dict[str, object]:
+    binding = {
+        "pe_sha256": "1" * 64,
+        "machine_ir_sha256": "2" * 64,
+        "rooted_graph_id": f"graph-lineage:{lineage}",
+        "launch_assumptions_sha256": "3" * 64,
+        "image_base": 0x400000,
+        "size_of_image": 0x10000,
+        "call_site_effects_sha256": canonical_sha256({"lineage": lineage}),
+    }
+    core = {
+        "format": CHECKED_MEMORY_RANGE_FACT_V2_FORMAT,
+        "status": "complete",
+        "source_kind": "entry",
+        "range_kind": "stack",
+        "base_expression": {
+            "op": "reg",
+            "name": "esp",
+            "width": 32,
+        },
+        "offset_start": -4,
+        "offset_end": 4,
+        "applies_to_unit_ids": ["root"],
+        "disjoint_from_image": {
+            "image_base": 0x400000,
+            "size_of_image": 0x10000,
+        },
+        "authority_binding": binding,
+    }
+    return {
+        **core,
+        "id": "checked-stack-range-v2:" + canonical_sha256(core),
     }
 
 
@@ -442,6 +480,56 @@ class JointFixedPointV2Tests(unittest.TestCase):
             result["joint_fixed_point"]["authoritative_rounds"][-1]["stack_entry_units"],
             2,
         )
+
+    def test_stack_evidence_lineage_does_not_prevent_semantic_convergence(self) -> None:
+        calls = 0
+
+        def interprocedural(
+            _invariants, _stack_entry_offsets, _stack_range_facts, _recoveries
+        ):
+            nonlocal calls
+            calls += 1
+            return _interprocedural(
+                generation=calls,
+                proposal_seed_count=0,
+            )
+
+        def stack(graph, interprocedural_result):
+            lineage = str(
+                interprocedural_result["fixed_point"]["cold_replay_signature"]
+            )
+            return {
+                **_stack({}, graph_id=str(graph["id"])),
+                "entry_offsets": {"root": [0]},
+                "checked_range_facts": [
+                    _checked_stack_fact(lineage=lineage)
+                ],
+            }
+
+        result = derive_joint_fixed_point_v2(
+            proposal_graph=_graph(),
+            proposal_recoveries=[],
+            callbacks=JointFixedPointCallbacks(
+                derive_interprocedural=interprocedural,
+                derive_stack_ranges=stack,
+                derive_global_slots=lambda _graph, _ranges: {
+                    "status": "complete"
+                },
+                derive_global_slot_authority=lambda *_args: {
+                    "status": "complete",
+                    "global_slot_invariants": [],
+                },
+                derive_graph=lambda _interprocedural: _graph(),
+            ),
+            finite_round_budget=3,
+        )
+
+        final_round = result["joint_fixed_point"]["authoritative_rounds"][-1]
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertEqual(calls, 2)
+        self.assertTrue(final_round["semantic_state_stable"])
+        self.assertFalse(final_round["evidence_identity_stable"])
+        self.assertEqual(final_round["changed_semantic_families"], [])
 
     def test_progress_reports_each_expensive_phase_without_changing_output(self) -> None:
         events: list[tuple[str, dict[str, object]]] = []

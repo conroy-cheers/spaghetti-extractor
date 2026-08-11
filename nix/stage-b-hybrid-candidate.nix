@@ -14,6 +14,7 @@
   diagnosticFailureTrap ? false,
   portableReplacements ? null,
   callableExternalRuntimeContract ? null,
+  externalSiteProposals ? null,
 }:
 
 assert pkgs.lib.assertMsg
@@ -29,6 +30,9 @@ assert pkgs.lib.assertMsg
   (candidateMode != "static-closed" ||
     (staticCompletenessReport != null && staticAuthorityV2 != null))
   "static-closed candidates require v2 static authority inputs";
+assert pkgs.lib.assertMsg
+  (externalSiteProposals == null || candidateMode == "structural-diagnostic")
+  "proposal-only external-site evidence is diagnostic-only";
 
 let
   lib = pkgs.lib;
@@ -90,6 +94,10 @@ let
   callableExternalRuntimeArg = lib.escapeShellArg (
     if callableExternalRuntimeContract == null then ""
     else toString callableExternalRuntimeContract
+  );
+  externalSiteProposalsArg = lib.escapeShellArg (
+    if externalSiteProposals == null then ""
+    else toString externalSiteProposals
   );
   machineImportProfileBundle = pkgs.runCommand
     "${namePrefix}-machine-import-profile-bundle-v1"
@@ -301,6 +309,7 @@ let
       ${portableReplacementArg} \
       ${machineImportProfileBundle}/profile.json \
       ${callableExternalRuntimeArg} \
+      ${externalSiteProposalsArg} \
       "$out" ${profileArgs} <<'PY'
     import json
     import pathlib
@@ -321,8 +330,9 @@ let
     portable_path = sys.argv[5]
     profile_bundle = pathlib.Path(sys.argv[6])
     callable_external_path = sys.argv[7]
-    output = pathlib.Path(sys.argv[8])
-    profiles = tuple(pathlib.Path(value) for value in sys.argv[9:])
+    external_site_proposals_path = sys.argv[8]
+    output = pathlib.Path(sys.argv[9])
+    profiles = tuple(pathlib.Path(value) for value in sys.argv[10:])
     selected_portable_components = ()
     if portable_path:
         portable_payload = json.loads(
@@ -367,6 +377,10 @@ let
         callable_external_contract=(
             pathlib.Path(callable_external_path)
             if callable_external_path else None
+        ),
+        external_site_proposals=(
+            pathlib.Path(external_site_proposals_path)
+            if external_site_proposals_path else None
         ),
         candidate_mode=${builtins.toJSON candidateMode},
         allow_deferred_potential_transfers=${if allowDeferredPotentialTransfers then "True" else "False"},

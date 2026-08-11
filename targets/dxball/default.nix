@@ -126,6 +126,8 @@ let
     candidateMode = "structural-diagnostic";
     allowDeferredPotentialTransfers = true;
     diagnosticFailureTrap = true;
+    externalSiteProposals =
+      analysis.diagnosticExternalSiteProposals.artifact;
     callableExternalRuntimeContract =
       analysis.diagnosticCallableExternalRuntime.artifact;
   };

@@ -108,6 +108,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("spaghetti_extractor.mutable_slot_candidates_v2", joint_phase)
         self.assertIn("spaghetti_extractor.global_slot_authority_v2", joint_phase)
         self.assertIn("derive_proposal_slot_dependencies", joint_phase)
+        self.assertIn('*seed.get("recovered_targets", [])', joint_phase)
         self.assertIn("derive_dependency_scoped_slot_inventory_v2", joint_phase)
         self.assertIn(
             "proposal_dependencies=proposal_slot_dependencies",
@@ -391,6 +392,9 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn('candidateMode = "structural-diagnostic"', target)
         self.assertIn("allowDeferredPotentialTransfers = true", target)
         self.assertIn("diagnosticFailureTrap = true", target)
+        self.assertIn(
+            "analysis.diagnosticExternalSiteProposals.artifact", target
+        )
         self.assertIn("nativeEnginePlan", target)
         self.assertIn("nativeRuntimePackage", target)
 
@@ -423,6 +427,11 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("write_static_hybrid_closure_receipt", module)
         self.assertNotIn("write_final_candidate_authorization", module)
         self.assertNotIn("stage-b-final-candidate-generation-authorization-v1", module)
+        self.assertIn("externalSiteProposals ? null", module)
+        self.assertIn("external_site_proposals=", module)
+        self.assertIn(
+            "proposal-only external-site evidence is diagnostic-only", module
+        )
 
     def test_checked_external_sites_use_only_the_canonical_v2_proposal(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(

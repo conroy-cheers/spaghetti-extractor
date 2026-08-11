@@ -47,35 +47,6 @@
       "world_effect": "none"
     },
     {
-      "id": 3,
-      "import": {
-        "dll": "kernel32.dll",
-        "symbol": "SetUnhandledExceptionFilter"
-      },
-      "abi_template": "pe32-stdcall-v1",
-      "argument_words": 1,
-      "result_register_relations": [
-        {"register": "eax", "relation": "related_word"}
-      ],
-      "memory_effect": "none",
-      "memory_footprints": [],
-      "world_effect": "callbackRegistration",
-      "callback_effect": "explicit",
-      "world_effect_argument": 0,
-      "callback_lifetime": "until_replaced_or_process_exit",
-      "callback_result": {
-        "register": "eax",
-        "origin": "previous_registered_callback",
-        "nullable": true
-      },
-      "callback_abi": {
-        "kind": "generic_callback",
-        "argument_words": 1,
-        "stack_cleanup_bytes": 4,
-        "nullable": true
-      }
-    },
-    {
       "id": 4,
       "import": {"dll": "kernel32.dll", "symbol": "VirtualQuery"},
       "abi_template": "pe32-stdcall-v1",

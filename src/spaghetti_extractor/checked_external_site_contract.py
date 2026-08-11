@@ -577,7 +577,13 @@ def checked_external_site_contract_from_event(
         raw_contract.get("argument_words"), f"{context} argument words", maximum=256
     )
     arguments = event.get("arguments")
-    if arguments is None and resolved_machine_contract is not None:
+    if (
+        resolved_machine_contract is not None
+        and (
+            arguments is None
+            or (argument_words > 0 and arguments == [])
+        )
+    ):
         arguments = _resolved_stack_arguments(
             event,
             argument_words=argument_words,

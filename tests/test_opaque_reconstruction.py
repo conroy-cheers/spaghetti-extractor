@@ -7,11 +7,12 @@ from pathlib import Path
 
 from tests.pe_fixtures import pe32_image
 from spaghetti_extractor.analysis.binary_inventory import stage_a_inventory_binary
+from spaghetti_extractor.analysis.cutpoints import semantic_cutpoint_spans_for_side
 from spaghetti_extractor.opaque_reconstruction import (
     opaque_self_map_from_inventory,
     stage_a_export_opaque_reconstruction,
 )
-from spaghetti_extractor.stage_binary import StageAInputError
+from spaghetti_extractor.stage_binary import StageAInputError, _parse_stage_a_pe
 from spaghetti_extractor.util import sha256_bytes
 
 
@@ -109,6 +110,53 @@ class OpaqueReconstructionTests(unittest.TestCase):
             self.assertEqual(result["status"], "ready")
             self.assertTrue((output / "reference-contract.json").is_file())
             self.assertTrue((output / "state-machine.jsonl").is_file())
+
+    def test_opaque_inventory_splits_nop_padding_before_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "fixture.exe"
+            inventory = root / "inventory.json"
+            original.write_bytes(
+                pe32_image(b"\x90\x90\x90\x56\xc3", virtual_size=5)
+            )
+
+            payload = stage_a_inventory_binary(
+                binary=original,
+                linker_map=None,
+                side="original",
+                out=inventory,
+            )
+
+            spans = [row["span"] for row in payload["regions"]]
+            self.assertIn({"rva_start": 0x1003, "size": 2}, spans)
+            self.assertTrue(any(
+                waiver["rva"] == 0x1000 and waiver["size"] == 3
+                for waiver in payload["padding_waivers"]
+            ))
+
+    def test_nop_split_does_not_treat_table_like_bytes_as_a_prologue(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "fixture.exe"
+            original.write_bytes(
+                pe32_image(b"\x90\x83\x39\x41\xc3", virtual_size=5)
+            )
+            binary = _parse_stage_a_pe(original)
+            try:
+                spans = semantic_cutpoint_spans_for_side(
+                    binary,
+                    {"rva_start": 0x1000, "rva_end": 0x1005, "size": 5},
+                    "table-like",
+                    periodic=False,
+                    split_nop_padding=True,
+                )
+            finally:
+                binary.pe.close()
+
+            self.assertEqual(
+                spans,
+                [{"rva_start": 0x1000, "rva_end": 0x1005, "size": 5}],
+            )
 
 
 if __name__ == "__main__":

@@ -832,7 +832,10 @@ let
           )
           proposal_slot_dependencies = derive_proposal_slot_dependencies(
               binary,
-              proposals,
+              [
+                  *proposals,
+                  *seed.get("recovered_targets", []),
+              ],
           )
           proposal_global_slot_hypotheses = (
               derive_global_slot_induction_hypotheses_v2(

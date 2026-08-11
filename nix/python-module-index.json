@@ -1034,6 +1034,7 @@
     "spaghetti_extractor.joint_fixed_point_v2": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.analysis_schema_v2",
         "spaghetti_extractor.artifact_identity_v2",
         "spaghetti_extractor.global_slot_hypotheses_v2",
         "spaghetti_extractor.joint_interprocedural_analysis_v2"
@@ -1584,6 +1585,7 @@
         "spaghetti_extractor.callable_external_runtime",
         "spaghetti_extractor.callback_contracts",
         "spaghetti_extractor.checked_external_site_contract",
+        "spaghetti_extractor.external_site_proposals_v2",
         "spaghetti_extractor.machine_import_profiles",
         "spaghetti_extractor.recovered_executable_data",
         "spaghetti_extractor.stage_b_candidate_modes",

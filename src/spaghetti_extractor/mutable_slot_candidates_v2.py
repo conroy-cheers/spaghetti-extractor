@@ -109,6 +109,22 @@ def derive_proposal_slot_dependencies(
     """
 
     dependencies: set[tuple[int, str, str, int]] = set()
+
+    # An incomplete cold recovery may already identify the exact mutable read
+    # responsible for the frontier.  Preserve that location as a replay
+    # nomination: the dependency grants no value or target authority, and the
+    # point-sensitive slot analysis must still classify every reaching write.
+    for requirement in derive_recovery_slot_requirements_v2(binary, recoveries):
+        for row in requirement.dependency_rows():
+            dependencies.add(
+                (
+                    requirement.slot_rva,
+                    str(row["exit_id"]),
+                    str(row.get("unit_id") or ""),
+                    int(row.get("event_index", -1)),
+                )
+            )
+
     for recovery in recoveries:
         if (
             not isinstance(recovery, Mapping)

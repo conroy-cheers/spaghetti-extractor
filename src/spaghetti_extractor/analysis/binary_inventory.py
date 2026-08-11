@@ -515,12 +515,14 @@ def stage_a_inventory_binary(
                 {"rva_start": start, "rva_end": stop, "size": stop - start},
                 f"{side}-{start:x}-{stop:x}",
                 periodic=True,
+                split_nop_padding=True,
             )
             semantic_spans = semantic_cutpoint_spans_for_side(
                 parsed,
                 {"rva_start": start, "rva_end": stop, "size": stop - start},
                 f"{side}-{start:x}-{stop:x}",
                 periodic=False,
+                split_nop_padding=True,
             )
         except StageAInputError as exc:
             issues.append(

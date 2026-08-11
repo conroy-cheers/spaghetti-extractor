@@ -230,6 +230,47 @@ class MutableSlotCandidatesV2Tests(unittest.TestCase):
         self.assertEqual(slot_rvas, (0x3020, 0x3024))
         self.assertEqual(replay_dependencies, tuple(dependencies))
 
+    def test_incomplete_exact_slot_dependency_is_retained_for_replay(self) -> None:
+        dependencies = derive_proposal_slot_dependencies(
+            _binary(),
+            [{
+                "id": "exit:callback",
+                "status": "incomplete",
+                "mutable_slot_dependencies": [{
+                    "slot_rva": 0x3020,
+                    "width_bytes": 4,
+                    "read_sites": [{
+                        "unit_id": "read:callback",
+                        "event_index": 1,
+                    }],
+                    "origin_witnessed": False,
+                }],
+            }],
+        )
+
+        self.assertEqual(dependencies, [{
+            "slot_rva": 0x3020,
+            "exit_id": "exit:callback",
+            "unit_id": "read:callback",
+            "event_index": 1,
+            "proof_authority": False,
+        }])
+
+    def test_malformed_incomplete_slot_dependency_fails_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "invalid exact span"):
+            derive_proposal_slot_dependencies(
+                _binary(),
+                [{
+                    "id": "exit:callback",
+                    "status": "incomplete",
+                    "mutable_slot_dependencies": [{
+                        "slot_rva": 0x3020,
+                        "width_bytes": 8,
+                        "read_sites": [],
+                    }],
+                }],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -10,6 +11,14 @@ from pathlib import Path
 
 import pefile
 
+from spaghetti_extractor.checked_external_site_contract import (
+    ExternalSiteIdentity,
+    checked_external_site_contract_from_event,
+)
+from spaghetti_extractor.external_site_proposals_v2 import (
+    build_external_site_proposals_v2,
+)
+from spaghetti_extractor.hybrid_authority_v2 import canonical_json_bytes
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.stage_b_native_engine import (
     STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
@@ -1676,6 +1685,175 @@ class StageBNativeEngineTests(unittest.TestCase):
             )
             self.assertEqual(plan.status, "ready", plan.blockers)
             self.assertEqual(plan.callback_targets[0].stack_cleanup_bytes, 8)
+
+    def test_diagnostic_site_proposal_supplies_receipted_callback_contract(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            callback_va = 0x403000
+            event = {
+                "kind": "external_call",
+                "instruction_rva": 0x2000,
+                "return_rva": 0x2006,
+                "dll": "kernel32.dll",
+                "symbol": "SetUnhandledExceptionFilter",
+                "ordinal": None,
+                "arguments": [
+                    {"op": "const", "value": callback_va, "width": 32}
+                ],
+                "stack_inputs": [{
+                    "offset": 0,
+                    "width": 4,
+                    "value": {
+                        "op": "const",
+                        "value": callback_va,
+                        "width": 32,
+                    },
+                }],
+            }
+            registration = _machine_ir_transfer(
+                rva=0x2000,
+                size=6,
+                event=event,
+            )
+            continuation = _machine_ir_transfer(
+                rva=0x2006, size=1, mnemonic="nop"
+            )
+            callback = _machine_ir_transfer(
+                rva=0x3000, size=1, mnemonic="ret"
+            )
+            callback["semantics"]["outcome"] = {"kind": "return"}
+            for row in (registration, continuation, callback):
+                row["control"] = {"direct_targets": []}
+            machine = self._write(
+                root, [registration, continuation, callback]
+            )
+            manifest_payload = _implementation_manifest(
+                machine,
+                roots=[registration["id"]],
+                reachable=[
+                    registration["id"],
+                    continuation["id"],
+                    callback["id"],
+                ],
+            )
+            manifest_payload["binary"] = {"sha256": "b" * 64}
+            manifest = root / "machine-ir-manifest.json"
+            manifest.write_text(
+                json.dumps(manifest_payload, sort_keys=True),
+                encoding="utf-8",
+            )
+            identity = ExternalSiteIdentity.imported(
+                event, context="fixture registration"
+            )
+            profile_binding = {
+                "profile_id": "fixture-kernel32",
+                "profile_sha256": "1" * 64,
+                "entry_key": "machine_import_signatures",
+                "entry_index": 0,
+            }
+            callback_source = {"kind": "argument_word", "argument": 0}
+            callback_abi = {
+                "kind": "generic_callback",
+                "argument_words": 1,
+                "stack_cleanup_bytes": 4,
+                "nullable": True,
+            }
+            contract = checked_external_site_contract_from_event(
+                event=event,
+                identity=identity,
+                transfer_kind="call",
+                disposition="returns_here",
+                callback_evidence={
+                    "status": "complete",
+                    "failure": None,
+                    "callback_source": callback_source,
+                    "callback_abi": callback_abi,
+                    "callback_lifetime": "until_replaced_or_process_exit",
+                    "callback_behavior": "registration",
+                    "target_rvas": [0x3000],
+                },
+                resolved_machine_contract={
+                    "id": "kernel32.dll!SetUnhandledExceptionFilter",
+                    "arity": {"kind": "fixed", "words": 1},
+                    "abi_template": "pe32-stdcall-v1",
+                    "profile_binding": profile_binding,
+                    "disposition": "returns",
+                    "result_register_relations": [{
+                        "register": "eax",
+                        "relation": "related_word",
+                    }],
+                    "memory_effect": "none",
+                    "memory_footprints": [],
+                    "world_effect": "callbackRegistration",
+                    "callback_effect": "explicit",
+                    "callback_source": callback_source,
+                    "callback_lifetime": "until_replaced_or_process_exit",
+                    "callback_abi": callback_abi,
+                },
+                context="fixture registration",
+            )
+            alternative_sha256 = hashlib.sha256(
+                canonical_json_bytes(identity.payload())
+            ).hexdigest()
+            proposals_payload = build_external_site_proposals_v2(
+                checked_sites=[{
+                    "unit_id": registration["id"],
+                    "event_index": 0,
+                    "target_alternative_index": 0,
+                    "target_alternative_sha256": alternative_sha256,
+                    "contract": contract.payload(),
+                }],
+                pe_sha256="b" * 64,
+                machine_ir_sha256=sha256_bytes(machine.read_bytes()),
+            )
+            proposals = root / "external-site-proposals-v2.json"
+            proposals.write_text(
+                json.dumps(proposals_payload, sort_keys=True),
+                encoding="utf-8",
+            )
+
+            plan = plan_stage_b_native_engine(
+                machine_ir=machine,
+                machine_ir_manifest=manifest,
+                entry_rva=0x2000,
+                import_iat_vas={
+                    ("kernel32.dll", "SetUnhandledExceptionFilter"): 0x432000
+                },
+                external_site_proposals=proposals,
+                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+                fixed_image_base=0x400000,
+            )
+
+            self.assertEqual(plan.status, "ready", plan.blockers)
+            site = plan.external_sites[0]
+            self.assertEqual(site.checked_external_contract, contract)
+            self.assertEqual(
+                site.target_resolution_evidence["kind"],
+                "diagnostic-external-site-proposal-v2",
+            )
+            self.assertFalse(site.target_resolution_evidence["proof_authority"])
+            self.assertEqual([target.rva for target in plan.callback_targets], [0x3000])
+            self.assertEqual(len(plan.callback_adapters), 1)
+            self.assertEqual(len(plan.callback_adapter_receipts), 1)
+
+            with self.assertRaisesRegex(
+                StageAInputError, "restricted to structural-diagnostic"
+            ):
+                plan_stage_b_native_engine(
+                    machine_ir=machine,
+                    machine_ir_manifest=manifest,
+                    entry_rva=0x2000,
+                    import_iat_vas={
+                        (
+                            "kernel32.dll",
+                            "SetUnhandledExceptionFilter",
+                        ): 0x432000
+                    },
+                    external_site_proposals=proposals,
+                    fixed_image_base=0x400000,
+                )
 
     def test_callback_registration_without_checked_contract_cannot_authorize_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
