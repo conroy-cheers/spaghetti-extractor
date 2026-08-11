@@ -111,6 +111,8 @@ class _InternalContractResult:
     contract_id: str
     relation: str
     nullable: bool
+    size_offset: int | None = None
+    size_scale: int = 1
 
 
 @dataclass(frozen=True)
@@ -138,6 +140,7 @@ class _State:
     memory_words: dict[ValueOrigin, _Value] = field(default_factory=dict)
     input_stack_valid: bool = True
     input_stack_kills: tuple[tuple[int, int], ...] = ()
+    caller_memory_writes: tuple[CallWriteSpan, ...] | None = ()
 
 
 @dataclass(frozen=True)
@@ -849,6 +852,11 @@ def _force_incomplete(
         "status": "incomplete",
         "locations": [],
     }
+    result["caller_memory_frame"] = {
+        "status": "incomplete",
+        "preserved": False,
+        "writes": [],
+    }
     result["return_behavior"] = {
         "status": "incomplete",
         "may_return": None,
@@ -878,6 +886,11 @@ def _recursive_seed_summary() -> dict[str, Any]:
         "register_preservation": {"status": "complete"},
         "result_register_origins": {"status": "complete", "registers": {}},
         "result_memory_origins": {"status": "complete", "locations": []},
+        "caller_memory_frame": {
+            "status": "incomplete",
+            "preserved": False,
+            "writes": [],
+        },
         "stack_cleanup": {"status": "not_applicable", "stack_delta": None},
         "return_behavior": {
             "status": "complete",
@@ -993,6 +1006,7 @@ def _recursive_summary_projection(
             "register_preservation": summary.get("register_preservation"),
             "result_register_origins": summary.get("result_register_origins"),
             "result_memory_origins": summary.get("result_memory_origins"),
+            "caller_memory_frame": summary.get("caller_memory_frame"),
             "stack_cleanup": summary.get("stack_cleanup"),
             "return_instruction_cleanup": summary.get(
                 "return_instruction_cleanup"
@@ -1135,6 +1149,7 @@ def _analyze_callee(
                     prior,
                     output,
                     max_value_alternatives=max_value_alternatives,
+                    max_memory_writes=max_memory_words,
                 )
             )
             if prior != joined:
@@ -1257,6 +1272,11 @@ def _analyze_callee(
         memory_fact_dependencies=memory_fact_dependencies,
         complete=control_complete,
     )
+    caller_memory_frame = _summarize_caller_memory_frame(
+        return_states,
+        control_complete=control_complete,
+        maximum=max_memory_words,
+    )
     return {
         "status": "complete" if summary_complete else "incomplete",
         "preserved_registers": (
@@ -1286,6 +1306,7 @@ def _analyze_callee(
                 else []
             ),
         },
+        "caller_memory_frame": caller_memory_frame,
         "stack_cleanup": stack_cleanup,
         "return_behavior": {
             "status": "complete" if control_complete else "incomplete",
@@ -1389,6 +1410,34 @@ def _summary_effect_families(
             "delegated_dependencies": sorted(dependencies),
         },
         "target_dependencies": sorted(dependencies),
+    }
+
+
+def _summarize_caller_memory_frame(
+    return_states: Sequence[_State],
+    *,
+    control_complete: bool,
+    maximum: int,
+) -> dict[str, Any]:
+    if not control_complete or not return_states:
+        return {"status": "incomplete", "preserved": False, "writes": []}
+    writes: tuple[CallWriteSpan, ...] | None = ()
+    for state in return_states:
+        writes = _join_caller_memory_writes(
+            writes,
+            state.caller_memory_writes,
+            maximum=maximum,
+        )
+        if writes is None:
+            return {
+                "status": "incomplete",
+                "preserved": False,
+                "writes": [],
+            }
+    return {
+        "status": "complete",
+        "preserved": not writes,
+        "writes": [span.as_json() for span in writes],
     }
 
 
@@ -1526,6 +1575,14 @@ def _summary_call_frame(
         register_results.get("status") == "complete"
         and memory_results.get("status") == "complete"
     )
+    (
+        memory_frame_complete,
+        memory_preserved,
+        memory_writes,
+    ) = _summary_caller_memory_writes(
+        summary,
+        input_state=input_state,
+    )
     return _CallFrame(
         behavior_complete=behavior_complete,
         may_return=may_return,
@@ -1557,7 +1614,55 @@ def _summary_call_frame(
             if behavior_complete
             else frozenset({"nested_call_return_behavior_incomplete"})
         ),
+        memory_frame_complete=memory_frame_complete,
+        memory_preserved=memory_preserved,
+        memory_writes=memory_writes,
     )
+
+
+def _summary_caller_memory_writes(
+    summary: Mapping[str, Any],
+    *,
+    input_state: _State | None,
+) -> tuple[bool, bool, tuple[CallWriteSpan, ...]]:
+    frame = _mapping(summary.get("caller_memory_frame"))
+    raw_writes = frame.get("writes")
+    preserved = frame.get("preserved")
+    if (
+        frame.get("status") != "complete"
+        or not isinstance(preserved, bool)
+        or not isinstance(raw_writes, list)
+    ):
+        return False, False, ()
+    writes: list[CallWriteSpan] = []
+    for raw in raw_writes:
+        row = _mapping(raw)
+        if set(row) != {"base", "size"}:
+            return False, False, ()
+        try:
+            base = _parse_typed_origin(row.get("base"))
+        except ValueError:
+            return False, False, ()
+        size = row.get("size")
+        if size is not None and (
+            not isinstance(size, int)
+            or isinstance(size, bool)
+            or not 0 <= size <= 0xFFFFFFFF
+        ):
+            return False, False, ()
+        instantiated = _instantiate_summary_location(
+            base,
+            input_state=input_state,
+        )
+        if instantiated is None:
+            return False, False, ()
+        try:
+            writes.append(CallWriteSpan(instantiated, size))
+        except ValueError:
+            return False, False, ()
+    if len(set(writes)) != len(writes) or preserved != (not writes):
+        return False, False, ()
+    return True, preserved, tuple(sorted(writes, key=_call_write_span_sort_key))
 
 
 def _recovered_indirect_call_frame(
@@ -1908,6 +2013,7 @@ def _external_tail_return_state(
         memory_words=dict(output.memory_words),
         input_stack_valid=output.input_stack_valid,
         input_stack_kills=output.input_stack_kills,
+        caller_memory_writes=output.caller_memory_writes,
     )
 
 
@@ -2267,6 +2373,11 @@ def _transfer(
             frame=frame,
             maximum_stack_ranges=max_stack_words,
         )
+        caller_memory_writes = _compose_caller_memory_writes(
+            pre_call.caller_memory_writes,
+            frame=frame,
+            maximum=max_memory_words,
+        )
         return (
             _State(
                 registers=output_registers,
@@ -2274,6 +2385,7 @@ def _transfer(
                 memory_words=output_memory,
                 input_stack_valid=input_stack_valid,
                 input_stack_kills=input_stack_kills,
+                caller_memory_writes=caller_memory_writes,
             ),
             set(frame.blocker_codes) | stack_blockers,
             set(),
@@ -2299,6 +2411,7 @@ def _transfer(
     memory_words = dict(state.memory_words)
     input_stack_valid = state.input_stack_valid
     input_stack_kills = state.input_stack_kills
+    caller_memory_writes = state.caller_memory_writes
     memory_fact_dependencies: set[str] = set()
     memory_events = semantics.get("memory_events")
     if not isinstance(memory_events, list):
@@ -2306,6 +2419,7 @@ def _transfer(
         memory_words.clear()
         input_stack_valid = False
         input_stack_kills = ()
+        caller_memory_writes = None
     else:
         for event_index, raw in enumerate(memory_events):
             event = _mapping(raw)
@@ -2318,6 +2432,14 @@ def _transfer(
                 and not address.register_terms
                 and width is not None
             ):
+                caller_memory_writes = _add_caller_memory_write(
+                    caller_memory_writes,
+                    CallWriteSpan(
+                        ValueOrigin("stack_location", (address.offset,)),
+                        width,
+                    ),
+                    maximum=max_memory_words,
+                )
                 _invalidate_overlapping(stack_words, address.offset, width)
                 input_stack_kills = _add_killed_stack_range(
                     input_stack_kills,
@@ -2339,6 +2461,11 @@ def _transfer(
                     or (unit_id, event_index) not in memory_write_footprints
                 )
             ):
+                caller_memory_writes = _add_caller_memory_write(
+                    caller_memory_writes,
+                    CallWriteSpan(location, width),
+                    maximum=max_memory_words,
+                )
                 if location.kind == "parametric_location":
                     # The address relation is useful as a returned memory
                     # effect, but by itself does not prove separation from the
@@ -2367,9 +2494,17 @@ def _transfer(
                     memory_words.clear()
                     input_stack_valid = False
                     input_stack_kills = ()
+                    caller_memory_writes = None
                     continue
                 memory_fact_dependencies.add(footprint.fact_id)
                 for offset in footprint.stack_offsets:
+                    caller_memory_writes = _add_caller_memory_write(
+                        caller_memory_writes,
+                        CallWriteSpan(
+                            ValueOrigin("stack_location", (offset,)), width
+                        ),
+                        maximum=max_memory_words,
+                    )
                     _invalidate_overlapping(stack_words, offset, width)
                     updated_kills = _add_killed_stack_range(
                         input_stack_kills,
@@ -2387,6 +2522,7 @@ def _transfer(
                 # evidence but conservatively discard ordinary memory facts.
                 if footprint.has_non_stack_alternative:
                     memory_words.clear()
+                    caller_memory_writes = None
     schedule = _mapping(semantics.get("instruction_effect_schedule"))
     blockers = schedule.get("blockers")
     if isinstance(blockers, list):
@@ -2404,6 +2540,7 @@ def _transfer(
                 memory_words.clear()
                 input_stack_valid = False
                 input_stack_kills = ()
+                caller_memory_writes = None
                 continue
             instruction = _mapping(instructions[index])
             written = instruction.get("registers_written")
@@ -2432,6 +2569,7 @@ def _transfer(
         memory_words=memory_words,
         input_stack_valid=input_stack_valid,
         input_stack_kills=input_stack_kills,
+        caller_memory_writes=caller_memory_writes,
     ), stack_blockers, memory_fact_dependencies
 
 
@@ -2619,12 +2757,19 @@ def _serialize_summary_value(value: _Value) -> dict[str, Any] | None:
             result["extent_lower_bound"] = value.extent_lower_bound
         return result
     if isinstance(value, _InternalContractResult):
-        return {
+        result = {
             "kind": "internal_contract_result",
             "contract_id": value.contract_id,
             "relation": value.relation,
             "nullable": value.nullable,
         }
+        if value.size_offset is not None:
+            result["size"] = {
+                "kind": "input_stack_word",
+                "offset": value.size_offset,
+                "scale": value.size_scale,
+            }
+        return result
     if isinstance(value, _TypedOrigins):
         return {
             "kind": "typed_origins",
@@ -2677,7 +2822,28 @@ def _parse_summary_value(value: Any) -> _Value:
             or not isinstance(nullable, bool)
         ):
             return None
-        return _InternalContractResult(contract_id, str(relation), nullable)
+        size_offset: int | None = None
+        size_scale = 1
+        if "size" in row:
+            size = _mapping(row.get("size"))
+            size_offset = _integer(size.get("offset"))
+            size_scale = _integer(size.get("scale")) or 0
+            if (
+                set(size) != {"kind", "offset", "scale"}
+                or size.get("kind") != "input_stack_word"
+                or size_offset is None
+                or not 4 <= size_offset <= 0x10000
+                or size_offset % 4
+                or not 0 < size_scale <= 0xFFFFFFFF
+            ):
+                return None
+        return _InternalContractResult(
+            contract_id,
+            str(relation),
+            nullable,
+            size_offset,
+            size_scale,
+        )
     if kind == "typed_origins":
         raw_origins = row.get("origins")
         if not isinstance(raw_origins, list) or not raw_origins:
@@ -3019,6 +3185,7 @@ def _event_state(event: Mapping[str, Any], state: _State) -> _State:
         memory_words=dict(state.memory_words),
         input_stack_valid=state.input_stack_valid,
         input_stack_kills=state.input_stack_kills,
+        caller_memory_writes=state.caller_memory_writes,
     )
 
 
@@ -3071,6 +3238,81 @@ def _stack_words_preserved_across_call(
         for offset, value in pre_call.stack_words.items()
         if offset >= protected_floor
     }
+
+
+def _compose_caller_memory_writes(
+    existing: tuple[CallWriteSpan, ...] | None,
+    *,
+    frame: _CallFrame,
+    maximum: int,
+) -> tuple[CallWriteSpan, ...] | None:
+    """Compose one checked callee footprint into the enclosing summary.
+
+    The enclosing function's callee-private stack lies below its entry ESP.
+    Writes wholly below that boundary do not escape through its caller-memory
+    frame. Every other bounded location remains visible and is unioned across
+    the path; an incomplete frame or budget overflow fails closed.
+    """
+
+    if existing is None or not frame.memory_frame_complete:
+        return None
+    result = existing
+    for span in frame.memory_writes:
+        result = _add_caller_memory_write(result, span, maximum=maximum)
+        if result is None:
+            return None
+    return result
+
+
+def _add_caller_memory_write(
+    existing: tuple[CallWriteSpan, ...] | None,
+    span: CallWriteSpan,
+    *,
+    maximum: int,
+) -> tuple[CallWriteSpan, ...] | None:
+    if existing is None:
+        return None
+    if _callee_private_stack_write(span):
+        return existing
+    combined = set(existing)
+    combined.add(span)
+    if len(combined) > maximum:
+        return None
+    return tuple(sorted(combined, key=_call_write_span_sort_key))
+
+
+def _join_caller_memory_writes(
+    left: tuple[CallWriteSpan, ...] | None,
+    right: tuple[CallWriteSpan, ...] | None,
+    *,
+    maximum: int,
+) -> tuple[CallWriteSpan, ...] | None:
+    if left is None or right is None:
+        return None
+    combined = set(left) | set(right)
+    if len(combined) > maximum:
+        return None
+    return tuple(sorted(combined, key=_call_write_span_sort_key))
+
+
+def _callee_private_stack_write(span: CallWriteSpan) -> bool:
+    if (
+        span.base.kind != "stack_location"
+        or len(span.base.key) != 1
+        or span.size is None
+    ):
+        return False
+    offset = _integer(span.base.key[0])
+    return offset is not None and offset + span.size <= 0
+
+
+def _call_write_span_sort_key(
+    span: CallWriteSpan,
+) -> tuple[tuple[str, str, tuple[str, ...]], int]:
+    return (
+        _typed_origin_sort_key(span.base),
+        -1 if span.size is None else span.size,
+    )
 
 
 def _apply_call_memory_frame(
@@ -3569,6 +3811,7 @@ def _join_states(
     right: _State,
     *,
     max_value_alternatives: int,
+    max_memory_writes: int,
 ) -> _State:
     registers = {
         register: _join_summary_value(
@@ -3611,12 +3854,18 @@ def _join_states(
                 input_stack_kills = ()
                 break
             input_stack_kills = updated
+    caller_memory_writes = _join_caller_memory_writes(
+        left.caller_memory_writes,
+        right.caller_memory_writes,
+        maximum=max_memory_writes,
+    )
     return _State(
         registers=registers,
         stack_words=stack_words,
         memory_words=memory_words,
         input_stack_valid=input_stack_valid,
         input_stack_kills=input_stack_kills,
+        caller_memory_writes=caller_memory_writes,
     )
 
 
@@ -3637,6 +3886,7 @@ def _unknown_state() -> _State:
         registers={register: None for register in _REGISTERS},
         stack_words={},
         input_stack_valid=False,
+        caller_memory_writes=None,
     )
 
 

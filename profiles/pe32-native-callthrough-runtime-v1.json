@@ -20,6 +20,31 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
+      "caller_memory_frame": {
+        "status": "complete",
+        "model": "pe32-declared-pointer-arguments-v1",
+        "arguments": [
+          {
+            "argument_index": 0,
+            "role": "caller_memory",
+            "access": "read",
+            "extent": "enclosing_object",
+            "retention": "during_call"
+          },
+          {
+            "argument_index": 6,
+            "role": "caller_memory",
+            "access": "read",
+            "extent": "enclosing_object",
+            "retention": "during_call"
+          }
+        ],
+        "assumptions": [
+          "caller memory is accessed only through declared pointer arguments",
+          "non-callback pointer arguments are retained only during the call",
+          "opaque interface resources are disjoint from caller image and stack memory"
+        ]
+      },
       "world_effect": "nativeCallthrough",
       "callback_effect": "none"
     },

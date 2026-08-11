@@ -9,6 +9,7 @@ from pathlib import Path
 from spaghetti_extractor.machine_import_profiles import (
     NATIVE_DLL_CALLTHROUGH_EFFECT_MODEL,
     NATIVE_DLL_CALLTHROUGH_PREREQUISITES,
+    MachineImportIdentity,
     MachineImportProfileError,
     load_machine_import_profile_set,
 )
@@ -83,6 +84,25 @@ def _callthrough_entry() -> dict[str, object]:
     }
 
 
+def _read_only_caller_memory_frame() -> dict[str, object]:
+    return {
+        "status": "complete",
+        "model": "pe32-declared-pointer-arguments-v1",
+        "arguments": [{
+            "argument_index": 0,
+            "role": "caller_memory",
+            "access": "read",
+            "extent": "enclosing_object",
+            "retention": "during_call",
+        }],
+        "assumptions": [
+            "caller memory is accessed only through declared pointer arguments",
+            "non-callback pointer arguments are retained only during the call",
+            "opaque interface resources are disjoint from caller image and stack memory",
+        ],
+    }
+
+
 def _load_fixture(entry: dict[str, object]) -> None:
     with tempfile.TemporaryDirectory() as temporary:
         path = Path(temporary) / "profile.json"
@@ -135,6 +155,50 @@ class NativeCallthroughProfileTests(unittest.TestCase):
 
         self.assertFalse(_EXCLUDED_MIDI_CALLBACK_APIS & selected_symbols)
         self.assertFalse(any(symbol.startswith("midi") for symbol in selected_symbols))
+
+    def test_profile_declares_create_file_caller_memory_reads(self) -> None:
+        contracts = load_machine_import_profile_set([_PROFILE]).by_identity()
+        selected = contracts[
+            MachineImportIdentity("kernel32.dll", "symbol", "CreateFileA")
+        ]
+
+        self.assertEqual(
+            selected.contract["caller_memory_frame"]["arguments"],
+            [
+                {
+                    "argument_index": 0,
+                    "role": "caller_memory",
+                    "access": "read",
+                    "extent": "enclosing_object",
+                    "retention": "during_call",
+                },
+                {
+                    "argument_index": 6,
+                    "role": "caller_memory",
+                    "access": "read",
+                    "extent": "enclosing_object",
+                    "retention": "during_call",
+                },
+            ],
+        )
+
+    def test_loader_accepts_checked_native_caller_memory_frame(self) -> None:
+        entry = _callthrough_entry()
+        entry["caller_memory_frame"] = _read_only_caller_memory_frame()
+
+        _load_fixture(entry)
+
+    def test_loader_rejects_malformed_native_caller_memory_frame(self) -> None:
+        entry = _callthrough_entry()
+        frame = _read_only_caller_memory_frame()
+        frame["arguments"][0]["argument_index"] = 1
+        entry["caller_memory_frame"] = frame
+
+        with self.assertRaisesRegex(
+            MachineImportProfileError,
+            "caller-memory frame argument 0 is invalid",
+        ):
+            _load_fixture(entry)
 
     def test_loader_rejects_vague_effect_model_label(self) -> None:
         entry = _callthrough_entry()

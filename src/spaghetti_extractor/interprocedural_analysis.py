@@ -5106,9 +5106,24 @@ def _call_summary_memory_preservation(
         if isinstance(row, Mapping)
         and isinstance(row.get("target_unit_id"), str)
     }
+    framed: set[str] = set()
     candidates: set[str] = set()
     dependencies: dict[str, set[str]] = {}
     for unit_id, row in rows.items():
+        caller_frame = row.get("caller_memory_frame")
+        if isinstance(caller_frame, Mapping):
+            writes = caller_frame.get("writes")
+            if (
+                row.get("status") == "complete"
+                and caller_frame.get("status") == "complete"
+                and caller_frame.get("preserved") is True
+                and writes == []
+            ):
+                framed.add(unit_id)
+            # A canonical frame is authoritative for this proposal family;
+            # do not reinterpret its diagnostic local-site inventory through
+            # the legacy no-write closure below.
+            continue
         memory = row.get("memory_effects")
         world = row.get("world_effects")
         if (
@@ -5153,13 +5168,13 @@ def _call_summary_memory_preservation(
         rejected = {
             unit_id
             for unit_id in candidates
-            if not dependencies.get(unit_id, set()) <= candidates
+            if not dependencies.get(unit_id, set()) <= (candidates | framed)
         }
         changed = bool(rejected)
         candidates.difference_update(rejected)
 
     result: dict[int, bool] = {}
-    for unit_id in sorted(candidates):
+    for unit_id in sorted(candidates | framed):
         rva = rows[unit_id].get("target_rva")
         if isinstance(rva, int) and not isinstance(rva, bool):
             result[(image_base + rva) & 0xFFFFFFFF] = True

@@ -392,12 +392,39 @@ def _normalize_summary(
             raise InternalFunctionContractError(
                 f"{context} has an unsupported result-register relation"
             )
-        results[str(register)] = {
+        result = {
             "kind": "internal_contract_result",
             "contract_id": _string(contract_id, f"{context} contract ID"),
             "relation": "dynamic_range_base",
             "nullable": nullable,
         }
+        if "size" in raw_origin:
+            size = _mapping(
+                raw_origin.get("size"),
+                f"{context} result-register allocation size",
+            )
+            offset = size.get("offset")
+            scale = size.get("scale")
+            if (
+                set(size) != {"kind", "offset", "scale"}
+                or size.get("kind") != "input_stack_word"
+                or not isinstance(offset, int)
+                or isinstance(offset, bool)
+                or not 4 <= offset <= 0x10000
+                or offset % 4
+                or not isinstance(scale, int)
+                or isinstance(scale, bool)
+                or not 0 < scale <= 0xFFFFFFFF
+            ):
+                raise InternalFunctionContractError(
+                    f"{context} has an invalid result-register allocation size"
+                )
+            result["size"] = {
+                "kind": "input_stack_word",
+                "offset": offset,
+                "scale": scale,
+            }
+        results[str(register)] = result
     return {
         "status": "complete",
         "preserved_registers": sorted(preserved),

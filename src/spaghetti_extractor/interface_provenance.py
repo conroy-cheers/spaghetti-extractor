@@ -5013,6 +5013,7 @@ def _selected_import_memory_writes(
         if base_values is None:
             return None
         size_spec = footprint["size"]
+        symbolic_extent: tuple[Any, ...] | None = None
         if size_spec["kind"] == "fixed":
             sizes = {int(size_spec["bytes"])}
         else:
@@ -5024,14 +5025,27 @@ def _selected_import_memory_writes(
                 origin_concrete_value(origin) for origin in size_values
             }
             if None in concrete_sizes:
-                return None
-            sizes = {int(value) * scale for value in concrete_sizes}
+                if concrete_sizes != {None}:
+                    return None
+                sizes = set()
+                symbolic_extent = _finite_value_extent_key(
+                    size_values, scale=scale
+                )
+                if symbolic_extent is None:
+                    return None
+            else:
+                sizes = {int(value) * scale for value in concrete_sizes}
         offset = int(footprint["offset"])
         for base in base_values:
             shifted = _offset_write_base(base, offset)
             if shifted is None:
                 return None
             if shifted.kind == "exact" and int(shifted.key[0]) & 0xFFFFFFFF == 0:
+                continue
+            if symbolic_extent is not None:
+                if offset != 0 or _dynamic_extent_key(shifted) != symbolic_extent:
+                    return None
+                writes.add(_WriteSpan(shifted, None))
                 continue
             for size in sizes:
                 if size < 0 or size > 0xFFFFFFFF:
@@ -5139,10 +5153,22 @@ def _internal_dynamic_range_origin(
     producer_unit_id: str,
     event_index: int,
     nullable: bool,
+    extent_value: _Value = None,
+    extent_scale: int = 1,
 ) -> _Value:
+    extent = _finite_value_extent_key(extent_value, scale=extent_scale)
+    key: tuple[Any, ...] = (
+        "internal_contract",
+        contract_id,
+        producer_unit_id,
+        event_index,
+        "result",
+    )
+    if extent is not None:
+        key = (*key, extent)
     dynamic = _Origin(
         "dynamic_range",
-        ("internal_contract", contract_id, producer_unit_id, event_index),
+        key,
     )
     return frozenset(
         {_Origin("exact", (0,)), dynamic} if nullable else {dynamic}
@@ -5185,7 +5211,62 @@ def _selected_import_result_outputs(
                     ),
                 )
             )
+        elif relation.get("relation") == "exact":
+            outputs[_Origin("register_location", (str(register),))] = frozenset({
+                _Origin(
+                    "call_result",
+                    (
+                        unit_id,
+                        event_index,
+                        selected.identity.dll,
+                        selected.identity.kind,
+                        selected.identity.value,
+                        str(register),
+                    ),
+                )
+            })
     return outputs
+
+
+def _finite_value_extent_key(
+    value: _Value,
+    *,
+    scale: int,
+) -> tuple[Any, ...] | None:
+    """Return a canonical equality witness for one symbolic allocation extent."""
+
+    if value is None or not value or not 0 < scale <= 0xFFFFFFFF:
+        return None
+    origins = tuple(sorted(
+        {
+            (
+                origin.kind,
+                origin.key,
+            )
+            for origin in value
+        },
+        key=lambda item: (item[0], repr(item[1])),
+    ))
+    # Authority dependencies justify how the value reached this site; they do
+    # not change the represented machine word and therefore are not part of
+    # the equality witness.
+    return ("finite-value-extent-v1", scale, origins)
+
+
+def _dynamic_extent_key(origin: _Origin) -> tuple[Any, ...] | None:
+    if origin.kind == "dynamic_range" and len(origin.key) in {5, 6}:
+        candidate = origin.key[-1] if len(origin.key) == 6 else None
+    elif origin.kind == "dynamic_location" and len(origin.key) in {6, 7}:
+        candidate = origin.key[-2] if len(origin.key) == 7 else None
+    else:
+        return None
+    return (
+        candidate
+        if isinstance(candidate, tuple)
+        and len(candidate) == 3
+        and candidate[0] == "finite-value-extent-v1"
+        else None
+    )
 
 
 def _selected_dynamic_result_extent_lower_bound(
@@ -5325,11 +5406,36 @@ def _internal_call_result_outputs(
                 ):
                     malformed = True
                     break
+                raw_size = row.get("size")
+                extent_value: _Value = None
+                extent_scale = 1
+                if raw_size is not None:
+                    size = _mapping(raw_size)
+                    offset = _integer(size.get("offset"))
+                    scale = _integer(size.get("scale"))
+                    if (
+                        set(size) != {"kind", "offset", "scale"}
+                        or size.get("kind") != "input_stack_word"
+                        or offset is None
+                        or scale is None
+                        or not 4 <= offset <= 0x10000
+                        or offset % 4
+                        or not 0 < scale <= 0xFFFFFFFF
+                    ):
+                        malformed = True
+                        break
+                    extent_value = _input_stack_summary_value(
+                        {"kind": "input_stack_word", "offset": offset},
+                        pre_call=pre_call,
+                    )
+                    extent_scale = scale
                 value = _internal_dynamic_range_origin(
                     contract_id=contract_id,
                     producer_unit_id=producer_unit_id,
                     event_index=event_index,
                     nullable=nullable,
+                    extent_value=extent_value,
+                    extent_scale=extent_scale,
                 )
                 if value is None:
                     malformed = True

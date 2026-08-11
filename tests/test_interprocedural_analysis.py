@@ -533,6 +533,14 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                         0x2400,
                         dependencies=["indirect-exit:missing"],
                     ),
+                    {
+                        **summary("private-writer", 0x2500, writes=True),
+                        "caller_memory_frame": {
+                            "status": "complete",
+                            "preserved": True,
+                            "writes": [],
+                        },
+                    },
                 ]
             },
             image_base=IMAGE_BASE,
@@ -540,7 +548,11 @@ class InterproceduralAnalysisTests(unittest.TestCase):
 
         self.assertEqual(
             set(result),
-            {IMAGE_BASE + 0x2000, IMAGE_BASE + 0x2100},
+            {
+                IMAGE_BASE + 0x2000,
+                IMAGE_BASE + 0x2100,
+                IMAGE_BASE + 0x2500,
+            },
         )
 
     def test_partial_summary_families_remain_independently_usable(self) -> None:

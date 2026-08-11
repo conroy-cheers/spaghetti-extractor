@@ -401,6 +401,13 @@ def _validate_effect_model(
         argument_words=argument_words,
         context=context,
     )
+    if "caller_memory_frame" in entry:
+        _validate_caller_memory_frame(
+            entry.get("caller_memory_frame"),
+            argument_words=argument_words,
+            context=context,
+            owner="native callthrough",
+        )
 
 
 def _validate_same_library_callthrough_effect(
@@ -461,6 +468,7 @@ def _validate_same_library_callthrough_effect(
         entry.get("caller_memory_frame"),
         argument_words=argument_words,
         context=context,
+        owner="same-library callthrough",
     )
 
 
@@ -469,12 +477,13 @@ def _validate_caller_memory_frame(
     *,
     argument_words: int,
     context: str,
+    owner: str,
 ) -> None:
     if not isinstance(value, Mapping) or set(value) != {
         "status", "model", "arguments", "assumptions"
     }:
         raise MachineImportProfileError(
-            f"{context} same-library callthrough has no exact caller-memory frame"
+            f"{context} {owner} has no exact caller-memory frame"
         )
     if (
         value.get("status") != "complete"
@@ -482,7 +491,7 @@ def _validate_caller_memory_frame(
         or value.get("assumptions") != _CALLER_MEMORY_FRAME_ASSUMPTIONS
     ):
         raise MachineImportProfileError(
-            f"{context} same-library callthrough caller-memory frame is unsupported"
+            f"{context} {owner} caller-memory frame is unsupported"
         )
     arguments = value.get("arguments")
     if not isinstance(arguments, list):

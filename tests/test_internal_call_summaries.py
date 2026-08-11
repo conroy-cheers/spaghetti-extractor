@@ -93,6 +93,204 @@ def internal_call(
 
 
 class InternalCallSummaryTests(unittest.TestCase):
+    def test_callee_private_stack_write_does_not_escape_memory_frame(self) -> None:
+        result = self._derive(
+            units=[
+                unit(
+                    "root",
+                    0x1000,
+                    outcome="fallthrough",
+                    events=[internal_call(0x2000)],
+                ),
+                unit(
+                    "callee",
+                    0x2000,
+                    outcome="return",
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": sub(reg("esp"), const(4)),
+                        "value": reg("eax"),
+                    }],
+                ),
+            ],
+            direct=[self._edge("root", "done")],
+            calls=[self._call_edge("root", "callee", 0)],
+            extra_units=[unit("done", 0x1001, outcome="return")],
+        )
+
+        self.assertEqual(
+            self._summary(result, "callee")["caller_memory_frame"],
+            {"status": "complete", "preserved": True, "writes": []},
+        )
+
+    def test_caller_stack_write_is_exported_from_memory_frame(self) -> None:
+        result = self._derive(
+            units=[
+                unit(
+                    "root",
+                    0x1000,
+                    outcome="fallthrough",
+                    events=[internal_call(0x2000)],
+                ),
+                unit(
+                    "callee",
+                    0x2000,
+                    outcome="return",
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": add(reg("esp"), const(4)),
+                        "value": reg("eax"),
+                    }],
+                ),
+            ],
+            direct=[self._edge("root", "done")],
+            calls=[self._call_edge("root", "callee", 0)],
+            extra_units=[unit("done", 0x1001, outcome="return")],
+        )
+
+        self.assertEqual(
+            self._summary(result, "callee")["caller_memory_frame"],
+            {
+                "status": "complete",
+                "preserved": False,
+                "writes": [{
+                    "base": {"kind": "stack_location", "key": [4]},
+                    "size": 4,
+                }],
+            },
+        )
+
+    def test_parametric_out_pointer_write_is_exported(self) -> None:
+        result = self._derive(
+            units=[
+                unit(
+                    "root",
+                    0x1000,
+                    outcome="fallthrough",
+                    events=[internal_call(0x2000)],
+                ),
+                unit(
+                    "callee-load",
+                    0x2000,
+                    outcome="fallthrough",
+                    writes=[{
+                        "register": "eax",
+                        "value": load(add(reg("esp"), const(4))),
+                    }],
+                ),
+                unit(
+                    "callee-write",
+                    0x2001,
+                    outcome="return",
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": reg("eax"),
+                        "value": const(1),
+                    }],
+                ),
+            ],
+            direct=[
+                self._edge("root", "done"),
+                self._edge("callee-load", "callee-write"),
+            ],
+            calls=[self._call_edge("root", "callee-load", 0)],
+            extra_units=[unit("done", 0x1001, outcome="return")],
+        )
+
+        frame = self._summary(result, "callee-load")["caller_memory_frame"]
+        self.assertEqual(frame["status"], "complete")
+        self.assertFalse(frame["preserved"])
+        self.assertEqual(frame["writes"][0]["base"]["kind"], "parametric_location")
+        self.assertEqual(frame["writes"][0]["size"], 4)
+
+    def test_unknown_memory_write_fails_closed(self) -> None:
+        result = self._derive(
+            units=[
+                unit(
+                    "root",
+                    0x1000,
+                    outcome="fallthrough",
+                    events=[internal_call(0x2000)],
+                ),
+                unit(
+                    "callee",
+                    0x2000,
+                    outcome="return",
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": {"op": "unsupported"},
+                        "value": const(1),
+                    }],
+                ),
+            ],
+            direct=[self._edge("root", "done")],
+            calls=[self._call_edge("root", "callee", 0)],
+            extra_units=[unit("done", 0x1001, outcome="return")],
+        )
+
+        self.assertEqual(
+            self._summary(result, "callee")["caller_memory_frame"],
+            {"status": "incomplete", "preserved": False, "writes": []},
+        )
+
+    def test_nested_memory_frame_composes_exact_write(self) -> None:
+        result = self._derive(
+            units=[
+                unit(
+                    "root",
+                    0x1000,
+                    outcome="fallthrough",
+                    events=[internal_call(0x2000)],
+                ),
+                unit(
+                    "wrapper",
+                    0x2000,
+                    outcome="fallthrough",
+                    events=[internal_call(0x3000)],
+                ),
+                unit("wrapper-return", 0x2001, outcome="return"),
+                unit(
+                    "leaf",
+                    0x3000,
+                    outcome="return",
+                    memory=[{
+                        "kind": "write",
+                        "width": 4,
+                        "address": const(0x440000),
+                        "value": const(1),
+                    }],
+                ),
+            ],
+            direct=[
+                self._edge("root", "done"),
+                self._edge("wrapper", "wrapper-return"),
+            ],
+            calls=[
+                self._call_edge("root", "wrapper", 0),
+                self._call_edge("wrapper", "leaf", 0),
+            ],
+            extra_units=[unit("done", 0x1001, outcome="return")],
+        )
+
+        expected = {
+            "status": "complete",
+            "preserved": False,
+            "writes": [{
+                "base": {"kind": "exact", "key": [0x440000]},
+                "size": 4,
+            }],
+        }
+        self.assertEqual(
+            self._summary(result, "leaf")["caller_memory_frame"], expected
+        )
+        self.assertEqual(
+            self._summary(result, "wrapper")["caller_memory_frame"], expected
+        )
+
     def test_input_relative_result_is_instantiated_at_call_site(self) -> None:
         result = self._derive(
             units=[
@@ -138,6 +336,11 @@ class InternalCallSummaryTests(unittest.TestCase):
                         "contract_id": "fixture-allocator",
                         "relation": "dynamic_range_base",
                         "nullable": True,
+                        "size": {
+                            "kind": "input_stack_word",
+                            "offset": 4,
+                            "scale": 1,
+                        },
                     }
                 },
             },
@@ -182,6 +385,10 @@ class InternalCallSummaryTests(unittest.TestCase):
         self.assertEqual(
             allocator["result_register_origins"]["registers"]["eax"]["kind"],
             "internal_contract_result",
+        )
+        self.assertEqual(
+            allocator["result_register_origins"]["registers"]["eax"]["size"],
+            {"kind": "input_stack_word", "offset": 4, "scale": 1},
         )
         self.assertNotIn("allocator", result["recursive_summary_roots"])
 

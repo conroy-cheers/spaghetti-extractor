@@ -28,6 +28,7 @@ from spaghetti_extractor.import_abi import SelectedImportABI
 from spaghetti_extractor.interface_provenance import (
     INTERFACE_PROVENANCE_FORMAT,
     InterfaceTransferCache,
+    _finite_value_extent_key,
     _guard_constraint,
     callback_root_argument_origins,
     recover_external_interface_targets,
@@ -223,6 +224,22 @@ def edge(source: str, target: str) -> dict[str, object]:
 
 
 class InterfaceProvenanceTests(unittest.TestCase):
+    def test_symbolic_extent_ignores_duplicate_authority_paths(self) -> None:
+        key = ("size-site", 0, "example.dll", "symbol", "GetSize", "eax")
+        unqualified = ValueOrigin("call_result", key)
+        qualified = ValueOrigin(
+            "call_result",
+            key,
+            dependencies=("call-frame:size-site",),
+        )
+
+        self.assertEqual(
+            _finite_value_extent_key(
+                frozenset((unqualified, qualified)), scale=1
+            ),
+            _finite_value_extent_key(frozenset((unqualified,)), scale=1),
+        )
+
     def test_masked_guard_constraint_remains_binary(self) -> None:
         self.assertEqual(
             _guard_constraint({
@@ -525,6 +542,287 @@ class InterfaceProvenanceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["resolutions"][0]["status"], "recovered")
+
+    def test_native_callthrough_read_frame_preserves_interface_slot(self) -> None:
+        identity = MachineImportIdentity("example.dll", "symbol", "Observe")
+        contract = self._caller_memory_contract(
+            argument_index=0,
+            access="read",
+            extent="enclosing_object",
+        )
+        contract["memory_effect"] = "nativeCallthrough"
+        selected = self._selected_abi(
+            identity,
+            argument_words=1,
+            contract=contract,
+        )
+
+        result = self._run_selected_import_memory_case(
+            selected, symbol="Observe", pointer_argument=None
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "recovered")
+        call_effect = next(
+            row
+            for row in result["call_site_effects"]
+            if row["unit_id"] == "selected-import"
+        )
+        self.assertEqual(call_effect["memory_frame"]["status"], "complete")
+        self.assertEqual(call_effect["memory_frame"]["writes"], [])
+
+    def test_symbolic_allocation_extent_bounds_import_write(self) -> None:
+        get_size_identity = MachineImportIdentity(
+            "example.dll", "symbol", "GetSize"
+        )
+        read_identity = MachineImportIdentity(
+            "example.dll", "symbol", "ReadBuffer"
+        )
+        get_size = {
+            "kind": "external_call",
+            "dll": get_size_identity.dll,
+            "symbol": get_size_identity.value,
+            "ordinal": None,
+            "return_rva": 0x1181,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        pushed_size = sub(reg("esp"), const(4))
+        allocate_write = {
+            "kind": "write",
+            "width": 4,
+            "address": pushed_size,
+            "value": reg("ebx"),
+        }
+        allocate_call = {
+            "kind": "internal_call",
+            "target_rva": 0x1800,
+            "return_rva": 0x11A1,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        allocate_call["register_inputs"]["esp"] = pushed_size
+
+        pushed_overlapped = sub(reg("esp"), const(4))
+        pushed_count = sub(pushed_overlapped, const(4))
+        pushed_size_argument = sub(pushed_count, const(4))
+        pushed_buffer = sub(pushed_size_argument, const(4))
+        pushed_handle = sub(pushed_buffer, const(4))
+        read_writes = [
+            {
+                "kind": "write",
+                "width": 4,
+                "address": pushed_overlapped,
+                "value": const(0),
+            },
+            {
+                "kind": "write",
+                "width": 4,
+                "address": pushed_count,
+                "value": const(CHILD_SLOT),
+            },
+            {
+                "kind": "write",
+                "width": 4,
+                "address": pushed_size_argument,
+                "value": reg("ebx"),
+            },
+            {
+                "kind": "write",
+                "width": 4,
+                "address": pushed_buffer,
+                "value": reg("edi"),
+            },
+            {
+                "kind": "write",
+                "width": 4,
+                "address": pushed_handle,
+                "value": const(1),
+            },
+        ]
+        read_call = {
+            "kind": "external_call",
+            "dll": read_identity.dll,
+            "symbol": read_identity.value,
+            "ordinal": None,
+            "return_rva": 0x11C1,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        read_call["register_inputs"]["esp"] = pushed_handle
+
+        units = [
+            factory_unit(),
+            unit("get-size", 0x1180, events=[get_size], ordered=[get_size]),
+            unit("save-size", 0x1190, writes=[{
+                "register": "ebx", "value": reg("eax"),
+            }]),
+            unit(
+                "allocate",
+                0x11A0,
+                memory=[allocate_write],
+                events=[allocate_call],
+                ordered=[allocate_write, allocate_call],
+            ),
+            unit("allocator", 0x1800),
+            unit("save-buffer", 0x11B0, writes=[{
+                "register": "edi", "value": reg("eax"),
+            }]),
+            unit(
+                "read",
+                0x11C0,
+                memory=read_writes,
+                events=[read_call],
+                ordered=[*read_writes, read_call],
+            ),
+            unit("object", 0x1200, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            unit("vtable", 0x1300, writes=[{
+                "register": "ecx", "value": load(reg("eax")),
+            }]),
+            indirect_call(),
+        ]
+        get_size_abi = self._selected_abi(
+            get_size_identity,
+            argument_words=0,
+            contract={
+                "result_register_relations": [{
+                    "register": "eax", "relation": "exact",
+                }],
+                "memory_effect": "none",
+                "memory_footprints": [],
+            },
+        )
+        read_abi = self._selected_abi(
+            read_identity,
+            argument_words=5,
+            contract={
+                "result_register_relations": [{
+                    "register": "eax", "relation": "exact",
+                }],
+                "memory_effect": "argumentRanges",
+                "memory_footprints": [
+                    {
+                        "access": "write",
+                        "base_argument": 1,
+                        "offset": 0,
+                        "size": {"kind": "argument", "argument": 2, "scale": 1},
+                        "nullable": False,
+                    },
+                    {
+                        "access": "write",
+                        "base_argument": 3,
+                        "offset": 0,
+                        "size": {"kind": "fixed", "bytes": 4},
+                        "nullable": False,
+                    },
+                ],
+            },
+        )
+        result = self._run(
+            units,
+            [
+                edge("factory", "get-size"),
+                edge("get-size", "save-size"),
+                edge("save-size", "allocate"),
+                edge("allocate", "save-buffer"),
+                edge("save-buffer", "read"),
+                edge("read", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "call"),
+            ],
+            roots=["factory"],
+            internal_edges=[{
+                "source_unit_id": "allocate",
+                "source_event_index": 0,
+                "target_unit_id": "allocator",
+            }],
+            extra_import_abis={
+                get_size_identity: get_size_abi,
+                read_identity: read_abi,
+            },
+            internal_call_preserved_registers={
+                IMAGE_BASE + 0x1800: frozenset({"ebx", "esi", "edi", "ebp"}),
+            },
+            internal_call_result_relations={
+                IMAGE_BASE + 0x1800: {
+                    "eax": [{
+                        "kind": "internal_contract_result",
+                        "contract_id": "fixture-allocator",
+                        "relation": "dynamic_range_base",
+                        "nullable": False,
+                        "size": {
+                            "kind": "input_stack_word",
+                            "offset": 4,
+                            "scale": 1,
+                        },
+                    }],
+                },
+            },
+            internal_call_memory_preservation={IMAGE_BASE + 0x1800: True},
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "recovered", result)
+        effect = next(
+            row for row in result["call_site_effects"] if row["unit_id"] == "read"
+        )
+        self.assertEqual(
+            effect["memory_frame"]["status"],
+            "complete",
+            (effect, result["call_argument_recoveries"]),
+        )
+        self.assertEqual(
+            {row["base"]["kind"] for row in effect["memory_frame"]["writes"]},
+            {"dynamic_location", "exact"},
+        )
+
+        mismatched = self._run(
+            units,
+            [
+                edge("factory", "get-size"),
+                edge("get-size", "save-size"),
+                edge("save-size", "allocate"),
+                edge("allocate", "save-buffer"),
+                edge("save-buffer", "read"),
+                edge("read", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "call"),
+            ],
+            roots=["factory"],
+            internal_edges=[{
+                "source_unit_id": "allocate",
+                "source_event_index": 0,
+                "target_unit_id": "allocator",
+            }],
+            extra_import_abis={
+                get_size_identity: get_size_abi,
+                read_identity: read_abi,
+            },
+            internal_call_preserved_registers={
+                IMAGE_BASE + 0x1800: frozenset({"ebx", "esi", "edi", "ebp"}),
+            },
+            internal_call_result_relations={
+                IMAGE_BASE + 0x1800: {
+                    "eax": [{
+                        "kind": "internal_contract_result",
+                        "contract_id": "fixture-allocator",
+                        "relation": "dynamic_range_base",
+                        "nullable": False,
+                        "size": {
+                            "kind": "input_stack_word",
+                            "offset": 4,
+                            "scale": 2,
+                        },
+                    }],
+                },
+            },
+            internal_call_memory_preservation={IMAGE_BASE + 0x1800: True},
+        )
+        mismatched_effect = next(
+            row
+            for row in mismatched["call_site_effects"]
+            if row["unit_id"] == "read"
+        )
+        self.assertEqual(
+            mismatched_effect["memory_frame"]["status"], "incomplete"
+        )
 
     def test_selected_import_write_frame_preserves_disjoint_interface_slot(self) -> None:
         identity = MachineImportIdentity("example.dll", "symbol", "WriteWord")

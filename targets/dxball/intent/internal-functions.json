@@ -20,7 +20,11 @@
         "may_return": true,
         "may_not_return": false,
         "result_register_origins": {
-          "eax": {"relation": "dynamic_range_base", "nullable": true}
+          "eax": {
+            "relation": "dynamic_range_base",
+            "nullable": true,
+            "size": {"kind": "input_stack_word", "offset": 4, "scale": 1}
+          }
         }
       }
     },
@@ -53,7 +57,11 @@
         "may_return": true,
         "may_not_return": false,
         "result_register_origins": {
-          "eax": {"relation": "dynamic_range_base", "nullable": true}
+          "eax": {
+            "relation": "dynamic_range_base",
+            "nullable": true,
+            "size": {"kind": "input_stack_word", "offset": 4, "scale": 1}
+          }
         }
       }
     },
@@ -85,5 +93,5 @@
       }
     }
   ],
-  "profile_sha256": "98461f72dbd03c16cc6bdb5c35bf047fca367df6edcf470269a0ff25fab37fcd"
+  "profile_sha256": "f4221c886e1918c73154b86c6b603381ddfd9b5dffeb145cd4766844ec99ea38"
 }

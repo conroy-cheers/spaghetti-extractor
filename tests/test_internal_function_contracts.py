@@ -104,6 +104,53 @@ class InternalFunctionContractTests(unittest.TestCase):
             [{"register": "eax", "coefficient": -1}],
         )
 
+    def test_allocator_size_witness_is_normalized(self) -> None:
+        payload = copy.deepcopy(_profile())
+        payload["contracts"][0]["summary"]["result_register_origins"]["eax"][
+            "size"
+        ] = {"kind": "input_stack_word", "offset": 4, "scale": 1}
+        payload = bind_internal_function_contract_profile(payload)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "profile.json"
+            path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            contracts = load_internal_function_contracts(
+                [path],
+                binary_sha256="a" * 64,
+                units=[_unit("allocator", 0x2000, "b" * 64)],
+            )
+
+        self.assertEqual(
+            contracts["allocator"]["result_register_origins"]["registers"][
+                "eax"
+            ]["size"],
+            {"kind": "input_stack_word", "offset": 4, "scale": 1},
+        )
+
+    def test_allocator_size_witness_rejects_malformed_stack_source(self) -> None:
+        for size in (
+            {"kind": "input_stack_word", "offset": 0, "scale": 1},
+            {"kind": "input_stack_word", "offset": 5, "scale": 1},
+            {"kind": "input_stack_word", "offset": 4, "scale": 0},
+            {"kind": "argument", "offset": 4, "scale": 1},
+        ):
+            with self.subTest(size=size), tempfile.TemporaryDirectory() as temporary:
+                payload = copy.deepcopy(_profile())
+                payload["contracts"][0]["summary"]["result_register_origins"][
+                    "eax"
+                ]["size"] = size
+                payload = bind_internal_function_contract_profile(payload)
+                path = Path(temporary) / "profile.json"
+                path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+                with self.assertRaisesRegex(
+                    InternalFunctionContractError,
+                    "invalid result-register allocation size",
+                ):
+                    load_internal_function_contracts(
+                        [path],
+                        binary_sha256="a" * 64,
+                        units=[_unit("allocator", 0x2000, "b" * 64)],
+                    )
+
     def test_stale_binary_unit_and_self_hash_fail_closed(self) -> None:
         mutations = {
             "binary": lambda payload: payload.update(binary_sha256="c" * 64),
