@@ -8,7 +8,6 @@ call argument, memory update, and external frame must be replayed by Stage A.
 from __future__ import annotations
 
 import copy
-import heapq
 import json
 from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
@@ -499,6 +498,7 @@ class _DataflowSCCSummary:
     states: tuple[tuple[str, _State], ...]
     final_transfers: tuple[tuple[str, _UnitTransfer], ...]
     outgoing: tuple[tuple[str, str, _State], ...]
+    path_recoveries: tuple[tuple[str, str, Mapping[str, Any]], ...]
     transfer_observations: tuple[
         tuple[str, tuple[Any, ...], int], ...
     ]
@@ -2380,6 +2380,7 @@ def _dataflow_scc_input_key(
     outgoing: Mapping[str, set[_Edge]],
     checked_stack_entry_offsets: Mapping[str, frozenset[int]],
     checked_nonimage_stack_units: frozenset[str],
+    collect_path_recovery_proposals: bool,
     local_environment: Hashable,
     call_environment: Hashable,
 ) -> Hashable:
@@ -2392,8 +2393,9 @@ def _dataflow_scc_input_key(
     """
 
     return (
-        "interface-provenance-scc-v1",
+        "interface-provenance-scc-v2",
         component,
+        collect_path_recovery_proposals,
         tuple(
             (unit_id, _state_cache_key(states[unit_id]))
             for unit_id in component
@@ -2817,236 +2819,209 @@ def _run_dataflow(
         -1 if item.event_index is None else item.event_index,
         item.guard_json or "",
     )
-    if collect_path_recovery_proposals:
-        # Proposal discovery intentionally observes finite transient states.
-        # Keep its established worklist order; SCC summaries authorize only
-        # the ordinary converged dataflow used by cold and inductive passes.
-        priorities = _reverse_postorder_priorities(roots, outgoing)
-        work = [(priorities[root], root) for root in sorted(roots)]
-        heapq.heapify(work)
-        queued = set(roots)
-        while work:
-            _, source_id = heapq.heappop(work)
-            queued.remove(source_id)
-            collect_path_recoveries(source_id)
-            transfer = transfer_unit(source_id)
-            for edge in sorted(outgoing.get(source_id, ()), key=edge_key):
-                contribution = edge_contribution(source_id, edge, transfer)
-                if contribution is None:
+    control_edges = {
+        (source_id, edge.target_id)
+        for source_id, edges in outgoing.items()
+        for edge in edges
+    }
+    decomposition = decompose_scc(tuple(by_id), control_edges)
+    component_by_unit = {
+        unit_id: component_index
+        for component_index, component in enumerate(decomposition.components)
+        for unit_id in component
+    }
+
+    for component_index, component in enumerate(decomposition.components):
+        queue = deque(
+            unit_id for unit_id in component if unit_id in input_states
+        )
+        in_queue = set(queue)
+        if not queue:
+            continue
+        members = frozenset(component)
+
+        def propagate(
+            target_id: str,
+            contribution: _State,
+            *,
+            enqueue_internal: bool,
+        ) -> None:
+            target_component = component_by_unit[target_id]
+            if target_component < component_index:
+                raise AssertionError(
+                    "interface provenance SCC order contains a backward edge"
+                )
+            changed = _join_state(
+                input_states,
+                target_id,
+                contribution,
+                finite_value_budget,
+                static_slot_budget,
+                stack_slot_budget,
+            )
+            if (
+                changed
+                and enqueue_internal
+                and target_id in members
+                and target_id not in in_queue
+            ):
+                queue.append(target_id)
+                in_queue.add(target_id)
+
+        cache_key = _dataflow_scc_input_key(
+            component=component,
+            states=input_states,
+            outgoing=outgoing,
+            checked_stack_entry_offsets=checked_stack_entry_offsets,
+            checked_nonimage_stack_units=checked_nonimage_stack_units,
+            collect_path_recovery_proposals=collect_path_recovery_proposals,
+            local_environment=_component_local_environment_key(
+                component=component,
+                known_slots=known_slots,
+                event_known_slots=event_known_slots,
+                checked_write_footprints=checked_write_footprints,
+                finite_value_budget=finite_value_budget,
+                static_slot_budget=static_slot_budget,
+                stack_slot_budget=stack_slot_budget,
+            ),
+            call_environment=_component_call_environment_key(
+                component=component,
+                by_id=by_id,
+                image_base=image_base,
+                internal_call_preserved_registers=(
+                    internal_call_preserved_registers
+                ),
+                internal_call_stack_cleanup=internal_call_stack_cleanup,
+                internal_call_result_relations=(
+                    internal_call_result_relations
+                ),
+                internal_call_memory_preservation=(
+                    internal_call_memory_preservation
+                ),
+                internal_call_memory_frames=internal_call_memory_frames,
+                internal_call_memory_result_relations=(
+                    internal_call_memory_result_relations
+                ),
+                internal_call_dependency_ids=internal_call_dependency_ids,
+                recovered_calls=recovered_calls,
+                bootstrap_unknown_call_preserved_registers=(
+                    bootstrap_unknown_call_preserved_registers
+                ),
+                normal_call_abi_premise=normal_call_abi_premise,
+                preserved_register_hypotheses=preserved_register_hypotheses,
+            ),
+        )
+        cached_summary = transfer_cache.get_scc(key=cache_key)
+        if cached_summary is not None:
+            input_states.update(cached_summary.states)
+            final_transfers.update(cached_summary.final_transfers)
+            for identity, key, candidate in cached_summary.path_recoveries:
+                existing = path_recoveries[identity].get(key)
+                path_recoveries[identity][key] = (
+                    _merge_path_recovery_proposal(
+                        existing,
+                        candidate,
+                        finite_value_budget=finite_value_budget,
+                    )
+                )
+            for unit_id, state_key, exceeded in (
+                cached_summary.transfer_observations
+            ):
+                request_key = (unit_id, state_key)
+                if request_key in observed_transfer_keys:
                     continue
-                if _join_state(
-                    input_states,
-                    edge.target_id,
-                    contribution,
-                    finite_value_budget,
-                    static_slot_budget,
-                    stack_slot_budget,
-                ) and edge.target_id not in queued:
-                    heapq.heappush(
-                        work,
-                        (
-                            priorities.get(edge.target_id, len(priorities)),
-                            edge.target_id,
-                        ),
-                    )
-                    queued.add(edge.target_id)
-    else:
-        control_edges = {
-            (source_id, edge.target_id)
-            for source_id, edges in outgoing.items()
-            for edge in edges
-        }
-        decomposition = decompose_scc(tuple(by_id), control_edges)
-        component_by_unit = {
-            unit_id: component_index
-            for component_index, component in enumerate(
-                decomposition.components
-            )
-            for unit_id in component
-        }
-
-        for component_index, component in enumerate(decomposition.components):
-            queue = deque(
-                unit_id for unit_id in component if unit_id in input_states
-            )
-            in_queue = set(queue)
-            if not queue:
-                continue
-            members = frozenset(component)
-
-            def propagate(
-                target_id: str,
-                contribution: _State,
-                *,
-                enqueue_internal: bool,
-            ) -> None:
-                target_component = component_by_unit[target_id]
-                if target_component < component_index:
-                    raise AssertionError(
-                        "interface provenance SCC order contains a backward edge"
-                    )
-                changed = _join_state(
-                    input_states,
+                observed_transfer_keys.add(request_key)
+                observed_transfer_exceeded[request_key] = exceeded
+                budget_exceeded += exceeded
+            for _source_id, target_id, contribution in cached_summary.outgoing:
+                propagate(
                     target_id,
                     contribution,
-                    finite_value_budget,
-                    static_slot_budget,
-                    stack_slot_budget,
+                    enqueue_internal=False,
                 )
-                if (
-                    changed
-                    and enqueue_internal
-                    and target_id in members
-                    and target_id not in in_queue
-                ):
-                    queue.append(target_id)
-                    in_queue.add(target_id)
+            continue
 
-            cache_key = _dataflow_scc_input_key(
-                component=component,
-                states=input_states,
-                outgoing=outgoing,
-                checked_stack_entry_offsets=checked_stack_entry_offsets,
-                checked_nonimage_stack_units=checked_nonimage_stack_units,
-                local_environment=_component_local_environment_key(
-                    component=component,
-                    known_slots=known_slots,
-                    event_known_slots=event_known_slots,
-                    checked_write_footprints=checked_write_footprints,
-                    finite_value_budget=finite_value_budget,
-                    static_slot_budget=static_slot_budget,
-                    stack_slot_budget=stack_slot_budget,
-                ),
-                call_environment=_component_call_environment_key(
-                    component=component,
-                    by_id=by_id,
-                    image_base=image_base,
-                    internal_call_preserved_registers=(
-                        internal_call_preserved_registers
-                    ),
-                    internal_call_stack_cleanup=(
-                        internal_call_stack_cleanup
-                    ),
-                    internal_call_result_relations=(
-                        internal_call_result_relations
-                    ),
-                    internal_call_memory_preservation=(
-                        internal_call_memory_preservation
-                    ),
-                    internal_call_memory_frames=internal_call_memory_frames,
-                    internal_call_memory_result_relations=(
-                        internal_call_memory_result_relations
-                    ),
-                    internal_call_dependency_ids=(
-                        internal_call_dependency_ids
-                    ),
-                    recovered_calls=recovered_calls,
-                    bootstrap_unknown_call_preserved_registers=(
-                        bootstrap_unknown_call_preserved_registers
-                    ),
-                    normal_call_abi_premise=normal_call_abi_premise,
-                    preserved_register_hypotheses=(
-                        preserved_register_hypotheses
-                    ),
-                ),
-            )
-            cached_summary = transfer_cache.get_scc(
-                key=cache_key,
-            )
-            if cached_summary is not None:
-                input_states.update(cached_summary.states)
-                final_transfers.update(cached_summary.final_transfers)
-                for unit_id, state_key, exceeded in (
-                    cached_summary.transfer_observations
-                ):
-                    request_key = (unit_id, state_key)
-                    if request_key in observed_transfer_keys:
-                        continue
-                    observed_transfer_keys.add(request_key)
-                    observed_transfer_exceeded[request_key] = exceeded
-                    budget_exceeded += exceeded
-                for _source_id, target_id, contribution in (
-                    cached_summary.outgoing
-                ):
-                    propagate(
-                        target_id,
-                        contribution,
-                        enqueue_internal=False,
-                    )
-                continue
-
-            observations_before = set(observed_transfer_keys)
-            while queue:
-                source_id = queue.popleft()
-                in_queue.discard(source_id)
-                transfer = transfer_unit(source_id)
-                for edge in sorted(
-                    outgoing.get(source_id, ()), key=edge_key
-                ):
-                    if edge.target_id not in members:
-                        continue
-                    contribution = edge_contribution(
-                        source_id, edge, transfer
-                    )
-                    if contribution is not None:
-                        propagate(
-                            edge.target_id,
-                            contribution,
-                            enqueue_internal=True,
-                        )
-
-            component_transfers = {
-                source_id: transfer_unit(source_id)
-                for source_id in component
-                if source_id in input_states
-            }
-            final_transfers.update(component_transfers)
-            outgoing_contributions: list[tuple[str, str, _State]] = []
-            for source_id, transfer in component_transfers.items():
-                for edge in sorted(
-                    outgoing.get(source_id, ()), key=edge_key
-                ):
-                    if edge.target_id in members:
-                        continue
-                    contribution = edge_contribution(
-                        source_id, edge, transfer
-                    )
-                    if contribution is None:
-                        continue
-                    outgoing_contributions.append((
-                        source_id, edge.target_id, contribution
-                    ))
+        observations_before = set(observed_transfer_keys)
+        while queue:
+            source_id = queue.popleft()
+            in_queue.discard(source_id)
+            if collect_path_recovery_proposals:
+                # These transient finite-state observations remain proposal-only.
+                # The contextual checker below decides whether all bounded call
+                # contexts agree before any target can be replayed for authority.
+                collect_path_recoveries(source_id)
+            transfer = transfer_unit(source_id)
+            for edge in sorted(outgoing.get(source_id, ()), key=edge_key):
+                if edge.target_id not in members:
+                    continue
+                contribution = edge_contribution(source_id, edge, transfer)
+                if contribution is not None:
                     propagate(
                         edge.target_id,
                         contribution,
-                        enqueue_internal=False,
+                        enqueue_internal=True,
                     )
-            new_observations = observed_transfer_keys - observations_before
-            transfer_cache.put_scc(
-                key=cache_key,
-                summary=_DataflowSCCSummary(
-                    states=tuple(
-                        (unit_id, input_states[unit_id])
-                        for unit_id in component
-                        if unit_id in input_states
-                    ),
-                    final_transfers=tuple(component_transfers.items()),
-                    outgoing=tuple(outgoing_contributions),
-                    transfer_observations=tuple(
-                        (
-                            unit_id,
-                            state_key,
-                            observed_transfer_exceeded.get(
-                                (unit_id, state_key), 0
-                            ),
-                        )
-                        for unit_id, state_key in sorted(
-                            new_observations,
-                            key=lambda item: (item[0], repr(item[1])),
-                        )
-                    ),
+
+        component_transfers = {
+            source_id: transfer_unit(source_id)
+            for source_id in component
+            if source_id in input_states
+        }
+        final_transfers.update(component_transfers)
+        outgoing_contributions: list[tuple[str, str, _State]] = []
+        for source_id, transfer in component_transfers.items():
+            for edge in sorted(outgoing.get(source_id, ()), key=edge_key):
+                if edge.target_id in members:
+                    continue
+                contribution = edge_contribution(source_id, edge, transfer)
+                if contribution is None:
+                    continue
+                outgoing_contributions.append((
+                    source_id, edge.target_id, contribution
+                ))
+                propagate(
+                    edge.target_id,
+                    contribution,
+                    enqueue_internal=False,
+                )
+        component_exit_ids = {
+            str(exit_record.get("id"))
+            for source_id in component
+            for exit_record in exits_by_source.get(source_id, ())
+            if isinstance(exit_record.get("id"), str)
+        }
+        component_path_recoveries = tuple(
+            (identity, key, candidate)
+            for identity in sorted(component_exit_ids)
+            for key, candidate in sorted(path_recoveries[identity].items())
+        )
+        new_observations = observed_transfer_keys - observations_before
+        transfer_cache.put_scc(
+            key=cache_key,
+            summary=_DataflowSCCSummary(
+                states=tuple(
+                    (unit_id, input_states[unit_id])
+                    for unit_id in component
+                    if unit_id in input_states
                 ),
-            )
+                final_transfers=tuple(component_transfers.items()),
+                outgoing=tuple(outgoing_contributions),
+                path_recoveries=component_path_recoveries,
+                transfer_observations=tuple(
+                    (
+                        unit_id,
+                        state_key,
+                        observed_transfer_exceeded.get(
+                            (unit_id, state_key), 0
+                        ),
+                    )
+                    for unit_id, state_key in sorted(
+                        new_observations,
+                        key=lambda item: (item[0], repr(item[1])),
+                    )
+                ),
+            ),
+        )
 
     dataflow_transfer_evaluations = evaluations
     finalization_start = evaluations
@@ -4835,35 +4810,6 @@ def _canonical_origin_key(value: Any) -> str:
         ensure_ascii=True,
         allow_nan=False,
     )
-
-
-def _reverse_postorder_priorities(
-    roots: Iterable[str], outgoing: Mapping[str, set[_Edge]]
-) -> dict[str, int]:
-    visited: set[str] = set()
-    postorder: list[str] = []
-    for root in sorted(set(roots)):
-        if root in visited:
-            continue
-        stack: list[tuple[str, bool]] = [(root, False)]
-        while stack:
-            node, expanded = stack.pop()
-            if expanded:
-                postorder.append(node)
-                continue
-            if node in visited:
-                continue
-            visited.add(node)
-            stack.append((node, True))
-            successors = sorted(
-                {edge.target_id for edge in outgoing.get(node, ())},
-                reverse=True,
-            )
-            stack.extend((target, False) for target in successors)
-    return {
-        node: index
-        for index, node in enumerate(reversed(postorder))
-    }
 
 
 def _normalize_checked_stack_entry_offsets(

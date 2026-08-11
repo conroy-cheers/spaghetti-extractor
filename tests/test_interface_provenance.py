@@ -5812,6 +5812,67 @@ class InterfaceProvenanceTests(unittest.TestCase):
             deferred["path_recovery_proposals"][0]["proof_authority"]
         )
 
+    def test_proposal_scc_cache_replays_transient_path_hints(self) -> None:
+        target_address = IMAGE_BASE + 0x2000
+        seed = unit(
+            "seed",
+            0x1000,
+            writes=[{"register": "esi", "value": const(target_address)}],
+        )
+        call = unit("call", 0x1001, events=[{
+            "kind": "indirect_call",
+            "return_rva": 0x1002,
+            "target": reg("esi"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }])
+        clobber = unit(
+            "clobber",
+            0x1002,
+            writes=[{"register": "esi", "value": {"op": "unknown"}}],
+        )
+        exit_row = {
+            "id": "exit:call",
+            "source_unit_id": "call",
+            "source_rva": 0x1001,
+            "source_event_index": 0,
+            "kind": "indirect_call",
+            "target_expression": reg("esi"),
+        }
+        cache = InterfaceTransferCache(capacity=16)
+        arguments = {
+            "units": [seed, call, clobber, unit("target", 0x2000)],
+            "direct": [
+                edge("seed", "call"),
+                edge("call", "clobber"),
+                edge("clobber", "call"),
+            ],
+            "roots": ["seed"],
+            "indirect_exits": [exit_row],
+            "bootstrap_unknown_call_preserved_registers": frozenset({"esi"}),
+            "collect_path_recovery_proposals": True,
+            "transfer_cache": cache,
+        }
+
+        first = self._run(**arguments)
+        second = self._run(**arguments)
+
+        self.assertEqual(
+            first["path_recovery_proposals"],
+            second["path_recovery_proposals"],
+        )
+        self.assertEqual(
+            second["path_recovery_proposals"][0]["legacy_path_hint"][
+                "target_rvas"
+            ],
+            [0x2000],
+        )
+        self.assertEqual(second["counts"]["transfer_evaluations"], 0)
+        self.assertEqual(
+            second["counts"]["scc_cache_hits"],
+            second["counts"]["scc_cache_requests"],
+        )
+        self.assertGreater(second["counts"]["cross_run_scc_cache_hits"], 0)
+
     def test_bounded_call_contexts_preserve_correlated_table_ranges(self) -> None:
         table_a = IMAGE_BASE + 0x5000
         table_b = IMAGE_BASE + 0x5100

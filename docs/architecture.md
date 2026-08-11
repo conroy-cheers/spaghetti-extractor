@@ -238,6 +238,12 @@ transfer function consumes. Changes confined to provenance hypotheses do not
 replay that graph; changes to any mutable-analysis dependency invalidate the
 memo. Within a replay, independently converged SCC summaries are also retained
 under exact incoming-state, local-control, target, and consumed-call-fact keys.
+A proposal pass uses the same SCC schedule while retaining finite target hints
+observed before a local join. Those hints remain non-authorizing: bounded
+contextual recovery must establish complete context coverage, and the final
+cold or inductive pass must reproduce every accepted target without proposal
+seeds. The SCC cache binds and restores the hints only to avoid repeating the
+same proposal computation.
 A hit restores the checked final member states, outgoing contributions, and
 the final per-unit transfers used by diagnostics and mutable-slot proposal
 extraction. Finalization therefore consumes converged transfer evidence without
