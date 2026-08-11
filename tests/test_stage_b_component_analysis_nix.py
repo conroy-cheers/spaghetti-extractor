@@ -175,12 +175,35 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         )
         self.assertIn("build_global_slot_authority_v2", joint_phase)
         self.assertNotIn("replay_global_slot_authority_v2", joint_phase)
-
         authority_phase = module[
             module.index("      globalSlotAuthority = {") :
             module.index("      callbackEntryContracts = {")
         ]
         self.assertIn("replay_global_slot_authority_v2", authority_phase)
+
+    def test_exact_stack_state_budget_is_independent_of_value_origins(self) -> None:
+        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("analysis_finite_value_budget = 32", module)
+        self.assertIn("analysis_stack_offset_budget = 64", module)
+        self.assertIn(
+            "finite_offset_budget=analysis_stack_offset_budget",
+            module,
+        )
+        self.assertIn(
+            "stack_finite_offset_budget=analysis_stack_offset_budget",
+            module,
+        )
+        self.assertNotIn(
+            "finite_offset_budget=analysis_finite_value_budget",
+            module,
+        )
+        self.assertNotIn(
+            "stack_finite_offset_budget=analysis_finite_value_budget",
+            module,
+        )
 
     def test_memory_range_invariants_are_checked_once_before_joint_analysis(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(

@@ -820,6 +820,10 @@ let
               size_of_image=binary.size_of_image,
           )
           analysis_finite_value_budget = 32
+          # Stack entry offsets are exact integer states, not value-origin
+          # alternatives.  Keep their resource bound independent so ordinary
+          # control-flow joins do not consume the tighter provenance budget.
+          analysis_stack_offset_budget = 64
           exact = exact_control_inventory_v2(units)
           control = manifest.get("control", {})
           static_proposals = control.get("recovered_indirect_targets", [])
@@ -963,7 +967,7 @@ let
                           "authority_artifact_sha256"
                       )
                   ),
-                  finite_offset_budget=analysis_finite_value_budget,
+                  finite_offset_budget=analysis_stack_offset_budget,
               )
 
           def derive_global_slots(graph, stack_ranges):
@@ -1097,7 +1101,7 @@ let
                   stack_call_site_effects=operation.get(
                       "call_site_effects", []
                   ),
-                  stack_finite_offset_budget=analysis_finite_value_budget,
+                  stack_finite_offset_budget=analysis_stack_offset_budget,
                   launch_memory_range_analysis=launch_memory_ranges,
                   launch_memory_assumptions={"assumptions": assumptions},
               )

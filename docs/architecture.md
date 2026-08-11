@@ -245,6 +245,13 @@ already stabilized. The joint artifact records both semantic and full-evidence
 signatures, while the final replay still binds the exact output stack artifact
 to the current graph and current call-effect inventory.
 
+Finite domains use family-specific resource bounds. Value-origin alternatives
+remain capped at 32, while exact launch-relative stack states are capped at 64.
+The latter are integer control states rather than possible machine values;
+sharing the tighter provenance bound caused otherwise exact control-flow joins
+to fail without reducing the accepted value set. Exhausting either bound still
+produces `incomplete` and never widens to an arbitrary value or address.
+
 Generated files belong under Nix outputs or ignored `build/` workspaces. Authored
 intent and source belong in target bundles. Private binaries belong under the
 ignored `private/` tree and must never be copied into source or target data.
