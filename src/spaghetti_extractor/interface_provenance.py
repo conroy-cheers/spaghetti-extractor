@@ -98,7 +98,17 @@ _CALL_KINDS = frozenset({"external_call", "indirect_call", "internal_call"})
 _Origin = ValueOrigin
 _Value = FiniteValue
 _MemoryLocation = int | _Origin
-_EventKnownSlots = Mapping[str, Mapping[int, _Value]]
+
+
+@dataclass(frozen=True)
+class _EventKnownRead:
+    """Finite values for one exact read-address expression in one unit."""
+
+    address_expression_key: str
+    slots: tuple[tuple[int, _Value], ...]
+
+
+_EventKnownSlots = Mapping[str, tuple[_EventKnownRead, ...]]
 _MemoryResultRelation = tuple[_Origin, Mapping[str, Any]]
 _InternalCallMemoryResults = Mapping[int, Sequence[_MemoryResultRelation]]
 _InternalCallMemoryFrames = Mapping[int, tuple[CallWriteSpan, ...]]
@@ -756,6 +766,7 @@ def recover_external_interface_targets(
         initial_event_known_slots or {},
         by_id=by_id,
         finite_value_budget=finite_value_budget,
+        static_slot_budget=static_slot_budget,
     )
     root_argument_origins = _normalize_root_argument_origins(
         initial_root_argument_origins or {},
@@ -963,7 +974,9 @@ def recover_external_interface_targets(
             "initial_known_slots": initial_known_slot_count,
             "initial_event_known_slot_units": len(event_known_slots),
             "initial_event_known_slots": sum(
-                len(values) for values in event_known_slots.values()
+                len(read.slots)
+                for reads in event_known_slots.values()
+                for read in reads
             ),
         },
         "internal_call_cleanup_inference": [
@@ -2684,23 +2697,30 @@ def _normalize_event_known_slots(
     *,
     by_id: Mapping[str, Mapping[str, Any]],
     finite_value_budget: int,
+    static_slot_budget: int,
 ) -> tuple[
-    dict[str, dict[int, _Value]],
+    dict[str, tuple[_EventKnownRead, ...]],
     list[dict[str, Any]],
 ]:
     """Bind exact read facts to expressions without promoting them to memory.
 
     Machine-IR summaries can contain the same load expression for more than
-    one read event.  A unit/address binding is therefore usable only when every
-    matching exact read has equivalent checked evidence.  Other reads and
-    writes in the unit do not affect the binding: consumers apply it only while
-    evaluating an expression that contains that exact load.
+    one read event. A unit/expression binding is therefore usable only when
+    every matching exact read has equivalent checked evidence. For a dynamic
+    address expression, each supplied slot value is conditional: it applies
+    only if evaluation of that exact expression selects the supplied address.
+    Other reads and writes in the unit do not affect the binding because
+    consumers apply it only while evaluating a load with the same expression.
     """
 
-    supplied: dict[str, dict[int, dict[int, _Value]]] = defaultdict(
-        lambda: defaultdict(dict)
+    supplied: dict[
+        str, dict[str, dict[int, dict[int, _Value]]]
+    ] = defaultdict(
+        lambda: defaultdict(lambda: defaultdict(dict))
     )
+    supplied_expressions: dict[tuple[str, str], Mapping[str, Any]] = {}
     issues: list[dict[str, Any]] = []
+    supplied_slot_keys: set[tuple[str, str, int]] = set()
     for site, raw_slots in sorted(
         values.items(), key=lambda item: (item[0].unit_id, item[0].event_index)
     ):
@@ -2716,18 +2736,32 @@ def _normalize_event_known_slots(
         ):
             raise ValueError("event-known slot references an unknown memory event")
         event = _mapping(memory_events[site.event_index])
-        event_address = _constant_u32_expression(event.get("address"))
+        address_expression = event.get("address")
         if (
             event.get("kind") not in {"read", "read_write"}
             or _integer(event.get("width")) != 4
-            or event_address is None
+            or not isinstance(address_expression, Mapping)
         ):
-            raise ValueError("event-known slot must bind an exact 32-bit read")
+            raise ValueError("event-known slot must bind a 32-bit read expression")
         if not isinstance(raw_slots, Mapping) or not raw_slots:
             raise ValueError("event-known slot inventory is empty")
+        expression_key = _event_address_expression_key(address_expression)
+        supplied_expressions[(site.unit_id, expression_key)] = address_expression
+        event_address = _constant_u32_expression(address_expression)
+        distinct_values: set[tuple[str, tuple[Any, ...]]] = set()
         for location, origins in raw_slots.items():
-            if location != event_address or not isinstance(location, int):
+            if (
+                not isinstance(location, int)
+                or isinstance(location, bool)
+                or not 0 <= location <= 0xFFFF_FFFF
+                or (event_address is not None and location != event_address)
+            ):
                 raise ValueError("event-known slot address contradicts its read")
+            supplied_slot_keys.add((site.unit_id, expression_key, location))
+            if len(supplied_slot_keys) > static_slot_budget:
+                raise ValueError(
+                    "event-known slot inventory exceeds the static-slot budget"
+                )
             if (
                 origins is None
                 or not origins
@@ -2735,58 +2769,104 @@ def _normalize_event_known_slots(
                 or any(not _persistent_origin(origin) for origin in origins)
             ):
                 raise ValueError("event-known slot value is invalid")
-            supplied[site.unit_id][location][site.event_index] = origins
+            distinct_values.update((origin.kind, origin.key) for origin in origins)
+            supplied[site.unit_id][expression_key][site.event_index][location] = origins
+        if len(distinct_values) > finite_value_budget:
+            raise ValueError("event-known slot values exceed the finite-value budget")
 
-    result: dict[str, dict[int, _Value]] = defaultdict(dict)
-    for unit_id, by_address in sorted(supplied.items()):
+    result: dict[str, list[_EventKnownRead]] = defaultdict(list)
+    for unit_id, by_expression in sorted(supplied.items()):
         memory_events = _mapping(by_id[unit_id].get("semantics")).get(
             "memory_events"
         )
         assert isinstance(memory_events, list)
-        for address, by_event in sorted(by_address.items()):
+        for expression_key, by_event in sorted(by_expression.items()):
+            address_expression = supplied_expressions[(unit_id, expression_key)]
             matching_events = {
                 index
                 for index, raw in enumerate(memory_events)
-                if _exact_read_event_address(raw) == address
+                if _read_event_address_expression_key(raw) == expression_key
             }
             supplied_events = set(by_event)
             if matching_events != supplied_events:
-                issues.append({
+                issue = {
                     "code": "event_known_slot_expression_binding_ambiguous",
                     "unit_id": unit_id,
-                    "address": address,
+                    "address_expression_sha256": sha256(
+                        expression_key.encode("utf-8")
+                    ).hexdigest(),
                     "matching_event_indices": sorted(matching_events),
                     "supplied_event_indices": sorted(supplied_events),
                     "missing_event_indices": sorted(
                         matching_events - supplied_events
                     ),
-                })
+                }
+                constant_address = _constant_u32_expression(address_expression)
+                if constant_address is not None:
+                    issue["address"] = constant_address
+                issues.append(issue)
                 continue
-            merged = _merge_equivalent_event_values(by_event.values())
+            merged = _merge_equivalent_event_slot_maps(by_event.values())
             if merged is None:
-                issues.append({
+                issue = {
                     "code": "event_known_slot_expression_values_conflict",
                     "unit_id": unit_id,
-                    "address": address,
+                    "address_expression_sha256": sha256(
+                        expression_key.encode("utf-8")
+                    ).hexdigest(),
                     "event_indices": sorted(supplied_events),
-                })
+                }
+                constant_address = _constant_u32_expression(address_expression)
+                if constant_address is not None:
+                    issue["address"] = constant_address
+                issues.append(issue)
                 continue
-            result[unit_id][address] = merged
+            result[unit_id].append(_EventKnownRead(
+                expression_key,
+                tuple(sorted(merged.items())),
+            ))
     return {
-        unit_id: dict(sorted(slots.items(), key=lambda item: repr(item[0])))
-        for unit_id, slots in sorted(result.items())
-        if slots
+        unit_id: tuple(sorted(reads, key=lambda read: read.address_expression_key))
+        for unit_id, reads in sorted(result.items())
+        if reads
     }, issues
 
 
-def _exact_read_event_address(value: Any) -> int | None:
+def _read_event_address_expression_key(value: Any) -> str | None:
     event = _mapping(value)
     if (
         event.get("kind") not in {"read", "read_write"}
         or _integer(event.get("width")) != 4
+        or not isinstance(event.get("address"), Mapping)
     ):
         return None
-    return _constant_u32_expression(event.get("address"))
+    return _event_address_expression_key(event["address"])
+
+
+def _event_address_expression_key(value: Mapping[str, Any]) -> str:
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("event-known slot address expression is not canonical JSON") from exc
+
+
+def _merge_equivalent_event_slot_maps(
+    values: Iterable[Mapping[int, _Value]],
+) -> dict[int, _Value] | None:
+    rows = list(values)
+    if not rows:
+        return None
+    address_sets = {frozenset(row) for row in rows}
+    if len(address_sets) != 1:
+        return None
+    addresses = next(iter(address_sets))
+    result: dict[int, _Value] = {}
+    for address in addresses:
+        merged = _merge_equivalent_event_values(row[address] for row in rows)
+        if merged is None:
+            return None
+        result[address] = merged
+    return result
 
 
 def _merge_equivalent_event_values(values: Iterable[_Value]) -> _Value:
@@ -2825,15 +2905,20 @@ def _with_expression_event_known_slots(
     expression: Any,
     event_known_slots: _EventKnownSlots,
 ) -> _State:
-    slots = event_known_slots.get(unit_id)
-    if not slots:
+    reads = event_known_slots.get(unit_id)
+    if not reads:
         return state
-    referenced = _exact_load_addresses(expression)
-    selected = {
-        address: value
-        for address, value in slots.items()
-        if address in referenced
-    }
+    referenced = _load_address_expression_keys(expression)
+    selected: dict[int, _Value] = {}
+    for read in reads:
+        if read.address_expression_key not in referenced:
+            continue
+        for address, value in read.slots:
+            existing = selected.get(address)
+            if address not in selected:
+                selected[address] = value
+                continue
+            selected[address] = _merge_equivalent_event_values((existing, value))
     if not selected:
         return state
     return _State(
@@ -2845,17 +2930,20 @@ def _with_expression_event_known_slots(
     )
 
 
-def _exact_load_addresses(expression: Any) -> frozenset[int]:
-    result: set[int] = set()
+def _load_address_expression_keys(expression: Any) -> frozenset[str]:
+    result: set[str] = set()
 
     def visit(value: Any) -> None:
         if isinstance(value, Mapping):
             op = str(value.get("op") or "").lower()
             width = value.get("width", value.get("width_bits", 4))
-            if op in {"load", "read32", "mem32"} and width in {4, 32, None}:
-                address = _constant_u32_expression(value.get("address"))
-                if address is not None:
-                    result.add(address)
+            address = value.get("address")
+            if (
+                op in {"load", "read32", "mem32"}
+                and width in {4, 32, None}
+                and isinstance(address, Mapping)
+            ):
+                result.add(_event_address_expression_key(address))
             for child in value.values():
                 visit(child)
         elif isinstance(value, Sequence) and not isinstance(
@@ -3988,11 +4076,17 @@ def _transfer_local_environment_key(
             (
                 unit_id,
                 tuple(
-                    (address, _value_cache_key(value))
-                    for address, value in sorted(slots.items())
+                    (
+                        read.address_expression_key,
+                        tuple(
+                            (address, _value_cache_key(value))
+                            for address, value in read.slots
+                        ),
+                    )
+                    for read in reads
                 ),
             )
-            for unit_id, slots in sorted(event_known_slots.items())
+            for unit_id, reads in sorted(event_known_slots.items())
         ),
         tuple(
             (

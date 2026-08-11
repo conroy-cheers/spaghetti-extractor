@@ -703,7 +703,9 @@
         "spaghetti_extractor.authority_record_core_v2",
         "spaghetti_extractor.global_slot_contract_v2",
         "spaghetti_extractor.global_slot_image_v2",
+        "spaghetti_extractor.machine_ir_authority_v2",
         "spaghetti_extractor.mutable_slot_candidates_v2",
+        "spaghetti_extractor.provenance_domain",
         "spaghetti_extractor.stage_binary"
       ],
       "path": "src/spaghetti_extractor/global_slot_hypotheses_v2.py"
@@ -1036,6 +1038,7 @@
         "spaghetti_extractor",
         "spaghetti_extractor.analysis_schema_v2",
         "spaghetti_extractor.artifact_identity_v2",
+        "spaghetti_extractor.authority_bindings_v2",
         "spaghetti_extractor.global_slot_hypotheses_v2",
         "spaghetti_extractor.joint_interprocedural_analysis_v2"
       ],

@@ -1684,6 +1684,7 @@ def _run_typed_pass(
             finite_value_budget=finite_value_budget,
             allow_bootstrap=allow_bootstrap,
             retain_contextual_hypotheses=True,
+            accept_contextual_replay=False,
         )
         next_call_site_effects = operation_outputs.call_site_effects
         next_callback_root_arguments = operation_outputs.callback_root_arguments
@@ -1801,6 +1802,7 @@ def _run_typed_pass(
                 finite_value_budget=finite_value_budget,
                 allow_bootstrap=allow_bootstrap,
                 retain_contextual_hypotheses=False,
+                accept_contextual_replay=True,
             )
             stable = _operation_outputs_stable(
                 checkpoint_outputs,
@@ -2002,6 +2004,7 @@ def _derive_operation_outputs(
     finite_value_budget: int,
     allow_bootstrap: bool,
     retain_contextual_hypotheses: bool,
+    accept_contextual_replay: bool,
 ) -> _OperationOutputs:
     call_site_effects = _call_site_effect_rows(operation_provenance)
     callback_arguments = callback_root_argument_origins(
@@ -2020,6 +2023,17 @@ def _derive_operation_outputs(
         operation_provenance,
         finite_target_budget=finite_value_budget,
     )
+    contextual_recoveries: Sequence[Mapping[str, Any]] = ()
+    if accept_contextual_replay:
+        contextual_status = operation_provenance.get("contextual_recovery")
+        if (
+            isinstance(contextual_status, Mapping)
+            and contextual_status.get("executed") is True
+        ):
+            contextual_recoveries = _contextual_recovery_hypotheses(
+                operation_provenance.get("path_recovery_proposals", ())
+            )
+
     next_selected = _prefer_indirect_recoveries(
         static_recoveries,
         value_provenance.get("resolutions", []),
@@ -2028,6 +2042,7 @@ def _derive_operation_outputs(
             if allow_bootstrap
             else []
         ),
+        contextual_recoveries,
         operation_provenance.get("resolutions", []),
         allow_proposal_hypotheses=allow_bootstrap,
     )

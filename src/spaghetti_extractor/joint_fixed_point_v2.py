@@ -16,6 +16,7 @@ from typing import Any
 
 from .analysis_schema_v2 import CHECKED_MEMORY_RANGE_FACT_V2_FORMAT
 from .artifact_identity_v2 import canonical_sha256
+from .authority_bindings_v2 import EventBinding
 from .global_slot_hypotheses_v2 import (
     GlobalSlotHypothesisV2Error,
     GlobalSlotInductionHypothesisV2,
@@ -78,6 +79,10 @@ class JointFixedPointCallbacks:
         [Mapping[str, Any], Mapping[str, Any], Mapping[str, Any]],
         Mapping[str, Any],
     ] | None = None
+    derive_global_slot_hypotheses: Callable[
+        [Mapping[str, Any]],
+        Sequence[Mapping[str, Any] | GlobalSlotInductionHypothesisV2],
+    ] | None = None
 
 
 def derive_joint_fixed_point_v2(
@@ -96,10 +101,10 @@ def derive_joint_fixed_point_v2(
 ) -> dict[str, Any]:
     """Close one graph-bound finite lattice and replay it without seeds.
 
-    Proposal recoveries accelerate only the bootstrap.  Exact launch-value
-    slot hypotheses may additionally seed the first authority round, but they
-    are discarded immediately unless point-sensitive replay emits the
-    identical typed invariant.  Acceptance depends on an unseeded
+    Proposal recoveries accelerate only the bootstrap.  Non-authorizing slot
+    hypotheses may additionally seed the first authority round, but the
+    hypothesis inventory is discarded immediately in favor of point-sensitive
+    replay output.  Acceptance depends on an unseeded
     interprocedural pass whose derived graph, stack facts, and mutable-slot
     invariants reproduce the exact facts supplied to that pass.
     """
@@ -189,6 +194,14 @@ def derive_joint_fixed_point_v2(
         bootstrap_authority_invariants = _global_slot_invariants(
             bootstrap_authority
         )
+        if callbacks.derive_global_slot_hypotheses is not None:
+            derived_slot_hypotheses = _normalize_global_slot_hypotheses(
+                callbacks.derive_global_slot_hypotheses(bootstrap_slots)
+            )
+            slot_hypotheses = _combine_global_slot_hypotheses(
+                slot_hypotheses,
+                derived_slot_hypotheses,
+            )
         invariants = bootstrap_authority_invariants
         stack_entry_offsets = _stack_entry_offsets(bootstrap_stack)
         stack_range_facts = _mapping_rows(
@@ -592,12 +605,44 @@ def _normalize_global_slot_hypotheses(
     result.sort(key=lambda item: item.id)
     if len({item.id for item in result}) != len(result):
         raise ValueError("global-slot induction hypothesis IDs must be unique")
-    slot_rvas = [item.invariant.slot_rva for item in result]
-    if len(set(slot_rvas)) != len(slot_rvas):
+    scope_keys = [_global_slot_hypothesis_scope_key(item) for item in result]
+    if len(set(scope_keys)) != len(scope_keys):
         raise ValueError(
-            "global-slot induction hypotheses must contain one record per slot"
+            "global-slot induction hypotheses duplicate one exact scope"
         )
     return tuple(result)
+
+
+def _combine_global_slot_hypotheses(
+    left: Sequence[GlobalSlotInductionHypothesisV2],
+    right: Sequence[GlobalSlotInductionHypothesisV2],
+) -> tuple[GlobalSlotInductionHypothesisV2, ...]:
+    """Combine independently derived proposal scopes without widening them."""
+
+    result: dict[tuple[Any, ...], GlobalSlotInductionHypothesisV2] = {}
+    for hypothesis in (*left, *right):
+        key = _global_slot_hypothesis_scope_key(hypothesis)
+        previous = result.get(key)
+        if previous is not None and previous != hypothesis:
+            raise ValueError(
+                "global-slot induction hypotheses contradict one exact scope"
+            )
+        result[key] = hypothesis
+    return tuple(sorted(result.values(), key=lambda item: item.id))
+
+
+def _global_slot_hypothesis_scope_key(
+    hypothesis: GlobalSlotInductionHypothesisV2,
+) -> tuple[Any, ...]:
+    binding = hypothesis.invariant.binding
+    if isinstance(binding, EventBinding):
+        return (
+            "event",
+            hypothesis.invariant.slot_rva,
+            binding.unit.unit_id,
+            binding.event_index,
+        )
+    return ("global", hypothesis.invariant.slot_rva)
 
 
 def _merge_initial_global_slot_hypotheses(
@@ -608,11 +653,11 @@ def _merge_initial_global_slot_hypotheses(
 
     rows = [copy.deepcopy(dict(row)) for row in authoritative]
     content_ids = set(_global_slot_content_ids(rows))
-    occupied_slots = {
-        int(row["slot_rva"])
+    occupied_scopes = {
+        key
         for row in rows
-        if isinstance(row.get("slot_rva"), int)
-        and not isinstance(row.get("slot_rva"), bool)
+        for key in (_global_slot_record_scope_key(row),)
+        if key is not None
     }
     introduced: set[str] = set()
     shadowed: set[str] = set()
@@ -620,16 +665,42 @@ def _merge_initial_global_slot_hypotheses(
         content_id = hypothesis.invariant.content_id
         if (
             content_id in content_ids
-            or hypothesis.invariant.slot_rva in occupied_slots
+            or _global_slot_hypothesis_scope_key(hypothesis) in occupied_scopes
         ):
             shadowed.add(content_id)
             continue
         rows.append(hypothesis.invariant.to_payload())
         content_ids.add(content_id)
-        occupied_slots.add(hypothesis.invariant.slot_rva)
+        occupied_scopes.add(_global_slot_hypothesis_scope_key(hypothesis))
         introduced.add(content_id)
     rows.sort(key=lambda row: str(row.get("content_id", "")))
     return tuple(rows), frozenset(introduced), frozenset(shadowed)
+
+
+def _global_slot_record_scope_key(
+    row: Mapping[str, Any],
+) -> tuple[Any, ...] | None:
+    slot_rva = row.get("slot_rva")
+    binding = row.get("binding")
+    if (
+        not isinstance(slot_rva, int)
+        or isinstance(slot_rva, bool)
+        or not isinstance(binding, Mapping)
+    ):
+        return None
+    if binding.get("kind") != "event":
+        return ("global", slot_rva)
+    unit = binding.get("unit")
+    unit_id = unit.get("unit_id") if isinstance(unit, Mapping) else None
+    event_index = binding.get("event_index")
+    if (
+        not isinstance(unit_id, str)
+        or not unit_id
+        or not isinstance(event_index, int)
+        or isinstance(event_index, bool)
+    ):
+        return None
+    return ("event", slot_rva, unit_id, event_index)
 
 
 def _global_slot_content_ids(

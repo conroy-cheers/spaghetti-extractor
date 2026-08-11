@@ -2294,6 +2294,130 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertTrue(replay["proof_authority"])
         self.assertEqual(replay["reproduced_ids"], [exit_row["id"]])
 
+    def test_scheduled_contextual_replay_can_reproduce_cyclic_target(self) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "b")
+        seed.update({
+            "proposal_source": "bounded_call_context_v1",
+            "proof_authority": False,
+            "context_coverage": {
+                "format": "bounded-call-context-coverage-v1",
+                "status": "complete",
+                "context_count": 1,
+                "complete_contexts": 1,
+                "incomplete_contexts": 0,
+                "impacted_by_budget": False,
+                "contexts": [{
+                    "id": "bounded-call-context-v1:fixture",
+                    "status": "recovered",
+                }],
+            },
+        })
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            selected = kwargs["recovered_indirect_edges"]
+            assert isinstance(selected, list)
+            row = next(item for item in selected if item.get("id") == exit_row["id"])
+            if row.get("status") != "recovered":
+                return {"resolutions": [incomplete_recovery(exit_row)]}
+            if kwargs.get("run_contextual_recovery") is not True:
+                return {
+                    "resolutions": [incomplete_recovery(exit_row)],
+                    "contextual_recovery": {
+                        "required": True,
+                        "executed": False,
+                    },
+                }
+            witnessed = recovered(exit_row, "b")
+            witnessed.update({
+                "proposal_source": "bounded_call_context_v1",
+                "proof_authority": False,
+                "context_coverage": seed["context_coverage"],
+                "analysis_dependencies": [exit_row["id"]],
+                "origin_count": 1,
+                "origin_kinds": ["internal"],
+                "target_origin_witnesses": [
+                    {"kind": "static_code", "key": [IMAGE_BASE + 0x2000, 0]}
+                ],
+            })
+            return {
+                "resolutions": [incomplete_recovery(exit_row)],
+                "path_recovery_proposals": [witnessed],
+                "contextual_recovery": {
+                    "required": True,
+                    "executed": True,
+                },
+            }
+
+        result = self._run(
+            units=[
+                unit("a", 0x1000),
+                unit("loop", 0x1001),
+                unit("b", 0x2000),
+            ],
+            roots=["a"],
+            direct=[edge("a", "loop"), edge("loop", "a")],
+            exits=[exit_row],
+            inductive=[seed],
+            resolver=resolver,
+            authority_only=True,
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        replay = result.fixed_point["inductive_replay"]
+        self.assertTrue(replay["required"])
+        self.assertTrue(replay["executed"])
+        self.assertTrue(replay["proof_authority"])
+        self.assertEqual(replay["reproduced_ids"], [exit_row["id"]])
+
+    def test_unexecuted_contextual_checkpoint_remains_incomplete(self) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "b")
+        seed.update({
+            "proposal_source": "bounded_call_context_v1",
+            "proof_authority": False,
+            "context_coverage": {
+                "format": "bounded-call-context-coverage-v1",
+                "status": "complete",
+                "context_count": 1,
+                "complete_contexts": 1,
+                "incomplete_contexts": 0,
+                "impacted_by_budget": False,
+                "contexts": [{
+                    "id": "bounded-call-context-v1:fixture",
+                    "status": "recovered",
+                }],
+            },
+        })
+
+        def resolver(**_kwargs: object) -> dict[str, object]:
+            return {
+                "resolutions": [incomplete_recovery(exit_row)],
+                "contextual_recovery": {
+                    "required": True,
+                    "executed": False,
+                },
+            }
+
+        result = self._run(
+            units=[
+                unit("a", 0x1000),
+                unit("loop", 0x1001),
+                unit("b", 0x2000),
+            ],
+            roots=["a"],
+            direct=[edge("a", "loop"), edge("loop", "a")],
+            exits=[exit_row],
+            inductive=[seed],
+            resolver=resolver,
+            authority_only=True,
+        )
+
+        self.assertFalse(result.complete)
+        replay = result.fixed_point["inductive_replay"]
+        self.assertFalse(replay["proof_authority"])
+        self.assertEqual(replay["missing_ids"], [exit_row["id"]])
+
     def test_witnessed_inductive_replay_can_close_a_checked_cycle(self) -> None:
         exit_row = indirect_exit("exit:a:0", "a")
         seed = recovered(exit_row, "b")

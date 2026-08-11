@@ -748,6 +748,7 @@ let
               loader_initial_bytes_v2,
           )
           from spaghetti_extractor.global_slot_hypotheses_v2 import (
+              derive_event_bound_global_slot_induction_hypotheses_v2,
               derive_global_slot_induction_hypotheses_v2,
           )
           from spaghetti_extractor.import_abi import load_selected_import_abis
@@ -1101,6 +1102,16 @@ let
                   launch_memory_assumptions={"assumptions": assumptions},
               )
 
+          def derive_global_slot_hypotheses(bootstrap_slot_analysis):
+              return derive_event_bound_global_slot_induction_hypotheses_v2(
+                  binary,
+                  units=units,
+                  machine_ir_sha256=machine_ir_sha256,
+                  proposal_slot_dependencies=proposal_slot_dependencies,
+                  proposal_global_slot_analysis=bootstrap_slot_analysis,
+                  finite_value_budget=analysis_finite_value_budget,
+              )
+
           progress_started = time.monotonic()
 
           def emit_progress(phase, details):
@@ -1146,6 +1157,9 @@ let
                   ),
                   derive_dependency_scoped_global_slots=(
                       derive_dependency_scoped_global_slots
+                  ),
+                  derive_global_slot_hypotheses=(
+                      derive_global_slot_hypotheses
                   ),
               ),
               progress=emit_progress,

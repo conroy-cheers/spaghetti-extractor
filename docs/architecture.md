@@ -106,7 +106,12 @@ The v2 evidence graph is fail-closed:
    then replay from no proposal seeds. Expensive bounded-context recovery runs
    only as a checkpoint after ordinary propagation stabilizes; a checkpoint
    that discovers new driver facts resumes ordinary propagation before another
-   checkpoint may authorize contextual memory evidence.
+   checkpoint may authorize contextual memory evidence. Bootstrap mutable-slot
+   replay may propose bounded values at exact read events to break a cyclic
+   slot/call dependency. These hypotheses are event-hash-bound,
+   non-authorizing, and used only for the first authority round; converged
+   point-sensitive replay must derive the final invariant inventory without
+   target proposal seeds.
 4. External sites are normalized only after target recovery and are rebound to
    the exact event, ABI, arguments, effects, continuation, and selected profile.
 5. Every reachable instruction form is bound to one binary-specific qualified

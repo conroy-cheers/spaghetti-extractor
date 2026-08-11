@@ -8,7 +8,9 @@ from spaghetti_extractor.analysis_schema_v2 import (
 )
 from spaghetti_extractor.authority_bindings_v2 import (
     BinaryBinding,
+    EventBinding,
     ImageSpanBinding,
+    UnitBinding,
 )
 from spaghetti_extractor.authority_record_core_v2 import FiniteAlternatives
 from spaghetti_extractor.global_slot_contract_v2 import GlobalSlotInvariant
@@ -131,7 +133,190 @@ def _slot_hypothesis() -> GlobalSlotInductionHypothesisV2:
     )
 
 
+def _event_slot_hypothesis(
+    *,
+    unit_id: str = "root",
+    event_index: int = 0,
+) -> GlobalSlotInductionHypothesisV2:
+    unit = UnitBinding(
+        binary=BinaryBinding("a" * 64, "b" * 64),
+        unit_id=unit_id,
+        rva_start=0x1000,
+        rva_end=0x1010,
+        unit_sha256="c" * 64,
+        instruction_bytes_sha256="d" * 64,
+    )
+    invariant = GlobalSlotInvariant(
+        binding=EventBinding(
+            unit=unit,
+            event_index=event_index,
+            event_kind="read",
+            instruction_rva=0x1000 + event_index,
+            event_sha256="e" * 64,
+        ),
+        slot_rva=0x2000,
+        width_bytes=4,
+        invariant_kind="finite_set_at_read",
+        alternatives=FiniteAlternatives.of([
+            {
+                "kind": "interface_object",
+                "key": ["f" * 64, "ITestInterface"],
+            }
+        ]),
+    )
+    return GlobalSlotInductionHypothesisV2(
+        invariant=invariant,
+        exit_ids=(f"exit:{unit_id}:{event_index}",),
+        dependency_sha256=canonical_sha256({
+            "unit_id": unit_id,
+            "event_index": event_index,
+        }),
+    )
+
+
 class JointFixedPointV2Tests(unittest.TestCase):
+    def test_bootstrap_derives_event_hypotheses_before_authority_round(self) -> None:
+        hypothesis = _event_slot_hypothesis()
+        observed: list[tuple[str, ...]] = []
+        callback_inputs: list[dict[str, object]] = []
+        authority_calls = 0
+
+        proposal = _interprocedural(generation=0, proposal_seed_count=1)
+        proposal["fixed_point"].update({
+            "proposal_only": True,
+            "cold_initial_recoveries_empty": False,
+        })
+
+        def interprocedural(
+            invariants, _stack_entry_offsets, _stack_range_facts, _recoveries
+        ):
+            observed.append(tuple(str(row["content_id"]) for row in invariants))
+            return _interprocedural(
+                generation=len(invariants), proposal_seed_count=0
+            )
+
+        def slots(_graph, _ranges):
+            return {"status": "complete", "bootstrap_marker": True}
+
+        def hypotheses(analysis):
+            callback_inputs.append(dict(analysis))
+            return [hypothesis.to_payload()]
+
+        def authority(*_args):
+            nonlocal authority_calls
+            authority_calls += 1
+            return {
+                "status": "complete",
+                "global_slot_invariants": (
+                    []
+                    if authority_calls == 1
+                    else [hypothesis.invariant.to_payload()]
+                ),
+            }
+
+        result = derive_joint_fixed_point_v2(
+            proposal_graph=_graph(),
+            proposal_recoveries=[],
+            proposal_interprocedural=proposal,
+            callbacks=JointFixedPointCallbacks(
+                derive_interprocedural=interprocedural,
+                derive_stack_ranges=lambda graph, interprocedural: _stack(
+                    dict(interprocedural["call_summaries"]),
+                    graph_id=str(graph["id"]),
+                ),
+                derive_global_slots=slots,
+                derive_global_slot_authority=authority,
+                derive_graph=lambda _interprocedural: _graph(),
+                derive_global_slot_hypotheses=hypotheses,
+            ),
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertEqual(callback_inputs, [{"status": "complete", "bootstrap_marker": True}])
+        self.assertTrue(observed)
+        self.assertEqual(observed[0], (hypothesis.invariant.content_id,))
+        self.assertIn(
+            hypothesis.invariant.content_id,
+            result["joint_fixed_point"]["global_slot_induction"][
+                "reproduced_content_ids"
+            ],
+        )
+
+    def test_multiple_event_hypotheses_for_one_slot_are_distinct_scopes(self) -> None:
+        hypotheses = [
+            _event_slot_hypothesis(event_index=0),
+            _event_slot_hypothesis(event_index=1),
+        ]
+        observed: list[int] = []
+
+        def interprocedural(
+            invariants, _stack_entry_offsets, _stack_range_facts, _recoveries
+        ):
+            observed.append(len(invariants))
+            return _interprocedural(
+                generation=len(invariants), proposal_seed_count=0
+            )
+
+        result = derive_joint_fixed_point_v2(
+            proposal_graph=_graph(),
+            proposal_recoveries=[],
+            proposal_global_slot_hypotheses=hypotheses,
+            callbacks=JointFixedPointCallbacks(
+                derive_interprocedural=interprocedural,
+                derive_stack_ranges=lambda graph, interprocedural: _stack(
+                    dict(interprocedural["call_summaries"]),
+                    graph_id=str(graph["id"]),
+                ),
+                derive_global_slots=lambda _graph, _ranges: {"status": "complete"},
+                derive_global_slot_authority=lambda *_args: {
+                    "status": "complete",
+                    "global_slot_invariants": [
+                        hypothesis.invariant.to_payload()
+                        for hypothesis in hypotheses
+                    ],
+                },
+                derive_graph=lambda _interprocedural: _graph(),
+            ),
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertTrue(observed)
+        self.assertTrue(all(count == 2 for count in observed))
+
+    def test_corrupted_bootstrap_hypothesis_callback_fails_closed(self) -> None:
+        hypothesis = _event_slot_hypothesis().to_payload()
+        hypothesis["proof_authority"] = True
+        proposal = _interprocedural(generation=0, proposal_seed_count=1)
+        proposal["fixed_point"].update({
+            "proposal_only": True,
+            "cold_initial_recoveries_empty": False,
+        })
+
+        with self.assertRaisesRegex(ValueError, "non-authorizing"):
+            derive_joint_fixed_point_v2(
+                proposal_graph=_graph(),
+                proposal_recoveries=[],
+                proposal_interprocedural=proposal,
+                callbacks=JointFixedPointCallbacks(
+                    derive_interprocedural=lambda *_args: _interprocedural(
+                        generation=0, proposal_seed_count=0
+                    ),
+                    derive_stack_ranges=lambda graph, interprocedural: _stack(
+                        dict(interprocedural["call_summaries"]),
+                        graph_id=str(graph["id"]),
+                    ),
+                    derive_global_slots=lambda _graph, _ranges: {
+                        "status": "complete"
+                    },
+                    derive_global_slot_authority=lambda *_args: {
+                        "status": "complete",
+                        "global_slot_invariants": [],
+                    },
+                    derive_graph=lambda _interprocedural: _graph(),
+                    derive_global_slot_hypotheses=lambda _analysis: [hypothesis],
+                ),
+            )
+
     def test_slot_hypothesis_survives_only_when_replay_reproduces_it(self) -> None:
         hypothesis = _slot_hypothesis()
         observed: list[tuple[str, ...]] = []

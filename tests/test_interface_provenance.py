@@ -1722,6 +1722,239 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(resolution["analysis_dependencies"], [dependency])
         self.assertEqual(result["counts"]["static_interface_slots"], 0)
 
+    def test_event_slot_facts_resolve_indexed_read_conditionally(self) -> None:
+        table = SLOT
+        address = add(const(table), mul(reg("edx"), const(4)))
+        units = [
+            unit("select", 0x1100, writes=[{
+                "register": "edx", "value": const(1),
+            }]),
+            unit(
+                "dispatch",
+                0x1200,
+                writes=[{"register": "eax", "value": load(address)}],
+                memory=[{"kind": "read", "width": 4, "address": address}],
+            ),
+            unit("target-zero", 0x1800),
+            unit("target-one", 0x1900),
+        ]
+        zero_dependency = (
+            "hybrid-authority-v2:global_slot_invariant:" + "1" * 64
+        )
+        one_dependency = (
+            "hybrid-authority-v2:global_slot_invariant:" + "2" * 64
+        )
+        result = self._run(
+            units,
+            [edge("select", "dispatch")],
+            roots=["select"],
+            indirect_exits=[{
+                "id": "exit:dispatch",
+                "source_unit_id": "dispatch",
+                "source_rva": 0x1200,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(address),
+            }],
+            initial_event_known_slots={
+                CallSiteId("dispatch", 0): {
+                    table: frozenset({ValueOrigin(
+                        "exact", (IMAGE_BASE + 0x1800,), (zero_dependency,)
+                    )}),
+                    table + 4: frozenset({ValueOrigin(
+                        "exact", (IMAGE_BASE + 0x1900,), (one_dependency,)
+                    )}),
+                },
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        resolution = result["resolutions"][0]
+        self.assertEqual(resolution["status"], "recovered", resolution)
+        self.assertEqual(resolution["target_rvas"], [0x1900])
+        self.assertEqual(resolution["analysis_dependencies"], [one_dependency])
+        self.assertEqual(result["fixed_point"]["initial_event_known_slots"], 2)
+
+    def test_event_slot_indexed_read_missing_selected_slot_stays_incomplete(self) -> None:
+        address = add(const(SLOT), mul(reg("edx"), const(4)))
+        units = [
+            unit("select", 0x1100, writes=[{
+                "register": "edx", "value": const(2),
+            }]),
+            unit(
+                "dispatch",
+                0x1200,
+                memory=[{"kind": "read", "width": 4, "address": address}],
+            ),
+            unit("target", 0x1800),
+        ]
+        result = self._run(
+            units,
+            [edge("select", "dispatch")],
+            roots=["select"],
+            indirect_exits=[{
+                "id": "exit:dispatch",
+                "source_unit_id": "dispatch",
+                "source_rva": 0x1200,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(address),
+            }],
+            initial_event_known_slots={
+                CallSiteId("dispatch", 0): {
+                    SLOT: frozenset({ValueOrigin(
+                        "exact", (IMAGE_BASE + 0x1800,), ()
+                    )}),
+                    SLOT + 4: frozenset({ValueOrigin(
+                        "exact", (IMAGE_BASE + 0x1800,), ()
+                    )}),
+                },
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "incomplete")
+
+    def test_event_slot_indexed_read_is_scoped_to_exact_unit(self) -> None:
+        address = add(const(SLOT), mul(reg("edx"), const(4)))
+        read = {"kind": "read", "width": 4, "address": address}
+        units = [
+            unit("select-bound", 0x1100, writes=[{
+                "register": "edx", "value": const(0),
+            }]),
+            unit("bound", 0x1200, memory=[read]),
+            unit("select-other", 0x1300, writes=[{
+                "register": "edx", "value": const(0),
+            }]),
+            unit("other", 0x1400, memory=[read]),
+            unit("target", 0x1800),
+        ]
+        result = self._run(
+            units,
+            [
+                edge("select-bound", "bound"),
+                edge("select-other", "other"),
+            ],
+            roots=["select-bound", "select-other"],
+            indirect_exits=[
+                {
+                    "id": "exit:bound",
+                    "source_unit_id": "bound",
+                    "source_rva": 0x1200,
+                    "source_event_index": 0,
+                    "kind": "indirect_call",
+                    "target_expression": load(address),
+                },
+                {
+                    "id": "exit:other",
+                    "source_unit_id": "other",
+                    "source_rva": 0x1400,
+                    "source_event_index": 0,
+                    "kind": "indirect_call",
+                    "target_expression": load(address),
+                },
+            ],
+            initial_event_known_slots={
+                CallSiteId("bound", 0): {
+                    SLOT: frozenset({ValueOrigin(
+                        "exact", (IMAGE_BASE + 0x1800,), ()
+                    )}),
+                },
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        by_id = {row["id"]: row for row in result["resolutions"]}
+        self.assertEqual(by_id["exit:bound"]["status"], "recovered")
+        self.assertEqual(by_id["exit:other"]["status"], "incomplete")
+
+    def test_event_slot_indexed_read_rejects_ambiguous_repetition(self) -> None:
+        address = add(const(SLOT), mul(reg("edx"), const(4)))
+        read = {"kind": "read", "width": 4, "address": address}
+        result = self._run(
+            [unit("dispatch", 0x1100, memory=[read, read]), unit("target", 0x1800)],
+            [],
+            roots=["dispatch"],
+            indirect_exits=[{
+                "id": "exit:dispatch",
+                "source_unit_id": "dispatch",
+                "source_rva": 0x1100,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(address),
+            }],
+            initial_event_known_slots={
+                CallSiteId("dispatch", 0): {
+                    SLOT: frozenset({ValueOrigin(
+                        "exact", (IMAGE_BASE + 0x1800,), ()
+                    )}),
+                },
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "incomplete")
+        issue = next(
+            row for row in result["issues"]
+            if row["code"] == "event_known_slot_expression_binding_ambiguous"
+        )
+        self.assertEqual(issue["matching_event_indices"], [0, 1])
+        self.assertEqual(issue["supplied_event_indices"], [0])
+
+    def test_event_slot_indexed_read_rejects_conflicting_repeated_values(self) -> None:
+        address = add(const(SLOT), mul(reg("edx"), const(4)))
+        read = {"kind": "read", "width": 4, "address": address}
+        result = self._run(
+            [unit("dispatch", 0x1100, memory=[read, read]), unit("target", 0x1800)],
+            [],
+            roots=["dispatch"],
+            indirect_exits=[{
+                "id": "exit:dispatch",
+                "source_unit_id": "dispatch",
+                "source_rva": 0x1100,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(address),
+            }],
+            initial_event_known_slots={
+                CallSiteId("dispatch", 0): {
+                    SLOT: frozenset({ValueOrigin(
+                        "exact", (IMAGE_BASE + 0x1800,), ()
+                    )}),
+                },
+                CallSiteId("dispatch", 1): {
+                    SLOT: frozenset({ValueOrigin(
+                        "exact", (IMAGE_BASE + 0x1900,), ()
+                    )}),
+                },
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "incomplete")
+        self.assertTrue(any(
+            row["code"] == "event_known_slot_expression_values_conflict"
+            for row in result["issues"]
+        ))
+
+    def test_event_slot_indexed_read_respects_static_slot_budget(self) -> None:
+        address = add(const(SLOT), mul(reg("edx"), const(4)))
+        read = {"kind": "read", "width": 4, "address": address}
+        with self.assertRaisesRegex(ValueError, "static-slot budget"):
+            self._run(
+                [unit("dispatch", 0x1100, memory=[read])],
+                [],
+                roots=["dispatch"],
+                indirect_exits=[],
+                initial_event_known_slots={
+                    CallSiteId("dispatch", 0): {
+                        SLOT: frozenset({ValueOrigin("exact", (1,), ())}),
+                        SLOT + 4: frozenset({ValueOrigin("exact", (2,), ())}),
+                    },
+                },
+                static_slot_budget=1,
+            )
+
     def test_guarded_target_carries_checked_control_dependency(self) -> None:
         null_dependency = (
             "hybrid-authority-v2:global_slot_invariant:" + "1" * 64
@@ -5524,6 +5757,8 @@ class InterfaceProvenanceTests(unittest.TestCase):
         extra_import_abis: dict[
             MachineImportIdentity, SelectedImportABI
         ] | None = None,
+        finite_value_budget: int = 32,
+        static_slot_budget: int = 256,
         stack_slot_budget: int = 256,
         imports: list[dict[str, object]] | None = None,
         indirect_exits: list[dict[str, object]] | None = None,
@@ -5607,6 +5842,8 @@ class InterfaceProvenanceTests(unittest.TestCase):
             ),
             image_base=IMAGE_BASE,
             image_size=image_size,
+            finite_value_budget=finite_value_budget,
+            static_slot_budget=static_slot_budget,
             stack_slot_budget=stack_slot_budget,
             static_data_reader=static_data_reader,
             bootstrap_unknown_call_preserved_registers=(

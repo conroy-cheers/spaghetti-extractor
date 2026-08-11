@@ -8,6 +8,7 @@ from pathlib import Path
 from spaghetti_extractor.global_slot_hypotheses_v2 import (
     GlobalSlotHypothesisV2Error,
     GlobalSlotInductionHypothesisV2,
+    derive_event_bound_global_slot_induction_hypotheses_v2,
     derive_global_slot_induction_hypotheses_v2,
 )
 from spaghetti_extractor.stage_binary import _parse_stage_a_pe
@@ -48,6 +49,78 @@ class GlobalSlotHypothesesV2Tests(unittest.TestCase):
             "unit_id": "unit:read",
             "event_index": 0,
             "proof_authority": False,
+        }
+
+    @staticmethod
+    def _read_unit(*, address: int = 0x402000) -> dict[str, object]:
+        return {
+            "id": "unit:read",
+            "source": {
+                "original": {"rva_start": 0x1000, "rva_end": 0x1002},
+                "instruction_bytes_sha256": "c" * 64,
+            },
+            "semantics": {
+                "memory_events": [{
+                    "kind": "read",
+                    "instruction_rva": 0x1000,
+                    "address": {
+                        "op": "const",
+                        "value": address,
+                        "width": 32,
+                    },
+                    "width": 4,
+                    "value": {"op": "reg", "name": "eax", "width": 32},
+                }],
+            },
+        }
+
+    @staticmethod
+    def _indexed_read_unit(*, table_address: int = 0x402000) -> dict[str, object]:
+        address = {
+            "op": "add32",
+            "args": [
+                {"op": "const", "value": table_address, "width": 32},
+                {
+                    "op": "mul32",
+                    "args": [
+                        {"op": "reg", "name": "edx", "width": 32},
+                        {"op": "const", "value": 4, "width": 32},
+                    ],
+                },
+            ],
+        }
+        unit = GlobalSlotHypothesesV2Tests._read_unit(address=table_address)
+        unit["semantics"]["memory_events"][0]["address"] = address
+        return unit
+
+    @staticmethod
+    def _proposal_analysis(
+        alternatives: list[dict[str, object]],
+        *,
+        instruction_rva: int = 0x1000,
+        address: int = 0x402000,
+    ) -> dict[str, object]:
+        return {
+            "format": "stage-a-global-slot-analysis-v2",
+            "global_slot_evidence": [{
+                "address": address,
+                "width": 4,
+                "read_inventory": [{
+                    "site": {
+                        "unit_id": "unit:read",
+                        "event_index": 0,
+                        "instruction_rva": instruction_rva,
+                    },
+                    "status": "incomplete",
+                    "state": {
+                        "reachable": True,
+                        "initialized": True,
+                        "tainted": True,
+                        "overflow": False,
+                        "alternatives": alternatives,
+                    },
+                }],
+            }],
         }
 
     def test_exact_launch_value_produces_non_authorizing_typed_hypothesis(self) -> None:
@@ -140,6 +213,150 @@ class GlobalSlotHypothesesV2Tests(unittest.TestCase):
             GlobalSlotHypothesisV2Error, "identity does not match"
         ):
             GlobalSlotInductionHypothesisV2.parse(payload)
+
+    def test_bootstrap_read_produces_exact_event_bound_hypothesis(self) -> None:
+        binary = self._binary()
+        interface_origin = {
+            "kind": "interface_object",
+            "key": ["d" * 64, "ITestInterface"],
+        }
+        hypotheses = derive_event_bound_global_slot_induction_hypotheses_v2(
+            binary,
+            units=[self._read_unit(address=binary.image_base + 0x2000)],
+            machine_ir_sha256=MACHINE_IR_SHA256,
+            proposal_slot_dependencies=[self._dependency()],
+            proposal_global_slot_analysis=self._proposal_analysis(
+                [interface_origin],
+                address=binary.image_base + 0x2000,
+            ),
+        )
+
+        self.assertEqual(len(hypotheses), 1)
+        hypothesis = hypotheses[0]
+        binding = hypothesis.invariant.binding
+        self.assertEqual(binding.unit.unit_id, "unit:read")
+        self.assertEqual(binding.event_index, 0)
+        self.assertEqual(binding.event_kind, "read")
+        self.assertEqual(hypothesis.invariant.invariant_kind, "finite_set_at_read")
+        self.assertEqual(
+            hypothesis.invariant.alternatives.to_payload()["values"],
+            [interface_origin],
+        )
+        self.assertFalse(hypothesis.to_payload()["proof_authority"])
+
+    def test_event_hypothesis_rejects_contradictory_read_binding(self) -> None:
+        binary = self._binary()
+        with self.assertRaisesRegex(
+            GlobalSlotHypothesisV2Error, "contradicts its exact event binding"
+        ):
+            derive_event_bound_global_slot_induction_hypotheses_v2(
+                binary,
+                units=[self._read_unit(address=binary.image_base + 0x2000)],
+                machine_ir_sha256=MACHINE_IR_SHA256,
+                proposal_slot_dependencies=[self._dependency()],
+                proposal_global_slot_analysis=self._proposal_analysis(
+                    [{"kind": "exact_bits", "value": 0, "width_bits": 32}],
+                    instruction_rva=0x1001,
+                    address=binary.image_base + 0x2000,
+                ),
+            )
+
+    def test_event_hypothesis_skips_over_budget_read(self) -> None:
+        binary = self._binary()
+        hypotheses = derive_event_bound_global_slot_induction_hypotheses_v2(
+            binary,
+            units=[self._read_unit(address=binary.image_base + 0x2000)],
+            machine_ir_sha256=MACHINE_IR_SHA256,
+            proposal_slot_dependencies=[self._dependency()],
+            proposal_global_slot_analysis=self._proposal_analysis(
+                [
+                    {"kind": "exact_bits", "value": 0, "width_bits": 32},
+                    {"kind": "exact_bits", "value": 1, "width_bits": 32},
+                ],
+                address=binary.image_base + 0x2000,
+            ),
+            finite_value_budget=1,
+        )
+
+        self.assertEqual(hypotheses, ())
+
+    def test_indexed_read_produces_conditional_hypothesis_per_slot(self) -> None:
+        binary = self._binary(data_size=8)
+        first = binary.image_base + 0x1010
+        second = binary.image_base + 0x1020
+        analysis = {
+            "format": "stage-a-global-slot-analysis-v2",
+            "global_slot_evidence": [
+                {
+                    "address": binary.image_base + slot_rva,
+                    "width": 4,
+                    "read_inventory": [{
+                        "site": {
+                            "unit_id": "unit:read",
+                            "event_index": 0,
+                            "instruction_rva": 0x1000,
+                        },
+                        "status": "incomplete",
+                        "state": {
+                            "reachable": True,
+                            "initialized": True,
+                            "tainted": True,
+                            "overflow": False,
+                            "alternatives": [{
+                                "kind": "exact_bits",
+                                "value": value,
+                                "width_bits": 32,
+                            }],
+                        },
+                    }],
+                }
+                for slot_rva, value in ((0x2000, first), (0x2004, second))
+            ],
+        }
+
+        hypotheses = derive_event_bound_global_slot_induction_hypotheses_v2(
+            binary,
+            units=[self._indexed_read_unit(
+                table_address=binary.image_base + 0x2000
+            )],
+            machine_ir_sha256=MACHINE_IR_SHA256,
+            proposal_slot_dependencies=[
+                self._dependency(slot_rva=0x2000, exit_id="exit:first"),
+                self._dependency(slot_rva=0x2004, exit_id="exit:second"),
+            ],
+            proposal_global_slot_analysis=analysis,
+        )
+
+        by_slot = {item.invariant.slot_rva: item for item in hypotheses}
+        self.assertEqual(sorted(by_slot), [0x2000, 0x2004])
+        self.assertEqual(
+            {
+                slot_rva: item.invariant.alternatives.to_payload()["values"][0][
+                    "value"
+                ]
+                for slot_rva, item in by_slot.items()
+            },
+            {0x2000: first, 0x2004: second},
+        )
+        self.assertEqual(
+            {item.invariant.binding.event_index for item in hypotheses}, {0}
+        )
+
+    def test_event_hypothesis_rejects_nonpersistent_origin(self) -> None:
+        binary = self._binary()
+        with self.assertRaisesRegex(
+            GlobalSlotHypothesisV2Error, "is not persistent"
+        ):
+            derive_event_bound_global_slot_induction_hypotheses_v2(
+                binary,
+                units=[self._read_unit(address=binary.image_base + 0x2000)],
+                machine_ir_sha256=MACHINE_IR_SHA256,
+                proposal_slot_dependencies=[self._dependency()],
+                proposal_global_slot_analysis=self._proposal_analysis(
+                    [{"kind": "register", "key": ["eax"]}],
+                    address=binary.image_base + 0x2000,
+                ),
+            )
 
 
 if __name__ == "__main__":
