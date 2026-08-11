@@ -8,6 +8,9 @@ from spaghetti_extractor.call_site_effects import (
     CALL_SITE_EFFECT_FORMAT,
     parse_call_site_effects,
 )
+from spaghetti_extractor.authority_dependencies_v2 import (
+    call_frame_family_dependency_id,
+)
 from spaghetti_extractor.interface_provenance import (
     recover_external_interface_targets,
 )
@@ -65,7 +68,7 @@ class InternalCallResultConsumerTests(unittest.TestCase):
         )
 
         resolution = self._resolution(result, "exit:register-dispatch")
-        call_dependency = self._call_dependency("callee")
+        call_dependency = self._call_result_dependency("callee")
         self.assertEqual(resolution["status"], "recovered", result)
         self.assertEqual(
             resolution["analysis_dependencies"],
@@ -84,7 +87,9 @@ class InternalCallResultConsumerTests(unittest.TestCase):
             register_output["origins"][0]["authority_dependencies"],
             [summary_dependency],
         )
-        self.assertEqual(effect["dependencies"], [call_dependency])
+        self.assertEqual(
+            effect["dependencies"], self._call_effect_dependencies("callee")
+        )
 
     def test_input_stack_word_memory_result_uses_checked_caller_cell(self) -> None:
         summary_dependency = "callback-entry:surface"
@@ -463,7 +468,7 @@ class InternalCallResultConsumerTests(unittest.TestCase):
         dependency_unit: str,
         target_recovery_dependency: str | None = None,
     ) -> None:
-        dependency = self._call_dependency(dependency_unit)
+        dependency = self._call_result_dependency(dependency_unit)
         resolution_dependencies = sorted([
             dependency,
             *(
@@ -491,7 +496,17 @@ class InternalCallResultConsumerTests(unittest.TestCase):
             "preserved": True,
             "writes": [],
         })
-        self.assertEqual(effect["dependencies"], resolution_dependencies)
+        self.assertEqual(
+            effect["dependencies"],
+            sorted([
+                *self._call_effect_dependencies(dependency_unit),
+                *(
+                    [target_recovery_dependency]
+                    if target_recovery_dependency is not None
+                    else []
+                ),
+            ]),
+        )
         self.assertEqual(len(effect["result_frame"]["outputs"]), 2)
         self.assertFalse(result["proof_authority"])
         parsed = parse_call_site_effects(
@@ -506,6 +521,25 @@ class InternalCallResultConsumerTests(unittest.TestCase):
 
     def _call_dependency(self, target: str) -> str:
         return f'call-frame:["invoke",0,"{target}"]'
+
+    def _call_result_dependency(self, target: str) -> str:
+        return call_frame_family_dependency_id(
+            "invoke", 0, target, "result"
+        )
+
+    def _call_effect_dependencies(self, target: str) -> list[str]:
+        return sorted([
+            self._call_dependency(target),
+            call_frame_family_dependency_id("invoke", 0, target, "memory"),
+            call_frame_family_dependency_id("invoke", 0, target, "result"),
+            call_frame_family_dependency_id("invoke", 0, target, "stack"),
+            *(
+                call_frame_family_dependency_id(
+                    "invoke", 0, target, "register", register
+                )
+                for register in ("ebp", "ebx", "edi", "esi")
+            ),
+        ])
 
     def _effect(
         self, result: dict[str, object], unit_id: str

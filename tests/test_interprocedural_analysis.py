@@ -637,6 +637,9 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 CallWriteSpan(ValueOrigin("exact", (SLOT,)), 4),
             ),
             IMAGE_BASE + 0x2100: (),
+            IMAGE_BASE + 0x2300: (
+                CallWriteSpan(ValueOrigin("exact", (SLOT,)), 4),
+            ),
         })
 
     def test_partial_summary_families_remain_independently_usable(self) -> None:
@@ -2540,9 +2543,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 "checked_preserved_registers": ["edi"],
             },
         )
-        self.assertEqual(
-            callee_summary["stack_cleanup"]["status"], "incomplete"
-        )
+        self.assertEqual(callee_summary["stack_cleanup"]["status"], "complete")
 
     def test_missing_register_fact_cannot_authorize_family_dependency(
         self,
@@ -2601,6 +2602,161 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertNotIn(
             exit_row["id"],
             result.fixed_point["inductive_replay"]["accepted_nodes"],
+        )
+
+    def test_memory_family_can_authorize_without_complete_call_summary(
+        self,
+    ) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "callee")
+        dependency = call_frame_family_dependency_id(
+            "a", 0, "callee", "memory"
+        )
+        seed["analysis_dependencies"] = [dependency]
+
+        def summaries(**kwargs: Any) -> dict[str, object]:
+            result = summary_adapter(**kwargs)
+            rows = result["summaries"]
+            assert isinstance(rows, list)
+            for row in rows:
+                if row.get("target_unit_id") != "callee":
+                    continue
+                row.update({
+                    "status": "incomplete",
+                    "caller_memory_frame": {
+                        "status": "complete",
+                        "preserved": True,
+                        "writes": [],
+                    },
+                    "blocker_codes": ["result_frame_incomplete"],
+                })
+            result["status"] = "incomplete"
+            return result
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            selected = kwargs["recovered_indirect_edges"]
+            assert isinstance(selected, list)
+            if not any(row.get("status") == "recovered" for row in selected):
+                return {"resolutions": [incomplete_recovery(exit_row)]}
+            replayed = dict(seed)
+            replayed.update({
+                "origin_count": 1,
+                "origin_kinds": ["internal"],
+                "target_origin_witnesses": [{
+                    "kind": "static_code",
+                    "key": [IMAGE_BASE + 0x2000, 0],
+                }],
+            })
+            return {"resolutions": [replayed]}
+
+        result = self._run(
+            units=[unit("a", 0x1000), unit("callee", 0x2000)],
+            roots=["a"],
+            exits=[exit_row],
+            inductive=[seed],
+            resolver=resolver,
+            summary_resolver=summaries,
+            authority_only=True,
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        replay = result.fixed_point["inductive_replay"]
+        family_node = call_summary_family_node_id("callee", "memory")
+        self.assertIn(exit_row["id"], replay["accepted_nodes"])
+        self.assertIn(family_node, replay["accepted_nodes"])
+        self.assertNotIn("call-summary:callee", replay["accepted_nodes"])
+        summary = next(
+            row
+            for row in result.call_summaries["summaries"]
+            if row["target_unit_id"] == "callee"
+        )
+        self.assertEqual(summary["status"], "incomplete")
+        self.assertEqual(summary["caller_memory_frame"]["status"], "complete")
+
+    def test_missing_memory_family_cannot_authorize_family_dependency(
+        self,
+    ) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "callee")
+        seed["analysis_dependencies"] = [call_frame_family_dependency_id(
+            "a", 0, "callee", "memory"
+        )]
+
+        def summaries(**kwargs: Any) -> dict[str, object]:
+            result = summary_adapter(**kwargs)
+            rows = result["summaries"]
+            assert isinstance(rows, list)
+            for row in rows:
+                if row.get("target_unit_id") == "callee":
+                    row.update({
+                        "status": "incomplete",
+                        "caller_memory_frame": {
+                            "status": "incomplete",
+                            "preserved": False,
+                            "writes": [],
+                        },
+                        "blocker_codes": ["caller_memory_frame_incomplete"],
+                    })
+            result["status"] = "incomplete"
+            return result
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            selected = kwargs["recovered_indirect_edges"]
+            assert isinstance(selected, list)
+            if not any(row.get("status") == "recovered" for row in selected):
+                return {"resolutions": [incomplete_recovery(exit_row)]}
+            replayed = dict(seed)
+            replayed.update({
+                "origin_count": 1,
+                "origin_kinds": ["internal"],
+                "target_origin_witnesses": [{
+                    "kind": "static_code",
+                    "key": [IMAGE_BASE + 0x2000, 0],
+                }],
+            })
+            return {"resolutions": [replayed]}
+
+        result = self._run(
+            units=[unit("a", 0x1000), unit("callee", 0x2000)],
+            roots=["a"],
+            exits=[exit_row],
+            inductive=[seed],
+            resolver=resolver,
+            summary_resolver=summaries,
+            authority_only=True,
+        )
+
+        self.assertFalse(result.complete)
+        self.assertEqual(result.recovered_targets[0]["status"], "incomplete")
+        self.assertNotIn(
+            exit_row["id"],
+            result.fixed_point["inductive_replay"]["accepted_nodes"],
+        )
+
+    def test_unused_unknown_scalar_families_are_not_global_obligations(
+        self,
+    ) -> None:
+        result = self._run(
+            units=[unit("root", 0x1000)],
+            roots=["root"],
+            resolver=lambda **_kwargs: {"resolutions": []},
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        dependencies = {
+            row["id"]: row for row in result.fixed_point["dependencies"]
+        }
+        self.assertEqual(
+            dependencies[call_summary_family_node_id("root", "memory")][
+                "status"
+            ],
+            "incomplete",
+        )
+        self.assertEqual(
+            dependencies[call_summary_family_node_id("root", "result")][
+                "status"
+            ],
+            "incomplete",
         )
 
     def test_closed_register_family_records_checked_non_preservation(self) -> None:

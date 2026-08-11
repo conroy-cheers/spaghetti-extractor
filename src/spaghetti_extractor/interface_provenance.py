@@ -162,7 +162,9 @@ class _CallFacts:
     memory_preserved: bool = False
     memory_writes: tuple["_WriteSpan", ...] | None = None
     dependencies: frozenset[str] = frozenset()
-    register_dependencies: Mapping[str, frozenset[str]] = field(
+    family_dependencies: Mapping[
+        tuple[str, str | None], frozenset[str]
+    ] = field(
         default_factory=dict
     )
 
@@ -208,9 +210,12 @@ def _with_preserved_register_hypotheses(
         memory_preserved=facts.memory_preserved,
         memory_writes=facts.memory_writes,
         dependencies=facts.dependencies,
-        register_dependencies={
-            register: frozenset({hypothesis.id})
-            for register, hypothesis in hypotheses.items()
+        family_dependencies={
+            **facts.family_dependencies,
+            **{
+                ("register", register): frozenset({hypothesis.id})
+                for register, hypothesis in hypotheses.items()
+            },
         },
     )
 
@@ -290,7 +295,7 @@ def _call_site_effect(
         argument_words=facts.argument_words,
         dependencies=tuple(sorted(
             facts.dependencies
-            | frozenset().union(*facts.register_dependencies.values())
+            | frozenset().union(*facts.family_dependencies.values())
         )),
         failure_codes=tuple(sorted(failures)),
     )
@@ -4515,13 +4520,16 @@ def _transfer_unit(
             and bootstrap_unknown_call_preserved_registers is not None
         ):
             site = CallSiteId(unit_id, event_index)
-            register_dependencies = {
-                register: frozenset({
-                    call_frame_hypothesis_id(
-                        site.unit_id, site.event_index, register
-                    )
-                })
-                for register in bootstrap_unknown_call_preserved_registers
+            family_dependencies = {
+                **facts.family_dependencies,
+                **{
+                    ("register", register): frozenset({
+                        call_frame_hypothesis_id(
+                            site.unit_id, site.event_index, register
+                        )
+                    })
+                    for register in bootstrap_unknown_call_preserved_registers
+                },
             }
             facts = _CallFacts(
                 preserved=bootstrap_unknown_call_preserved_registers,
@@ -4532,7 +4540,7 @@ def _transfer_unit(
                 memory_preserved=facts.memory_preserved,
                 memory_writes=facts.memory_writes,
                 dependencies=facts.dependencies,
-                register_dependencies=register_dependencies,
+                family_dependencies=family_dependencies,
             )
             issues.append({
                 "code": "bootstrap_call_preservation_used",
@@ -4544,7 +4552,7 @@ def _transfer_unit(
                 ),
                 "hypothesis_ids": sorted(
                     next(iter(dependencies))
-                    for dependencies in register_dependencies.values()
+                    for dependencies in family_dependencies.values()
                 ),
             })
         call_site_effects = (_call_site_effect(
@@ -4566,12 +4574,15 @@ def _transfer_unit(
                     or location.kind in {"dynamic_range", "dynamic_location"}
                 )
             )
+        memory_dependencies = _call_family_dependencies(facts, "memory")
         output = _State(
             registers={
                 register: (
                     with_value_dependencies(
                         pre_call.registers.get(register),
-                        _register_frame_dependencies(facts, register),
+                        _call_family_dependencies(
+                            facts, "register", register
+                        ),
                     )
                     if facts.preserved is not None and register in facts.preserved
                     else None
@@ -4579,12 +4590,16 @@ def _transfer_unit(
                 for register in _REGISTERS
             },
             memory={
-                location: with_value_dependencies(value, facts.dependencies)
+                location: with_value_dependencies(
+                    value, memory_dependencies
+                )
                 for location, value in framed_memory.items()
             },
             stack={
                 offset: _StackCell(
-                    with_value_dependencies(cell.value, facts.dependencies),
+                    with_value_dependencies(
+                        cell.value, memory_dependencies
+                    ),
                     cell.witnesses,
                 )
                 for offset, cell in framed_stack.items()
@@ -4593,8 +4608,9 @@ def _transfer_unit(
             control_dependencies=pre_call.control_dependencies,
         )
         _apply_call_stack_result(output, pre_call, facts)
+        result_dependencies = _call_family_dependencies(facts, "result")
         for address, origins in facts.outputs.items():
-            origins = with_value_dependencies(origins, facts.dependencies)
+            origins = with_value_dependencies(origins, result_dependencies)
             if address.kind == "exact":
                 concrete = int(address.key[0]) & 0xFFFFFFFF
                 output.memory[concrete] = origins
@@ -5829,20 +5845,38 @@ def _internal_target_call_facts(
 ) -> _CallFacts:
     preserved = internal_call_preserved_registers.get(target_address)
     target_bindings = inventory.unit_targets.get(target_address, ())
-    register_dependencies = (
-        {
-            register: frozenset({call_frame_family_dependency_id(
-                producer_unit_id,
-                event_index,
-                target_bindings[0][1],
-                "register",
-                register,
-            )})
-            for register in preserved
-        }
-        if preserved is not None and len(target_bindings) == 1
-        else {}
-    )
+    family_dependencies: dict[
+        tuple[str, str | None], frozenset[str]
+    ] = {}
+    if len(target_bindings) == 1:
+        target_unit_id = target_bindings[0][1]
+
+        def bind(family: str, subject: str | None = None) -> None:
+            family_dependencies[(family, subject)] = frozenset({
+                call_frame_family_dependency_id(
+                    producer_unit_id,
+                    event_index,
+                    target_unit_id,
+                    family,
+                    subject,
+                )
+            })
+
+        if preserved is not None:
+            for register in preserved:
+                bind("register", register)
+        if (
+            target_address in internal_call_memory_preservation
+            or target_address in internal_call_memory_frames
+        ):
+            bind("memory")
+        if target_address in internal_call_stack_cleanup:
+            bind("stack")
+        if (
+            target_address in internal_call_result_relations
+            or target_address in internal_call_memory_result_relations
+        ):
+            bind("result")
     outputs: dict[_Origin, _Value] = {}
     _merge_output_effects(
         outputs,
@@ -5888,7 +5922,7 @@ def _internal_target_call_facts(
         memory_preserved=memory_preserved,
         memory_writes=memory_writes,
         dependencies=dependencies,
-        register_dependencies=register_dependencies,
+        family_dependencies=family_dependencies,
     )
 
 
@@ -8085,22 +8119,26 @@ def _with_call_dependencies(
         memory_preserved=facts.memory_preserved,
         memory_writes=facts.memory_writes,
         dependencies=facts.dependencies | dependencies,
-        register_dependencies=facts.register_dependencies,
+        family_dependencies=facts.family_dependencies,
     )
 
 
-def _register_frame_dependencies(
-    facts: _CallFacts, register: str
+def _call_family_dependencies(
+    facts: _CallFacts,
+    family: str,
+    subject: str | None = None,
 ) -> frozenset[str]:
-    """Project aggregate call evidence onto one preserved register fact.
+    """Project aggregate call evidence onto one independently checked fact.
 
-    A callee may prove EDI preservation while its memory or result summary is
-    still incomplete.  In that case the register-specific witness replaces
-    aggregate call-frame dependencies.  Other dependencies, such as the
-    indirect-target certificate selecting the callee, remain required.
+    A callee may prove one register, memory footprint, stack delta, or result
+    family while another family is incomplete. In that case the precise
+    witness replaces aggregate call-frame dependencies. Other dependencies,
+    such as the indirect-target certificate selecting the callee, remain.
     """
 
-    specific = facts.register_dependencies.get(register, frozenset())
+    specific = facts.family_dependencies.get(
+        (family, subject), frozenset()
+    )
     if not specific:
         return facts.dependencies
     return frozenset(
@@ -8279,16 +8317,14 @@ def _combine_call_facts(
         dependencies=frozenset().union(
             *(facts.dependencies for facts in alternatives)
         ),
-        register_dependencies={
-            register: frozenset().union(*(
-                facts.register_dependencies.get(register, frozenset())
-                for facts in alternatives
+        family_dependencies={
+            key: frozenset().union(*(
+                facts.family_dependencies[key] for facts in alternatives
             ))
-            for register in preserved
-            if any(
-                facts.register_dependencies.get(register)
-                for facts in alternatives
-            )
+            for key in set.intersection(*(
+                set(facts.family_dependencies) for facts in alternatives
+            ))
+            if key[0] != "register" or key[1] in preserved
         },
     )
 
@@ -8526,9 +8562,13 @@ def _apply_call_stack_result(
     pre_call: _State,
     facts: _CallFacts,
 ) -> None:
+    dependencies = _call_family_dependencies(facts, "stack")
     if facts.stack_cleanup_bytes is not None:
-        output.registers["esp"] = _add_stack_offset(
-            pre_call.registers.get("esp"), facts.stack_cleanup_bytes
+        output.registers["esp"] = with_value_dependencies(
+            _add_stack_offset(
+                pre_call.registers.get("esp"), facts.stack_cleanup_bytes
+            ),
+            dependencies,
         )
         if output.registers["esp"] is None:
             output.stack.clear()
@@ -8538,15 +8578,20 @@ def _apply_call_stack_result(
         output.stack.clear()
         return
     if not facts.abi.callee_cleanup:
-        output.registers["esp"] = pre_call.registers.get("esp")
+        output.registers["esp"] = with_value_dependencies(
+            pre_call.registers.get("esp"), dependencies
+        )
         return
     if facts.argument_words is None:
         output.registers["esp"] = None
         output.stack.clear()
         return
-    output.registers["esp"] = _add_stack_offset(
-        pre_call.registers.get("esp"),
-        facts.argument_words * 4,
+    output.registers["esp"] = with_value_dependencies(
+        _add_stack_offset(
+            pre_call.registers.get("esp"),
+            facts.argument_words * 4,
+        ),
+        dependencies,
     )
     if output.registers["esp"] is None:
         output.stack.clear()

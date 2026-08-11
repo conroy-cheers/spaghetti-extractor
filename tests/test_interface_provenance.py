@@ -31,8 +31,12 @@ from spaghetti_extractor.import_abi import SelectedImportABI
 from spaghetti_extractor.interface_provenance import (
     INTERFACE_PROVENANCE_FORMAT,
     InterfaceTransferCache,
+    _CallFacts,
+    _call_family_dependencies,
+    _combine_call_facts,
     _finite_value_extent_key,
     _guard_constraint,
+    _value_cache_key,
     callback_root_argument_origins,
     recover_external_interface_targets,
 )
@@ -1160,7 +1164,11 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(result["resolutions"][0]["status"], "recovered", result)
         self.assertEqual(
             result["resolutions"][0]["analysis_dependencies"],
-            ['call-frame:["root",0,"factory"]'],
+            [
+                call_frame_family_dependency_id(
+                    "root", 0, "factory", "result"
+                )
+            ],
         )
 
     def test_factory_object_survives_nary_address_normalization(self) -> None:
@@ -1348,7 +1356,11 @@ class InterfaceProvenanceTests(unittest.TestCase):
         )
         self.assertEqual(
             framed["resolutions"][0]["analysis_dependencies"],
-            ['call-frame:["invoke",0,"callee"]'],
+            [
+                call_frame_family_dependency_id(
+                    "invoke", 0, "callee", "memory"
+                )
+            ],
         )
 
     def test_internal_summary_instantiates_parametric_write_frame(self) -> None:
@@ -5349,6 +5361,57 @@ class InterfaceProvenanceTests(unittest.TestCase):
             "inductive_call_frame_hypothesis_used",
             {issue["code"] for issue in exact_clobber["issues"]},
         )
+
+    def test_finite_call_alternatives_require_a_common_family_witness(
+        self,
+    ) -> None:
+        aggregate_a = 'call-frame:["dispatch",0,"a"]'
+        aggregate_b = 'call-frame:["dispatch",0,"b"]'
+        memory_a = call_frame_family_dependency_id(
+            "dispatch", 0, "a", "memory"
+        )
+        alternatives = [
+            _CallFacts(
+                frozenset({"esi"}),
+                None,
+                None,
+                0,
+                {},
+                memory_preserved=True,
+                dependencies=frozenset({aggregate_a}),
+                family_dependencies={
+                    ("memory", None): frozenset({memory_a})
+                },
+            ),
+            _CallFacts(
+                frozenset({"esi"}),
+                None,
+                None,
+                0,
+                {},
+                memory_preserved=True,
+                dependencies=frozenset({aggregate_b}),
+            ),
+        ]
+
+        combined = _combine_call_facts(alternatives)
+
+        self.assertIsNotNone(combined)
+        assert combined is not None
+        self.assertNotIn(("memory", None), combined.family_dependencies)
+        self.assertEqual(
+            _call_family_dependencies(combined, "memory"),
+            frozenset({aggregate_a, aggregate_b}),
+        )
+
+    def test_value_cache_key_orders_heterogeneous_origin_keys(self) -> None:
+        value = frozenset({
+            ValueOrigin("resource", (1,)),
+            ValueOrigin("resource", (("nested", 1),)),
+        })
+
+        self.assertEqual(_value_cache_key(value), _value_cache_key(value))
+        self.assertEqual(len(_value_cache_key(value) or ()), 2)
 
     def test_transient_path_target_needs_complete_context_coverage(self) -> None:
         target_address = IMAGE_BASE + 0x2000

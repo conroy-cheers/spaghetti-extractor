@@ -32,6 +32,7 @@ from .analysis.scc_worklist import SCCDecomposition, SCCWorklist, decompose_scc
 from .analysis_schema_v2 import interprocedural_authority_signature_v2
 from .address_expression_v2 import affine_register_offset, constant_u32
 from .authority_dependencies_v2 import (
+    CALL_SUMMARY_FAMILY_NODE_PREFIX,
     call_summary_family_node_id,
     canonical_authority_dependencies,
     parse_call_frame_dependency,
@@ -89,6 +90,7 @@ _REGISTER_UNIVERSE = frozenset(
     {"eax", "ebp", "ebx", "ecx", "edi", "edx", "esi", "esp"}
 )
 _CALL_SUMMARY_PRESERVED_REGISTERS = ("ebp", "ebx", "edi", "esi")
+_CALL_SUMMARY_SCALAR_FAMILIES = ("memory", "result", "return", "stack")
 
 
 @dataclass(frozen=True, order=True)
@@ -261,10 +263,45 @@ class _PassResult:
 
     @property
     def lattice_complete(self) -> bool:
-        return all(
-            state.status == "complete" and state.fact.complete
-            for state in self.facts.values()
+        required = _required_lattice_nodes(
+            self.facts, self.dependency_edges
         )
+        return all(
+            (state := self.facts.get(node)) is not None
+            and state.status == "complete"
+            and state.fact.complete
+            for node in required
+        )
+
+
+def _required_lattice_nodes(
+    facts: Mapping[str, _NodeState],
+    dependency_edges: frozenset[tuple[str, str]],
+) -> frozenset[str]:
+    """Close authorizing outputs over the exact facts they consume.
+
+    Call-summary families are intentionally demand driven.  An unavailable
+    memory, result, stack, or register family must fail a consumer which cites
+    it, but an unused family is not itself a whole-program obligation.
+    """
+
+    required = {
+        node
+        for node in facts
+        if not node.startswith(CALL_SUMMARY_FAMILY_NODE_PREFIX)
+    }
+    incoming: dict[str, set[str]] = defaultdict(set)
+    for dependency, dependent in dependency_edges:
+        incoming[dependent].add(dependency)
+    queue = deque(required)
+    while queue:
+        dependent = queue.popleft()
+        for dependency in incoming.get(dependent, ()):
+            if dependency in required:
+                continue
+            required.add(dependency)
+            queue.append(dependency)
+    return frozenset(required)
 
 
 @dataclass(frozen=True)
@@ -1153,6 +1190,7 @@ def _complete_output_nodes(
             or _has_inductive_origin_witnesses(row)
         )
     }
+    family_availability = _summary_family_availability(result.summaries)
     for row in result.summaries.get("summaries", ()):
         if not isinstance(row, Mapping):
             continue
@@ -1163,6 +1201,10 @@ def _complete_output_nodes(
             complete.update(
                 _summary_register_node(unit_id, register)
                 for register in checked_summary_preserved_registers(row)
+            )
+            complete.update(
+                _summary_family_node(unit_id, family)
+                for family in family_availability.get(unit_id, ())
             )
     complete.update(
         node
@@ -1245,6 +1287,15 @@ def _merge_summary_outputs(
                         "status": "incomplete",
                         "checked_preserved_registers": sorted(checked),
                     }
+            _merge_promoted_summary_families(
+                merged,
+                replay_row,
+                {
+                    family
+                    for family in _CALL_SUMMARY_SCALAR_FAMILIES
+                    if _summary_family_node(root, family) in promoted
+                },
+            )
         rows.append(merged)
     for root, replay_row in replay_by_root.items():
         if root in cold_roots:
@@ -1258,10 +1309,19 @@ def _merge_summary_outputs(
             if _summary_register_node(root, register) in promoted
             and register in checked_summary_preserved_registers(replay_row)
         }
-        if promoted_registers:
-            rows.append(_project_summary_register_claims(
+        promoted_families = {
+            family
+            for family in _CALL_SUMMARY_SCALAR_FAMILIES
+            if _summary_family_node(root, family) in promoted
+        }
+        if promoted_registers or promoted_families:
+            projected = _project_summary_register_claims(
                 replay_row, promoted_registers
-            ))
+            )
+            _merge_promoted_summary_families(
+                projected, replay_row, promoted_families
+            )
+            rows.append(projected)
     rows.sort(key=lambda row: str(row.get("target_unit_id")))
     complete = sum(row.get("status") == "complete" for row in rows)
     result = copy.deepcopy(dict(cold))
@@ -1275,6 +1335,27 @@ def _merge_summary_outputs(
             "incomplete_summaries": len(rows) - complete,
         }
     return result
+
+
+_SUMMARY_FAMILY_FIELDS: Mapping[str, tuple[str, ...]] = {
+    "memory": ("caller_memory_frame",),
+    "result": ("result_register_origins", "result_memory_origins"),
+    "return": ("return_behavior",),
+    "stack": ("stack_cleanup", "return_instruction_cleanup"),
+}
+
+
+def _merge_promoted_summary_families(
+    target: dict[str, Any],
+    source: Mapping[str, Any],
+    families: set[str],
+) -> None:
+    """Copy only independently accepted scalar summary families."""
+
+    for family in sorted(families):
+        for field in _SUMMARY_FAMILY_FIELDS[family]:
+            if field in source:
+                target[field] = copy.deepcopy(source[field])
 
 
 def _project_summary_register_claims(
@@ -4660,6 +4741,7 @@ def _typed_proposals(
     finite_value_budget: int,
 ) -> dict[str, _NodeState]:
     result: dict[str, _NodeState] = {}
+    family_availability = _summary_family_availability(summaries)
     for raw in summaries.get("summaries", []):
         if not isinstance(raw, Mapping):
             continue
@@ -4669,6 +4751,13 @@ def _typed_proposals(
             for register in _CALL_SUMMARY_PRESERVED_REGISTERS:
                 result[_summary_register_node(unit_id, register)] = (
                     _summary_register_state(raw, register)
+                )
+            available = family_availability.get(unit_id, frozenset())
+            for family in _CALL_SUMMARY_SCALAR_FAMILIES:
+                result[_summary_family_node(unit_id, family)] = (
+                    _summary_scalar_family_state(
+                        family, family in available
+                    )
                 )
     for raw in recoveries:
         identity = raw.get("id")
@@ -4890,6 +4979,87 @@ def _summary_register_state(
     )
 
 
+def _summary_scalar_family_state(
+    family: str, available: bool
+) -> _NodeState:
+    reasons = () if available else (f"call_summary_{family}_unknown",)
+    return _NodeState(
+        InterproceduralFact(
+            may_values=Bottom(),
+            preserved_registers=MustPreservedRegisters(_REGISTER_UNIVERSE),
+            stack_cleanup=NoExactValue(),
+            results=NoExactValue(),
+            return_behavior=ReturnBehavior(),
+            taint=Taint.of(reasons),
+        ),
+        "complete" if available else "incomplete",
+        reasons,
+    )
+
+
+def _summary_family_availability(
+    summaries: Mapping[str, Any],
+) -> dict[str, frozenset[str]]:
+    """Derive family availability through the same checked adapters as calls."""
+
+    rows = [
+        row
+        for row in summaries.get("summaries", ())
+        if isinstance(row, Mapping)
+    ]
+    budget_row = summaries.get("budgets")
+    raw_budget = (
+        budget_row.get("max_value_alternatives")
+        if isinstance(budget_row, Mapping)
+        else None
+    )
+    budget = (
+        raw_budget
+        if isinstance(raw_budget, int)
+        and not isinstance(raw_budget, bool)
+        and raw_budget > 0
+        else 32
+    )
+    wrapped = {"summaries": rows}
+    _preserved, cleanup, results, memory_results = _call_summary_inputs(
+        wrapped, image_base=0, finite_value_budget=budget
+    )
+    memory_preservation = _call_summary_memory_preservation(
+        wrapped, image_base=0
+    )
+    memory_frames = _call_summary_memory_frames(
+        wrapped, image_base=0, finite_value_budget=budget
+    )
+    result: dict[str, frozenset[str]] = {}
+    for row in rows:
+        unit_id = row.get("target_unit_id")
+        rva = row.get("target_rva")
+        if (
+            not isinstance(unit_id, str)
+            or not isinstance(rva, int)
+            or isinstance(rva, bool)
+        ):
+            continue
+        address = rva & 0xFFFFFFFF
+        available: set[str] = set()
+        if address in cleanup:
+            available.add("stack")
+        if address in memory_preservation or address in memory_frames:
+            available.add("memory")
+        if address in results or address in memory_results:
+            available.add("result")
+        behavior = row.get("return_behavior")
+        if (
+            isinstance(behavior, Mapping)
+            and behavior.get("status") == "complete"
+            and isinstance(behavior.get("may_return"), bool)
+            and isinstance(behavior.get("may_not_return"), bool)
+        ):
+            available.add("return")
+        result[unit_id] = frozenset(available)
+    return result
+
+
 def _canonical_summary_register_origins(
     result_row: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -5105,6 +5275,20 @@ def _derive_dependency_edges(
                     and hypothesis.register == register
                 ):
                     dependencies.add((hypothesis.id, register_consumer))
+        for family in _CALL_SUMMARY_SCALAR_FAMILIES:
+            family_consumer = _summary_family_node(root, family)
+            for source in body:
+                for target in calls.get(source, ()):
+                    if target in summary_roots:
+                        dependencies.add((
+                            _summary_family_node(target, family),
+                            family_consumer,
+                        ))
+                for exit_row in exits_by_source.get(source, ()):
+                    dependencies.add((
+                        _required_string(exit_row, "id"),
+                        family_consumer,
+                    ))
 
     for row in summaries.get("summaries", []):
         if not isinstance(row, Mapping):
@@ -5139,6 +5323,13 @@ def _derive_dependency_edges(
                         _summary_register_node(target, register),
                     )
                     for register in _CALL_SUMMARY_PRESERVED_REGISTERS
+                )
+                dependencies.update(
+                    (
+                        recovery_id,
+                        _summary_family_node(target, family),
+                    )
+                    for family in _CALL_SUMMARY_SCALAR_FAMILIES
                 )
 
     # Target provenance carries the exact summaries used to preserve or
@@ -5485,8 +5676,7 @@ def _call_summary_memory_preservation(
         if isinstance(caller_frame, Mapping):
             writes = caller_frame.get("writes")
             if (
-                row.get("status") == "complete"
-                and caller_frame.get("status") == "complete"
+                caller_frame.get("status") == "complete"
                 and caller_frame.get("preserved") is True
                 and writes == []
             ):
@@ -5570,7 +5760,7 @@ def _call_summary_memory_frames(
         "symbolic_affine",
     }
     for row in summaries.get("summaries", ()):
-        if not isinstance(row, Mapping) or row.get("status") != "complete":
+        if not isinstance(row, Mapping):
             continue
         rva = row.get("target_rva")
         frame = row.get("caller_memory_frame")
@@ -6202,6 +6392,8 @@ def _dependency_inventory(
                 "kind": (
                     "call_summary"
                     if node_id.startswith("call-summary:")
+                    else "call_summary_family"
+                    if node_id.startswith("call-summary-family:")
                     else "global_slot_invariant"
                     if node_id.startswith("global_slot_invariant:")
                     else "indirect_exit"
@@ -6370,6 +6562,10 @@ def _summary_node(unit_id: str) -> str:
 
 def _summary_register_node(unit_id: str, register: str) -> str:
     return call_summary_family_node_id(unit_id, "register", register)
+
+
+def _summary_family_node(unit_id: str, family: str) -> str:
+    return call_summary_family_node_id(unit_id, family)
 
 
 def _unit_id(unit: Mapping[str, Any]) -> str:

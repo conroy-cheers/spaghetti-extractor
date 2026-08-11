@@ -7,6 +7,7 @@ derivation against exact machine semantics before candidate qualification.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -81,7 +82,7 @@ PERSISTENT_ORIGIN_KINDS = frozenset({
 })
 
 
-@dataclass(frozen=True, order=True)
+@dataclass(frozen=True)
 class ValueOrigin:
     """One checked-origin proposal for a concrete 32-bit machine value."""
 
@@ -103,6 +104,27 @@ class ValueOrigin:
         if self.dependencies:
             result["authority_dependencies"] = list(self.dependencies)
         return result
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, ValueOrigin):
+            return NotImplemented
+        return value_origin_sort_key(self) < value_origin_sort_key(other)
+
+
+def value_origin_sort_key(origin: ValueOrigin) -> tuple[str, str, tuple[str, ...]]:
+    """Canonical total order for heterogeneous JSON-shaped origin keys."""
+
+    return (
+        origin.kind,
+        json.dumps(
+            origin.key,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ),
+        origin.dependencies,
+    )
 
 
 FiniteValue = frozenset[ValueOrigin] | None
@@ -249,6 +271,7 @@ __all__ = [
     "parse_finite_value",
     "parse_value_origin",
     "value_dependencies",
+    "value_origin_sort_key",
     "with_origin_dependencies",
     "with_value_dependencies",
 ]
