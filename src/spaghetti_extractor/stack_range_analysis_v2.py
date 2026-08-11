@@ -461,6 +461,13 @@ def _successor_offsets(
                 (event_esp_value - 4, event_esp_value - 4, event_ebp)
                 for event_esp_value, _frame_base, event_ebp in event_states
             )
+        summary = (
+            summaries.get(target_rva)
+            if isinstance(target_rva, int)
+            else None
+        )
+        if _summary_never_returns(summary):
+            return transitions, frontiers
         cleanup = _call_effect_cleanup(effect)
         if effect is None:
             cleanup = _internal_cleanup(target_rva, summaries)
@@ -1040,7 +1047,7 @@ def _complete_summary_index(value: Mapping[str, Any]) -> dict[int, Mapping[str, 
     for raw in rows:
         if not isinstance(raw, Mapping):
             continue
-        if _summary_cleanup(raw) is None:
+        if _summary_cleanup(raw) is None and not _summary_never_returns(raw):
             continue
         rva = raw.get("target_rva")
         if isinstance(rva, int) and not isinstance(rva, bool):
@@ -1161,6 +1168,16 @@ def _summary_cleanup(summary: Mapping[str, Any]) -> int | None:
         if isinstance(value, int) and not isinstance(value, bool)
     }
     return next(iter(values)) if len(values) == 1 else None
+
+
+def _summary_never_returns(summary: Mapping[str, Any] | None) -> bool:
+    behavior = summary.get("return_behavior") if isinstance(summary, Mapping) else None
+    return bool(
+        isinstance(behavior, Mapping)
+        and behavior.get("status") == "complete"
+        and behavior.get("may_return") is False
+        and behavior.get("may_not_return") is True
+    )
 
 
 def _external_cleanup(event: Mapping[str, Any]) -> int | None:

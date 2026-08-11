@@ -1784,6 +1784,11 @@ class InternalCallSummaryTests(unittest.TestCase):
         self.assertEqual(summary["status"], "incomplete")
         self.assertIn("unresolved_indirect_jump", summary["blocker_codes"])
         self.assertEqual(summary["preserved_registers"], [])
+        self.assertEqual(summary["return_instruction_cleanup"]["status"], "incomplete")
+        self.assertIn(
+            "return_instruction_indirect_frontier_open",
+            summary["return_instruction_cleanup"]["blocker_codes"],
+        )
 
     def test_return_instruction_cleanup_is_independent_of_other_families(
         self,
@@ -1830,6 +1835,55 @@ class InternalCallSummaryTests(unittest.TestCase):
                 "blocker_codes": [],
             },
         )
+
+    def test_structural_nonreturn_is_independent_of_nested_call_frame(self) -> None:
+        unknown_external = {
+            "kind": "external_call",
+            "dll": "unknown.dll",
+            "symbol": "OpaqueCall",
+            "register_inputs": {
+                register: reg(register) for register in REGISTERS
+            },
+        }
+        result = self._derive(
+            units=[
+                unit(
+                    "root",
+                    0x1000,
+                    outcome="fallthrough",
+                    events=[internal_call(0x2000)],
+                ),
+                unit(
+                    "callee",
+                    0x2000,
+                    outcome="fallthrough",
+                    events=[unknown_external],
+                ),
+                unit("terminal", 0x2001, outcome="halt"),
+            ],
+            direct=[
+                self._edge("root", "done"),
+                self._edge("callee", "terminal"),
+            ],
+            calls=[self._call_edge("root", "callee", 0)],
+            extra_units=[unit("done", 0x1001, outcome="return")],
+        )
+
+        summary = self._summary(result, "callee")
+        self.assertEqual(summary["status"], "incomplete")
+        self.assertIn("external_call_abi_unresolved", summary["blocker_codes"])
+        self.assertEqual(summary["return_instruction_cleanup"], {
+            "status": "not_applicable",
+            "cleanup_bytes": None,
+            "return_unit_ids": [],
+            "reached_units": 2,
+            "blocker_codes": [],
+        })
+        self.assertEqual(summary["return_behavior"], {
+            "status": "complete",
+            "may_return": False,
+            "may_not_return": True,
+        })
 
     def _derive(
         self,

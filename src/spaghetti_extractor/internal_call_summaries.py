@@ -369,12 +369,10 @@ def derive_internal_call_preservation_summaries(
         opaque_roots=frozenset(declarations),
     )
     summaries: dict[str, dict[str, Any]] = {
-        root: {
-            **copy.deepcopy(dict(summary)),
-            "return_instruction_cleanup": copy.deepcopy(
-                return_instruction_cleanups[root]
-            ),
-        }
+        root: _with_return_instruction_evidence(
+            copy.deepcopy(dict(summary)),
+            return_instruction_cleanups[root],
+        )
         for root, summary in declarations.items()
         if root in summary_roots
     }
@@ -429,8 +427,9 @@ def derive_internal_call_preservation_summaries(
             max_memory_words=max_memory_words,
             max_value_alternatives=max_value_alternatives,
         )
-        proposed["return_instruction_cleanup"] = copy.deepcopy(
-            return_instruction_cleanups[root]
+        proposed = _with_return_instruction_evidence(
+            proposed,
+            return_instruction_cleanups[root],
         )
         forced_blockers = (
             {"call_dependency_inventory_budget_exceeded"}
@@ -587,11 +586,18 @@ def _derive_return_instruction_cleanup(
             blockers.add("return_instruction_control_frontier_open")
 
     cleanup_values = sorted(set(returns.values()))
-    if not returns:
+    structurally_nonreturning = not returns and not blockers
+    if not returns and not structurally_nonreturning:
         blockers.add("return_instruction_inventory_empty")
     if len(cleanup_values) > 1:
         blockers.add("return_instruction_cleanup_ambiguous")
-    status = "complete" if not blockers and len(cleanup_values) == 1 else "incomplete"
+    status = (
+        "not_applicable"
+        if structurally_nonreturning
+        else "complete"
+        if not blockers and len(cleanup_values) == 1
+        else "incomplete"
+    )
     return {
         "status": status,
         "cleanup_bytes": cleanup_values[0] if status == "complete" else None,
@@ -599,6 +605,28 @@ def _derive_return_instruction_cleanup(
         "reached_units": len(reached),
         "blocker_codes": sorted(blockers),
     }
+
+
+def _with_return_instruction_evidence(
+    summary: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Attach independent return evidence without promoting other families."""
+
+    result = copy.deepcopy(dict(summary))
+    result["return_instruction_cleanup"] = copy.deepcopy(dict(evidence))
+    if evidence.get("status") != "not_applicable":
+        return result
+    result["stack_cleanup"] = {
+        "status": "not_applicable",
+        "stack_delta": None,
+    }
+    result["return_behavior"] = {
+        "status": "complete",
+        "may_return": False,
+        "may_not_return": True,
+    }
+    return result
 
 
 def _return_instruction_cleanup_bytes(unit: Mapping[str, Any]) -> int | None:
@@ -935,12 +963,10 @@ def _analyze_recursive_component(
     """Establish one simultaneous inductive summary for a recursive SCC."""
 
     current = {
-        root: {
-            **_recursive_seed_summary(),
-            "return_instruction_cleanup": copy.deepcopy(
-                return_instruction_cleanups[root]
-            ),
-        }
+        root: _with_return_instruction_evidence(
+            _recursive_seed_summary(),
+            return_instruction_cleanups[root],
+        )
         for root in component
     }
     for round_index in range(1, max_rounds + 1):
@@ -964,8 +990,9 @@ def _analyze_recursive_component(
                 max_memory_words=max_memory_words,
                 max_value_alternatives=max_value_alternatives,
             )
-            summary["return_instruction_cleanup"] = copy.deepcopy(
-                return_instruction_cleanups[root]
+            summary = _with_return_instruction_evidence(
+                summary,
+                return_instruction_cleanups[root],
             )
             summary["recursive_induction"] = {
                 "status": "checked_fixed_point_candidate",

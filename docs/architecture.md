@@ -271,6 +271,14 @@ either result. An external tail transfer with no local continuation does not
 create a fictitious returning-stack obligation; its external-site contract
 still governs the terminal transfer itself.
 
+Internal return behavior is likewise a separate structural summary family.
+An exact finite intraprocedural closure containing no return instruction and
+ending only in checked terminal dispositions proves that the callee cannot
+resume its caller, even when unrelated nested-call register or memory families
+remain incomplete. Stack propagation still enters that callee but suppresses
+the impossible caller continuation. Any unresolved direct or indirect exit
+keeps the return family incomplete instead of being treated as non-returning.
+
 Generated files belong under Nix outputs or ignored `build/` workspaces. Authored
 intent and source belong in target bundles. Private binaries belong under the
 ignored `private/` tree and must never be copied into source or target data.

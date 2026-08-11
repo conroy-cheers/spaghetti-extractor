@@ -759,6 +759,48 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
         )
         self.assertNotIn("continuation", conflicting["entry_offsets"])
 
+    def test_structurally_nonreturning_internal_call_has_no_continuation(self) -> None:
+        call = {
+            "kind": "internal_call",
+            "target_rva": 0x2000,
+            "register_inputs": {"esp": _add(-4)},
+        }
+        units = [
+            _unit(
+                "caller",
+                0x1000,
+                target_rvas=[0x1010],
+                stack_delta=None,
+                external_events=[call],
+            ),
+            _unit("continuation", 0x1010, memory_offsets=[0]),
+            _unit("callee", 0x2000, memory_offsets=[0]),
+        ]
+        summaries = {
+            "summaries": [{
+                "target_rva": 0x2000,
+                "status": "incomplete",
+                "stack_cleanup": {
+                    "status": "not_applicable",
+                    "stack_delta": None,
+                },
+                "return_behavior": {
+                    "status": "complete",
+                    "may_return": False,
+                    "may_not_return": True,
+                },
+            }],
+        }
+
+        result = _derive(units, summaries=summaries)
+
+        self.assertEqual(result["entry_offsets"]["callee"], [-8])
+        self.assertNotIn("continuation", result["entry_offsets"])
+        self.assertNotIn(
+            "internal_call_frame_incomplete",
+            {row["code"] for row in result["frontiers"]},
+        )
+
     def test_checked_stack_origin_uses_active_callee_frame_base(self) -> None:
         call = {
             "kind": "internal_call",
