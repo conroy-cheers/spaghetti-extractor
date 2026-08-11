@@ -101,6 +101,7 @@ _MemoryLocation = int | _Origin
 _EventKnownSlots = Mapping[str, Mapping[int, _Value]]
 _MemoryResultRelation = tuple[_Origin, Mapping[str, Any]]
 _InternalCallMemoryResults = Mapping[int, Sequence[_MemoryResultRelation]]
+_InternalCallMemoryFrames = Mapping[int, tuple[CallWriteSpan, ...]]
 
 
 @dataclass
@@ -569,6 +570,9 @@ def recover_external_interface_targets(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ] | None = None,
     internal_call_memory_preservation: Mapping[int, bool] | None = None,
+    internal_call_memory_frames: Mapping[
+        int, Sequence[CallWriteSpan]
+    ] | None = None,
     internal_call_memory_result_relations: Mapping[int, Any] | None = None,
     prepared_memory_access_facts: Mapping[
         str, PreparedMemoryAccessFact
@@ -638,6 +642,12 @@ def recover_external_interface_targets(
     supplied_call_memory_preservation = dict(
         internal_call_memory_preservation or {}
     )
+    supplied_call_memory_frames = _normalize_internal_call_memory_frames(
+        internal_call_memory_frames or {},
+        finite_value_budget=finite_value_budget,
+    )
+    for address, writes in supplied_call_memory_frames.items():
+        supplied_call_memory_preservation.setdefault(address, not writes)
     supplied_call_memory_results = _normalize_internal_call_memory_results(
         internal_call_memory_result_relations or {},
         finite_value_budget=finite_value_budget,
@@ -772,6 +782,7 @@ def recover_external_interface_targets(
             internal_call_memory_preservation=(
                 supplied_call_memory_preservation
             ),
+            internal_call_memory_frames=supplied_call_memory_frames,
             internal_call_memory_result_relations=(
                 supplied_call_memory_results
             ),
@@ -2099,6 +2110,54 @@ def _normalize_internal_call_memory_results(
     return result
 
 
+def _normalize_internal_call_memory_frames(
+    values: Mapping[int, Sequence[CallWriteSpan]],
+    *,
+    finite_value_budget: int,
+) -> dict[int, tuple[CallWriteSpan, ...]]:
+    """Validate bounded caller-visible write frames from call summaries."""
+
+    result: dict[int, tuple[CallWriteSpan, ...]] = {}
+    supported_origins = {
+        "exact",
+        "stack_location",
+        "dynamic_range",
+        "dynamic_location",
+        "parametric_location",
+        "symbolic_affine",
+    }
+    for target, raw_writes in values.items():
+        if (
+            not isinstance(target, int)
+            or isinstance(target, bool)
+            or not 0 <= target <= 0xFFFFFFFF
+            or not isinstance(raw_writes, Sequence)
+            or isinstance(raw_writes, (str, bytes))
+            or len(raw_writes) > finite_value_budget
+        ):
+            raise ValueError("internal-call memory frame is invalid")
+        writes = tuple(raw_writes)
+        if (
+            any(
+                not isinstance(span, CallWriteSpan)
+                or span.base.kind not in supported_origins
+                for span in writes
+            )
+            or len(set(writes)) != len(writes)
+        ):
+            raise ValueError("internal-call memory frame is invalid")
+        result[target] = tuple(sorted(
+            writes,
+            key=lambda span: (
+                span.base.kind,
+                _canonical_origin_key(span.base.key),
+                span.base.dependencies,
+                -1 if span.size is None else span.size,
+            ),
+        ))
+    return result
+
+
 def _run_dataflow(
     *,
     by_id: Mapping[str, Mapping[str, Any]],
@@ -2113,6 +2172,7 @@ def _run_dataflow(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_frames: _InternalCallMemoryFrames,
     internal_call_memory_result_relations: _InternalCallMemoryResults,
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
@@ -2183,6 +2243,7 @@ def _run_dataflow(
             internal_call_memory_preservation=(
                 internal_call_memory_preservation
             ),
+            internal_call_memory_frames=internal_call_memory_frames,
             internal_call_memory_result_relations=(
                 internal_call_memory_result_relations
             ),
@@ -2234,6 +2295,7 @@ def _run_dataflow(
             internal_call_memory_preservation=(
                 internal_call_memory_preservation
             ),
+            internal_call_memory_frames=internal_call_memory_frames,
             internal_call_memory_result_relations=(
                 internal_call_memory_result_relations
             ),
@@ -3909,6 +3971,7 @@ def _transfer_call_environment_key(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_frames: _InternalCallMemoryFrames,
     internal_call_memory_result_relations: _InternalCallMemoryResults,
     internal_call_dependency_ids: Mapping[
         tuple[str, int], frozenset[str]
@@ -3924,6 +3987,7 @@ def _transfer_call_environment_key(
         internal_call_stack_cleanup,
         internal_call_result_relations,
         internal_call_memory_preservation,
+        internal_call_memory_frames,
         internal_call_memory_result_relations,
         internal_call_dependency_ids,
         recovered_calls,
@@ -3949,6 +4013,12 @@ def _freeze_transfer_cache_value(value: Any) -> tuple[Any, ...]:
             value.kind,
             _freeze_transfer_cache_value(value.key),
             value.dependencies,
+        )
+    if isinstance(value, CallWriteSpan):
+        return (
+            "call-write-span",
+            _freeze_transfer_cache_value(value.base),
+            _freeze_transfer_cache_value(value.size),
         )
     if isinstance(value, CallSiteId):
         return ("call-site", value.unit_id, value.event_index)
@@ -4157,6 +4227,7 @@ def _transfer_unit(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_frames: _InternalCallMemoryFrames,
     internal_call_memory_result_relations: _InternalCallMemoryResults,
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
@@ -4246,6 +4317,7 @@ def _transfer_unit(
             internal_call_memory_preservation=(
                 internal_call_memory_preservation
             ),
+            internal_call_memory_frames=internal_call_memory_frames,
             internal_call_memory_result_relations=(
                 internal_call_memory_result_relations
             ),
@@ -5582,6 +5654,7 @@ def _internal_target_call_facts(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_frames: _InternalCallMemoryFrames,
     internal_call_memory_result_relations: _InternalCallMemoryResults,
     dependencies: frozenset[str],
     budget: int,
@@ -5614,17 +5687,50 @@ def _internal_target_call_facts(
         issues=issues,
         unit_id=producer_unit_id,
     )
+    memory_writes = _internal_call_memory_writes(
+        internal_call_memory_frames.get(target_address),
+        pre_call=pre_call,
+        inventory=inventory,
+        budget=budget,
+    )
+    memory_preserved = bool(
+        internal_call_memory_preservation.get(target_address)
+    ) or memory_writes == ()
     return _CallFacts(
         internal_call_preserved_registers.get(target_address),
         None,
         None,
         internal_call_stack_cleanup.get(target_address),
         outputs,
-        memory_preserved=bool(
-            internal_call_memory_preservation.get(target_address)
-        ),
+        memory_preserved=memory_preserved,
+        memory_writes=memory_writes,
         dependencies=dependencies,
     )
+
+
+def _internal_call_memory_writes(
+    spans: Sequence[CallWriteSpan] | None,
+    *,
+    pre_call: _State,
+    inventory: _ProfileInventory,
+    budget: int,
+) -> tuple[_WriteSpan, ...] | None:
+    if spans is None:
+        return None
+    result: set[_WriteSpan] = set()
+    for span in spans:
+        base = _instantiate_internal_summary_location(
+            span.base,
+            pre_call=pre_call,
+            inventory=inventory,
+            budget=budget,
+        )
+        if base is None:
+            return None
+        result.add(_WriteSpan(base, span.size))
+    if len(result) > budget:
+        return None
+    return tuple(sorted(result))
 
 
 def _internal_call_memory_result_outputs(
@@ -5954,6 +6060,7 @@ def _call_contract(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_frames: _InternalCallMemoryFrames,
     internal_call_memory_result_relations: _InternalCallMemoryResults,
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
@@ -6249,6 +6356,7 @@ def _call_contract(
                 internal_call_memory_preservation=(
                     internal_call_memory_preservation
                 ),
+                internal_call_memory_frames=internal_call_memory_frames,
                 internal_call_memory_result_relations=(
                     internal_call_memory_result_relations
                 ),
@@ -6430,6 +6538,7 @@ def _call_contract(
             internal_call_memory_preservation=(
                 internal_call_memory_preservation
             ),
+            internal_call_memory_frames=internal_call_memory_frames,
             internal_call_memory_result_relations=(
                 internal_call_memory_result_relations
             ),
@@ -6458,6 +6567,7 @@ def _call_contract(
                 internal_call_memory_preservation=(
                     internal_call_memory_preservation
                 ),
+                internal_call_memory_frames=internal_call_memory_frames,
                 internal_call_memory_result_relations=(
                     internal_call_memory_result_relations
                 ),
@@ -7426,6 +7536,7 @@ def _origin_call_facts(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_frames: _InternalCallMemoryFrames,
     internal_call_memory_result_relations: _InternalCallMemoryResults,
     dependencies: frozenset[str] = frozenset(),
     budget: int,
@@ -7465,6 +7576,7 @@ def _origin_call_facts(
                 internal_call_memory_preservation=(
                     internal_call_memory_preservation
                 ),
+                internal_call_memory_frames=internal_call_memory_frames,
                 internal_call_memory_result_relations=(
                     internal_call_memory_result_relations
                 ),
@@ -7497,6 +7609,7 @@ def _recovered_call_facts(
         int, Mapping[str, Sequence[Mapping[str, Any]]]
     ],
     internal_call_memory_preservation: Mapping[int, bool],
+    internal_call_memory_frames: _InternalCallMemoryFrames,
     internal_call_memory_result_relations: _InternalCallMemoryResults,
     image_base: int,
     known_slots: Mapping[int, _Value],
@@ -7572,6 +7685,7 @@ def _recovered_call_facts(
             internal_call_memory_preservation=(
                 internal_call_memory_preservation
             ),
+            internal_call_memory_frames=internal_call_memory_frames,
             internal_call_memory_result_relations=(
                 internal_call_memory_result_relations
             ),

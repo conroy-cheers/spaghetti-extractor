@@ -11,6 +11,7 @@ from spaghetti_extractor.call_frame_hypotheses import (
 from spaghetti_extractor.call_site_effects import (
     CallSiteEffect,
     CallSiteId,
+    CallWriteSpan,
 )
 from spaghetti_extractor.authority_dependencies_v2 import (
     call_frame_dependency_id,
@@ -23,6 +24,7 @@ from spaghetti_extractor.interprocedural_analysis import (
     _MutableState,
     _analyze_mutable_slot_influence,
     _call_summary_inputs,
+    _call_summary_memory_frames,
     _call_summary_memory_preservation,
     _call_site_memory_preservation,
     _merge_inductive_operation_provenance,
@@ -554,6 +556,59 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 IMAGE_BASE + 0x2500,
             },
         )
+
+    def test_complete_caller_memory_frames_are_parsed_fail_closed(self) -> None:
+        exact = {"kind": "exact", "key": [SLOT]}
+        frame = {
+            "status": "complete",
+            "preserved": False,
+            "writes": [{"base": exact, "size": 4}],
+        }
+        result = _call_summary_memory_frames(
+            {
+                "summaries": [
+                    {
+                        "target_rva": 0x2000,
+                        "status": "complete",
+                        "caller_memory_frame": frame,
+                    },
+                    {
+                        "target_rva": 0x2100,
+                        "status": "complete",
+                        "caller_memory_frame": {
+                            "status": "complete",
+                            "preserved": True,
+                            "writes": [],
+                        },
+                    },
+                    {
+                        "target_rva": 0x2200,
+                        "status": "complete",
+                        "caller_memory_frame": {
+                            **frame,
+                            "writes": [
+                                {"base": exact, "size": 4},
+                                {"base": exact, "size": 4},
+                            ],
+                        },
+                    },
+                    {
+                        "target_rva": 0x2300,
+                        "status": "incomplete",
+                        "caller_memory_frame": frame,
+                    },
+                ]
+            },
+            image_base=IMAGE_BASE,
+            finite_value_budget=4,
+        )
+
+        self.assertEqual(result, {
+            IMAGE_BASE + 0x2000: (
+                CallWriteSpan(ValueOrigin("exact", (SLOT,)), 4),
+            ),
+            IMAGE_BASE + 0x2100: (),
+        })
 
     def test_partial_summary_families_remain_independently_usable(self) -> None:
         preserved, cleanup, results, memory_results = _call_summary_inputs(

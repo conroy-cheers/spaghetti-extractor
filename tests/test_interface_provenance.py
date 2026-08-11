@@ -10,7 +10,7 @@ from spaghetti_extractor.call_frame_hypotheses import (
     PreservedRegisterHypothesis,
     hypothesis_id as call_frame_hypothesis_id,
 )
-from spaghetti_extractor.call_site_effects import CallSiteId
+from spaghetti_extractor.call_site_effects import CallSiteId, CallWriteSpan
 from spaghetti_extractor.authority_bindings_v2 import BinaryBinding
 from spaghetti_extractor.checked_memory_access_v2 import (
     MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
@@ -1311,9 +1311,35 @@ class InterfaceProvenanceTests(unittest.TestCase):
             internal_call_memory_preservation={IMAGE_BASE + 0x1800: True},
             **common,
         )
+        bounded_disjoint = self._run(
+            units,
+            direct,
+            internal_call_memory_frames={
+                IMAGE_BASE + 0x1800: (
+                    CallWriteSpan(ValueOrigin("exact", (CHILD_SLOT,)), 4),
+                ),
+            },
+            **common,
+        )
+        bounded_overlap = self._run(
+            units,
+            direct,
+            internal_call_memory_frames={
+                IMAGE_BASE + 0x1800: (
+                    CallWriteSpan(ValueOrigin("exact", (SLOT,)), 4),
+                ),
+            },
+            **common,
+        )
 
         self.assertEqual(unsafe["resolutions"][0]["status"], "incomplete")
         self.assertEqual(framed["resolutions"][0]["status"], "recovered")
+        self.assertEqual(
+            bounded_disjoint["resolutions"][0]["status"], "recovered"
+        )
+        self.assertEqual(
+            bounded_overlap["resolutions"][0]["status"], "incomplete"
+        )
         self.assertEqual(
             framed["resolutions"][0]["target_unit_ids"], ["target"]
         )
@@ -1321,6 +1347,101 @@ class InterfaceProvenanceTests(unittest.TestCase):
             framed["resolutions"][0]["analysis_dependencies"],
             ['call-frame:["invoke",0,"callee"]'],
         )
+
+    def test_internal_summary_instantiates_parametric_write_frame(self) -> None:
+        call_esp = sub(reg("esp"), const(4))
+        push_pointer = {
+            "kind": "write",
+            "width": 4,
+            "address": call_esp,
+            "value": const(CHILD_SLOT),
+        }
+        call = {
+            "kind": "internal_call",
+            "target_rva": 0x1800,
+            "return_rva": 0x1101,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        call["register_inputs"]["esp"] = call_esp
+        units = [
+            factory_unit(),
+            unit(
+                "invoke",
+                0x1100,
+                memory=[push_pointer],
+                events=[call],
+                ordered=[push_pointer, call],
+            ),
+            unit("callee", 0x1800),
+            unit("object", 0x1200, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            unit("vtable", 0x1300, writes=[{
+                "register": "ecx", "value": load(reg("eax")),
+            }]),
+            indirect_call(),
+        ]
+        frame = CallWriteSpan(
+            ValueOrigin(
+                "parametric_location",
+                (0, (("input_stack_word", 4, 1),)),
+            ),
+            4,
+        )
+        result = self._run(
+            units,
+            [
+                edge("factory", "invoke"),
+                edge("invoke", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "call"),
+            ],
+            roots=["factory"],
+            internal_edges=[{
+                "source_unit_id": "invoke",
+                "source_event_index": 0,
+                "target_unit_id": "callee",
+            }],
+            internal_call_preserved_registers={
+                IMAGE_BASE + 0x1800: frozenset({"ebp", "ebx", "edi", "esi"})
+            },
+            internal_call_memory_frames={IMAGE_BASE + 0x1800: (frame,)},
+            allow_global_slot_promotion=False,
+        )
+
+        self.assertEqual(result["resolutions"][0]["status"], "recovered", result)
+        effect = next(
+            row for row in result["call_site_effects"]
+            if row["unit_id"] == "invoke"
+        )
+        self.assertEqual(effect["memory_frame"], {
+            "status": "complete",
+            "preserved": False,
+            "writes": [{
+                "base": {"kind": "exact", "key": [CHILD_SLOT]},
+                "size": 4,
+            }],
+        })
+
+    def test_internal_summary_rejects_malformed_memory_frames(self) -> None:
+        common = {
+            "units": [unit("root", 0x1000)],
+            "direct": [],
+            "roots": ["root"],
+            "indirect_exits": [],
+            "allow_global_slot_promotion": False,
+        }
+        span = CallWriteSpan(ValueOrigin("exact", (SLOT,)), 4)
+        with self.assertRaisesRegex(ValueError, "memory frame is invalid"):
+            self._run(
+                internal_call_memory_frames={IMAGE_BASE + 0x1800: (span, span)},
+                **common,
+            )
+        with self.assertRaisesRegex(ValueError, "memory frame is invalid"):
+            self._run(
+                internal_call_memory_frames={IMAGE_BASE + 0x1800: (object(),)},
+                **common,
+            )
 
     def test_checked_slot_seed_reuses_the_prior_fixed_point(self) -> None:
         units = [
@@ -5339,6 +5460,9 @@ class InterfaceProvenanceTests(unittest.TestCase):
             int, dict[str, list[dict[str, object]]]
         ] | None = None,
         internal_call_memory_preservation: dict[int, bool] | None = None,
+        internal_call_memory_frames: dict[
+            int, tuple[CallWriteSpan, ...]
+        ] | None = None,
         internal_call_memory_result_relations: dict[
             int, dict[ValueOrigin, frozenset[ValueOrigin] | None]
         ] | None = None,
@@ -5403,6 +5527,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             internal_call_memory_preservation=(
                 internal_call_memory_preservation or {}
             ),
+            internal_call_memory_frames=internal_call_memory_frames or {},
             internal_call_memory_result_relations=(
                 internal_call_memory_result_relations or {}
             ),

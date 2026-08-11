@@ -54,7 +54,7 @@ from .call_frame_hypotheses import (
     hypothesis_id as call_frame_hypothesis_id,
     parse_preserved_register_hypotheses,
 )
-from .call_site_effects import CallSiteId, parse_call_site_effects
+from .call_site_effects import CallSiteId, CallWriteSpan, parse_call_site_effects
 from .authority_record_core_v2 import AuthorityStatus
 from .global_slot_contract_v2 import GlobalSlotInvariant
 from .indirect_target_dependency_v2 import (
@@ -1518,6 +1518,11 @@ def _run_typed_pass(
         memory_preservation = _call_summary_memory_preservation(
             summaries, image_base=image_base
         )
+        memory_frames = _call_summary_memory_frames(
+            summaries,
+            image_base=image_base,
+            finite_value_budget=finite_value_budget,
+        )
         call_memory_preservation = _call_site_memory_preservation(
             units=units,
             internal_call_edges=internal_call_edges,
@@ -1547,6 +1552,7 @@ def _run_typed_pass(
                 internal_call_result_relations=results,
                 internal_call_memory_result_relations=memory_results,
                 internal_call_memory_preservation=memory_preservation,
+                internal_call_memory_frames=memory_frames,
                 prepared_memory_access_facts=validated_memory_access_facts,
                 image_base=image_base,
                 image_size=image_size,
@@ -5178,6 +5184,91 @@ def _call_summary_memory_preservation(
         rva = rows[unit_id].get("target_rva")
         if isinstance(rva, int) and not isinstance(rva, bool):
             result[(image_base + rva) & 0xFFFFFFFF] = True
+    return result
+
+
+def _call_summary_memory_frames(
+    summaries: Mapping[str, Any],
+    *,
+    image_base: int,
+    finite_value_budget: int,
+) -> dict[int, tuple[CallWriteSpan, ...]]:
+    """Extract canonical bounded caller-memory frames from exact summaries."""
+
+    result: dict[int, tuple[CallWriteSpan, ...]] = {}
+    supported_origins = {
+        "exact",
+        "stack_location",
+        "dynamic_range",
+        "dynamic_location",
+        "parametric_location",
+        "symbolic_affine",
+    }
+    for row in summaries.get("summaries", ()):
+        if not isinstance(row, Mapping) or row.get("status") != "complete":
+            continue
+        rva = row.get("target_rva")
+        frame = row.get("caller_memory_frame")
+        if (
+            not isinstance(rva, int)
+            or isinstance(rva, bool)
+            or not 0 <= rva <= 0xFFFFFFFF
+            or not isinstance(frame, Mapping)
+            or set(frame) != {"status", "preserved", "writes"}
+            or frame.get("status") != "complete"
+            or not isinstance(frame.get("preserved"), bool)
+            or not isinstance(frame.get("writes"), list)
+            or len(frame["writes"]) > finite_value_budget
+        ):
+            continue
+        writes: list[CallWriteSpan] = []
+        malformed = False
+        for index, raw in enumerate(frame["writes"]):
+            if not isinstance(raw, Mapping) or set(raw) != {"base", "size"}:
+                malformed = True
+                break
+            size = raw.get("size")
+            if size is not None and (
+                not isinstance(size, int)
+                or isinstance(size, bool)
+                or not 0 <= size <= 0xFFFFFFFF
+            ):
+                malformed = True
+                break
+            try:
+                base = parse_value_origin(
+                    raw.get("base"),
+                    context=f"call summary {rva:#x} memory write {index}",
+                )
+                span = CallWriteSpan(base, size)
+            except ValueError:
+                malformed = True
+                break
+            if base.kind not in supported_origins:
+                malformed = True
+                break
+            writes.append(span)
+        if (
+            malformed
+            or len(set(writes)) != len(writes)
+            or frame["preserved"] != (not writes)
+        ):
+            continue
+        result[(image_base + rva) & 0xFFFFFFFF] = tuple(sorted(
+            writes,
+            key=lambda span: (
+                span.base.kind,
+                json.dumps(
+                    span.base.key,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                    allow_nan=False,
+                ),
+                span.base.dependencies,
+                -1 if span.size is None else span.size,
+            ),
+        ))
     return result
 
 
