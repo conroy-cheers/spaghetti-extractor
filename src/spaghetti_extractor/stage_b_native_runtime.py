@@ -3295,7 +3295,18 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
     callable_footprint_table = "\n".join(callable_footprint_rows) or (
         "  { 0U, 0U, 0U, 0U, 0U },"
     )
-    callable_binding_count = len(callable_resolver_rows)
+    callable_capability_ids = sorted({
+        resolver.capability_id
+        for resolver in (
+            ()
+            if plan.callable_external_contract is None
+            else plan.callable_external_contract.resolvers
+        )
+    })
+    callable_binding_rows = "\n".join(
+        f"  {capability_id}U," for capability_id in callable_capability_ids
+    ) or "  0U,"
+    callable_binding_count = len(callable_capability_ids)
     action_codes = {
         "add_result_range": 1,
         "release_argument_range": 2,
@@ -3486,6 +3497,10 @@ static const stage_b_native_callable_resolver stage_b_native_callable_resolvers[
 {callable_resolver_table}
 }};
 static const uint32_t stage_b_native_callable_resolver_count = {len(callable_resolver_rows)}U;
+static const uint32_t stage_b_native_callable_binding_capabilities[] = {{
+{callable_binding_rows}
+}};
+static const uint32_t stage_b_native_callable_binding_count = {callable_binding_count}U;
 
 typedef struct stage_b_native_callable_argument {{
   uint32_t kind, register_index, value;
@@ -4022,10 +4037,29 @@ static stage_b_native_callable_binding *stage_b_native_callable_binding_for(
     uint32_t capability_id) {{
   stage_b_native_context *context = &stage_b_native_context_value;
   uint32_t i;
-  for (i = 0U; i < stage_b_native_callable_resolver_count; ++i)
+  for (i = 0U; i < stage_b_native_callable_binding_count; ++i)
     if (context->callable_bindings[i].capability_id == capability_id)
       return &context->callable_bindings[i];
   return (stage_b_native_callable_binding *)0;
+}}
+
+static uint32_t stage_b_native_callable_target_matches(
+    const stage_b_call_event *event) {{
+  uint32_t route_index, route_seen = 0U;
+  if (event == 0 || event->kind != STAGE_B_CALL_INDIRECT) return 1U;
+  for (route_index = 0U;
+       route_index < stage_b_native_callable_route_count; ++route_index) {{
+    const stage_b_native_callable_route *route =
+        &stage_b_native_callable_routes[route_index];
+    stage_b_native_callable_binding *binding;
+    if (route->instruction_rva != event->instruction_rva) continue;
+    route_seen = 1U;
+    binding = stage_b_native_callable_binding_for(route->capability_id);
+    if (binding != 0 && binding->bound != 0U &&
+        binding->target_word == event->target_rva)
+      return 1U;
+  }}
+  return route_seen == 0U;
 }}
 
 static stage_b_call_status stage_b_native_record_callable_result(
@@ -4139,6 +4173,12 @@ stage_b_call_status stage_b_native_runtime_capture_external_call(
       event->target_rva - stage_b_native_context_value.image_base <
           stage_b_native_context_value.image_size) {{
     stage_b_native_diagnostic_reason = 0x200aU;
+    stage_b_native_diagnostic_value = event->instruction_rva;
+    stage_b_native_diagnostic_aux = event->target_rva;
+    return STAGE_B_CALL_UNIMPLEMENTED;
+  }}
+  if (!stage_b_native_callable_target_matches(event)) {{
+    stage_b_native_diagnostic_reason = 0x200bU;
     stage_b_native_diagnostic_value = event->instruction_rva;
     stage_b_native_diagnostic_aux = event->target_rva;
     return STAGE_B_CALL_UNIMPLEMENTED;
@@ -5070,9 +5110,9 @@ stage_b_call_status stage_b_native_runtime_run_at_rva(
     context->transfer_trace_count = 0U;
     context->transfer_trace_next = 0U;
     context->transfer_trace_sequence = 0U;
-    for (i = 0U; i < stage_b_native_callable_resolver_count; ++i) {{
+    for (i = 0U; i < stage_b_native_callable_binding_count; ++i) {{
       context->callable_bindings[i].capability_id =
-          stage_b_native_callable_resolvers[i].capability_id;
+          stage_b_native_callable_binding_capabilities[i];
       context->callable_bindings[i].target_word = 0U;
       context->callable_bindings[i].bound = 0U;
     }}

@@ -2086,6 +2086,157 @@ let
     };
   };
 
+  # Diagnostic candidate projection deliberately stops at the cached proposal
+  # seed. It cannot authorize static closure; its runtime guard checks each
+  # resolved pointer against the exact value returned by the candidate's own
+  # resolver call before invoking it.
+  diagnosticRootedClosure = import ./ca-python-json-phase.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = pythonSource;
+    name = "${namePrefix}-diagnostic-rooted-closure-v2";
+    kind = "diagnostic-rooted-closure-v2";
+    artifactName = "diagnostic-rooted-closure-v2.json";
+    expectedFormat = "stage-a-rooted-control-graph-v2";
+    allowedStatuses = [ "complete" "incomplete" "violated" ];
+    pythonModules = [ "spaghetti_extractor.control_analysis_v2" ];
+    inputs = {
+      machine_ir = "${machineIr}/machine-ir.jsonl";
+      base_graph = staticHybridAuthorityV2.baseGraph.artifact;
+      interprocedural_seed =
+        staticHybridAuthorityV2.interproceduralSeed.artifact;
+    };
+    program = ''
+      from spaghetti_extractor.control_analysis_v2 import (
+          derive_rooted_control_closure_v2,
+      )
+
+      rows = [
+          json.loads(line)
+          for line in inputs["machine_ir"].read_text(encoding="utf-8").splitlines()
+          if line.strip()
+      ]
+      payload = derive_rooted_control_closure_v2(
+          rows=rows,
+          base_graph=json.loads(inputs["base_graph"].read_text(encoding="utf-8")),
+          interprocedural=json.loads(
+              inputs["interprocedural_seed"].read_text(encoding="utf-8")
+          ),
+      )
+      output.write_text(
+          json.dumps(payload, indent=2, sort_keys=True) + "\n",
+          encoding="utf-8",
+      )
+    '';
+  };
+
+  diagnosticExternalSiteProposals = import ./ca-python-json-phase.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = pythonSource;
+    name = "${namePrefix}-diagnostic-external-site-proposals-v2";
+    kind = "diagnostic-external-site-proposals-v2";
+    artifactName = "diagnostic-external-site-proposals-v2.json";
+    expectedFormat = "spaghetti-extractor-external-site-proposals-v2";
+    allowedStatuses = [ "complete" "incomplete" "violated" ];
+    pythonModules = [
+      "spaghetti_extractor.external_profile_authority_v2"
+      "spaghetti_extractor.external_site_proposals_v2"
+    ];
+    inputs = {
+      original_pe = original;
+      machine_ir = "${machineIr}/machine-ir.jsonl";
+      rooted_closure = diagnosticRootedClosure.artifact;
+      interprocedural_seed =
+        staticHybridAuthorityV2.interproceduralSeed.artifact;
+      external_profile_authority =
+        staticHybridAuthorityV2.externalProfileAuthority.artifact;
+    };
+    program = ''
+      import hashlib
+
+      from spaghetti_extractor.external_profile_authority_v2 import (
+          parse_external_profile_authority_v2,
+      )
+      from spaghetti_extractor.external_site_proposals_v2 import (
+          derive_external_site_proposals_v2,
+      )
+      from spaghetti_extractor.hybrid_authority_v2 import canonical_json_bytes
+
+      rows = [
+          json.loads(line)
+          for line in inputs["machine_ir"].read_text(encoding="utf-8").splitlines()
+          if line.strip()
+      ]
+      rooted_closure = json.loads(
+          inputs["rooted_closure"].read_text(encoding="utf-8")
+      )
+      profile_phase = json.loads(
+          inputs["external_profile_authority"].read_text(encoding="utf-8")
+      )
+      payload = derive_external_site_proposals_v2(
+          machine_ir_rows=rows,
+          interprocedural=json.loads(
+              inputs["interprocedural_seed"].read_text(encoding="utf-8")
+          ),
+          profile_authority=parse_external_profile_authority_v2(
+              profile_phase["authority"]
+          ),
+          pe_sha256=hashlib.sha256(
+              inputs["original_pe"].read_bytes()
+          ).hexdigest(),
+          machine_ir_sha256=hashlib.sha256(
+              inputs["machine_ir"].read_bytes()
+          ).hexdigest(),
+          reachable_unit_ids=rooted_closure["reachable_units"],
+      )
+      output.write_bytes(canonical_json_bytes(payload))
+    '';
+  };
+
+  diagnosticCallableExternalRuntime = import ./ca-python-json-phase.nix {
+    inherit pkgs pythonEnv;
+    pythonSource = pythonSource;
+    name = "${namePrefix}-diagnostic-callable-external-runtime-v2";
+    kind = "diagnostic-callable-external-runtime-v2";
+    artifactName = "diagnostic-callable-external-runtime-v2.json";
+    expectedFormat = "spaghetti-extractor-callable-external-runtime-v2";
+    allowedStatuses = [ "ready" ];
+    pythonModules = [
+      "spaghetti_extractor.callable_external_runtime"
+    ];
+    inputs = {
+      original_pe = original;
+      machine_ir = "${machineIr}/machine-ir.jsonl";
+      interprocedural_seed =
+        staticHybridAuthorityV2.interproceduralSeed.artifact;
+      external_site_proposals = diagnosticExternalSiteProposals.artifact;
+      external_profile_authority =
+        staticHybridAuthorityV2.externalProfileAuthority.artifact;
+      selected_profiles = selectedProfileInventory;
+    };
+    program = ''
+      from spaghetti_extractor.callable_external_runtime import (
+          write_callable_external_runtime_contract_v2,
+      )
+
+      inventory = json.loads(
+          inputs["selected_profiles"].read_text(encoding="utf-8")
+      )
+      write_callable_external_runtime_contract_v2(
+          original=inputs["original_pe"],
+          machine_ir=inputs["machine_ir"],
+          interprocedural=inputs["interprocedural_seed"],
+          external_site_proposals=inputs["external_site_proposals"],
+          profile_authority=inputs["external_profile_authority"],
+          callable_profiles=tuple(
+              pathlib.Path(path)
+              for path in inventory["callable_external_profiles"]
+          ),
+          out=output,
+          authority_class="diagnostic-proposal-v2",
+      )
+    '';
+  };
+
   reconstructionPlan = pkgs.runCommand
     "${namePrefix}-reconstruction-plan-v1"
     commonAttrs
@@ -2139,6 +2290,9 @@ in
     machineIr
     staticHybridCompleteness
     staticHybridAuthorityV2
+    diagnosticRootedClosure
+    diagnosticExternalSiteProposals
+    diagnosticCallableExternalRuntime
     reconstructionPlan
     componentProposals
     ;

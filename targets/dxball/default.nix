@@ -126,6 +126,8 @@ let
     candidateMode = "structural-diagnostic";
     allowDeferredPotentialTransfers = true;
     diagnosticFailureTrap = true;
+    callableExternalRuntimeContract =
+      analysis.diagnosticCallableExternalRuntime.artifact;
   };
   diagnosticRun = import ../../nix/stage-b-headless-diagnostic-run.nix {
     inherit pkgs pythonEnv;

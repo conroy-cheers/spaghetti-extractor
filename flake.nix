@@ -179,6 +179,12 @@
             dxball.analysis.staticHybridAuthorityV2.finalAudit.derivation;
           dxball-external-site-proposals-v2 =
             dxball.analysis.staticHybridAuthorityV2.checkedExternalSites.derivation;
+          dxball-diagnostic-external-site-proposals-v2 =
+            dxball.analysis.diagnosticExternalSiteProposals.derivation;
+          dxball-diagnostic-rooted-closure-v2 =
+            dxball.analysis.diagnosticRootedClosure.derivation;
+          dxball-diagnostic-callable-external-runtime-v2 =
+            dxball.analysis.diagnosticCallableExternalRuntime.derivation;
           dxball-control-invariants-v2 =
             dxball.analysis.staticHybridAuthorityV2.controlInvariantCertificates.derivation;
           dxball-memory-range-invariants-v2 =
@@ -214,6 +220,8 @@
           dxball-native-runtime = dxball.hybrid.nativeRuntime;
           dxball-native-objects = dxball.hybrid.nativeObjects.package;
           dxball-hybrid-candidate = dxball.hybrid.candidate;
+          dxball-diagnostic-native-engine = dxball.hybridDiagnostic.nativeEngine;
+          dxball-diagnostic-native-runtime = dxball.hybridDiagnostic.nativeRuntime;
           dxball-hybrid-diagnostic-candidate = dxball.hybridDiagnostic.candidate;
           dxball-headless-diagnostic-run = dxball.diagnosticRun;
         });

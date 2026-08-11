@@ -321,8 +321,10 @@
     "spaghetti_extractor.callable_external_runtime": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.checked_external_site_contract",
         "spaghetti_extractor.errors",
         "spaghetti_extractor.external_capabilities",
+        "spaghetti_extractor.external_site_proposals_v2",
         "spaghetti_extractor.external_sites",
         "spaghetti_extractor.util"
       ],

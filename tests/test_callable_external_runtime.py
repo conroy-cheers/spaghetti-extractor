@@ -1,17 +1,229 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
 
 from spaghetti_extractor.callable_external_runtime import (
     CALLABLE_EXTERNAL_RUNTIME_FORMAT,
+    CALLABLE_EXTERNAL_RUNTIME_V2_FORMAT,
     CallableExternalRuntimeError,
     build_callable_external_runtime_contract,
+    build_callable_external_runtime_contract_v2,
     load_callable_external_runtime_contract,
 )
+from spaghetti_extractor.external_capabilities import load_callable_external_profile
+from spaghetti_extractor.external_site_proposals_v2 import (
+    build_external_site_proposals_v2,
+)
 _DIGEST = "1" * 64
+
+
+def _canonical_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+    ).hexdigest()
+
+
+def _v2_inputs(temporary: Path) -> tuple[list[dict], dict, dict, object]:
+    profile_path = temporary / "callable-profile.json"
+    profile_path.write_text(json.dumps({
+        "format": "stage-a-callable-external-profile-v2",
+        "id": "test-kernel32-callable-v1",
+        "model": "x86-pe32",
+        "resolvers": [{
+            "id": 0,
+            "import": {"dll": "kernel32.dll", "symbol": "GetProcAddress"},
+            "result_register": "eax",
+            "module_argument_index": 0,
+            "identity_argument_indices": [1],
+            "nullable": True,
+        }],
+        "targets": [{
+            "id": 7,
+            "resolver_id": 0,
+            "module": {
+                "loader_import": {
+                    "dll": "kernel32.dll",
+                    "symbol": "GetModuleHandleA",
+                },
+                "loader_name_argument_index": 0,
+                "bytes": list(b"KERNEL32"),
+            },
+            "identity_arguments": [{
+                "kind": "canonical_static_string",
+                "index": 1,
+                "bytes": list(b"TestFeature"),
+            }],
+            "target": {"dll": "kernel32.dll", "symbol": "TestFeature"},
+            "machine_contract": {
+                "id": "kernel32.dll!TestFeature",
+                "import": {"dll": "kernel32.dll", "symbol": "TestFeature"},
+                "abi_template": "pe32-stdcall-v1",
+                "arity": {"kind": "fixed", "words": 1},
+                "disposition": "returns",
+                "result_register_relations": [
+                    {"register": "eax", "relation": "exact"}
+                ],
+                "effect_model": {
+                    "kind": "exact_native_dll_callthrough_v1",
+                    "prerequisites": {
+                        "same_pinned_dll_implementation": True,
+                        "exact_machine_arguments": True,
+                        "candidate_address_space_used_directly": True,
+                    },
+                },
+                "memory_effect": "nativeCallthrough",
+                "memory_footprints": [],
+                "world_effect": "nativeCallthrough",
+                "callback_effect": "none",
+            },
+            "transfers": ["call"],
+        }],
+    }), encoding="utf-8")
+    profile = load_callable_external_profile(profile_path)
+    protocol = {
+        "kind": "pe32-resolved-export",
+        "profile_id": profile.profile_id,
+        "profile_sha256": profile.sha256,
+        "target_id": 7,
+        "resolver_import": {
+            "dll": "kernel32.dll",
+            "symbol": "GetProcAddress",
+        },
+        "loader_import": {
+            "dll": "kernel32.dll",
+            "symbol": "GetModuleHandleA",
+        },
+        "module": "KERNEL32",
+        "name": "TestFeature",
+        "target": {"dll": "kernel32.dll", "symbol": "TestFeature"},
+        "transfer_kind": "call",
+        "machine_contract": {
+            "id": "kernel32.dll!TestFeature",
+        },
+    }
+    external_target = {
+        "external_protocol": protocol,
+        "abi": {
+            "template": "pe32-stdcall-v1",
+            "callee_cleanup": True,
+            "preserved_registers": ["ebp", "ebx", "edi", "esi"],
+            "clobbered_registers": ["eax", "ecx", "edx"],
+        },
+        "argument_words": 1,
+        "out_interfaces": [],
+    }
+    resolver_unit = "semantic-transfer:resolver"
+    call_unit = "semantic-transfer:call"
+    rows = [
+        {
+            "id": resolver_unit,
+            "source": {"original": {"rva_start": 0x1100}},
+            "semantics": {"external_events": [{
+                "kind": "external_call",
+                "dll": "kernel32.dll",
+                "symbol": "GetProcAddress",
+                "instruction_rva": 0x1104,
+            }]},
+        },
+        {
+            "id": call_unit,
+            "source": {"original": {"rva_start": 0x1200}},
+            "semantics": {"external_events": [{
+                "kind": "indirect_call",
+                "instruction_rva": 0x1202,
+                "return_rva": 0x1204,
+                "target": {"op": "reg", "name": "eax", "width": 32},
+            }]},
+        },
+    ]
+    interprocedural = {
+        "format": "stage-a-interprocedural-analysis-v2",
+        "status": "incomplete",
+        "fixed_point": {"proposal_only": True},
+        "recovered_targets": [{
+            "id": "indirect-exit:test",
+            "source_unit_id": call_unit,
+            "source_event_index": 0,
+            "status": "recovered",
+            "external_targets": [external_target],
+            "target_unit_ids": [],
+        }],
+        "operation_provenance": {
+            "call_argument_recoveries": [{
+                "status": "complete",
+                "unit_id": resolver_unit,
+                "event_index": 0,
+                "callable_resolver": {
+                    "profile_sha256": profile.sha256,
+                    "resolver_id": 0,
+                },
+                "resolved_target": {
+                    "dll": "kernel32.dll",
+                    "symbol": "TestFeature",
+                    "target_id": 7,
+                },
+            }],
+        },
+    }
+    checked_contract = {
+        "format": "stage-b-checked-external-site-contract-v1",
+        "identity": {
+            "kind": "resolved_export",
+            "dll": "kernel32.dll",
+            "symbol": "TestFeature",
+            "ordinal": None,
+            "protocol": "pe32-resolved-export",
+            "profile_id": profile.profile_id,
+            "profile_sha256": profile.sha256,
+            "operation": None,
+        },
+        "transfer_kind": "call",
+        "disposition": "returns_here",
+        "profile_disposition": "returns",
+        "abi_template": "pe32-stdcall-v1",
+        "arity": {"kind": "fixed", "words": 1},
+        "argument_base_offset": 4,
+        "arguments": [{"op": "const", "value": 0, "width": 32}],
+        "stack_arguments": [{
+            "index": 0,
+            "offset": 4,
+            "width": 4,
+            "value": {"op": "const", "value": 0, "width": 32},
+        }],
+        "contract_id": "kernel32.dll!TestFeature",
+        "profile_binding": {
+            "profile_id": profile.profile_id,
+            "profile_sha256": profile.sha256,
+        },
+        "result_register_relations": [
+            {"register": "eax", "relation": "exact"}
+        ],
+        "memory_effect": "nativeCallthrough",
+        "memory_footprints": [],
+        "world_effect": "nativeCallthrough",
+        "callback_effect": "none",
+        "callback_adapter": None,
+        "out_pointer_relations": [],
+        "out_interface_relations": [],
+    }
+    proposals = build_external_site_proposals_v2(
+        checked_sites=[{
+            "unit_id": call_unit,
+            "event_index": 0,
+            "target_alternative_index": 0,
+            "target_alternative_sha256": _canonical_sha256(external_target),
+            "contract": checked_contract,
+        }],
+        pe_sha256="2" * 64,
+        machine_ir_sha256="3" * 64,
+    )
+    return rows, interprocedural, proposals, profile
 
 
 def _inputs() -> tuple[dict, dict, dict, dict]:
@@ -115,6 +327,55 @@ def _inputs() -> tuple[dict, dict, dict, dict]:
 
 
 class CallableExternalRuntimeTests(unittest.TestCase):
+    def test_projects_v2_resolved_export_for_diagnostic_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            rows, interprocedural, proposals, profile = _v2_inputs(
+                Path(temporary_name)
+            )
+            contract = build_callable_external_runtime_contract_v2(
+                machine_ir_rows=rows,
+                interprocedural=interprocedural,
+                external_site_proposals=proposals,
+                callable_profiles=(profile,),
+                original_sha256="2" * 64,
+                machine_ir_sha256="3" * 64,
+                interprocedural_sha256="4" * 64,
+                external_site_proposals_sha256="5" * 64,
+                profile_authority_sha256="6" * 64,
+            )
+            self.assertEqual(contract.format, CALLABLE_EXTERNAL_RUNTIME_V2_FORMAT)
+            self.assertEqual(contract.authority_class, "diagnostic-proposal-v2")
+            self.assertEqual(contract.resolvers[0].instruction_rva, 0x1104)
+            self.assertEqual(contract.routes[0].instruction_rva, 0x1202)
+            self.assertEqual(
+                contract.routes[0].checked_external_contract.contract_id,
+                "kernel32.dll!TestFeature",
+            )
+            path = Path(temporary_name) / "runtime-contract.json"
+            path.write_text(json.dumps(contract.payload()), encoding="utf-8")
+            self.assertEqual(load_callable_external_runtime_contract(path), contract)
+
+    def test_v2_proposal_cannot_claim_static_authority(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            rows, interprocedural, proposals, profile = _v2_inputs(
+                Path(temporary_name)
+            )
+            with self.assertRaisesRegex(
+                CallableExternalRuntimeError, "cold-replayed authority"
+            ):
+                build_callable_external_runtime_contract_v2(
+                    machine_ir_rows=rows,
+                    interprocedural=interprocedural,
+                    external_site_proposals=proposals,
+                    callable_profiles=(profile,),
+                    original_sha256="2" * 64,
+                    machine_ir_sha256="3" * 64,
+                    interprocedural_sha256="4" * 64,
+                    external_site_proposals_sha256="5" * 64,
+                    profile_authority_sha256="6" * 64,
+                    authority_class="static-authority-v2",
+                )
+
     def test_projects_and_reloads_one_strict_call_route(self) -> None:
         proposal, capability, execution, authority = _inputs()
         capability["resolved_abi_contracts"][0]["transfer"] = "call"

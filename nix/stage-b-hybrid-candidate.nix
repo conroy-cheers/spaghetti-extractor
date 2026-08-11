@@ -13,6 +13,7 @@
   allowDeferredPotentialTransfers ? candidateMode == "structural-diagnostic",
   diagnosticFailureTrap ? false,
   portableReplacements ? null,
+  callableExternalRuntimeContract ? null,
 }:
 
 assert pkgs.lib.assertMsg
@@ -85,6 +86,10 @@ let
   portableReplacementArg = lib.escapeShellArg (
     if portableReplacementSelection == null then ""
     else toString portableReplacementSelection
+  );
+  callableExternalRuntimeArg = lib.escapeShellArg (
+    if callableExternalRuntimeContract == null then ""
+    else toString callableExternalRuntimeContract
   );
   machineImportProfileBundle = pkgs.runCommand
     "${namePrefix}-machine-import-profile-bundle-v1"
@@ -295,6 +300,7 @@ let
       ${loadImageContract} \
       ${portableReplacementArg} \
       ${machineImportProfileBundle}/profile.json \
+      ${callableExternalRuntimeArg} \
       "$out" ${profileArgs} <<'PY'
     import json
     import pathlib
@@ -314,8 +320,9 @@ let
     load_contract = pathlib.Path(sys.argv[4])
     portable_path = sys.argv[5]
     profile_bundle = pathlib.Path(sys.argv[6])
-    output = pathlib.Path(sys.argv[7])
-    profiles = tuple(pathlib.Path(value) for value in sys.argv[8:])
+    callable_external_path = sys.argv[7]
+    output = pathlib.Path(sys.argv[8])
+    profiles = tuple(pathlib.Path(value) for value in sys.argv[9:])
     selected_portable_components = ()
     if portable_path:
         portable_payload = json.loads(
@@ -357,6 +364,10 @@ let
         fixed_image_base=inputs.fixed_image_base,
         preferred_image_base=inputs.image_base,
         machine_import_profiles=(profile_bundle,),
+        callable_external_contract=(
+            pathlib.Path(callable_external_path)
+            if callable_external_path else None
+        ),
         candidate_mode=${builtins.toJSON candidateMode},
         allow_deferred_potential_transfers=${if allowDeferredPotentialTransfers then "True" else "False"},
         out=output,
@@ -390,6 +401,7 @@ let
     export PYTHONPATH=${nativeRuntimePythonSource}/src
     ${python} - ${interpreter} ${nativeEngine} \
       ${machineImportProfileBundle}/profile.json \
+      ${callableExternalRuntimeArg} \
       "$out" <<'PY'
     import pathlib
     import sys
@@ -401,7 +413,10 @@ let
         interpreter_package=pathlib.Path(sys.argv[1]),
         native_engine_package=pathlib.Path(sys.argv[2]),
         external_profile=pathlib.Path(sys.argv[3]),
-        out=pathlib.Path(sys.argv[4]),
+        callable_external_contract=(
+            pathlib.Path(sys.argv[4]) if sys.argv[4] else None
+        ),
+        out=pathlib.Path(sys.argv[5]),
     )
     PY
     jq -e '

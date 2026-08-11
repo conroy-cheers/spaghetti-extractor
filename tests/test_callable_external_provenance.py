@@ -201,6 +201,95 @@ class CallableExternalProvenanceTests(unittest.TestCase):
             {issue["code"] for issue in report["issues"]},
         )
 
+    def test_extensionless_module_handle_resolves_direct_register_call(self) -> None:
+        loader = pushed_call(
+            "loader",
+            0x1100,
+            arguments=[const(MODULE)],
+            kind="external_call",
+            dll="kernel32.dll",
+            symbol="GetModuleHandleA",
+        )
+        preserve = unit(
+            "preserve",
+            0x1110,
+            writes=[{"register": "esi", "value": reg("eax")}],
+        )
+        resolver = pushed_call(
+            "resolver",
+            0x1120,
+            arguments=[reg("esi"), const(SYMBOL)],
+            kind="indirect_call",
+            target=load(const(GETPROC_IAT)),
+        )
+        invoke = pushed_call(
+            "invoke",
+            0x1130,
+            arguments=[const(0)],
+            kind="indirect_call",
+            target=reg("eax"),
+        )
+        loader_identity = MachineImportIdentity(
+            "kernel32.dll", "symbol", "GetModuleHandleA"
+        )
+        resolver_identity = MachineImportIdentity(
+            "kernel32.dll", "symbol", "GetProcAddress"
+        )
+        static = {
+            MODULE: b"KERNEL32\0",
+            SYMBOL: b"IsProcessorFeaturePresent\0",
+        }
+
+        def reader(address: int, size: int) -> bytes | None:
+            value = static.get(address)
+            return value if value is not None and len(value) == size else None
+
+        report = recover_external_interface_targets(
+            units=[loader, preserve, resolver, invoke],
+            roots=["loader"],
+            direct_edges=[
+                {"source_unit_id": "loader", "target_unit_id": "preserve"},
+                {"source_unit_id": "preserve", "target_unit_id": "resolver"},
+                {"source_unit_id": "resolver", "target_unit_id": "invoke"},
+            ],
+            internal_call_edges=[],
+            recovered_indirect_edges=[],
+            indirect_exits=[{
+                "id": "invoke:0",
+                "source_unit_id": "invoke",
+                "source_rva": 0x1130,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target": reg("eax"),
+            }],
+            profiles=[],
+            callable_external_profiles=[self.profile],
+            imports=[{
+                "dll": "kernel32.dll",
+                "symbol": "GetProcAddress",
+                "ordinal": None,
+                "thunk_rva": 0x3000,
+            }],
+            import_abis={
+                loader_identity: selected(loader_identity, 1),
+                resolver_identity: selected(resolver_identity, 2),
+            },
+            internal_call_preserved_registers={},
+            image_base=IMAGE_BASE,
+            static_data_reader=reader,
+        )
+
+        self.assertEqual(report["status"], "complete", report["issues"])
+        resolution = report["resolutions"][0]
+        self.assertEqual(resolution["status"], "recovered")
+        protocol = resolution["external_targets"][0]["external_protocol"]
+        self.assertEqual(protocol["module"], "KERNEL32")
+        self.assertEqual(protocol["target"], {
+            "dll": "kernel32.dll",
+            "symbol": "IsProcessorFeaturePresent",
+        })
+        self.assertEqual(resolution["external_targets"][0]["argument_words"], 1)
+
 
 class CallableExternalProfileTests(unittest.TestCase):
     def test_profile_rejects_target_name_that_differs_from_static_identity(self) -> None:

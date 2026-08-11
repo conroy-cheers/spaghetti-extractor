@@ -7,10 +7,11 @@ steps before the candidate can be accepted.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -2750,8 +2751,75 @@ def _add_callable_external_sites(
                         "bind the checked callable CALL route to the ordinary dynamic-target bridge"
                     ),
                 ))
-            # Normal indirect CALL already invokes the exact candidate pointer.
-            # This route adds checked provenance/ABI authority without replacing it.
+                continue
+            checked_payloads = {
+                json.dumps(
+                    route.checked_external_contract.payload(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ): route.checked_external_contract
+                for route in routes
+                if route.checked_external_contract is not None
+            }
+            protocol_payloads = {
+                json.dumps(
+                    route.external_protocol,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ): route.external_protocol
+                for route in routes
+                if route.external_protocol is not None
+            }
+            if len(checked_payloads) != 1 or len(protocol_payloads) != 1:
+                blockers.append(_blocker(
+                    "callable_external_call_contract_ambiguous",
+                    transfer_id=transfer_id,
+                    source_rva=source_rva,
+                    instruction_rva=instruction_rva,
+                    observed={
+                        "checked_contracts": len(checked_payloads),
+                        "external_protocols": len(protocol_payloads),
+                        "routes": len(routes),
+                    },
+                    next_action=(
+                        "split or select the finite resolved-export alternatives "
+                        "before generating this dynamic CALL bridge"
+                    ),
+                ))
+                continue
+            checked = next(iter(checked_payloads.values()))
+            protocol = next(iter(protocol_payloads.values()))
+            assert prior is not None
+            merged = replace(
+                prior,
+                event_identity_sha256=contract.identity,
+                abi_metadata_sha256=sha256_bytes(
+                    json.dumps(
+                        checked.payload(),
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=True,
+                    ).encode("ascii")
+                ),
+                external_protocol=copy.deepcopy(dict(protocol)),
+                interface_argument_words=checked.argument_words,
+                out_interface_relations=checked.out_interface_relations,
+                checked_external_contract=checked,
+                checked_external_contract_required=True,
+                target_resolution_evidence={
+                    "kind": "resolver-result-runtime-binding-v2",
+                    "contract_identity": contract.identity,
+                    "route_ids": sorted(route.id for route in routes),
+                    "capability_ids": sorted({
+                        route.capability_id for route in routes
+                    }),
+                },
+            )
+            sites[prior.id] = merged
+            seen_sites[instruction_rva] = merged
+            # The ordinary indirect-CALL bridge still invokes the exact live
+            # candidate pointer. The runtime contract adds target provenance,
+            # ABI authority, and a live resolver-result equality check.
             continue
         if (
             not isinstance(outcome, Mapping)
@@ -2899,6 +2967,21 @@ def plan_stage_b_native_engine(
         if callable_external_contract is None
         else load_callable_external_runtime_contract(callable_external_contract)
     )
+    if (
+        callable_contract is not None
+        and callable_contract.state_machine_sha256 != semantic_input_sha256
+    ):
+        raise StageAInputError(
+            "callable-external runtime contract binds a different semantic input"
+        )
+    if (
+        callable_contract is not None
+        and callable_contract.authority_class == "diagnostic-proposal-v2"
+        and candidate_mode != STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
+    ):
+        raise StageAInputError(
+            "proposal-only callable evidence is restricted to structural-diagnostic candidates"
+        )
     machine_ir_mode = machine_ir is not None
     machine_ir_manifest_payload = (
         _machine_ir_manifest_payload(

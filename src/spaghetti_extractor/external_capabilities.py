@@ -339,6 +339,17 @@ def _ascii_identity_bytes(value: object, context: str) -> bytes:
     return raw
 
 
+def _canonical_module_dll_bytes(value: bytes) -> bytes:
+    """Canonicalize one explicit Windows loader name for DLL identity checks."""
+
+    lowered = value.lower()
+    if b"/" in lowered or b"\\" in lowered:
+        raise StageAInputError(
+            "callable external module selectors must be bare module names"
+        )
+    return lowered if b"." in lowered else lowered + b".dll"
+
+
 def _parse_profile_identity(value: object, context: str) -> MachineImportIdentity:
     return MachineImportIdentity.from_mapping(_object(value, context), context=context)
 
@@ -512,7 +523,8 @@ def load_callable_external_profile(path: Path | str) -> CallableExternalProfile:
         identity = _parse_profile_identity(row.get("target"), f"{context}.target")
         if (
             identity.kind != "symbol"
-            or identity.dll.encode("ascii") != module.name_bytes.lower()
+            or identity.dll.encode("ascii")
+            != _canonical_module_dll_bytes(module.name_bytes)
             or str(identity.value).encode("ascii") != name_bytes
         ):
             raise StageAInputError(
