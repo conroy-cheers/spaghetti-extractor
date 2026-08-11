@@ -1362,6 +1362,182 @@ class StageBNativeEngineTests(unittest.TestCase):
                     import_iat_vas={("kernel32.dll", "HeapAlloc"): iat_va},
                 )
 
+    def test_diagnostic_runtime_guard_carries_import_across_unproved_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            iat_va = 0x43219C
+            load = _machine_ir_transfer(rva=0x1000, size=6, mnemonic="mov")
+            load["semantics"]["register_writes"] = [{
+                "register": "ebx",
+                "value": {
+                    "op": "load",
+                    "width": 4,
+                    "address": {"op": "const", "value": iat_va, "width": 32},
+                },
+            }]
+            load["semantics"]["outcome"] = {
+                "kind": "fallthrough",
+                "target_rva": 0x1010,
+            }
+            internal = _machine_ir_transfer(
+                rva=0x1010,
+                size=5,
+                event={
+                    "kind": "internal_call",
+                    "instruction_rva": 0x1010,
+                    "return_rva": 0x1015,
+                    "target_rva": 0x2000,
+                },
+            )
+            internal["semantics"]["register_writes"] = [{
+                "register": register,
+                "value": {
+                    "op": "call_response",
+                    "call_index": 0,
+                    "register": register,
+                    "width": 32,
+                },
+            } for register in (
+                "eax", "ebp", "ebx", "ecx", "edi", "edx", "esi", "esp"
+            )]
+            indirect = _machine_ir_transfer(
+                rva=0x1015,
+                size=2,
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x1015,
+                    "return_rva": 0x1017,
+                    "target": {"op": "reg", "name": "ebx", "width": 32},
+                },
+            )
+            callee = _machine_ir_transfer(rva=0x2000, size=1, mnemonic="ret")
+            callee["semantics"]["outcome"] = {"kind": "return"}
+            machine = self._write(root, [load, internal, indirect, callee])
+
+            strict = plan_stage_b_native_engine(
+                machine_ir=machine,
+                entry_rva=0x1000,
+                import_iat_vas={("kernel32.dll", "HeapAlloc"): iat_va},
+            )
+            diagnostic = plan_stage_b_native_engine(
+                machine_ir=machine,
+                entry_rva=0x1000,
+                import_iat_vas={("kernel32.dll", "HeapAlloc"): iat_va},
+                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+            )
+
+            strict_site = next(
+                item for item in strict.external_sites
+                if item.instruction_rva == 0x1015
+            )
+            diagnostic_site = next(
+                item for item in diagnostic.external_sites
+                if item.instruction_rva == 0x1015
+            )
+            self.assertEqual(
+                (strict_site.dll, strict_site.symbol, strict_site.iat_va),
+                (None, None, None),
+            )
+            self.assertIsNone(strict_site.target_resolution_evidence)
+            self.assertEqual(
+                (diagnostic_site.dll, diagnostic_site.symbol, diagnostic_site.iat_va),
+                ("kernel32.dll", "HeapAlloc", iat_va),
+            )
+            evidence = diagnostic_site.target_resolution_evidence
+            self.assertIsNotNone(evidence)
+            assert evidence is not None
+            self.assertEqual(evidence["kind"], "runtime-guarded-import-origin-v1")
+            self.assertFalse(evidence["proof_authority"])
+            self.assertEqual(
+                evidence["runtime_guard"],
+                "indirect-target-equals-current-iat-cell",
+            )
+            self.assertEqual(evidence["diagnostic_dependencies"], [{
+                "kind": "pe32-internal-call-abi-hypothesis-v1",
+                "proof_authority": False,
+                "transfer_rva": 0x1010,
+                "instruction_rva": 0x1010,
+                "target_rva": 0x2000,
+                "register": "ebx",
+                "assumption": "pe32-callee-preserved-register",
+            }])
+            frontiers = [
+                item for item in diagnostic.diagnostic_frontiers
+                if item["category"] == "diagnostic_internal_call_abi_hypothesis"
+            ]
+            self.assertEqual(len(frontiers), 1)
+            self.assertEqual(frontiers[0]["instruction_rva"], 0x1015)
+
+    def test_diagnostic_import_origin_rejects_conflicting_branch_join(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            first_iat = 0x43219C
+            second_iat = 0x4321A0
+            branch = _machine_ir_transfer(rva=0x1000, size=2, mnemonic="jcc")
+            branch["semantics"]["outcome"] = {
+                "kind": "branch",
+                "true_target_rva": 0x1010,
+                "false_target_rva": 0x1020,
+            }
+
+            def load_import(rva: int, iat_va: int) -> dict:
+                row = _machine_ir_transfer(rva=rva, size=6, mnemonic="mov")
+                row["semantics"]["register_writes"] = [{
+                    "register": "ebx",
+                    "value": {
+                        "op": "load",
+                        "width": 4,
+                        "address": {
+                            "op": "const",
+                            "value": iat_va,
+                            "width": 32,
+                        },
+                    },
+                }]
+                row["semantics"]["outcome"] = {
+                    "kind": "jump",
+                    "target_rva": 0x1030,
+                }
+                return row
+
+            indirect = _machine_ir_transfer(
+                rva=0x1030,
+                size=2,
+                event={
+                    "kind": "indirect_call",
+                    "instruction_rva": 0x1030,
+                    "return_rva": 0x1032,
+                    "target": {"op": "reg", "name": "ebx", "width": 32},
+                },
+            )
+            machine = self._write(root, [
+                branch,
+                load_import(0x1010, first_iat),
+                load_import(0x1020, second_iat),
+                indirect,
+            ])
+
+            diagnostic = plan_stage_b_native_engine(
+                machine_ir=machine,
+                entry_rva=0x1000,
+                import_iat_vas={
+                    ("kernel32.dll", "HeapAlloc"): first_iat,
+                    ("kernel32.dll", "HeapFree"): second_iat,
+                },
+                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+            )
+
+            site = next(
+                item for item in diagnostic.external_sites
+                if item.instruction_rva == 0x1030
+            )
+            self.assertEqual((site.dll, site.symbol, site.iat_va), (None, None, None))
+            self.assertIsNone(site.target_resolution_evidence)
+            self.assertNotIn(
+                "diagnostic_internal_call_abi_hypothesis",
+                {item["category"] for item in diagnostic.diagnostic_frontiers},
+            )
+
     def test_uses_evaluated_target_for_absolute_indirect_call(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

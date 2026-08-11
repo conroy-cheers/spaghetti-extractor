@@ -227,6 +227,7 @@ class NativeExternalSite:
     out_interface_relations: tuple[Mapping[str, Any], ...] = ()
     checked_external_contract: CheckedExternalSiteContract | None = None
     checked_external_contract_required: bool = False
+    target_resolution_evidence: Mapping[str, Any] | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -266,6 +267,11 @@ class NativeExternalSite:
             ),
             "checked_external_contract_required": (
                 self.checked_external_contract_required
+            ),
+            "target_resolution_evidence": (
+                None
+                if self.target_resolution_evidence is None
+                else dict(self.target_resolution_evidence)
             ),
             "disposition": self.disposition,
             "transfer_sha256": self.transfer_sha256,
@@ -1253,18 +1259,74 @@ _IMPORT_ORIGIN_BOTTOM = object()
 _IMPORT_ORIGIN_UNKNOWN = object()
 
 
+@dataclass(frozen=True, order=True)
+class _DiagnosticCallPreservation:
+    transfer_rva: int
+    instruction_rva: int
+    target_rva: int
+    register: str
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "kind": "pe32-internal-call-abi-hypothesis-v1",
+            "proof_authority": False,
+            "transfer_rva": self.transfer_rva,
+            "instruction_rva": self.instruction_rva,
+            "target_rva": self.target_rva,
+            "register": self.register,
+            "assumption": "pe32-callee-preserved-register",
+        }
+
+
+@dataclass(frozen=True)
+class _RegisterImportOrigin:
+    dll: str
+    symbol: str | None
+    ordinal: int | None
+    iat_va: int
+    diagnostic_dependencies: frozenset[_DiagnosticCallPreservation] = frozenset()
+
+    @property
+    def identity(self) -> tuple[str, str | None, int | None, int]:
+        return self.dll, self.symbol, self.ordinal, self.iat_va
+
+    def with_dependency(
+        self, dependency: _DiagnosticCallPreservation
+    ) -> "_RegisterImportOrigin":
+        return _RegisterImportOrigin(
+            self.dll,
+            self.symbol,
+            self.ordinal,
+            self.iat_va,
+            self.diagnostic_dependencies | frozenset({dependency}),
+        )
+
+
+@dataclass(frozen=True)
+class _RegisterImportSiteAnalysis:
+    sites: Mapping[
+        tuple[int, int], tuple[str, str | None, int | None, int]
+    ]
+    diagnostic_dependencies: Mapping[
+        tuple[int, int], tuple[_DiagnosticCallPreservation, ...]
+    ]
+
+
 def _machine_ir_register_import_sites(
     rows: Iterable[Mapping[str, Any]],
     *,
     import_iat_vas: Mapping[tuple[str, str | int], int],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
-) -> dict[tuple[int, int], tuple[str, str | None, int | None, int]]:
+    allow_diagnostic_abi_hypotheses: bool,
+) -> _RegisterImportSiteAnalysis:
     """Propagate exact IAT origins through registers and checked direct CFG edges.
 
     The analysis is deliberately finite and conservative.  A join retains an
     origin only when every known incoming path agrees, and imported calls carry
-    origins only in PE32 nonvolatile registers.  Generated code independently
-    checks both properties at runtime before relying on the result.
+    origins only in PE32 nonvolatile registers. Diagnostic mode may retain an
+    origin across an unproved internal-call frame, but records that hypothesis
+    and generates an exact live-target-versus-IAT guard. Strict mode never
+    consumes such hypotheses.
     """
 
     row_by_rva: dict[int, Mapping[str, Any]] = {}
@@ -1294,14 +1356,27 @@ def _machine_ir_register_import_sites(
         if not concrete:
             return _IMPORT_ORIGIN_BOTTOM
         first = concrete[0]
-        return first if all(value == first for value in concrete[1:]) else _IMPORT_ORIGIN_UNKNOWN
+        if not isinstance(first, _RegisterImportOrigin) or any(
+            not isinstance(value, _RegisterImportOrigin)
+            or value.identity != first.identity
+            for value in concrete[1:]
+        ):
+            return _IMPORT_ORIGIN_UNKNOWN
+        return _RegisterImportOrigin(
+            *first.identity,
+            frozenset(
+                dependency
+                for value in concrete
+                for dependency in value.diagnostic_dependencies
+            ),
+        )
 
     def expression_origin(expression: Any, inputs: Mapping[str, Any]) -> Any:
         direct = _static_iat_import_identity(
             expression, import_iat_vas=import_iat_vas
         )
         if direct is not None:
-            return direct
+            return _RegisterImportOrigin(*direct)
         if (
             isinstance(expression, Mapping)
             and expression.get("op") == "reg"
@@ -1332,7 +1407,7 @@ def _machine_ir_register_import_sites(
         if iat_va is None:
             return _IMPORT_ORIGIN_UNKNOWN
         checked_iat = _required_u32(iat_va, "import IAT VA")
-        return (
+        return _RegisterImportOrigin(
             dll.lower(),
             identity if isinstance(identity, str) else None,
             identity if isinstance(identity, int) else None,
@@ -1347,6 +1422,9 @@ def _machine_ir_register_import_sites(
             return ({name: _IMPORT_ORIGIN_UNKNOWN for name in _MACHINE_REGISTERS}, {})
         call_origins: dict[int, Any] = {}
         call_preserved: dict[int, frozenset[str]] = {}
+        call_diagnostic_preservation: dict[
+            tuple[int, str], _DiagnosticCallPreservation
+        ] = {}
         site_origins: dict[int, Any] = {}
         call_index = 0
         for raw_event in events:
@@ -1355,12 +1433,39 @@ def _machine_ir_register_import_sites(
             kind = raw_event.get("kind")
             if kind == "internal_call":
                 target_rva = raw_event.get("target_rva")
+                instruction_rva = raw_event.get("instruction_rva")
                 call_origins[call_index] = _IMPORT_ORIGIN_UNKNOWN
                 call_preserved[call_index] = (
                     internal_call_preserved_registers.get(target_rva, frozenset())
                     if isinstance(target_rva, int) and not isinstance(target_rva, bool)
                     else frozenset()
                 )
+                if (
+                    allow_diagnostic_abi_hypotheses
+                    and isinstance(target_rva, int)
+                    and not isinstance(target_rva, bool)
+                    and isinstance(instruction_rva, int)
+                    and not isinstance(instruction_rva, bool)
+                ):
+                    original = row.get("original")
+                    if not isinstance(original, Mapping):
+                        raise StageAInputError(
+                            "machine-IR internal call has no source span"
+                        )
+                    source = _required_u32(
+                        original.get("rva_start"),
+                        "machine-IR internal-call source RVA",
+                    )
+                    for register in _PE32_CALLEE_PRESERVED_REGISTERS:
+                        if register not in call_preserved[call_index]:
+                            call_diagnostic_preservation[(call_index, register)] = (
+                                _DiagnosticCallPreservation(
+                                    source,
+                                    instruction_rva,
+                                    target_rva,
+                                    register,
+                                )
+                            )
                 call_index += 1
                 continue
             if kind not in _CALL_KINDS:
@@ -1400,6 +1505,22 @@ def _machine_ir_register_import_sites(
                 and register in call_preserved.get(value["call_index"], frozenset())
             ):
                 outputs[register] = inputs.get(register, _IMPORT_ORIGIN_UNKNOWN)
+            elif (
+                isinstance(value, Mapping)
+                and value.get("op") == "call_response"
+                and value.get("register") == register
+                and isinstance(value.get("call_index"), int)
+                and (
+                    dependency := call_diagnostic_preservation.get(
+                        (value["call_index"], register)
+                    )
+                )
+                is not None
+                and isinstance(
+                    prior := inputs.get(register), _RegisterImportOrigin
+                )
+            ):
+                outputs[register] = prior.with_dependency(dependency)
             else:
                 outputs[register] = expression_origin(value, inputs)
         return outputs, site_origins
@@ -1444,6 +1565,9 @@ def _machine_ir_register_import_sites(
                 worklist.append(target)
 
     result: dict[tuple[int, int], tuple[str, str | None, int | None, int]] = {}
+    diagnostic_dependencies: dict[
+        tuple[int, int], tuple[_DiagnosticCallPreservation, ...]
+    ] = {}
     for rva, row in row_by_rva.items():
         incoming = predecessors.get(rva, set())
         if not incoming:
@@ -1459,9 +1583,14 @@ def _machine_ir_register_import_sites(
             }
         _, sites = transfer(row, inputs)
         for instruction_rva, origin in sites.items():
-            if origin not in {_IMPORT_ORIGIN_BOTTOM, _IMPORT_ORIGIN_UNKNOWN}:
-                result[(rva, instruction_rva)] = origin
-    return result
+            if isinstance(origin, _RegisterImportOrigin):
+                key = (rva, instruction_rva)
+                result[key] = origin.identity
+                if origin.diagnostic_dependencies:
+                    diagnostic_dependencies[key] = tuple(
+                        sorted(origin.diagnostic_dependencies)
+                    )
+    return _RegisterImportSiteAnalysis(result, diagnostic_dependencies)
 
 
 def _machine_ir_manifest_payload(
@@ -2874,14 +3003,21 @@ def plan_stage_b_native_engine(
                 iat_va=iat_va,
                 iat_rva=iat_va - preferred_image_base,
             ))
-    propagated_import_sites = (
+    propagated_import_analysis = (
         _machine_ir_register_import_sites(
             rows,
             import_iat_vas=import_iat_vas,
             internal_call_preserved_registers=internal_call_preserved_registers,
+            allow_diagnostic_abi_hypotheses=(
+                candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
+            ),
         )
         if machine_ir_mode
-        else {}
+        else _RegisterImportSiteAnalysis({}, {})
+    )
+    propagated_import_sites = propagated_import_analysis.sites
+    propagated_import_dependencies = (
+        propagated_import_analysis.diagnostic_dependencies
     )
     blockers: list[dict[str, Any]] = []
     diagnostic_frontiers: list[dict[str, Any]] = []
@@ -3115,6 +3251,7 @@ def plan_stage_b_native_engine(
             else:
                 callback_registration = None
             iat_va: int | None = None
+            target_resolution_evidence: dict[str, Any] | None = None
             if dynamic_target:
                 indirect_calls += 1
                 dll = None
@@ -3129,6 +3266,38 @@ def plan_stage_b_native_engine(
                     )
                 if resolved_import is not None:
                     dll, symbol, ordinal, iat_va = resolved_import
+                    dependencies = propagated_import_dependencies.get(
+                        (transfer_rva, instruction_rva), ()
+                    )
+                    if dependencies:
+                        target_resolution_evidence = {
+                            "kind": "runtime-guarded-import-origin-v1",
+                            "proof_authority": False,
+                            "import_iat_va": iat_va,
+                            "runtime_guard": "indirect-target-equals-current-iat-cell",
+                            "diagnostic_dependencies": [
+                                dependency.payload()
+                                for dependency in dependencies
+                            ],
+                        }
+                        diagnostic_frontiers.append(_frontier(
+                            "diagnostic_internal_call_abi_hypothesis",
+                            transfer_id=transfer_id,
+                            event_index=event_index,
+                            instruction_rva=instruction_rva,
+                            detail=(
+                                "an exact IAT origin crossed an internal call whose "
+                                "callee-preserved register frame is not statically closed"
+                            ),
+                            observed=target_resolution_evidence,
+                            runtime_disposition=(
+                                "require-live-target-equals-exact-iat-or-fail-closed"
+                            ),
+                            next_action=(
+                                "prove the internal call frame or retain this only as "
+                                "candidate diagnostic evidence"
+                            ),
+                        ))
                 if not machine_ir_mode and (raw is None or not _indirect_call_encoding(raw)):
                     blockers.append(_blocker(
                         "indirect_call_encoding_unsupported",
@@ -3399,6 +3568,7 @@ def plan_stage_b_native_engine(
                 checked_external_contract_required=(
                     checked_external_contracts_required
                 ),
+                target_resolution_evidence=target_resolution_evidence,
             )
             prior_site = seen_sites.get(instruction_rva)
             if prior_site is not None and prior_site != site:
