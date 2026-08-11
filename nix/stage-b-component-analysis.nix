@@ -13,6 +13,7 @@
   externalOperationProfiles ? [ ],
   callableExternalProfiles ? [ ],
   internalFunctionContractProfiles ? [ ],
+  normalCallAbiPremise ? null,
   indirectTargetProfile ? null,
   checkedExternalSites ? null,
   launchProfile ? null,
@@ -520,6 +521,8 @@ let
           machine_ir = "${machineIr}/machine-ir.jsonl";
           machine_ir_manifest = "${machineIr}/machine-ir-manifest.json";
           selected_profiles = selectedProfileInventory;
+        } // lib.optionalAttrs (normalCallAbiPremise != null) {
+          normal_call_abi_premise = normalCallAbiPremise;
         };
         program = ''
           import hashlib
@@ -532,6 +535,7 @@ let
           from spaghetti_extractor.import_abi import load_selected_import_abis
           from spaghetti_extractor.internal_function_contracts import load_internal_function_contracts
           from spaghetti_extractor.interprocedural_phase_v2 import derive_interprocedural_result_v2
+          from spaghetti_extractor.machine_abi import load_normal_call_abi_premise
           from spaghetti_extractor.stage_binary import _parse_stage_a_pe
 
           units = [
@@ -546,6 +550,11 @@ let
           machine_ir_sha256 = hashlib.sha256(
               inputs["machine_ir"].read_bytes()
           ).hexdigest()
+          normal_call_abi_premise = (
+              load_normal_call_abi_premise(inputs["normal_call_abi_premise"])
+              if "normal_call_abi_premise" in inputs
+              else None
+          )
           progress_started = time.monotonic()
 
           def emit_progress(phase, details):
@@ -603,6 +612,7 @@ let
                       units=units,
                   )
               ),
+              normal_call_abi_premise=normal_call_abi_premise,
               static_recoveries=None,
               proposal_only=True,
               progress=emit_progress,
@@ -721,6 +731,8 @@ let
           machine_ir = "${machineIr}/machine-ir.jsonl";
           machine_ir_manifest = "${machineIr}/machine-ir-manifest.json";
           selected_profiles = selectedProfileInventory;
+        } // lib.optionalAttrs (normalCallAbiPremise != null) {
+          normal_call_abi_premise = normalCallAbiPremise;
         } // lib.optionalAttrs (launchProfile != null) {
           launch_profile = launchProfile;
         } // lib.optionalAttrs (launchProfileTemplate != null) {
@@ -769,6 +781,7 @@ let
           from spaghetti_extractor.launch_memory_ranges_v2 import (
               derive_launch_memory_range_analysis_v2,
           )
+          from spaghetti_extractor.machine_abi import load_normal_call_abi_premise
           from spaghetti_extractor.mutable_slot_candidates_v2 import (
               derive_dependency_scoped_slot_inventory_v2,
               derive_mutable_slot_candidates,
@@ -810,6 +823,11 @@ let
           else:
               assumptions = {}
           machine_ir_sha256 = hashlib.sha256(inputs["machine_ir"].read_bytes()).hexdigest()
+          normal_call_abi_premise = (
+              load_normal_call_abi_premise(inputs["normal_call_abi_premise"])
+              if "normal_call_abi_premise" in inputs
+              else None
+          )
           launch_assumptions_sha256 = canonical_sha256({"assumptions": assumptions})
           launch_memory_ranges = derive_launch_memory_range_analysis_v2(
               units=units,
@@ -905,6 +923,7 @@ let
                   operation_profiles=operation_profiles,
                   callable_profiles=callable_profiles,
                   internal_function_contracts=internal_contracts,
+                  normal_call_abi_premise=normal_call_abi_premise,
                   static_recoveries=static_recoveries,
                   finite_value_budget=analysis_finite_value_budget,
                   stack_entry_offset_budget=analysis_stack_offset_budget,
@@ -936,6 +955,7 @@ let
                   operation_profiles=operation_profiles,
                   callable_profiles=callable_profiles,
                   internal_function_contracts=internal_contracts,
+                  normal_call_abi_premise=normal_call_abi_premise,
                   static_recoveries=None,
                   inductive_hypothesis_recoveries=hypothesis_recoveries,
                   inductive_hypothesis_call_frames=hypothesis_call_frames,

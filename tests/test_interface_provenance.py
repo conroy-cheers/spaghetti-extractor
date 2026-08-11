@@ -41,7 +41,11 @@ from spaghetti_extractor.interface_provenance import (
     recover_external_interface_targets,
 )
 from spaghetti_extractor.provenance_domain import ValueOrigin
-from spaghetti_extractor.machine_abi import resolve_machine_call_abi
+from spaghetti_extractor.machine_abi import (
+    NormalCallABIPremise,
+    build_pe32_normal_call_abi_premise,
+    resolve_machine_call_abi,
+)
 from spaghetti_extractor.machine_import_profiles import MachineImportIdentity
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
 
@@ -465,6 +469,133 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(
             unchanged["counts"]["cross_run_transfer_cache_hits"], 1
         )
+
+    def test_normal_call_premise_preserves_only_nonvolatile_registers(self) -> None:
+        premise = build_pe32_normal_call_abi_premise()
+        edi_target = IMAGE_BASE + 0x2000
+        eax_target = IMAGE_BASE + 0x2010
+        seed = unit(
+            "seed",
+            0x1000,
+            writes=[
+                {"register": "edi", "value": const(edi_target)},
+                {"register": "eax", "value": const(eax_target)},
+            ],
+        )
+        unknown_event = {
+            "kind": "indirect_call",
+            "return_rva": 0x1002,
+            "target": reg("eax"),
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        unknown_call = unit(
+            "unknown-call",
+            0x1001,
+            events=[unknown_event],
+            ordered=[unknown_event],
+        )
+
+        def register_call(
+            identifier: str, rva: int, register: str
+        ) -> dict[str, object]:
+            event = {
+                "kind": "indirect_call",
+                "return_rva": rva + 1,
+                "target": reg(register),
+                "register_inputs": {
+                    name: reg(name) for name in REGISTERS
+                },
+            }
+            return unit(
+                identifier,
+                rva,
+                events=[event],
+                ordered=[event],
+            )
+
+        units = [
+            seed,
+            unknown_call,
+            register_call("dispatch-edi", 0x1002, "edi"),
+            register_call("dispatch-eax", 0x1003, "eax"),
+            unit("edi-target", 0x2000),
+            unit("eax-target", 0x2010),
+        ]
+        direct = [
+            edge("seed", "unknown-call"),
+            edge("unknown-call", "dispatch-edi"),
+            edge("unknown-call", "dispatch-eax"),
+        ]
+        exits = [
+            {
+                "id": "exit:unknown",
+                "source_unit_id": "unknown-call",
+                "source_rva": 0x1001,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": reg("eax"),
+            },
+            {
+                "id": "exit:edi",
+                "source_unit_id": "dispatch-edi",
+                "source_rva": 0x1002,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": reg("edi"),
+            },
+            {
+                "id": "exit:eax",
+                "source_unit_id": "dispatch-eax",
+                "source_rva": 0x1003,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": reg("eax"),
+            },
+        ]
+        without = self._run(
+            units,
+            direct,
+            roots=["seed"],
+            indirect_exits=exits,
+        )
+        with_premise = self._run(
+            units,
+            direct,
+            roots=["seed"],
+            indirect_exits=exits,
+            normal_call_abi_premise=premise,
+        )
+
+        without_by_id = {
+            row["id"]: row for row in without["resolutions"]
+        }
+        with_by_id = {
+            row["id"]: row for row in with_premise["resolutions"]
+        }
+        self.assertEqual(without_by_id["exit:edi"]["status"], "incomplete")
+        self.assertEqual(with_by_id["exit:edi"]["status"], "recovered")
+        self.assertEqual(
+            with_by_id["exit:edi"]["target_unit_ids"], ["edi-target"]
+        )
+        self.assertIn(
+            premise.dependency_id,
+            with_by_id["exit:edi"]["analysis_dependencies"],
+        )
+        self.assertEqual(with_by_id["exit:eax"]["status"], "incomplete")
+        unknown_effect = next(
+            row
+            for row in with_premise["call_site_effects"]
+            if row["unit_id"] == "unknown-call"
+        )
+        self.assertEqual(
+            unknown_effect["register_frame"]["preserved_registers"],
+            ["ebp", "ebx", "edi", "esi"],
+        )
+        self.assertIn(premise.dependency_id, unknown_effect["dependencies"])
+        self.assertEqual(unknown_effect["stack_frame"]["status"], "incomplete")
+        self.assertEqual(unknown_effect["memory_frame"]["status"], "incomplete")
+        self.assertIsNone(unknown_effect["abi"])
+        self.assertIsNone(unknown_effect["argument_words"])
 
     def test_shared_transfer_cache_is_bounded(self) -> None:
         cache = InterfaceTransferCache(capacity=1)
@@ -5950,6 +6081,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
         path_context_depth: int = 1,
         path_context_budget: int = 64,
         transfer_cache: InterfaceTransferCache | None = None,
+        normal_call_abi_premise: NormalCallABIPremise | None = None,
     ) -> dict[str, object]:
         identity = MachineImportIdentity("example.dll", "symbol", "CreateThing")
         abi = resolve_machine_call_abi("pe32-stdcall-v1")
@@ -6005,6 +6137,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             static_slot_budget=static_slot_budget,
             stack_slot_budget=stack_slot_budget,
             static_data_reader=static_data_reader,
+            normal_call_abi_premise=normal_call_abi_premise,
             bootstrap_unknown_call_preserved_registers=(
                 bootstrap_unknown_call_preserved_registers
             ),

@@ -1,0 +1,24 @@
+{
+  "applies_when": "call_returns_normally",
+  "authority": "conditional_machine_abi_premise",
+  "bitness": 32,
+  "clobbered_registers": [
+    "eax",
+    "ecx",
+    "edx"
+  ],
+  "content_sha256": "3af81583b7ba999e36181980c6b441d107284e1333856ff2caeb40e09318a0ea",
+  "format": "spaghetti-extractor-normal-call-abi-premise-v1",
+  "id": "pe32-normal-return-nonvolatile-v1",
+  "machine": "i386",
+  "preserved_registers": [
+    "ebp",
+    "ebx",
+    "edi",
+    "esi"
+  ],
+  "schema_version": 1,
+  "transfer_kinds": [
+    "indirect_call"
+  ]
+}

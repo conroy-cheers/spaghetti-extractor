@@ -72,6 +72,7 @@ from .internal_call_summaries import (
     checked_summary_preserved_registers,
     derive_internal_call_preservation_summaries,
 )
+from .machine_abi import NormalCallABIPremise
 from .machine_import_profiles import MachineImportIdentity
 from .provenance_domain import (
     FiniteValue,
@@ -361,6 +362,7 @@ def analyze_interprocedural_control(
     ] = (),
     checked_stack_entry_offsets: Mapping[str, Sequence[int]] | None = None,
     checked_nonimage_stack_units: Sequence[str] = (),
+    normal_call_abi_premise: NormalCallABIPremise | None = None,
     finite_value_budget: int = 32,
     stack_entry_offset_budget: int | None = None,
     max_rounds: int | None = None,
@@ -397,6 +399,10 @@ def analyze_interprocedural_control(
         "untrusted_input",
     }:
         raise ValueError("static recovery authority is unsupported")
+    if normal_call_abi_premise is not None and not isinstance(
+        normal_call_abi_premise, NormalCallABIPremise
+    ):
+        raise ValueError("normal-call ABI premise is not a checked profile")
     unit_ids = tuple(_unit_id(unit) for unit in units)
     if len(set(unit_ids)) != len(unit_ids):
         raise ValueError("interprocedural analysis requires unique unit IDs")
@@ -478,6 +484,7 @@ def analyze_interprocedural_control(
         checked_stack_entry_offsets=checked_stack_entry_offsets or {},
         checked_nonimage_stack_units=frozenset(checked_nonimage_stack_units),
         writable_image_ranges=normalized_writable_ranges,
+        normal_call_abi_premise=normal_call_abi_premise,
         allow_bootstrap=True,
         progress=progress,
     )
@@ -508,6 +515,7 @@ def analyze_interprocedural_control(
         checked_stack_entry_offsets=checked_stack_entry_offsets or {},
         checked_nonimage_stack_units=frozenset(checked_nonimage_stack_units),
         writable_image_ranges=normalized_writable_ranges,
+        normal_call_abi_premise=normal_call_abi_premise,
         allow_bootstrap=False,
         progress=progress,
     )
@@ -567,6 +575,7 @@ def analyze_interprocedural_control(
                 checked_nonimage_stack_units
             ),
             writable_image_ranges=normalized_writable_ranges,
+            normal_call_abi_premise=normal_call_abi_premise,
             allow_bootstrap=False,
             progress=progress,
         )
@@ -709,6 +718,11 @@ def analyze_interprocedural_control(
         call_site_effects=_call_site_effect_rows(
             authority_pass.operation_provenance
         ),
+        normal_call_abi_premise=(
+            None
+            if normal_call_abi_premise is None
+            else normal_call_abi_premise.as_json()
+        ),
     )
     checked_memory_access_facts = seal_checked_memory_access_facts_v2(
         prepared_memory_access_facts,
@@ -844,6 +858,11 @@ def analyze_interprocedural_control(
         "callback_root_count": len(set(authority_pass.roots) - set(roots)),
         "global_slot_promotion": False,
         "mutable_slot_handoff": "point_sensitive_dependency_v2",
+        "normal_call_abi_premise": (
+            None
+            if normal_call_abi_premise is None
+            else normal_call_abi_premise.as_json()
+        ),
         "finite_value_budget": finite_value_budget,
         "stack_entry_offset_budget": effective_stack_entry_offset_budget,
         "round_bound": evaluation_budget,
@@ -1217,6 +1236,13 @@ def _complete_output_nodes(
         node
         for node, state in result.facts.items()
         if node.startswith("call-frame-hypothesis:")
+        and state.status == "complete"
+        and state.fact.complete
+    )
+    complete.update(
+        node
+        for node, state in result.facts.items()
+        if node.startswith("normal-call-abi-premise:")
         and state.status == "complete"
         and state.fact.complete
     )
@@ -1599,6 +1625,7 @@ def _run_typed_pass(
     checked_stack_entry_offsets: Mapping[str, Sequence[int]],
     checked_nonimage_stack_units: frozenset[str],
     writable_image_ranges: tuple[tuple[int, int], ...],
+    normal_call_abi_premise: NormalCallABIPremise | None,
     progress: Callable[[str, Mapping[str, Any]], None] | None,
 ) -> _PassResult:
     known_unit_ids = frozenset(_unit_id(unit) for unit in units)
@@ -1747,6 +1774,7 @@ def _run_typed_pass(
                 finite_value_budget=finite_value_budget,
                 stack_entry_offset_budget=stack_entry_offset_budget,
                 static_data_reader=static_data_reader,
+                normal_call_abi_premise=normal_call_abi_premise,
                 bootstrap_unknown_call_preserved_registers=(
                     frozenset({"ebp", "ebx", "edi", "esi"})
                     if allow_bootstrap and evaluation == 1
@@ -1896,6 +1924,7 @@ def _run_typed_pass(
             call_frame_hypotheses=next_call_frame_hypotheses,
             call_site_effects=next_call_site_effects,
             prepared_memory_access_facts=next_memory_access_facts,
+            normal_call_abi_premise=normal_call_abi_premise,
             finite_value_budget=finite_value_budget,
         )
         proposed_edges = _derive_dependency_edges(
@@ -1907,6 +1936,9 @@ def _run_typed_pass(
             summaries=summaries,
             recoveries=next_selected,
             call_frame_hypotheses=next_call_frame_hypotheses,
+            call_site_effects=next_call_site_effects,
+            normal_call_abi_premise=normal_call_abi_premise,
+            finite_value_budget=finite_value_budget,
             memory_access_fact_ids=frozenset(
                 str(row["id"]) for row in next_memory_access_facts
             ),
@@ -4738,9 +4770,14 @@ def _typed_proposals(
     call_frame_hypotheses: Sequence[PreservedRegisterHypothesis] = (),
     call_site_effects: Sequence[Mapping[str, Any]] = (),
     prepared_memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    normal_call_abi_premise: NormalCallABIPremise | None = None,
     finite_value_budget: int,
 ) -> dict[str, _NodeState]:
     result: dict[str, _NodeState] = {}
+    if normal_call_abi_premise is not None:
+        result[normal_call_abi_premise.dependency_id] = (
+            _normal_call_abi_premise_state(normal_call_abi_premise)
+        )
     family_availability = _summary_family_availability(summaries)
     for raw in summaries.get("summaries", []):
         if not isinstance(raw, Mapping):
@@ -4787,6 +4824,25 @@ def _typed_proposals(
             )
         result[identity] = _memory_access_fact_state()
     return result
+
+
+def _normal_call_abi_premise_state(
+    premise: NormalCallABIPremise,
+) -> _NodeState:
+    return _NodeState(
+        InterproceduralFact(
+            may_values=Bottom(),
+            preserved_registers=MustPreservedRegisters(
+                frozenset(premise.preserved_registers)
+            ),
+            stack_cleanup=NoExactValue(),
+            results=NoExactValue(),
+            return_behavior=ReturnBehavior(),
+            taint=Taint(),
+        ),
+        "complete",
+        (),
+    )
 
 
 def _memory_access_fact_state() -> _NodeState:
@@ -5190,6 +5246,9 @@ def _derive_dependency_edges(
     summaries: Mapping[str, Any],
     recoveries: Sequence[Mapping[str, Any]],
     call_frame_hypotheses: Sequence[PreservedRegisterHypothesis] = (),
+    call_site_effects: Sequence[Mapping[str, Any]] = (),
+    normal_call_abi_premise: NormalCallABIPremise | None = None,
+    finite_value_budget: int = 32,
     memory_access_fact_ids: frozenset[str] = frozenset(),
 ) -> frozenset[tuple[str, str]]:
     """Derive provider-to-consumer dependencies from represented behavior."""
@@ -5217,6 +5276,15 @@ def _derive_dependency_edges(
     call_frame_ids = {
         hypothesis.id for hypothesis in call_frame_hypotheses
     }
+    parsed_call_effects = parse_call_site_effects(
+        call_site_effects,
+        finite_value_budget=finite_value_budget,
+    )
+    premise_id = (
+        None
+        if normal_call_abi_premise is None
+        else normal_call_abi_premise.dependency_id
+    )
     calls = _call_targets_by_source(
         by_id=by_id,
         by_rva=by_rva,
@@ -5265,8 +5333,27 @@ def _derive_dependency_edges(
                             register_consumer,
                         ))
                 for exit_row in exits_by_source.get(source, ()):
+                    exit_event_index = exit_row.get("source_event_index")
+                    effect = (
+                        parsed_call_effects.get(
+                            CallSiteId(source, exit_event_index)
+                        )
+                        if isinstance(exit_event_index, int)
+                        and not isinstance(exit_event_index, bool)
+                        and exit_event_index >= 0
+                        else None
+                    )
+                    premise_closes_register = bool(
+                        premise_id is not None
+                        and effect is not None
+                        and effect.register_frame_status == "complete"
+                        and register in effect.preserved_registers
+                        and premise_id in effect.dependencies
+                    )
                     dependencies.add((
-                        _required_string(exit_row, "id"),
+                        premise_id
+                        if premise_closes_register
+                        else _required_string(exit_row, "id"),
                         register_consumer,
                     ))
             for hypothesis in call_frame_hypotheses:
@@ -5348,6 +5435,9 @@ def _derive_dependency_edges(
                 dependencies.add((dependency, recovery_id))
                 continue
             if isinstance(dependency, str) and dependency in recovery_by_id:
+                dependencies.add((dependency, recovery_id))
+                continue
+            if isinstance(dependency, str) and dependency == premise_id:
                 dependencies.add((dependency, recovery_id))
                 continue
             target = _call_frame_dependency_target(dependency)
@@ -6396,6 +6486,8 @@ def _dependency_inventory(
                     if node_id.startswith("call-summary-family:")
                     else "global_slot_invariant"
                     if node_id.startswith("global_slot_invariant:")
+                    else "normal_call_abi_premise"
+                    if node_id.startswith("normal-call-abi-premise:")
                     else "indirect_exit"
                 ),
                 "status": state.status,

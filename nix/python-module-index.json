@@ -844,6 +844,7 @@
         "spaghetti_extractor.indirect_target_dependency_v2",
         "spaghetti_extractor.interface_provenance",
         "spaghetti_extractor.internal_call_summaries",
+        "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_import_profiles",
         "spaghetti_extractor.provenance_domain",
         "spaghetti_extractor.value_provenance"
@@ -862,6 +863,7 @@
         "spaghetti_extractor.global_slot_image_v2",
         "spaghetti_extractor.import_abi",
         "spaghetti_extractor.interprocedural_analysis",
+        "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_import_profiles",
         "spaghetti_extractor.stack_range_analysis_v2",
         "spaghetti_extractor.stage_binary",
@@ -1705,6 +1707,7 @@
         "spaghetti_extractor.hybrid_authority_v2",
         "spaghetti_extractor.hybrid_diagnostics_v2",
         "spaghetti_extractor.isa_kernel_selection",
+        "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_ir_authority_v2",
         "spaghetti_extractor.machine_ir_isa_requirements_v2",
         "spaghetti_extractor.machine_ir_isa_selection_v2"

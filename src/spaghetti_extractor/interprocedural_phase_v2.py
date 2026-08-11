@@ -26,6 +26,7 @@ from .interprocedural_analysis import (
     analyze_interprocedural_control,
 )
 from .machine_import_profiles import MachineImportIdentity
+from .machine_abi import NormalCallABIPremise
 from .stage_binary import StageABinary
 from .stack_range_analysis_v2 import validate_checked_stack_range_facts_v2
 from .static_indirect_replay_v2 import replay_exact_static_recoveries_v2
@@ -56,6 +57,7 @@ def derive_interprocedural_result_v2(
     static_recoveries: Sequence[Mapping[str, Any]] | None = None,
     inductive_hypothesis_recoveries: Sequence[Mapping[str, Any]] = (),
     inductive_hypothesis_call_frames: Sequence[Mapping[str, Any]] = (),
+    normal_call_abi_premise: NormalCallABIPremise | None = None,
     finite_value_budget: int = 32,
     stack_entry_offset_budget: int | None = None,
     proposal_only: bool = False,
@@ -86,6 +88,12 @@ def derive_interprocedural_result_v2(
         missing.append("machine_ir_binding_missing")
     if binary is not None and binary.imports and import_abis is None:
         missing.append("machine_import_profile_inventory_missing")
+    if normal_call_abi_premise is not None and not isinstance(
+        normal_call_abi_premise, NormalCallABIPremise
+    ):
+        raise InterproceduralPhaseV2Error(
+            "normal-call ABI premise is not a checked profile"
+        )
 
     proposal_closures = {str(row.get("closure", "")) for row in proposal_recoveries}
     if any("interface" in closure for closure in proposal_closures):
@@ -227,6 +235,7 @@ def derive_interprocedural_result_v2(
         global_slot_invariants=typed_slots,
         checked_stack_entry_offsets=checked_stack_entry_offsets,
         checked_nonimage_stack_units=tuple(sorted(checked_stack_units)),
+        normal_call_abi_premise=normal_call_abi_premise,
         finite_value_budget=finite_value_budget,
         stack_entry_offset_budget=stack_entry_offset_budget,
         proposal_only=proposal_only,
@@ -276,6 +285,7 @@ def _incomplete_interprocedural_result(
         "proposal_seed_count": 0,
         "global_slot_promotion": False,
         "mutable_slot_handoff": "missing_exact_replay",
+        "normal_call_abi_premise": None,
         "finite_value_budget": None,
         "stack_entry_offset_budget": None,
         "round_bound": 0,

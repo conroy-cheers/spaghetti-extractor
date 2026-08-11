@@ -71,7 +71,11 @@ from .intrinsic_call_site_effects import (
     derive_intrinsic_import_call_site_effects,
     merge_intrinsic_call_site_effects,
 )
-from .machine_abi import MachineCallABI, resolve_machine_call_abi
+from .machine_abi import (
+    MachineCallABI,
+    NormalCallABIPremise,
+    resolve_machine_call_abi,
+)
 from .machine_import_profiles import MachineImportIdentity, MachineImportProfileError
 from .checked_memory_access_v2 import (
     MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
@@ -215,6 +219,34 @@ def _with_preserved_register_hypotheses(
             **{
                 ("register", register): frozenset({hypothesis.id})
                 for register, hypothesis in hypotheses.items()
+            },
+        },
+    )
+
+
+def _with_normal_call_abi_premise(
+    facts: _CallFacts,
+    premise: NormalCallABIPremise,
+) -> _CallFacts:
+    """Add only normal-return nonvolatile preservation to an unknown frame."""
+
+    if facts.preserved is not None:
+        return facts
+    dependency = frozenset({premise.dependency_id})
+    return _CallFacts(
+        preserved=frozenset(premise.preserved_registers),
+        abi=facts.abi,
+        argument_words=facts.argument_words,
+        stack_cleanup_bytes=facts.stack_cleanup_bytes,
+        outputs=facts.outputs,
+        memory_preserved=facts.memory_preserved,
+        memory_writes=facts.memory_writes,
+        dependencies=facts.dependencies,
+        family_dependencies={
+            **facts.family_dependencies,
+            **{
+                ("register", register): dependency
+                for register in premise.preserved_registers
             },
         },
     )
@@ -607,6 +639,7 @@ def recover_external_interface_targets(
     stack_slot_budget: int = 256,
     fixed_point_budget: int | None = None,
     static_data_reader: Callable[[int, int], bytes | None] | None = None,
+    normal_call_abi_premise: NormalCallABIPremise | None = None,
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None = None,
     initial_known_slots: Mapping[_MemoryLocation, _Value] | None = None,
     initial_event_known_slots: Mapping[
@@ -672,6 +705,10 @@ def recover_external_interface_targets(
         and not bootstrap_unknown_call_preserved_registers <= frozenset(_REGISTERS)
     ):
         raise ValueError("bootstrap call preservation contains an unknown register")
+    if normal_call_abi_premise is not None and not isinstance(
+        normal_call_abi_premise, NormalCallABIPremise
+    ):
+        raise ValueError("normal-call ABI premise is not a checked profile")
     supplied_call_stack_cleanup = dict(internal_call_stack_cleanup or {})
     supplied_call_result_relations = dict(internal_call_result_relations or {})
     supplied_call_memory_preservation = dict(
@@ -831,6 +868,7 @@ def recover_external_interface_targets(
             bootstrap_unknown_call_preserved_registers=(
                 bootstrap_unknown_call_preserved_registers
             ),
+            normal_call_abi_premise=normal_call_abi_premise,
             image_base=image_base,
             known_slots=known_slots,
             event_known_slots=event_known_slots,
@@ -2273,6 +2311,7 @@ def _run_dataflow(
         tuple[str, int], _CheckedWriteFootprint
     ],
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
+    normal_call_abi_premise: NormalCallABIPremise | None,
     image_base: int,
     known_slots: Mapping[_MemoryLocation, _Value],
     event_known_slots: _EventKnownSlots,
@@ -2346,6 +2385,7 @@ def _run_dataflow(
             bootstrap_unknown_call_preserved_registers=(
                 bootstrap_unknown_call_preserved_registers
             ),
+            normal_call_abi_premise=normal_call_abi_premise,
             preserved_register_hypotheses=preserved_register_hypotheses,
         ),
     )
@@ -2399,6 +2439,7 @@ def _run_dataflow(
             bootstrap_unknown_call_preserved_registers=(
                 bootstrap_unknown_call_preserved_registers
             ),
+            normal_call_abi_premise=normal_call_abi_premise,
             preserved_register_hypotheses=preserved_register_hypotheses,
             image_base=image_base,
             known_slots=known_slots,
@@ -4151,6 +4192,7 @@ def _transfer_call_environment_key(
     ],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
+    normal_call_abi_premise: NormalCallABIPremise | None,
     preserved_register_hypotheses: Mapping[
         CallSiteId, Mapping[str, PreservedRegisterHypothesis]
     ],
@@ -4165,6 +4207,11 @@ def _transfer_call_environment_key(
         internal_call_dependency_ids,
         recovered_calls,
         bootstrap_unknown_call_preserved_registers,
+        (
+            None
+            if normal_call_abi_premise is None
+            else normal_call_abi_premise.dependency_id
+        ),
         preserved_register_hypotheses,
     ))
 
@@ -4408,6 +4455,7 @@ def _transfer_unit(
         tuple[str, int], _CheckedWriteFootprint
     ],
     bootstrap_unknown_call_preserved_registers: frozenset[str] | None,
+    normal_call_abi_premise: NormalCallABIPremise | None,
     preserved_register_hypotheses: Mapping[
         CallSiteId, Mapping[str, PreservedRegisterHypothesis]
     ],
@@ -4502,6 +4550,14 @@ def _transfer_unit(
         )
         issues.extend(call_issues)
         argument_recoveries.extend(call_argument_recoveries)
+        if (
+            facts.preserved is None
+            and normal_call_abi_premise is not None
+            and event.get("kind") in normal_call_abi_premise.transfer_kinds
+        ):
+            facts = _with_normal_call_abi_premise(
+                facts, normal_call_abi_premise
+            )
         hypotheses = preserved_register_hypotheses.get(
             CallSiteId(unit_id, event_index), {}
         )

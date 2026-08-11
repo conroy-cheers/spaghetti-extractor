@@ -27,6 +27,7 @@ def interprocedural_authority_signature_v2(
     memory_access_facts: Sequence[Mapping[str, Any]] = (),
     memory_address_domains: Sequence[Mapping[str, Any]] = (),
     call_site_effects: Sequence[Mapping[str, Any]] = (),
+    normal_call_abi_premise: Mapping[str, Any] | None = None,
 ) -> str:
     """Bind the exact interprocedural outputs consumed by later phases.
 
@@ -87,6 +88,11 @@ def interprocedural_authority_signature_v2(
                 str(row.get("event_index", "")),
                 canonical_sha256(row),
             ),
+        ),
+        "normal_call_abi_premise": (
+            None
+            if normal_call_abi_premise is None
+            else dict(normal_call_abi_premise)
         ),
     })
 

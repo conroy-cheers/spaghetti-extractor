@@ -29,6 +29,7 @@ from spaghetti_extractor.interprocedural_analysis import (
     _call_summary_memory_frames,
     _call_summary_memory_preservation,
     _call_site_memory_frames,
+    _derive_dependency_edges,
     _merge_inductive_operation_provenance,
     _requires_inductive_replay,
     _summary_register_state,
@@ -46,7 +47,11 @@ from spaghetti_extractor.checked_memory_address_domain_v2 import (
     MEMORY_ADDRESS_DOMAIN_PROPOSAL_V2_FORMAT,
 )
 from spaghetti_extractor.machine_ir_authority_v2 import machine_ir_sha256
-from spaghetti_extractor.machine_abi import resolve_machine_call_abi
+from spaghetti_extractor.machine_abi import (
+    NormalCallABIPremise,
+    build_pe32_normal_call_abi_premise,
+    resolve_machine_call_abi,
+)
 from spaghetti_extractor.provenance_domain import ValueOrigin
 from spaghetti_extractor.hybrid_authority_v2 import (
     BinaryBinding,
@@ -154,11 +159,12 @@ def call_effect(
     *,
     preserved: frozenset[str] | None,
     dependencies: tuple[str, ...] = (),
+    transfer_kind: str = "internal_call",
 ) -> dict[str, object]:
     complete = preserved is not None
     return CallSiteEffect(
         site=CallSiteId(unit_id, 0),
-        transfer_kind="internal_call",
+        transfer_kind=transfer_kind,
         status="complete" if complete else "incomplete",
         register_frame_status="complete" if complete else "incomplete",
         preserved_registers=frozenset() if preserved is None else preserved,
@@ -392,6 +398,38 @@ def legacy_adapter(operation: dict[str, object], **_kwargs: Any) -> dict[str, ob
 
 
 class InterproceduralAnalysisTests(unittest.TestCase):
+    def test_normal_call_premise_closes_only_register_summary_family(self) -> None:
+        premise = build_pe32_normal_call_abi_premise()
+        exit_row = indirect_exit("exit:a:0", "a")
+        summaries = {
+            "summaries": [summary_row("a", 0x1000)],
+        }
+        effect = call_effect(
+            "a",
+            preserved=frozenset(premise.preserved_registers),
+            dependencies=(premise.dependency_id,),
+            transfer_kind="indirect_call",
+        )
+
+        dependencies = _derive_dependency_edges(
+            units=[unit("a", 0x1000)],
+            roots=["a"],
+            direct_edges=[],
+            internal_call_edges=[],
+            indirect_exits=[exit_row],
+            summaries=summaries,
+            recoveries=[incomplete_recovery(exit_row)],
+            call_site_effects=[effect],
+            normal_call_abi_premise=premise,
+            finite_value_budget=8,
+        )
+
+        register_node = call_summary_family_node_id("a", "register", "edi")
+        aggregate_node = "call-summary:a"
+        self.assertIn((premise.dependency_id, register_node), dependencies)
+        self.assertNotIn(("exit:a:0", register_node), dependencies)
+        self.assertIn(("exit:a:0", aggregate_node), dependencies)
+
     def _mutable_replay(
         self,
         *,
@@ -916,6 +954,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         writable_image_ranges: list[tuple[int, int]] | None = None,
         bind_memory_accesses: bool = False,
         progress=None,
+        normal_call_abi_premise: NormalCallABIPremise | None = None,
     ):
         exit_rows = exits or []
         static = [incomplete_recovery(row) for row in exit_rows]
@@ -958,6 +997,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
                 inductive_hypothesis_call_frames=inductive_frames or [],
                 global_slot_invariants=globals or [],
                 checked_nonimage_stack_units=checked_stack_units or [],
+                normal_call_abi_premise=normal_call_abi_premise,
                 finite_value_budget=budget,
                 proposal_only=proposal_only,
                 authority_only=authority_only,

@@ -77,6 +77,8 @@ let
     internalFunctionContractProfiles = [
       internalFunctionProfile
     ];
+    normalCallAbiPremise =
+      "${profileSource}/profiles/pe32-normal-return-nonvolatile-v1.json";
     launchProfileTemplate =
       "${profileSource}/profiles/pe32-win32-gui-launch-assumptions-v1.json";
     namePrefix = "spaghetti-extractor-dxball-1.09";

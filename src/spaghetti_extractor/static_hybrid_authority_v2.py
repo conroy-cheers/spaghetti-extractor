@@ -91,6 +91,10 @@ from .machine_ir_isa_selection_v2 import (
     parse_machine_ir_isa_selection_certificate_v2,
 )
 from .machine_ir_authority_v2 import MACHINE_IR_AUTHORITY_BINDINGS_FORMAT
+from .machine_abi import (
+    NormalCallABIPremise,
+    parse_normal_call_abi_premise,
+)
 
 
 STATIC_HYBRID_AUTHORITY_V2_FORMAT = (
@@ -945,6 +949,22 @@ def _interprocedural_payload(
     failure_reasons = fixed.get("failure_reasons")
     failures = failure_reasons if isinstance(failure_reasons, list) else []
     dependencies = fixed.get("dependencies")
+    raw_normal_call_abi_premise = fixed.get("normal_call_abi_premise")
+    normal_call_abi_premise: NormalCallABIPremise | None = None
+    if raw_normal_call_abi_premise is not None:
+        try:
+            normal_call_abi_premise = parse_normal_call_abi_premise(
+                raw_normal_call_abi_premise
+            )
+        except (TypeError, ValueError) as exc:
+            blockers.append(_blocker(
+                status="violated",
+                category="interprocedural",
+                code="normal_call_abi_premise_invalid",
+                message="the selected normal-call ABI premise does not replay",
+                next_action="select a canonical reviewed machine-ABI premise",
+                details={"reason": str(exc)},
+            ))
     summaries = payload.get("call_summaries")
     recoveries = payload.get("recovered_targets")
     operation_provenance = payload.get("operation_provenance")
@@ -989,6 +1009,37 @@ def _interprocedural_payload(
                     raise ValueError(
                         "call-site effect does not bind an exact external event"
                     )
+                if (
+                    normal_call_abi_premise is not None
+                    and effect.transfer_kind
+                    in normal_call_abi_premise.transfer_kinds
+                    and effect.register_frame_status == "complete"
+                    and normal_call_abi_premise.dependency_id
+                    not in effect.dependencies
+                ):
+                    missing_preserved = sorted(
+                        set(normal_call_abi_premise.preserved_registers)
+                        - set(effect.preserved_registers)
+                    )
+                    if missing_preserved:
+                        blockers.append(_blocker(
+                            status="violated",
+                            category="interprocedural",
+                            code="normal_call_abi_premise_contradicted",
+                            message=(
+                                "a checked indirect call contradicts the selected "
+                                "normal-return preservation premise"
+                            ),
+                            next_action=(
+                                "remove the premise for this target or classify "
+                                "the call with an exact machine ABI"
+                            ),
+                            details={
+                                "unit_id": site.unit_id,
+                                "event_index": site.event_index,
+                                "missing_preserved_registers": missing_preserved,
+                            },
+                        ))
         except (TypeError, ValueError) as exc:
             blockers.append(_blocker(
                 status="violated",
@@ -1013,6 +1064,53 @@ def _interprocedural_payload(
         and isinstance(fixed.get("root_unit_ids"), list)
         and all(isinstance(value, str) for value in fixed["root_unit_ids"])
     )
+    premise_dependency_rows = (
+        [
+            row
+            for row in dependencies
+            if isinstance(row, Mapping)
+            and (
+                row.get("kind") == "normal_call_abi_premise"
+                or str(row.get("id", "")).startswith(
+                    "normal-call-abi-premise:"
+                )
+            )
+        ]
+        if isinstance(dependencies, list)
+        else []
+    )
+    expected_premise_dependency_id = (
+        None
+        if normal_call_abi_premise is None
+        else normal_call_abi_premise.dependency_id
+    )
+    premise_dependency_valid = (
+        not premise_dependency_rows
+        if expected_premise_dependency_id is None
+        else len(premise_dependency_rows) == 1
+        and premise_dependency_rows[0].get("id")
+        == expected_premise_dependency_id
+        and premise_dependency_rows[0].get("kind")
+        == "normal_call_abi_premise"
+        and premise_dependency_rows[0].get("status") == "complete"
+        and premise_dependency_rows[0].get("lattice_complete") is True
+        and premise_dependency_rows[0].get("dependencies") == []
+    )
+    if not premise_dependency_valid:
+        blockers.append(_blocker(
+            status="violated",
+            category="interprocedural",
+            code="normal_call_abi_premise_dependency_mismatch",
+            message=(
+                "the normal-call ABI premise and typed dependency inventory "
+                "do not agree"
+            ),
+            next_action="rerun the interprocedural authority analysis",
+            details={
+                "expected_dependency_id": expected_premise_dependency_id,
+                "observed": _safe_json(premise_dependency_rows),
+            },
+        ))
     observed_authority_sha256 = fixed.get("authority_artifact_sha256")
     expected_authority_sha256 = (
         interprocedural_authority_signature_v2(
@@ -1023,6 +1121,11 @@ def _interprocedural_payload(
             memory_access_facts=memory_access_facts,
             memory_address_domains=memory_address_domains,
             call_site_effects=call_site_effects,
+            normal_call_abi_premise=(
+                None
+                if normal_call_abi_premise is None
+                else normal_call_abi_premise.as_json()
+            ),
         )
         if artifact_inputs_valid
         else None

@@ -43,6 +43,7 @@ from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
 from spaghetti_extractor.machine_ir_isa_selection_v2 import (
     build_machine_ir_isa_selection_certificate_v2,
 )
+from spaghetti_extractor.machine_abi import build_pe32_normal_call_abi_premise
 from spaghetti_extractor.static_hybrid_authority_v2 import (
     STATIC_HYBRID_AUTHORITY_V2_FORMAT,
     StaticHybridAuthorityV2Error,
@@ -151,12 +152,27 @@ def _entry_analysis(rows: list[dict]) -> dict:
 
 
 def _interprocedural(
-    *, call_site_effects: list[dict] | None = None
+    *,
+    call_site_effects: list[dict] | None = None,
+    normal_call_abi_premise=None,
 ) -> dict:
     signature = "8" * 64
     call_summaries = {"summaries": []}
     recovered_targets: list[dict] = []
-    dependencies: list[dict] = []
+    dependencies: list[dict] = (
+        []
+        if normal_call_abi_premise is None
+        else [{
+            "id": normal_call_abi_premise.dependency_id,
+            "kind": "normal_call_abi_premise",
+            "status": "complete",
+            "lattice_complete": True,
+            "fact": {},
+            "dependencies": [],
+            "scc_id": 0,
+            "failure_reasons": [],
+        }]
+    )
     effects = [] if call_site_effects is None else call_site_effects
     root_unit_ids = ["unit:entry"]
     return {
@@ -179,25 +195,40 @@ def _interprocedural(
                 call_summaries=call_summaries,
                 recovered_targets=recovered_targets,
                 call_site_effects=effects,
+                normal_call_abi_premise=(
+                    None
+                    if normal_call_abi_premise is None
+                    else normal_call_abi_premise.as_json()
+                ),
             ),
             "root_unit_ids": root_unit_ids,
             "dependencies": dependencies,
+            "normal_call_abi_premise": (
+                None
+                if normal_call_abi_premise is None
+                else normal_call_abi_premise.as_json()
+            ),
             "failure_reasons": [],
             "recursive_summary_roots": [],
         },
     }
 
 
-def _call_effect() -> dict:
+def _call_effect(
+    *,
+    transfer_kind: str = "external_call",
+    preserved_registers: list[str] | None = None,
+    dependencies: list[str] | None = None,
+) -> dict:
     return {
         "format": "stage-a-call-site-effect-v2",
         "unit_id": "unit:entry",
         "event_index": 0,
-        "transfer_kind": "external_call",
+        "transfer_kind": transfer_kind,
         "status": "complete",
         "register_frame": {
             "status": "complete",
-            "preserved_registers": [],
+            "preserved_registers": preserved_registers or [],
         },
         "stack_frame": {
             "status": "complete",
@@ -211,7 +242,7 @@ def _call_effect() -> dict:
         },
         "abi": None,
         "argument_words": None,
-        "dependencies": [],
+        "dependencies": dependencies or [],
         "failure_codes": [],
     }
 
@@ -849,6 +880,53 @@ class StaticHybridAuthorityV2Tests(unittest.TestCase):
         self.assertIn(
             "interprocedural_call_site_effect_invalid",
             {row["details"]["code"] for row in report["diagnostics"]["blockers"]},
+        )
+
+    def test_normal_call_abi_premise_requires_its_typed_dependency(self) -> None:
+        rows = [_row()]
+        premise = build_pe32_normal_call_abi_premise()
+        interprocedural = _interprocedural(
+            normal_call_abi_premise=premise
+        )
+        interprocedural["fixed_point"]["dependencies"] = []
+
+        report = _complete_report(rows, interprocedural=interprocedural)
+
+        self.assertEqual(report["status"], "violated")
+        self.assertIn(
+            "normal_call_abi_premise_dependency_mismatch",
+            {row["details"]["code"] for row in report["diagnostics"]["blockers"]},
+        )
+
+    def test_checked_indirect_call_can_contradict_selected_abi_premise(self) -> None:
+        premise = build_pe32_normal_call_abi_premise()
+        event = {
+            "kind": "indirect_call",
+            "instruction_rva": 0x1000,
+            "target": {"op": "reg", "name": "eax", "width": 32},
+        }
+        effect = _call_effect(
+            transfer_kind="indirect_call",
+            preserved_registers=[],
+        )
+        rows = [_row(external_events=[event])]
+        interprocedural = _interprocedural(
+            call_site_effects=[effect],
+            normal_call_abi_premise=premise,
+        )
+
+        report = _complete_report(rows, interprocedural=interprocedural)
+
+        self.assertEqual(report["status"], "violated")
+        blocker = next(
+            row
+            for row in report["diagnostics"]["blockers"]
+            if row["details"]["code"]
+            == "normal_call_abi_premise_contradicted"
+        )
+        self.assertEqual(
+            blocker["details"]["missing_preserved_registers"],
+            ["ebp", "ebx", "edi", "esi"],
         )
 
     def test_invalid_replay_blocks_call_summary_as_a_dependency(self) -> None:
