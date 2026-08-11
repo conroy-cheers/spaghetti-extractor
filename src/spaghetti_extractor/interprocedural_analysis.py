@@ -69,6 +69,7 @@ from .interface_provenance import (
     recover_external_interface_targets,
 )
 from .internal_call_summaries import (
+    _InternalCallSummaryComponentCache,
     checked_summary_preserved_registers,
     derive_internal_call_preservation_summaries,
 )
@@ -254,6 +255,8 @@ class _PassAnalysisWorkspace:
     mutable_sccs: _MutableSCCCache
     mutable_replays: _BoundedResultCache
     call_summaries: _BoundedResultCache
+    call_summary_components: _InternalCallSummaryComponentCache
+    validated_memory_accesses: _BoundedResultCache
 
     @classmethod
     def for_unit_count(cls, unit_count: int) -> "_PassAnalysisWorkspace":
@@ -264,6 +267,10 @@ class _PassAnalysisWorkspace:
             mutable_sccs=_MutableSCCCache.for_unit_count(unit_count),
             mutable_replays=_BoundedResultCache(128),
             call_summaries=_BoundedResultCache(128),
+            call_summary_components=(
+                _InternalCallSummaryComponentCache.for_unit_count(unit_count)
+            ),
+            validated_memory_accesses=_BoundedResultCache(128),
         )
 
 
@@ -1806,6 +1813,8 @@ def _run_typed_pass(
         finite_value_budget=finite_value_budget,
     )
     interface_transfer_cache = workspace.interface_transfers
+    declared_summaries = internal_function_contracts if allow_bootstrap else {}
+    declared_summaries_key = _freeze_value(declared_summaries)
     _progress(progress, "pass_started", {
         "pass_kind": pass_kind,
         "units": len(units),
@@ -1838,27 +1847,35 @@ def _run_typed_pass(
             raise ValueError(
                 "prepared memory-access facts require an exact binary binding"
             )
-        validated_memory_access_facts = (
-            validate_prepared_memory_access_facts_v2(
-                prepared_memory_access_facts,
-                units=units,
-                binary=binary_binding,
+        validated_memory_access_facts = workspace.validated_memory_accesses.get(
+            input_memory_access_facts
+        )
+        memory_validation_cache_hit = validated_memory_access_facts is not None
+        if validated_memory_access_facts is None:
+            validated_memory_access_facts = (
+                validate_prepared_memory_access_facts_v2(
+                    prepared_memory_access_facts,
+                    units=units,
+                    binary=binary_binding,
+                )
+                if binary_binding is not None
+                else {}
             )
-            if binary_binding is not None
-            else {}
-        )
-        declared_summaries = (
-            internal_function_contracts if allow_bootstrap else {}
-        )
+            workspace.validated_memory_accesses.put(
+                input_memory_access_facts,
+                validated_memory_access_facts,
+            )
         summary_key = _call_summary_input_key(
             roots=current_roots,
-            recoveries=selected,
-            call_site_effects=call_site_effects,
-            prepared_memory_access_facts=prepared_memory_access_facts,
-            declared_summaries=declared_summaries,
+            recoveries_key=input_recoveries,
+            call_site_effects_key=input_call_site_effects,
+            memory_access_facts_key=input_memory_access_facts,
+            declared_summaries_key=declared_summaries_key,
         )
         summaries = workspace.call_summaries.get(summary_key)
         summary_cache_hit = summaries is not None
+        component_requests_before = workspace.call_summary_components.requests
+        component_hits_before = workspace.call_summary_components.hits
         if summaries is None:
             summaries = derive_internal_call_preservation_summaries(
                 units=units,
@@ -1879,6 +1896,8 @@ def _run_typed_pass(
                 # into v2 call authority.
                 declared_summaries=declared_summaries,
                 max_value_alternatives=finite_value_budget,
+                _component_cache=workspace.call_summary_components,
+                _validated_memory_access_facts=validated_memory_access_facts,
             )
             workspace.call_summaries.put(summary_key, summaries)
         _progress(progress, "call_summaries_derived", {
@@ -1887,6 +1906,18 @@ def _run_typed_pass(
             "summaries": _row_count(summaries.get("summaries")),
             "status": summaries.get("status"),
             "cache_hit": summary_cache_hit,
+            "memory_validation_cache_hit": memory_validation_cache_hit,
+            "component_cache_requests": (
+                workspace.call_summary_components.requests
+                - component_requests_before
+            ),
+            "component_cache_hits": (
+                workspace.call_summary_components.hits - component_hits_before
+            ),
+            "component_cache_entries": workspace.call_summary_components.entries,
+            "component_cache_evictions": (
+                workspace.call_summary_components.evictions
+            ),
         })
         preserved, cleanup, results, memory_results = _call_summary_inputs(
             summaries,
@@ -2944,20 +2975,20 @@ def _mutable_influence_input_key(
 def _call_summary_input_key(
     *,
     roots: Sequence[str],
-    recoveries: Sequence[Mapping[str, Any]],
-    call_site_effects: Sequence[Mapping[str, Any]],
-    prepared_memory_access_facts: Sequence[Mapping[str, Any]],
-    declared_summaries: Mapping[str, Mapping[str, Any]],
+    recoveries_key: Hashable,
+    call_site_effects_key: Hashable,
+    memory_access_facts_key: Hashable,
+    declared_summaries_key: Hashable,
 ) -> Hashable:
     """Exact changing inputs to one whole call-summary derivation."""
 
     return (
         "internal-call-summaries-v1",
         tuple(sorted(roots)),
-        _freeze_recovery_inputs(recoveries),
-        _freeze_call_site_effects(call_site_effects),
-        _freeze_value(list(prepared_memory_access_facts)),
-        _freeze_value(declared_summaries),
+        recoveries_key,
+        call_site_effects_key,
+        memory_access_facts_key,
+        declared_summaries_key,
     )
 
 

@@ -1663,6 +1663,66 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertNotIn("memory_access_proposals", result.operation_provenance)
         self.assertEqual(result.fixed_point["checked_memory_access_fact_count"], 1)
 
+    def test_memory_access_validation_reuses_exact_stable_inventory(self) -> None:
+        root = unit(
+            "root",
+            0x1000,
+            calls=(0x2000,),
+            memory=(stack_write(12, const(1)),),
+        )
+        root["source"]["instruction_bytes_sha256"] = "e" * 64
+        callee = unit("callee", 0x2000)
+        callee["source"]["instruction_bytes_sha256"] = "e" * 64
+        resolver_calls = 0
+
+        def resolver(**_kwargs: Any) -> dict[str, object]:
+            nonlocal resolver_calls
+            resolver_calls += 1
+            event = root["semantics"]["memory_events"][0]
+            return {
+                "resolutions": [],
+                "call_site_effects": [call_effect(
+                    "root",
+                    preserved=(
+                        frozenset({"ebx"})
+                        if resolver_calls == 1
+                        else frozenset({"ebx", "esi"})
+                    ),
+                )],
+                "memory_access_proposals": [{
+                    "format": MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
+                    "status": "complete",
+                    "unit_id": "root",
+                    "event_index": 0,
+                    "memory_kind": "write",
+                    "width_bytes": 4,
+                    "address_expression": event["address"],
+                    "address_origins": [{
+                        "kind": "stack_location",
+                        "key": [12],
+                    }],
+                    "authority_dependencies": [],
+                }],
+            }
+
+        observed: list[bool] = []
+        self._run(
+            units=[root, callee],
+            roots=["root"],
+            calls=[call_edge("root", "callee")],
+            resolver=resolver,
+            bind_memory_accesses=True,
+            proposal_only=True,
+            progress=lambda phase, details: (
+                observed.append(bool(details["memory_validation_cache_hit"]))
+                if phase == "call_summaries_derived"
+                else None
+            ),
+        )
+
+        self.assertIn(False, observed)
+        self.assertIn(True, observed)
+
     def test_call_summary_consumes_memory_fact_through_scc_dependency(
         self,
     ) -> None:

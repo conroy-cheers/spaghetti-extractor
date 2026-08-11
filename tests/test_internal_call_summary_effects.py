@@ -14,6 +14,7 @@ from spaghetti_extractor.checked_memory_access_v2 import (
     prepare_checked_memory_access_facts_v2,
 )
 from spaghetti_extractor.internal_call_summaries import (
+    _InternalCallSummaryComponentCache,
     derive_internal_call_preservation_summaries,
 )
 from spaghetti_extractor.import_abi import SelectedImportABI
@@ -230,6 +231,96 @@ def selected_allocator(identity: MachineImportIdentity) -> SelectedImportABI:
 
 
 class InternalCallSummaryEffectTests(unittest.TestCase):
+    def test_component_cache_invalidates_changed_leaf_and_its_callers(self) -> None:
+        units = [
+            unit(
+                "root-a",
+                0x1000,
+                outcome="fallthrough",
+                events=[internal_call(0x1100)],
+            ),
+            unit("return-a", 0x1001, outcome="return"),
+            unit(
+                "leaf-a",
+                0x1100,
+                outcome="fallthrough",
+                events=[external_call("create_a")],
+            ),
+            unit("leaf-return-a", 0x1101, outcome="return"),
+            unit(
+                "root-b",
+                0x2000,
+                outcome="fallthrough",
+                events=[internal_call(0x2100)],
+            ),
+            unit("return-b", 0x2001, outcome="return"),
+            unit(
+                "leaf-b",
+                0x2100,
+                outcome="fallthrough",
+                events=[external_call("create_b")],
+            ),
+            unit("leaf-return-b", 0x2101, outcome="return"),
+        ]
+        cache = _InternalCallSummaryComponentCache(16)
+        arguments = {
+            "units": units,
+            "roots": ["root-a", "root-b"],
+            "direct_edges": [
+                edge("root-a", "return-a"),
+                edge("leaf-a", "leaf-return-a"),
+                edge("root-b", "return-b"),
+                edge("leaf-b", "leaf-return-b"),
+            ],
+            "internal_call_edges": [
+                {
+                    "kind": "internal_call",
+                    "source_unit_id": "root-a",
+                    "source_event_index": 0,
+                    "resolved_unit_id": "leaf-a",
+                    "status": "resolved",
+                },
+                {
+                    "kind": "internal_call",
+                    "source_unit_id": "root-b",
+                    "source_event_index": 0,
+                    "resolved_unit_id": "leaf-b",
+                    "status": "resolved",
+                },
+            ],
+            "recovered_indirect_targets": [],
+            "indirect_exits": [],
+            "import_abis": {},
+            "_component_cache": cache,
+        }
+        first = derive_internal_call_preservation_summaries(
+            **arguments,
+            call_site_effects=[
+                effect("leaf-a", "a-v1"),
+                effect("leaf-b", "b-v1"),
+            ],
+        )
+        self.assertEqual((cache.requests, cache.hits), (4, 0))
+
+        second = derive_internal_call_preservation_summaries(
+            **arguments,
+            call_site_effects=[
+                effect("leaf-a", "a-v2"),
+                effect("leaf-b", "b-v1"),
+            ],
+        )
+        self.assertEqual((cache.requests, cache.hits), (8, 2))
+        first_by_root = {
+            row["target_unit_id"]: row for row in first["summaries"]
+        }
+        second_by_root = {
+            row["target_unit_id"]: row for row in second["summaries"]
+        }
+        self.assertNotEqual(first_by_root["leaf-a"], second_by_root["leaf-a"])
+        self.assertNotEqual(first_by_root["root-a"], second_by_root["root-a"])
+        self.assertEqual(first_by_root["leaf-b"], second_by_root["leaf-b"])
+        self.assertEqual(first_by_root["root-b"], second_by_root["root-b"])
+
     def test_exact_non_stack_write_fact_preserves_saved_register(self) -> None:
         def fixture() -> list[dict[str, object]]:
             return [

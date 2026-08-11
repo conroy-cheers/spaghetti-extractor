@@ -253,6 +253,17 @@ optimizations, are discarded between discovery, cold, and inductive passes,
 and carry no authority. The durable boundary remains independently realizable
 SCC summaries and their true condensation-graph descendants.
 
+Internal-call summaries use the same dependency discipline. Callee SCCs are
+cached under their local control closure, unresolved exits, call effects,
+memory-write footprints, return evidence, and the exact call-boundary
+projection of summaries they consume. A changed leaf invalidates that leaf and
+its callers without replaying independent call chains. Prepared memory-access
+facts are validated once per exact frozen inventory in the context-bound pass
+workspace; the resulting typed facts are shared by call-summary and provenance
+analysis instead of being revalidated independently. Whole-summary and
+component caches remain pass-local proposal optimizations, while the emitted
+artifact and downstream authority replay are unchanged.
+
 Each joint fixed-point round runs dependency-scoped global-slot analysis once.
 The round promotes that already cold-replayed artifact to obtain the invariant
 facts needed by the next iteration; it does not reconstruct and rerun the same

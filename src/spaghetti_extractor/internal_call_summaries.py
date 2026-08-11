@@ -12,9 +12,9 @@ import copy
 import hashlib
 import heapq
 import json
-from collections import defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any, Hashable, Iterable, Iterator, Mapping, Sequence
 
 from .call_site_effects import (
     CallSiteEffect,
@@ -168,6 +168,76 @@ class _MemoryWriteFootprint:
     has_non_stack_alternative: bool
 
 
+@dataclass(frozen=True)
+class _SummaryDependencyPlan:
+    ordered_components: tuple[tuple[str, ...], ...]
+    recursive_roots: frozenset[str]
+    inventory_incomplete: frozenset[str]
+    reached_units: Mapping[str, frozenset[str]]
+    dependencies: Mapping[str, frozenset[str]]
+
+
+@dataclass(frozen=True)
+class _ComponentCacheInputs:
+    normal_edges: Mapping[str, tuple[str, ...]]
+    call_targets: Mapping[str, frozenset[str]]
+    recovered_calls: Mapping[str, tuple[Hashable, ...]]
+    call_site_effects: Mapping[str, tuple[Hashable, ...]]
+    memory_write_footprints: Mapping[str, tuple[Hashable, ...]]
+
+
+@dataclass(frozen=True)
+class _CachedComponentSummary:
+    summaries: Mapping[str, Mapping[str, Any]]
+    rounds: int
+    converged: bool
+
+
+class _InternalCallSummaryComponentCache:
+    """Context-owned non-authorizing LRU for exact callee-SCC results."""
+
+    def __init__(self, maximum_entries: int) -> None:
+        if maximum_entries <= 0:
+            raise ValueError("call-summary component-cache capacity must be positive")
+        self.maximum_entries = maximum_entries
+        self.requests = 0
+        self.hits = 0
+        self.evictions = 0
+        self._entries: OrderedDict[
+            Hashable, _CachedComponentSummary
+        ] = OrderedDict()
+
+    @classmethod
+    def for_unit_count(
+        cls, unit_count: int
+    ) -> "_InternalCallSummaryComponentCache":
+        return cls(max(1024, min(65536, max(1, unit_count) * 2)))
+
+    @property
+    def entries(self) -> int:
+        return len(self._entries)
+
+    def get(self, key: Hashable) -> _CachedComponentSummary | None:
+        self.requests += 1
+        result = self._entries.get(key)
+        if result is None:
+            return None
+        self.hits += 1
+        self._entries.move_to_end(key)
+        return copy.deepcopy(result)
+
+    def put(self, key: Hashable, value: _CachedComponentSummary) -> None:
+        stored = copy.deepcopy(value)
+        if key in self._entries:
+            self._entries.move_to_end(key)
+            self._entries[key] = stored
+            return
+        self._entries[key] = stored
+        while len(self._entries) > self.maximum_entries:
+            self._entries.popitem(last=False)
+            self.evictions += 1
+
+
 def derive_internal_call_preservation_summaries(
     *,
     units: Sequence[Mapping[str, Any]],
@@ -188,6 +258,10 @@ def derive_internal_call_preservation_summaries(
     max_memory_words: int = 256,
     max_fixed_point_rounds: int = 64,
     max_value_alternatives: int = 32,
+    _component_cache: _InternalCallSummaryComponentCache | None = None,
+    _validated_memory_access_facts: Mapping[
+        str, PreparedMemoryAccessFact
+    ] | None = None,
 ) -> dict[str, Any]:
     """Propose frame/return facts for reachable callees and behavioral roots."""
 
@@ -230,15 +304,25 @@ def derive_internal_call_preservation_summaries(
         raise ValueError(
             "prepared memory-access facts require a bounded PE image range"
         )
-    prepared_by_event = (
-        {}
-        if binary_binding is None
-        else validate_prepared_memory_access_facts_v2(
-            prepared_memory_access_facts,
-            units=units,
-            binary=binary_binding,
+    if _validated_memory_access_facts is not None:
+        if any(
+            not isinstance(fact, PreparedMemoryAccessFact)
+            for fact in _validated_memory_access_facts.values()
+        ):
+            raise TypeError(
+                "validated memory-access cache contains an invalid fact"
+            )
+        prepared_by_event = _validated_memory_access_facts
+    else:
+        prepared_by_event = (
+            {}
+            if binary_binding is None
+            else validate_prepared_memory_access_facts_v2(
+                prepared_memory_access_facts,
+                units=units,
+                binary=binary_binding,
+            )
         )
-    )
     recovered_external_calls = _recovered_external_call_sites(
         recovered_indirect_targets,
         indirect_exits=indirect_exits,
@@ -356,17 +440,20 @@ def derive_internal_call_preservation_summaries(
         )
         for root in summary_roots
     }
-    (
-        ordered_components,
-        recursive_roots,
-        dependency_inventory_incomplete,
-    ) = _summary_dependency_order(
+    dependency_plan = _summary_dependency_order(
         summary_roots=summary_roots,
         normal_edges=normal_edges,
         direct_calls=direct_calls,
         recovered_calls=recovered_calls,
         max_units=max_units_per_summary,
         opaque_roots=frozenset(declarations),
+    )
+    cache_inputs = _component_cache_inputs(
+        normal_edges=normal_edges,
+        direct_calls=direct_calls,
+        recovered_calls=recovered_calls,
+        call_site_effects=effects_by_site,
+        memory_write_footprints=write_footprints,
     )
     summaries: dict[str, dict[str, Any]] = {
         root: _with_return_instruction_evidence(
@@ -378,10 +465,44 @@ def derive_internal_call_preservation_summaries(
     }
     rounds = 1 if summary_roots else 0
     fixed_point_complete = True
-    for component in ordered_components:
+    summary_tokens = {
+        root: _summary_call_boundary_token(summary)
+        for root, summary in summaries.items()
+    }
+    for component in dependency_plan.ordered_components:
         if all(root in summaries for root in component):
             continue
-        recursive_component = any(root in recursive_roots for root in component)
+        recursive_component = any(
+            root in dependency_plan.recursive_roots for root in component
+        )
+        cache_key = _component_summary_cache_key(
+            component=component,
+            dependency_plan=dependency_plan,
+            cache_inputs=cache_inputs,
+            unresolved_direct_sources=unresolved_direct_sources,
+            unresolved_jump_sources=unresolved_jump_sources,
+            completed_summaries=summaries,
+            summary_tokens=summary_tokens,
+            return_instruction_cleanups=return_instruction_cleanups,
+            max_units=max_units_per_summary,
+            max_stack_words=max_stack_words,
+            max_memory_words=max_memory_words,
+            max_rounds=max_fixed_point_rounds,
+            max_value_alternatives=max_value_alternatives,
+        )
+        cached = None if _component_cache is None else _component_cache.get(
+            cache_key
+        )
+        if cached is not None:
+            restored = copy.deepcopy(dict(cached.summaries))
+            summaries.update(restored)
+            summary_tokens.update({
+                root: _summary_call_boundary_token(summary)
+                for root, summary in restored.items()
+            })
+            rounds = max(rounds, cached.rounds)
+            fixed_point_complete = fixed_point_complete and cached.converged
+            continue
         if recursive_component:
             component_summaries, component_rounds, converged = (
                 _analyze_recursive_component(
@@ -407,6 +528,19 @@ def derive_internal_call_preservation_summaries(
             rounds = max(rounds, component_rounds)
             fixed_point_complete = fixed_point_complete and converged
             summaries.update(component_summaries)
+            summary_tokens.update({
+                root: _summary_call_boundary_token(summary)
+                for root, summary in component_summaries.items()
+            })
+            if _component_cache is not None:
+                _component_cache.put(
+                    cache_key,
+                    _CachedComponentSummary(
+                        summaries=component_summaries,
+                        rounds=component_rounds,
+                        converged=converged,
+                    ),
+                )
             continue
 
         root = component[0]
@@ -433,12 +567,22 @@ def derive_internal_call_preservation_summaries(
         )
         forced_blockers = (
             {"call_dependency_inventory_budget_exceeded"}
-            if root in dependency_inventory_incomplete
+            if root in dependency_plan.inventory_incomplete
             else set()
         )
         summaries[root] = _force_incomplete(proposed, forced_blockers)
+        summary_tokens[root] = _summary_call_boundary_token(summaries[root])
+        if _component_cache is not None:
+            _component_cache.put(
+                cache_key,
+                _CachedComponentSummary(
+                    summaries={root: summaries[root]},
+                    rounds=1,
+                    converged=True,
+                ),
+            )
 
-    for root in dependency_inventory_incomplete:
+    for root in dependency_plan.inventory_incomplete:
         if root in summaries:
             summaries[root] = _force_incomplete(
                 summaries[root],
@@ -503,9 +647,9 @@ def derive_internal_call_preservation_summaries(
         },
         "fixed_point_rounds": rounds,
         "fixed_point_complete": fixed_point_complete,
-        "recursive_summary_roots": sorted(recursive_roots),
+        "recursive_summary_roots": sorted(dependency_plan.recursive_roots),
         "dependency_inventory_incomplete_roots": sorted(
-            dependency_inventory_incomplete
+            dependency_plan.inventory_incomplete
         ),
         "eligible_units": sorted(eligible_units),
         "summaries": rows,
@@ -514,9 +658,9 @@ def derive_internal_call_preservation_summaries(
             "call_targets": len(callee_roots),
             "behavioral_roots": len(behavioral_roots),
             "summary_roots": len(rows),
-            "recursive_summary_roots": len(recursive_roots),
+            "recursive_summary_roots": len(dependency_plan.recursive_roots),
             "dependency_inventory_incomplete_roots": len(
-                dependency_inventory_incomplete
+                dependency_plan.inventory_incomplete
             ),
             "complete_summaries": len(complete),
             "incomplete_summaries": len(rows) - len(complete),
@@ -726,6 +870,175 @@ def _canonical_direct_calls(
     }
 
 
+def _freeze_cache_value(value: Any) -> Hashable:
+    if isinstance(value, Mapping):
+        return tuple(sorted(
+            (
+                (_freeze_cache_value(key), _freeze_cache_value(item))
+                for key, item in value.items()
+            ),
+            key=lambda row: repr(row[0]),
+        ))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_cache_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return tuple(sorted(
+            (_freeze_cache_value(item) for item in value), key=repr
+        ))
+    if isinstance(value, (str, int, float, bool, bytes, type(None))):
+        return value
+    raise TypeError(f"unsupported call-summary cache value {type(value).__name__}")
+
+
+def _component_cache_inputs(
+    *,
+    normal_edges: Mapping[str, set[str]],
+    direct_calls: Mapping[tuple[str, int], str],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+    memory_write_footprints: Mapping[
+        tuple[str, int], _MemoryWriteFootprint
+    ],
+) -> _ComponentCacheInputs:
+    call_targets_by_unit: dict[str, set[str]] = defaultdict(set)
+    for (source, _), target in direct_calls.items():
+        call_targets_by_unit[source].add(target)
+    recovered_by_unit: dict[str, list[Hashable]] = defaultdict(list)
+    for (source, event_index), recovery in recovered_calls.items():
+        recovered_by_unit[source].append((
+            event_index,
+            _freeze_cache_value(recovery),
+        ))
+        call_targets_by_unit[source].update(
+            target
+            for target in recovery.get("target_unit_ids", [])
+            if isinstance(target, str)
+        )
+    effects_by_unit: dict[str, list[Hashable]] = defaultdict(list)
+    for site, effect in call_site_effects.items():
+        effects_by_unit[site.unit_id].append((
+            site.event_index,
+            _freeze_cache_value(effect.as_json()),
+        ))
+    footprints_by_unit: dict[str, list[Hashable]] = defaultdict(list)
+    for (source, event_index), footprint in memory_write_footprints.items():
+        footprints_by_unit[source].append((
+            event_index,
+            footprint.fact_id,
+            footprint.stack_offsets,
+            footprint.has_non_stack_alternative,
+        ))
+    return _ComponentCacheInputs(
+        normal_edges={
+            source: tuple(sorted(targets))
+            for source, targets in normal_edges.items()
+        },
+        call_targets={
+            source: frozenset(targets)
+            for source, targets in call_targets_by_unit.items()
+        },
+        recovered_calls={
+            source: tuple(sorted(rows, key=repr))
+            for source, rows in recovered_by_unit.items()
+        },
+        call_site_effects={
+            source: tuple(sorted(rows, key=repr))
+            for source, rows in effects_by_unit.items()
+        },
+        memory_write_footprints={
+            source: tuple(sorted(rows, key=repr))
+            for source, rows in footprints_by_unit.items()
+        },
+    )
+
+
+def _summary_call_boundary_token(summary: Mapping[str, Any]) -> Hashable:
+    projection = next(iter(_recursive_summary_projection({"summary": summary}).values()))
+    return _freeze_cache_value(projection)
+
+
+def _component_summary_cache_key(
+    *,
+    component: Sequence[str],
+    dependency_plan: _SummaryDependencyPlan,
+    cache_inputs: _ComponentCacheInputs,
+    unresolved_direct_sources: set[str],
+    unresolved_jump_sources: set[str],
+    completed_summaries: Mapping[str, Mapping[str, Any]],
+    summary_tokens: Mapping[str, Hashable],
+    return_instruction_cleanups: Mapping[str, Mapping[str, Any]],
+    max_units: int,
+    max_stack_words: int,
+    max_memory_words: int,
+    max_rounds: int,
+    max_value_alternatives: int,
+) -> Hashable:
+    component_roots = frozenset(component)
+    reached: frozenset[str] = frozenset().union(*(
+        dependency_plan.reached_units.get(root, frozenset({root}))
+        for root in component
+    ))
+    called_targets = set().union(*(
+        cache_inputs.call_targets.get(source, frozenset())
+        for source in reached
+    ))
+    called_targets.update(
+        target
+        for root in component
+        for target in dependency_plan.dependencies.get(root, frozenset())
+    )
+    external_dependencies = tuple(sorted(
+        (called_targets - component_roots) & set(completed_summaries)
+    ))
+    reached_order = tuple(sorted(reached))
+    return (
+        "internal-call-summary-component-v2",
+        tuple(sorted(component_roots)),
+        tuple(
+            (source, cache_inputs.normal_edges.get(source, ()))
+            for source in reached_order
+        ),
+        tuple(sorted(reached & unresolved_direct_sources)),
+        tuple(sorted(reached & unresolved_jump_sources)),
+        tuple(
+            (source, cache_inputs.recovered_calls[source])
+            for source in reached_order
+            if source in cache_inputs.recovered_calls
+        ),
+        tuple(
+            (source, cache_inputs.call_site_effects[source])
+            for source in reached_order
+            if source in cache_inputs.call_site_effects
+        ),
+        tuple(
+            (source, cache_inputs.memory_write_footprints[source])
+            for source in reached_order
+            if source in cache_inputs.memory_write_footprints
+        ),
+        tuple(
+            (target, summary_tokens[target])
+            for target in external_dependencies
+        ),
+        tuple(
+            (
+                root,
+                _freeze_cache_value(return_instruction_cleanups[root]),
+            )
+            for root in sorted(component_roots)
+        ),
+        tuple(sorted(
+            component_roots & dependency_plan.inventory_incomplete
+        )),
+        (
+            max_units,
+            max_stack_words,
+            max_memory_words,
+            max_rounds,
+            max_value_alternatives,
+        ),
+    )
+
+
 def _summary_dependency_order(
     *,
     summary_roots: set[str],
@@ -734,7 +1047,7 @@ def _summary_dependency_order(
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     max_units: int,
     opaque_roots: frozenset[str] = frozenset(),
-) -> tuple[list[list[str]], set[str], set[str]]:
+) -> _SummaryDependencyPlan:
     """Return callee-first SCC order and explicit recursive frontiers."""
 
     opaque = set(opaque_roots) & summary_roots
@@ -751,6 +1064,7 @@ def _summary_dependency_order(
     dependencies: dict[str, set[str]] = {
         root: set() for root in active_roots
     }
+    reached_by_root: dict[str, frozenset[str]] = {}
     inventory_incomplete: set[str] = set()
     for root in sorted(active_roots):
         reached = {root}
@@ -765,6 +1079,7 @@ def _summary_dependency_order(
                 if target not in reached:
                     reached.add(target)
                     work.append(target)
+        reached_by_root[root] = frozenset(reached)
 
     components = _strongly_connected_components(dependencies)
     component_by_root = {
@@ -807,11 +1122,24 @@ def _summary_dependency_order(
                 heapq.heappush(ready, dependent)
     if len(ordered_indices) != len(components):
         raise AssertionError("SCC condensation graph must be acyclic")
-    return (
-        [[root] for root in sorted(opaque)]
-        + [sorted(components[index]) for index in ordered_indices],
-        recursive_roots,
-        inventory_incomplete,
+    return _SummaryDependencyPlan(
+        ordered_components=tuple(
+            [(root,) for root in sorted(opaque)]
+            + [tuple(sorted(components[index])) for index in ordered_indices]
+        ),
+        recursive_roots=frozenset(recursive_roots),
+        inventory_incomplete=frozenset(inventory_incomplete),
+        reached_units={
+            **{root: frozenset({root}) for root in opaque},
+            **reached_by_root,
+        },
+        dependencies={
+            **{root: frozenset() for root in opaque},
+            **{
+                root: frozenset(targets)
+                for root, targets in dependencies.items()
+            },
+        },
     )
 
 
