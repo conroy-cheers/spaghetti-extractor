@@ -252,6 +252,14 @@ sharing the tighter provenance bound caused otherwise exact control-flow joins
 to fail without reducing the accepted value set. Exhausting either bound still
 produces `incomplete` and never widens to an arbitrary value or address.
 
+Stack states carry exact launch-relative `ESP`, active call-frame, and optional
+`EBP` offsets. The `EBP` offset is established only by replaying a represented
+affine register write, is retained across calls only by a checked register
+frame or ABI, and is killed by an unrepresented write. This lets ordinary
+`leave` and `mov esp, ebp` epilogues compose without treating a conventional
+frame pointer as a special binary pattern; an unknown frame pointer still
+stops propagation as `incomplete`.
+
 Generated files belong under Nix outputs or ignored `build/` workspaces. Authored
 intent and source belong in target bundles. Private binaries belong under the
 ignored `private/` tree and must never be copied into source or target data.

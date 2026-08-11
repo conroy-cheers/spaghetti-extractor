@@ -1425,7 +1425,8 @@
         "spaghetti_extractor.authority_bindings_v2",
         "spaghetti_extractor.call_site_effects",
         "spaghetti_extractor.checked_memory_access_v2",
-        "spaghetti_extractor.control_analysis_v2"
+        "spaghetti_extractor.control_analysis_v2",
+        "spaghetti_extractor.internal_call_summaries"
       ],
       "path": "src/spaghetti_extractor/stack_range_analysis_v2.py"
     },

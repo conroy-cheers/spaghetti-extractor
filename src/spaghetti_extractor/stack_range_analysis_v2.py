@@ -26,6 +26,7 @@ from .checked_memory_access_v2 import (
     validate_checked_memory_access_facts_v2,
 )
 from .control_analysis_v2 import exact_control_inventory_v2
+from .internal_call_summaries import checked_summary_preserved_registers
 
 
 STACK_RANGE_ANALYSIS_V2_FORMAT = "spaghetti-extractor-stack-range-analysis-v2"
@@ -40,7 +41,8 @@ CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT = (
 )
 _STACK_BASE = {"op": "reg", "name": "esp", "width": 32}
 _UINT32 = 1 << 32
-_StackState = tuple[int, int]  # (launch-relative ESP, active frame base)
+_StackState = tuple[int, int, int | None]
+# (launch-relative ESP, active call-frame base, launch-relative EBP)
 
 
 def derive_stack_range_analysis_v2(
@@ -227,7 +229,7 @@ def _run(
     }
 
     entry: dict[str, frozenset[_StackState]] = {
-        root: frozenset({(0, 0)}) for root in roots if root in units
+        root: frozenset({(0, 0, None)}) for root in roots if root in units
     }
     pending = deque(sorted(entry))
     queued = set(pending)
@@ -271,6 +273,12 @@ def _run(
                     and -stack_contract["bytes_below"]
                     <= state[1]
                     <= stack_contract["bytes_above"]
+                    and (
+                        state[2] is None
+                        or -stack_contract["bytes_below"]
+                        <= state[2]
+                        <= stack_contract["bytes_above"]
+                    )
                 )
             }
             if len(bounded) != len(values):
@@ -292,7 +300,9 @@ def _run(
                 })
                 incomplete_entry_units.add(target)
                 joined = frozenset(
-                    sorted(joined)[:finite_offset_budget]
+                    sorted(joined, key=_stack_state_sort_key)[
+                        :finite_offset_budget
+                    ]
                 )
             if unit_id in incomplete_entry_units:
                 incomplete_entry_units.add(target)
@@ -392,26 +402,20 @@ def _successor_offsets(
     frontiers: list[dict[str, Any]] = []
 
     if not call_events:
-        delta = _derived_stack_delta(semantics)
-        if delta is None and normal_targets:
+        successor_states = _ordinary_successor_states(semantics, states)
+        if successor_states is None and normal_targets:
             frontiers.append({
                 "status": "incomplete",
                 "code": "non_affine_stack_transition",
                 "unit_id": unit_id,
             })
-        elif delta is not None:
+        elif successor_states is not None:
             for target in normal_targets:
-                transitions[target].update(
-                    (esp + delta, frame_base)
-                    for esp, frame_base in states
-                )
+                transitions[target].update(successor_states)
             if recovery is not None and recovery.get("kind") == "indirect_jump":
                 for target in recovery.get("target_unit_ids", ()):
                     if isinstance(target, str):
-                        transitions[target].update(
-                            (esp + delta, frame_base)
-                            for esp, frame_base in states
-                        )
+                        transitions[target].update(successor_states)
         return transitions, frontiers
 
     if len(call_events) != 1:
@@ -434,18 +438,28 @@ def _successor_offsets(
             "event_index": event_index,
         })
         return transitions, frontiers
+    event_ebp_expression = _mapping(event.get("register_inputs")).get("ebp")
+    event_states = [
+        (
+            esp + event_esp,
+            frame_base,
+            _evaluate_stack_expression(
+                event_ebp_expression,
+                esp=esp,
+                ebp=ebp,
+            ),
+        )
+        for esp, frame_base, ebp in states
+    ]
 
     kind = event.get("kind")
     if kind == "internal_call":
         target_rva = event.get("target_rva")
         target = by_rva.get(target_rva) if isinstance(target_rva, int) else None
         if target is not None:
-            callee_entries = {
-                esp + event_esp - 4 for esp, _frame_base in states
-            }
             transitions[target].update(
-                (callee_entry, callee_entry)
-                for callee_entry in callee_entries
+                (event_esp_value - 4, event_esp_value - 4, event_ebp)
+                for event_esp_value, _frame_base, event_ebp in event_states
             )
         cleanup = _call_effect_cleanup(effect)
         if effect is None:
@@ -459,10 +473,19 @@ def _successor_offsets(
                 "target_rva": target_rva,
             })
         else:
+            ebp_preserved = _call_effect_preserves(effect, "ebp")
+            if effect is None:
+                ebp_preserved = _internal_preserves(
+                    target_rva, summaries, "ebp"
+                )
             for target_id in normal_targets:
                 transitions[target_id].update(
-                    (esp + event_esp + cleanup, frame_base)
-                    for esp, frame_base in states
+                    (
+                        event_esp_value + cleanup,
+                        frame_base,
+                        event_ebp if ebp_preserved else None,
+                    )
+                    for event_esp_value, frame_base, event_ebp in event_states
                 )
         return transitions, frontiers
 
@@ -484,26 +507,30 @@ def _successor_offsets(
                     "event_index": event_index,
                 })
         else:
+            ebp_preserved = _call_effect_preserves(effect, "ebp")
+            if effect is None:
+                ebp_preserved = _external_preserves(event, "ebp")
             for target_id in normal_targets:
                 transitions[target_id].update(
-                    (esp + event_esp + cleanup, frame_base)
-                    for esp, frame_base in states
+                    (
+                        event_esp_value + cleanup,
+                        frame_base,
+                        event_ebp if ebp_preserved else None,
+                    )
+                    for event_esp_value, frame_base, event_ebp in event_states
                 )
         return transitions, frontiers
 
-    recovery_cleanup, target_units = _indirect_cleanup(
+    recovery_cleanup, target_units, recovery_preserves_ebp = _indirect_cleanup(
         recovery, summaries=summaries
     )
     cleanup = _call_effect_cleanup(effect)
     if effect is None:
         cleanup = recovery_cleanup
     for target in target_units:
-        callee_entries = {
-            esp + event_esp - 4 for esp, _frame_base in states
-        }
         transitions[target].update(
-            (callee_entry, callee_entry)
-            for callee_entry in callee_entries
+            (event_esp_value - 4, event_esp_value - 4, event_ebp)
+            for event_esp_value, _frame_base, event_ebp in event_states
         )
     if cleanup is None:
         frontiers.append({
@@ -513,10 +540,17 @@ def _successor_offsets(
             "event_index": event_index,
         })
     else:
+        ebp_preserved = _call_effect_preserves(effect, "ebp")
+        if effect is None:
+            ebp_preserved = recovery_preserves_ebp
         for target_id in normal_targets:
             transitions[target_id].update(
-                (esp + event_esp + cleanup, frame_base)
-                for esp, frame_base in states
+                (
+                    event_esp_value + cleanup,
+                    frame_base,
+                    event_ebp if ebp_preserved else None,
+                )
+                for event_esp_value, frame_base, event_ebp in event_states
             )
     return transitions, frontiers
 
@@ -1072,11 +1106,33 @@ def _call_effect_cleanup(effect: CallSiteEffect | None) -> int | None:
     return effect.stack_cleanup_bytes
 
 
+def _call_effect_preserves(
+    effect: CallSiteEffect | None, register: str
+) -> bool:
+    return bool(
+        effect is not None
+        and effect.register_frame_status == "complete"
+        and register in effect.preserved_registers
+    )
+
+
 def _internal_cleanup(
     target_rva: Any, summaries: Mapping[int, Mapping[str, Any]]
 ) -> int | None:
     summary = summaries.get(target_rva) if isinstance(target_rva, int) else None
     return _summary_cleanup(summary) if isinstance(summary, Mapping) else None
+
+
+def _internal_preserves(
+    target_rva: Any,
+    summaries: Mapping[int, Mapping[str, Any]],
+    register: str,
+) -> bool:
+    summary = summaries.get(target_rva) if isinstance(target_rva, int) else None
+    return bool(
+        isinstance(summary, Mapping)
+        and register in checked_summary_preserved_registers(summary)
+    )
 
 
 def _summary_cleanup(summary: Mapping[str, Any]) -> int | None:
@@ -1118,14 +1174,33 @@ def _external_cleanup(event: Mapping[str, Any]) -> int | None:
     return None
 
 
+def _external_preserves(event: Mapping[str, Any], register: str) -> bool:
+    abi = event.get("abi_contract")
+    if not isinstance(abi, Mapping):
+        return False
+    raw = abi.get("preserved_registers")
+    if isinstance(raw, list):
+        return register in raw
+    return bool(
+        register in {"ebp", "ebx", "edi", "esi"}
+        and abi.get("template") in {
+            "pe32-cdecl-v1",
+            "pe32-cdecl-varargs-v1",
+            "pe32-stdcall-v1",
+            "pe32-thiscall-v1",
+        }
+    )
+
+
 def _indirect_cleanup(
     recovery: Mapping[str, Any] | None,
     *,
     summaries: Mapping[int, Mapping[str, Any]],
-) -> tuple[int | None, tuple[str, ...]]:
+) -> tuple[int | None, tuple[str, ...], bool]:
     if recovery is None or recovery.get("status") != "recovered":
-        return None, ()
+        return None, (), False
     cleanups: set[int] = set()
+    preserves_ebp = True
     target_units = tuple(
         sorted(
             target
@@ -1136,17 +1211,20 @@ def _indirect_cleanup(
     for target_rva in recovery.get("target_rvas", ()):
         cleanup = _internal_cleanup(target_rva, summaries)
         if cleanup is None:
-            return None, target_units
+            return None, target_units, False
         cleanups.add(cleanup)
+        preserves_ebp = preserves_ebp and _internal_preserves(
+            target_rva, summaries, "ebp"
+        )
     for target in recovery.get("external_targets", ()):
         if not isinstance(target, Mapping):
-            return None, target_units
+            return None, target_units, False
         if target.get("disposition") != "returns":
-            return None, target_units
+            return None, target_units, False
         abi = target.get("abi")
         words = target.get("argument_words")
         if not isinstance(abi, Mapping) or not isinstance(words, int) or isinstance(words, bool):
-            return None, target_units
+            return None, target_units, False
         template = abi.get("template")
         callee_cleanup = abi.get("callee_cleanup")
         if template in {"pe32-stdcall-v1", "pe32-thiscall-v1"} and callee_cleanup is True:
@@ -1154,14 +1232,97 @@ def _indirect_cleanup(
         elif template in {"pe32-cdecl-v1", "pe32-cdecl-varargs-v1"} and callee_cleanup is False:
             cleanups.add(0)
         else:
-            return None, target_units
-    return (next(iter(cleanups)), target_units) if len(cleanups) == 1 else (None, target_units)
+            return None, target_units, False
+        raw_preserved = abi.get("preserved_registers")
+        preserves_ebp = preserves_ebp and (
+            "ebp" in raw_preserved
+            if isinstance(raw_preserved, list)
+            else template in {
+                "pe32-cdecl-v1",
+                "pe32-cdecl-varargs-v1",
+                "pe32-stdcall-v1",
+                "pe32-thiscall-v1",
+            }
+        )
+    return (
+        (next(iter(cleanups)), target_units, preserves_ebp)
+        if len(cleanups) == 1
+        else (None, target_units, False)
+    )
 
 
 def _derived_stack_delta(semantics: Mapping[str, Any]) -> int | None:
     raw = semantics.get("stack_delta")
     delta = raw.get("net_bytes") if isinstance(raw, Mapping) and raw.get("status") == "derived" else None
     return delta if isinstance(delta, int) and not isinstance(delta, bool) else None
+
+
+def _ordinary_successor_states(
+    semantics: Mapping[str, Any], states: frozenset[_StackState]
+) -> set[_StackState] | None:
+    raw_stack = semantics.get("stack_delta")
+    stack_expression = (
+        raw_stack.get("expression") if isinstance(raw_stack, Mapping) else None
+    )
+    delta = _derived_stack_delta(semantics)
+    ebp_expression, ebp_written = _register_output_expression(
+        semantics, "ebp"
+    )
+    result: set[_StackState] = set()
+    for esp, frame_base, ebp in states:
+        next_esp = (
+            esp + delta
+            if delta is not None
+            else _evaluate_stack_expression(
+                stack_expression,
+                esp=esp,
+                ebp=ebp,
+            )
+        )
+        if next_esp is None:
+            return None
+        next_ebp = (
+            ebp
+            if not ebp_written
+            else _evaluate_stack_expression(
+                ebp_expression,
+                esp=esp,
+                ebp=ebp,
+            )
+        )
+        result.add((next_esp, frame_base, next_ebp))
+    return result
+
+
+def _register_output_expression(
+    semantics: Mapping[str, Any], register: str
+) -> tuple[Any, bool]:
+    writes = semantics.get("register_writes")
+    if not isinstance(writes, list):
+        return None, False
+    matching = [
+        row.get("value")
+        for row in writes
+        if isinstance(row, Mapping) and row.get("register") == register
+    ]
+    return (matching[-1], True) if matching else (None, False)
+
+
+def _evaluate_stack_expression(
+    expression: Any, *, esp: int, ebp: int | None
+) -> int | None:
+    esp_offset = affine_register_offset(expression, "esp")
+    if esp_offset is not None:
+        return esp + esp_offset
+    ebp_offset = affine_register_offset(expression, "ebp")
+    if ebp is not None and ebp_offset is not None:
+        return ebp + ebp_offset
+    return None
+
+
+def _stack_state_sort_key(state: _StackState) -> tuple[int, int, int, int]:
+    esp, frame_base, ebp = state
+    return (esp, frame_base, ebp is None, 0 if ebp is None else ebp)
 
 
 def _esp_access_span(unit: Mapping[str, Any]) -> tuple[int, int] | None:

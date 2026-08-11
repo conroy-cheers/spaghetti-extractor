@@ -462,6 +462,91 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
             {row["code"] for row in result["frontiers"]},
         )
 
+    def test_checked_frame_pointer_closes_standard_leave_epilogue(self) -> None:
+        prologue = _unit(
+            "prologue", 0x1000, target_rvas=[0x1010], stack_delta=-4
+        )
+        prologue["semantics"]["register_writes"] = [{
+            "register": "ebp",
+            "value": _add(-4),
+        }]
+        epilogue = _unit(
+            "epilogue", 0x1010, target_rvas=[0x1020], stack_delta=None
+        )
+        epilogue["semantics"]["stack_delta"] = {
+            "status": "unknown",
+            "expression": _add_register("ebp", 4),
+        }
+        epilogue["semantics"]["register_writes"] = [{
+            "register": "ebp",
+            "value": {"op": "load", "address": _reg("ebp"), "width": 4},
+        }]
+        units = [prologue, epilogue, _unit("next", 0x1020, memory_offsets=[0])]
+
+        result = _derive(units)
+
+        self.assertEqual(result["entry_offsets"]["epilogue"], [-4])
+        self.assertEqual(result["entry_offsets"]["next"], [0])
+        self.assertNotIn(
+            "non_affine_stack_transition",
+            {row["code"] for row in result["frontiers"]},
+        )
+
+    def test_unwitnessed_frame_pointer_epilogue_still_fails_closed(self) -> None:
+        epilogue = _unit(
+            "epilogue", 0x1000, target_rvas=[0x1010], stack_delta=None
+        )
+        epilogue["semantics"]["stack_delta"] = {
+            "status": "unknown",
+            "expression": _add_register("ebp", 4),
+        }
+        units = [epilogue, _unit("next", 0x1010, memory_offsets=[0])]
+
+        result = _derive(units)
+
+        self.assertNotIn("next", result["entry_offsets"])
+        self.assertIn(
+            "non_affine_stack_transition",
+            {row["code"] for row in result["frontiers"]},
+        )
+
+    def test_frame_pointer_clobber_invalidates_epilogue_relation(self) -> None:
+        prologue = _unit(
+            "prologue", 0x1000, target_rvas=[0x1010], stack_delta=-4
+        )
+        prologue["semantics"]["register_writes"] = [{
+            "register": "ebp",
+            "value": _add(-4),
+        }]
+        clobber = _unit(
+            "clobber", 0x1010, target_rvas=[0x1020], stack_delta=0
+        )
+        clobber["semantics"]["register_writes"] = [{
+            "register": "ebp",
+            "value": {"op": "unknown", "width": 32},
+        }]
+        epilogue = _unit(
+            "epilogue", 0x1020, target_rvas=[0x1030], stack_delta=None
+        )
+        epilogue["semantics"]["stack_delta"] = {
+            "status": "unknown",
+            "expression": _add_register("ebp", 4),
+        }
+        units = [
+            prologue,
+            clobber,
+            epilogue,
+            _unit("next", 0x1030, memory_offsets=[0]),
+        ]
+
+        result = _derive(units)
+
+        self.assertNotIn("next", result["entry_offsets"])
+        self.assertIn(
+            "non_affine_stack_transition",
+            {row["code"] for row in result["frontiers"]},
+        )
+
     def test_checked_stdcall_frame_reaches_continuation(self) -> None:
         call = {
             "kind": "external_call",
