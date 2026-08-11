@@ -112,6 +112,12 @@ The v2 evidence graph is fail-closed:
    non-authorizing, and used only for the first authority round; converged
    point-sensitive replay must derive the final invariant inventory without
    target proposal seeds.
+   Caller evidence is projected onto independently checked summary families.
+   A value retained in a preserved register depends on that register's summary
+   fact, rather than an aggregate summary which may remain incomplete because
+   of unrelated memory or result effects. Aggregate call-frame identities stay
+   readable during migration but cannot stand in for a more precise family
+   witness.
 4. External sites are normalized only after target recovery and are rebound to
    the exact event, ABI, arguments, effects, continuation, and selected profile.
 5. Every reachable instruction form is bound to one binary-specific qualified
@@ -127,6 +133,14 @@ successive approximations, not simultaneous execution alternatives. Contextual
 address domains are accepted only from an explicitly scheduled and executed
 checkpoint. These rules make the authority inventory independent of evaluation
 history and prevent stale contextual proposals from being sealed.
+
+Rooted graph closure and value provenance have separate authority. A recovered
+indirect edge determines whether its destination is behaviorally reachable;
+merely traversing that edge does not make every later machine value depend on
+its target certificate. Values and effects carry the certificate only when the
+indirect transition semantically produced or preserved them. This prevents an
+unresolved earlier operation from contaminating otherwise independent target
+facts while retaining fail-closed rooted reachability.
 
 ## Completion Criteria
 
@@ -198,6 +212,12 @@ the interprocedural/external-site phases.  Adding or repairing an ordinary
 returning API contract therefore cannot invalidate the exact state machine or
 machine IR; changing a no-return disposition correctly invalidates rooted
 control and its descendants.
+
+Exact stack-entry offsets have a separate finite resource budget from typed
+value alternatives. A program can have many exact ESP states at a join without
+requiring the pointer-provenance lattice, global-slot alternatives, or indirect
+target sets to grow by the same amount. Both limits remain explicit and
+fail-closed.
 
 Analysis derivations preserve structurally valid `incomplete` artifacts so
 their blocker inventories are cacheable and inspectable. Policy enforcement is

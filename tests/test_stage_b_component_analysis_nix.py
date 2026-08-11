@@ -196,6 +196,12 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             "stack_finite_offset_budget=analysis_stack_offset_budget",
             module,
         )
+        self.assertEqual(
+            module.count(
+                "stack_entry_offset_budget=analysis_stack_offset_budget"
+            ),
+            2,
+        )
         self.assertNotIn(
             "finite_offset_budget=analysis_finite_value_budget",
             module,

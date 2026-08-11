@@ -15,6 +15,8 @@ from spaghetti_extractor.call_site_effects import (
 )
 from spaghetti_extractor.authority_dependencies_v2 import (
     call_frame_dependency_id,
+    call_frame_family_dependency_id,
+    call_summary_family_node_id,
 )
 from spaghetti_extractor.interprocedural_analysis import (
     _Influence,
@@ -29,6 +31,7 @@ from spaghetti_extractor.interprocedural_analysis import (
     _call_site_memory_frames,
     _merge_inductive_operation_provenance,
     _requires_inductive_replay,
+    _summary_register_state,
     _transfer_mutable_state,
     analyze_interprocedural_control,
 )
@@ -2454,6 +2457,172 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertEqual(replay["status"], "complete")
         self.assertTrue(replay["proof_authority"])
         self.assertEqual(replay["reproduced_ids"], [exit_row["id"]])
+
+    def test_register_fact_can_authorize_target_without_complete_call_summary(
+        self,
+    ) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "callee")
+        dependency = call_frame_family_dependency_id(
+            "a", 0, "callee", "register", "edi"
+        )
+        seed["analysis_dependencies"] = [dependency]
+
+        def summaries(**kwargs: Any) -> dict[str, object]:
+            result = summary_adapter(**kwargs)
+            rows = result["summaries"]
+            assert isinstance(rows, list)
+            for row in rows:
+                if row.get("target_unit_id") != "callee":
+                    continue
+                row.update({
+                    "status": "incomplete",
+                    "preserved_registers": ["edi"],
+                    "register_preservation": {
+                        "status": "incomplete",
+                        "checked_preserved_registers": ["edi"],
+                    },
+                    "blocker_codes": ["caller_memory_frame_incomplete"],
+                })
+            result["status"] = "incomplete"
+            return result
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            selected = kwargs["recovered_indirect_edges"]
+            assert isinstance(selected, list)
+            current = next(
+                (row for row in selected if row.get("id") == exit_row["id"]),
+                None,
+            )
+            if current is None or current.get("status") != "recovered":
+                return {"resolutions": [incomplete_recovery(exit_row)]}
+            replayed = dict(seed)
+            replayed.update({
+                "origin_count": 1,
+                "origin_kinds": ["internal"],
+                "target_origin_witnesses": [{
+                    "kind": "static_code",
+                    "key": [IMAGE_BASE + 0x2000, 0],
+                }],
+            })
+            return {"resolutions": [replayed]}
+
+        result = self._run(
+            units=[unit("a", 0x1000), unit("callee", 0x2000)],
+            roots=["a"],
+            exits=[exit_row],
+            inductive=[seed],
+            resolver=resolver,
+            summary_resolver=summaries,
+            authority_only=True,
+        )
+
+        recoveries = {str(row["id"]): row for row in result.recovered_targets}
+        self.assertEqual(recoveries[exit_row["id"]]["status"], "recovered")
+        replay = result.fixed_point["inductive_replay"]
+        family_node = call_summary_family_node_id(
+            "callee", "register", "edi"
+        )
+        self.assertIn(exit_row["id"], replay["accepted_nodes"])
+        self.assertIn(family_node, replay["accepted_nodes"])
+        self.assertNotIn("call-summary:callee", replay["accepted_nodes"])
+        callee_summary = next(
+            row
+            for row in result.call_summaries["summaries"]
+            if row["target_unit_id"] == "callee"
+        )
+        self.assertEqual(callee_summary["status"], "incomplete")
+        self.assertEqual(callee_summary["preserved_registers"], ["edi"])
+        self.assertEqual(
+            callee_summary["register_preservation"],
+            {
+                "status": "incomplete",
+                "checked_preserved_registers": ["edi"],
+            },
+        )
+        self.assertEqual(
+            callee_summary["stack_cleanup"]["status"], "incomplete"
+        )
+
+    def test_missing_register_fact_cannot_authorize_family_dependency(
+        self,
+    ) -> None:
+        exit_row = indirect_exit("exit:a:0", "a")
+        seed = recovered(exit_row, "callee")
+        seed["analysis_dependencies"] = [call_frame_family_dependency_id(
+            "a", 0, "callee", "register", "edi"
+        )]
+
+        def incomplete_summaries(**kwargs: Any) -> dict[str, object]:
+            result = summary_adapter(**kwargs)
+            rows = result["summaries"]
+            assert isinstance(rows, list)
+            for row in rows:
+                if row.get("target_unit_id") == "callee":
+                    row.update({
+                        "status": "incomplete",
+                        "preserved_registers": [],
+                        "register_preservation": {
+                            "status": "incomplete",
+                            "checked_preserved_registers": [],
+                        },
+                        "blocker_codes": ["register_frame_incomplete"],
+                    })
+            result["status"] = "incomplete"
+            return result
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            selected = kwargs["recovered_indirect_edges"]
+            assert isinstance(selected, list)
+            if any(row.get("status") == "recovered" for row in selected):
+                replayed = dict(seed)
+                replayed.update({
+                    "origin_count": 1,
+                    "origin_kinds": ["internal"],
+                    "target_origin_witnesses": [{
+                        "kind": "static_code",
+                        "key": [IMAGE_BASE + 0x2000, 0],
+                    }],
+                })
+                return {"resolutions": [replayed]}
+            return {"resolutions": [incomplete_recovery(exit_row)]}
+
+        result = self._run(
+            units=[unit("a", 0x1000), unit("callee", 0x2000)],
+            roots=["a"],
+            exits=[exit_row],
+            inductive=[seed],
+            resolver=resolver,
+            summary_resolver=incomplete_summaries,
+            authority_only=True,
+        )
+
+        self.assertEqual(result.recovered_targets[0]["status"], "incomplete")
+        self.assertNotIn(
+            exit_row["id"],
+            result.fixed_point["inductive_replay"]["accepted_nodes"],
+        )
+
+    def test_closed_register_family_records_checked_non_preservation(self) -> None:
+        checked_false = _summary_register_state({
+            "status": "complete",
+            "preserved_registers": [],
+            "register_preservation": {"status": "complete"},
+        }, "edi")
+        unknown = _summary_register_state({
+            "status": "incomplete",
+            "preserved_registers": [],
+            "register_preservation": {
+                "status": "incomplete",
+                "checked_preserved_registers": [],
+            },
+        }, "edi")
+
+        self.assertEqual(checked_false.status, "complete")
+        self.assertEqual(
+            checked_false.fact.preserved_registers.registers, frozenset()
+        )
+        self.assertEqual(unknown.status, "incomplete")
 
     def test_inductive_replay_accepts_only_dependency_closed_sccs(self) -> None:
         accepted_exit = indirect_exit("exit:a:0", "a")

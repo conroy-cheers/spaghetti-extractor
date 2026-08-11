@@ -32,8 +32,10 @@ from .analysis.scc_worklist import SCCDecomposition, SCCWorklist, decompose_scc
 from .analysis_schema_v2 import interprocedural_authority_signature_v2
 from .address_expression_v2 import affine_register_offset, constant_u32
 from .authority_dependencies_v2 import (
+    call_summary_family_node_id,
     canonical_authority_dependencies,
     parse_call_frame_dependency,
+    parse_call_frame_family_dependency,
 )
 from .external_capabilities import CallableExternalProfile
 from .external_interface_profiles import ExternalInterfaceProfile
@@ -86,6 +88,7 @@ INTERPROCEDURAL_ANALYSIS_FORMAT = "stage-a-interprocedural-analysis-v2"
 _REGISTER_UNIVERSE = frozenset(
     {"eax", "ebp", "ebx", "ecx", "edi", "edx", "esi", "esp"}
 )
+_CALL_SUMMARY_PRESERVED_REGISTERS = ("ebp", "ebx", "edi", "esi")
 
 
 @dataclass(frozen=True, order=True)
@@ -322,6 +325,7 @@ def analyze_interprocedural_control(
     checked_stack_entry_offsets: Mapping[str, Sequence[int]] | None = None,
     checked_nonimage_stack_units: Sequence[str] = (),
     finite_value_budget: int = 32,
+    stack_entry_offset_budget: int | None = None,
     max_rounds: int | None = None,
     proposal_only: bool = False,
     authority_only: bool = False,
@@ -338,6 +342,13 @@ def analyze_interprocedural_control(
 
     if finite_value_budget <= 0:
         raise ValueError("finite_value_budget must be positive")
+    effective_stack_entry_offset_budget = (
+        finite_value_budget
+        if stack_entry_offset_budget is None
+        else stack_entry_offset_budget
+    )
+    if effective_stack_entry_offset_budget <= 0:
+        raise ValueError("stack_entry_offset_budget must be positive")
     if proposal_only and authority_only:
         raise ValueError("proposal_only and authority_only are mutually exclusive")
     if (pe_sha256 is None) != (machine_ir_sha256 is None):
@@ -422,6 +433,7 @@ def analyze_interprocedural_control(
         callable_profiles=callable_profiles,
         internal_function_contracts=internal_function_contracts or {},
         finite_value_budget=finite_value_budget,
+        stack_entry_offset_budget=effective_stack_entry_offset_budget,
         max_evaluations=evaluation_budget,
         initial_recoveries=proposal_recoveries,
         initial_call_frame_hypotheses=(),
@@ -451,6 +463,7 @@ def analyze_interprocedural_control(
         callable_profiles=callable_profiles,
         internal_function_contracts=internal_function_contracts or {},
         finite_value_budget=finite_value_budget,
+        stack_entry_offset_budget=effective_stack_entry_offset_budget,
         max_evaluations=evaluation_budget,
         initial_recoveries=(),
         initial_call_frame_hypotheses=(),
@@ -507,6 +520,7 @@ def analyze_interprocedural_control(
             callable_profiles=callable_profiles,
             internal_function_contracts=internal_function_contracts or {},
             finite_value_budget=finite_value_budget,
+            stack_entry_offset_budget=effective_stack_entry_offset_budget,
             max_evaluations=evaluation_budget,
             initial_recoveries=effective_hypotheses,
             initial_call_frame_hypotheses=effective_call_frame_hypotheses,
@@ -794,6 +808,7 @@ def analyze_interprocedural_control(
         "global_slot_promotion": False,
         "mutable_slot_handoff": "point_sensitive_dependency_v2",
         "finite_value_budget": finite_value_budget,
+        "stack_entry_offset_budget": effective_stack_entry_offset_budget,
         "round_bound": evaluation_budget,
         "round_bound_kind": "transfer_evaluation_resource_limit",
         "typed_fact_count": len(authority_pass.facts),
@@ -1139,11 +1154,16 @@ def _complete_output_nodes(
         )
     }
     for row in result.summaries.get("summaries", ()):
-        if not isinstance(row, Mapping) or row.get("status") != "complete":
+        if not isinstance(row, Mapping):
             continue
         unit_id = row.get("target_unit_id")
-        if isinstance(unit_id, str):
+        if isinstance(unit_id, str) and row.get("status") == "complete":
             complete.add(_summary_node(unit_id))
+        if isinstance(unit_id, str):
+            complete.update(
+                _summary_register_node(unit_id, register)
+                for register in checked_summary_preserved_registers(row)
+            )
     complete.update(
         node
         for node, state in result.facts.items()
@@ -1192,16 +1212,57 @@ def _merge_summary_outputs(
         for row in replay.get("summaries", ())
         if isinstance(row, Mapping) and isinstance(row.get("target_unit_id"), str)
     }
-    rows = [
-        copy.deepcopy(
-            dict(replay_by_root[root])
-            if _summary_node(root) in promoted and root in replay_by_root
-            else dict(row)
-        )
-        for row in cold.get("summaries", ())
-        if isinstance(row, Mapping)
-        for root in (str(row.get("target_unit_id")),)
-    ]
+    rows: list[dict[str, Any]] = []
+    cold_roots: set[str] = set()
+    for row in cold.get("summaries", ()):
+        if not isinstance(row, Mapping):
+            continue
+        root = str(row.get("target_unit_id"))
+        cold_roots.add(root)
+        if _summary_node(root) in promoted and root in replay_by_root:
+            rows.append(copy.deepcopy(dict(replay_by_root[root])))
+            continue
+        merged = copy.deepcopy(dict(row))
+        replay_row = replay_by_root.get(root)
+        if replay_row is not None:
+            promoted_registers = {
+                register
+                for register in _CALL_SUMMARY_PRESERVED_REGISTERS
+                if _summary_register_node(root, register) in promoted
+                and register in checked_summary_preserved_registers(replay_row)
+            }
+            if promoted_registers:
+                checked = (
+                    set(checked_summary_preserved_registers(merged))
+                    | promoted_registers
+                )
+                merged["preserved_registers"] = sorted(checked)
+                preservation = merged.get("register_preservation")
+                if not isinstance(preservation, Mapping) or (
+                    preservation.get("status") != "complete"
+                ):
+                    merged["register_preservation"] = {
+                        "status": "incomplete",
+                        "checked_preserved_registers": sorted(checked),
+                    }
+        rows.append(merged)
+    for root, replay_row in replay_by_root.items():
+        if root in cold_roots:
+            continue
+        if _summary_node(root) in promoted:
+            rows.append(copy.deepcopy(dict(replay_row)))
+            continue
+        promoted_registers = {
+            register
+            for register in _CALL_SUMMARY_PRESERVED_REGISTERS
+            if _summary_register_node(root, register) in promoted
+            and register in checked_summary_preserved_registers(replay_row)
+        }
+        if promoted_registers:
+            rows.append(_project_summary_register_claims(
+                replay_row, promoted_registers
+            ))
+    rows.sort(key=lambda row: str(row.get("target_unit_id")))
     complete = sum(row.get("status") == "complete" for row in rows)
     result = copy.deepcopy(dict(cold))
     result["summaries"] = rows
@@ -1213,6 +1274,56 @@ def _merge_summary_outputs(
             "complete_summaries": complete,
             "incomplete_summaries": len(rows) - complete,
         }
+    return result
+
+
+def _project_summary_register_claims(
+    summary: Mapping[str, Any], registers: set[str]
+) -> dict[str, Any]:
+    """Retain accepted positive register atoms without importing other facts."""
+
+    result = copy.deepcopy(dict(summary))
+    result.update({
+        "status": "incomplete",
+        "preserved_registers": sorted(registers),
+        "register_preservation": {
+            "status": "incomplete",
+            "checked_preserved_registers": sorted(registers),
+        },
+        "stack_cleanup": {"status": "incomplete", "stack_delta": None},
+        "result_register_origins": {
+            "status": "incomplete",
+            "registers": {},
+        },
+        "result_memory_origins": {
+            "status": "incomplete",
+            "locations": [],
+        },
+        "caller_memory_frame": {
+            "status": "incomplete",
+            "preserved": False,
+            "writes": [],
+        },
+        "return_behavior": {
+            "status": "incomplete",
+            "may_return": None,
+            "may_not_return": None,
+        },
+    })
+    for family, empty_field in (
+        ("memory_effects", "local_sites"),
+        ("callback_effects", "sites"),
+        ("world_effects", "external_sites"),
+    ):
+        result[family] = {"status": "incomplete", empty_field: []}
+    result["blocker_codes"] = sorted(
+        {
+            str(code)
+            for code in result.get("blocker_codes", ())
+            if isinstance(code, str)
+        }
+        | {"inductive_call_summary_family_projection"}
+    )
     return result
 
 
@@ -1400,6 +1511,7 @@ def _run_typed_pass(
     callable_profiles: Sequence[CallableExternalProfile],
     internal_function_contracts: Mapping[str, Mapping[str, Any]],
     finite_value_budget: int,
+    stack_entry_offset_budget: int,
     max_evaluations: int,
     allow_bootstrap: bool,
     global_slot_invariants: Sequence[GlobalSlotInvariant],
@@ -1552,6 +1664,7 @@ def _run_typed_pass(
                 image_base=image_base,
                 image_size=image_size,
                 finite_value_budget=finite_value_budget,
+                stack_entry_offset_budget=stack_entry_offset_budget,
                 static_data_reader=static_data_reader,
                 bootstrap_unknown_call_preserved_registers=(
                     frozenset({"ebp", "ebx", "edi", "esi"})
@@ -4553,6 +4666,10 @@ def _typed_proposals(
         unit_id = raw.get("target_unit_id")
         if isinstance(unit_id, str):
             result[_summary_node(unit_id)] = _summary_state(raw)
+            for register in _CALL_SUMMARY_PRESERVED_REGISTERS:
+                result[_summary_register_node(unit_id, register)] = (
+                    _summary_register_state(raw, register)
+                )
     for raw in recoveries:
         identity = raw.get("id")
         if isinstance(identity, str):
@@ -4723,6 +4840,54 @@ def _summary_state(raw: Mapping[str, Any]) -> _NodeState:
         taint=Taint.of(blockers if hard_conflict else ()),
     )
     return _NodeState(fact, "complete" if complete else "incomplete", blockers)
+
+
+def _summary_register_state(
+    raw: Mapping[str, Any], register: str
+) -> _NodeState:
+    checked = checked_summary_preserved_registers(raw)
+    raw_preserved = raw.get("preserved_registers")
+    inventory_valid = (
+        isinstance(raw_preserved, list)
+        and len(raw_preserved) == len(set(map(str, raw_preserved)))
+        and all(
+            isinstance(value, str)
+            and value in _CALL_SUMMARY_PRESERVED_REGISTERS
+            for value in raw_preserved
+        )
+    )
+    preservation = raw.get("register_preservation")
+    family_closed = inventory_valid and (
+        (
+            isinstance(preservation, Mapping)
+            and preservation.get("status") == "complete"
+        )
+        or (
+            not isinstance(preservation, Mapping)
+            and raw.get("status") == "complete"
+        )
+    )
+    preserved = register in checked
+    known = preserved or family_closed
+    reasons = () if known else ("call_summary_register_preservation_unknown",)
+    return _NodeState(
+        InterproceduralFact(
+            may_values=Bottom(),
+            preserved_registers=MustPreservedRegisters(
+                frozenset({register})
+                if preserved
+                else frozenset()
+                if known
+                else _REGISTER_UNIVERSE
+            ),
+            stack_cleanup=NoExactValue(),
+            results=NoExactValue(),
+            return_behavior=ReturnBehavior(),
+            taint=Taint.of(reasons),
+        ),
+        "complete" if known else "incomplete",
+        reasons,
+    )
 
 
 def _canonical_summary_register_origins(
@@ -4909,8 +5074,10 @@ def _derive_dependency_edges(
         for target in recovery.get("target_unit_ids", []):
             if isinstance(target, str) and target in by_id:
                 body_graph.setdefault(source, set()).add(target)
-    for root in sorted(summary_roots):
-        body = _reachable(root, body_graph)
+    summary_bodies = {
+        root: _reachable(root, body_graph) for root in sorted(summary_roots)
+    }
+    for root, body in summary_bodies.items():
         consumer = _summary_node(root)
         for source in body:
             for target in calls.get(source, ()):
@@ -4918,6 +5085,26 @@ def _derive_dependency_edges(
                     dependencies.add((_summary_node(target), consumer))
             for exit_row in exits_by_source.get(source, ()):
                 dependencies.add((_required_string(exit_row, "id"), consumer))
+        for register in _CALL_SUMMARY_PRESERVED_REGISTERS:
+            register_consumer = _summary_register_node(root, register)
+            for source in body:
+                for target in calls.get(source, ()):
+                    if target in summary_roots:
+                        dependencies.add((
+                            _summary_register_node(target, register),
+                            register_consumer,
+                        ))
+                for exit_row in exits_by_source.get(source, ()):
+                    dependencies.add((
+                        _required_string(exit_row, "id"),
+                        register_consumer,
+                    ))
+            for hypothesis in call_frame_hypotheses:
+                if (
+                    hypothesis.unit_id in body
+                    and hypothesis.register == register
+                ):
+                    dependencies.add((hypothesis.id, register_consumer))
 
     for row in summaries.get("summaries", []):
         if not isinstance(row, Mapping):
@@ -4946,6 +5133,13 @@ def _derive_dependency_edges(
         for target in recovery.get("target_unit_ids", ()):
             if isinstance(target, str) and target in summary_roots:
                 dependencies.add((recovery_id, _summary_node(target)))
+                dependencies.update(
+                    (
+                        recovery_id,
+                        _summary_register_node(target, register),
+                    )
+                    for register in _CALL_SUMMARY_PRESERVED_REGISTERS
+                )
 
     # Target provenance carries the exact summaries used to preserve or
     # produce that value.  Path-wide attribution invents dependencies from
@@ -4968,6 +5162,15 @@ def _derive_dependency_edges(
             target = _call_frame_dependency_target(dependency)
             if target is not None and target in summary_roots:
                 dependencies.add((_summary_node(target), recovery_id))
+                continue
+            family = parse_call_frame_family_dependency(dependency)
+            if family is not None and family[2] in summary_roots:
+                dependencies.add((
+                    call_summary_family_node_id(
+                        family[2], family[3], family[4]
+                    ),
+                    recovery_id,
+                ))
 
     recoveries_by_site = {
         (row.get("source_unit_id"), row.get("source_event_index")): identity
@@ -4981,6 +5184,15 @@ def _derive_dependency_edges(
             )
             if provider is not None:
                 dependencies.add((provider, hypothesis.id))
+                recovery = recovery_by_id.get(provider, {})
+                for target in recovery.get("target_unit_ids", ()):
+                    if isinstance(target, str) and target in summary_roots:
+                        dependencies.add((
+                            _summary_register_node(
+                                target, hypothesis.register
+                            ),
+                            hypothesis.id,
+                        ))
             continue
         if hypothesis.transfer_kind != "internal_call":
             continue
@@ -4999,7 +5211,10 @@ def _derive_dependency_edges(
         target_rva = raw_target_rva
         for target in by_rva.get(target_rva, ()):
             if target in summary_roots:
-                dependencies.add((_summary_node(target), hypothesis.id))
+                dependencies.add((
+                    _summary_register_node(target, hypothesis.register),
+                    hypothesis.id,
+                ))
     for recovery_id, recovery in recovery_by_id.items():
         raw_dependencies = recovery.get("authority_dependencies", ())
         if not isinstance(raw_dependencies, Sequence) or isinstance(
@@ -6151,6 +6366,10 @@ def _is_overflow_reason(reason: str) -> bool:
 
 def _summary_node(unit_id: str) -> str:
     return f"call-summary:{unit_id}"
+
+
+def _summary_register_node(unit_id: str, register: str) -> str:
+    return call_summary_family_node_id(unit_id, "register", register)
 
 
 def _unit_id(unit: Mapping[str, Any]) -> str:

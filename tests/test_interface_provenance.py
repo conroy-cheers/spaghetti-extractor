@@ -12,6 +12,9 @@ from spaghetti_extractor.call_frame_hypotheses import (
 )
 from spaghetti_extractor.call_site_effects import CallSiteId, CallWriteSpan
 from spaghetti_extractor.authority_bindings_v2 import BinaryBinding
+from spaghetti_extractor.authority_dependencies_v2 import (
+    call_frame_family_dependency_id,
+)
 from spaghetti_extractor.checked_memory_access_v2 import (
     MEMORY_ACCESS_PROPOSAL_V2_FORMAT,
     prepare_checked_memory_access_facts_v2,
@@ -2101,6 +2104,64 @@ class InterfaceProvenanceTests(unittest.TestCase):
             [left_dependency, right_dependency, target_dependency],
         )
 
+    def test_recovered_edge_authority_is_owned_by_rooted_reachability(
+        self,
+    ) -> None:
+        target_dependency = (
+            "hybrid-authority-v2:global_slot_invariant:" + "6" * 64
+        )
+        upstream_id = "indirect-exit:upstream"
+        target = IMAGE_BASE + 0x1800
+        units = [
+            unit("indirect-root", 0x1100),
+            unit(
+                "load-target",
+                0x1200,
+                writes=[{
+                    "register": "ebx",
+                    "value": load(const(SLOT)),
+                }],
+            ),
+            unit("dispatch", 0x1300),
+            unit("target", 0x1800),
+        ]
+        result = self._run(
+            units,
+            [edge("load-target", "dispatch")],
+            roots=["indirect-root"],
+            recovered_indirect_edges=[{
+                "id": upstream_id,
+                "status": "recovered",
+                "source_unit_id": "indirect-root",
+                "source_event_index": 0,
+                "kind": "indirect_jump",
+                "target_rvas": [0x1200],
+                "target_unit_ids": ["load-target"],
+                "external_targets": [],
+            }],
+            indirect_exits=[{
+                "id": "indirect-exit:dispatch",
+                "source_unit_id": "dispatch",
+                "source_rva": 0x1300,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": reg("ebx"),
+            }],
+            initial_known_slots={
+                SLOT: frozenset({ValueOrigin(
+                    "exact", (target,), (target_dependency,)
+                )}),
+            },
+            allow_global_slot_promotion=False,
+        )
+
+        resolution = result["resolutions"][0]
+        self.assertEqual(resolution["status"], "recovered", resolution)
+        self.assertEqual(
+            resolution["analysis_dependencies"], [target_dependency]
+        )
+        self.assertNotIn(upstream_id, resolution["analysis_dependencies"])
+
     def test_dynamic_allocator_result_carries_interface_field_provenance(self) -> None:
         allocator = {
             "kind": "internal_call",
@@ -3665,6 +3726,33 @@ class InterfaceProvenanceTests(unittest.TestCase):
             complete_recovery["arguments"][1]["origins"],
             [{"kind": "exact", "key": [CHILD_SLOT]}],
         )
+
+    def test_exact_stack_entry_budget_is_independent_of_value_origins(self) -> None:
+        offsets = {"factory": [0, 4]}
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "checked stack-entry offsets exceed the stack-entry offset budget",
+        ):
+            self._run(
+                [factory_unit()],
+                [],
+                roots=["factory"],
+                finite_value_budget=1,
+                checked_stack_entry_offsets=offsets,
+            )
+
+        result = self._run(
+            [factory_unit()],
+            [],
+            roots=["factory"],
+            finite_value_budget=1,
+            stack_entry_offset_budget=2,
+            checked_stack_entry_offsets=offsets,
+        )
+
+        self.assertEqual(result["budgets"]["finite_values"], 1)
+        self.assertEqual(result["budgets"]["stack_entry_offsets"], 2)
 
     def test_recovered_import_preserves_interface_and_stack_origins(self) -> None:
         show_window = MachineImportIdentity(
@@ -5232,6 +5320,12 @@ class InterfaceProvenanceTests(unittest.TestCase):
         )
         exact_by_id = {row["id"]: row for row in exact["resolutions"]}
         self.assertEqual(exact_by_id["exit:esi"]["status"], "recovered")
+        self.assertIn(
+            call_frame_family_dependency_id(
+                "internal-call", 0, "callee", "register", "esi"
+            ),
+            exact_by_id["exit:esi"]["analysis_dependencies"],
+        )
         self.assertNotIn(
             identity, exact_by_id["exit:esi"]["analysis_dependencies"]
         )
@@ -5758,6 +5852,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             MachineImportIdentity, SelectedImportABI
         ] | None = None,
         finite_value_budget: int = 32,
+        stack_entry_offset_budget: int | None = None,
         static_slot_budget: int = 256,
         stack_slot_budget: int = 256,
         imports: list[dict[str, object]] | None = None,
@@ -5843,6 +5938,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
             image_base=IMAGE_BASE,
             image_size=image_size,
             finite_value_budget=finite_value_budget,
+            stack_entry_offset_budget=stack_entry_offset_budget,
             static_slot_budget=static_slot_budget,
             stack_slot_budget=stack_slot_budget,
             static_data_reader=static_data_reader,

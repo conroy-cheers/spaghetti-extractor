@@ -35,6 +35,8 @@ from .call_site_effects import (
 )
 from .authority_dependencies_v2 import (
     call_frame_dependency_id,
+    call_frame_family_dependency_id,
+    parse_call_frame_dependency,
 )
 from .call_frame_hypotheses import (
     PreservedRegisterHypothesis,
@@ -300,7 +302,6 @@ class _Edge:
     target_id: str
     event_index: int | None = None
     guard_json: str | None = None
-    authority_dependency: str | None = None
 
 
 @dataclass(frozen=True)
@@ -596,6 +597,7 @@ def recover_external_interface_targets(
         str, PreparedMemoryAccessFact
     ] | None = None,
     finite_value_budget: int = 32,
+    stack_entry_offset_budget: int | None = None,
     static_slot_budget: int = 256,
     stack_slot_budget: int = 256,
     fixed_point_budget: int | None = None,
@@ -621,7 +623,17 @@ def recover_external_interface_targets(
 ) -> dict[str, Any]:
     """Recover finite external method targets from typed interface origins."""
 
-    if min(finite_value_budget, static_slot_budget, stack_slot_budget) <= 0 or (
+    effective_stack_entry_offset_budget = (
+        finite_value_budget
+        if stack_entry_offset_budget is None
+        else stack_entry_offset_budget
+    )
+    if min(
+        finite_value_budget,
+        effective_stack_entry_offset_budget,
+        static_slot_budget,
+        stack_slot_budget,
+    ) <= 0 or (
         fixed_point_budget is not None and fixed_point_budget <= 0
     ):
         raise ValueError("interface provenance budgets must be positive")
@@ -687,7 +699,7 @@ def recover_external_interface_targets(
             )
     stack_entry_offsets = _normalize_checked_stack_entry_offsets(
         checked_stack_entry_offsets or {},
-        finite_value_budget=finite_value_budget,
+        stack_entry_offset_budget=effective_stack_entry_offset_budget,
     )
     by_id = {str(unit["id"]): unit for unit in units}
     if len(by_id) != len(units):
@@ -996,6 +1008,7 @@ def recover_external_interface_targets(
         ],
         "budgets": {
             "finite_values": finite_value_budget,
+            "stack_entry_offsets": effective_stack_entry_offset_budget,
             "static_slots": static_slot_budget,
             "stack_slots": stack_slot_budget,
             "fixed_point_rounds": effective_fixed_point_budget,
@@ -1455,10 +1468,6 @@ def _loop_entry_state(
             )
             if contribution is None:
                 continue
-        if edge.authority_dependency is not None:
-            contribution = _with_control_dependencies(
-                contribution, (edge.authority_dependency,)
-            )
         if entry is None:
             entry = contribution
             continue
@@ -2501,10 +2510,6 @@ def _run_dataflow(
                 )
                 if contribution is None:
                     continue
-            if edge.authority_dependency is not None:
-                contribution = _with_control_dependencies(
-                    contribution, (edge.authority_dependency,)
-                )
             if _join_state(
                 input_states,
                 edge.target_id,
@@ -3135,10 +3140,6 @@ def _run_contextual_target_discovery(
                 )
                 if contribution is None:
                     continue
-            if edge.authority_dependency is not None:
-                contribution = _with_control_dependencies(
-                    contribution, (edge.authority_dependency,)
-                )
             target_key = (edge.target_id, next_context)
             if (
                 target_key not in states
@@ -4316,7 +4317,7 @@ def _reverse_postorder_priorities(
 def _normalize_checked_stack_entry_offsets(
     values: Mapping[str, Sequence[int]],
     *,
-    finite_value_budget: int,
+    stack_entry_offset_budget: int,
 ) -> dict[str, frozenset[int]]:
     result: dict[str, frozenset[int]] = {}
     for unit_id, raw_offsets in values.items():
@@ -4332,11 +4333,11 @@ def _normalize_checked_stack_entry_offsets(
             raise ValueError(
                 f"checked stack-entry offsets for {unit_id!r} are empty"
             )
-        if len(raw_offsets) > finite_value_budget:
+        if len(raw_offsets) > stack_entry_offset_budget:
             raise ValueError(
-                "checked stack-entry offsets exceed the finite-value budget: "
+                "checked stack-entry offsets exceed the stack-entry offset budget: "
                 f"unit={unit_id!r} alternatives={len(raw_offsets)} "
-                f"budget={finite_value_budget}"
+                f"budget={stack_entry_offset_budget}"
             )
         if any(
             not isinstance(offset, int) or isinstance(offset, bool)
@@ -4570,8 +4571,7 @@ def _transfer_unit(
                 register: (
                     with_value_dependencies(
                         pre_call.registers.get(register),
-                        facts.dependencies
-                        | facts.register_dependencies.get(register, frozenset()),
+                        _register_frame_dependencies(facts, register),
                     )
                     if facts.preserved is not None and register in facts.preserved
                     else None
@@ -5827,6 +5827,22 @@ def _internal_target_call_facts(
     budget: int,
     issues: list[dict[str, Any]],
 ) -> _CallFacts:
+    preserved = internal_call_preserved_registers.get(target_address)
+    target_bindings = inventory.unit_targets.get(target_address, ())
+    register_dependencies = (
+        {
+            register: frozenset({call_frame_family_dependency_id(
+                producer_unit_id,
+                event_index,
+                target_bindings[0][1],
+                "register",
+                register,
+            )})
+            for register in preserved
+        }
+        if preserved is not None and len(target_bindings) == 1
+        else {}
+    )
     outputs: dict[_Origin, _Value] = {}
     _merge_output_effects(
         outputs,
@@ -5864,7 +5880,7 @@ def _internal_target_call_facts(
         internal_call_memory_preservation.get(target_address)
     ) or memory_writes == ()
     return _CallFacts(
-        internal_call_preserved_registers.get(target_address),
+        preserved,
         None,
         None,
         internal_call_stack_cleanup.get(target_address),
@@ -5872,6 +5888,7 @@ def _internal_target_call_facts(
         memory_preserved=memory_preserved,
         memory_writes=memory_writes,
         dependencies=dependencies,
+        register_dependencies=register_dependencies,
     )
 
 
@@ -8070,6 +8087,27 @@ def _with_call_dependencies(
         dependencies=facts.dependencies | dependencies,
         register_dependencies=facts.register_dependencies,
     )
+
+
+def _register_frame_dependencies(
+    facts: _CallFacts, register: str
+) -> frozenset[str]:
+    """Project aggregate call evidence onto one preserved register fact.
+
+    A callee may prove EDI preservation while its memory or result summary is
+    still incomplete.  In that case the register-specific witness replaces
+    aggregate call-frame dependencies.  Other dependencies, such as the
+    indirect-target certificate selecting the callee, remain required.
+    """
+
+    specific = facts.register_dependencies.get(register, frozenset())
+    if not specific:
+        return facts.dependencies
+    return frozenset(
+        dependency
+        for dependency in facts.dependencies
+        if parse_call_frame_dependency(dependency) is None
+    ) | specific
 
 
 def _external_target_call_facts(
@@ -10312,7 +10350,6 @@ def _outgoing_edges(
         source = raw.get("source_unit_id")
         targets = raw.get("target_unit_ids")
         event_index = _integer(raw.get("source_event_index"))
-        dependency = raw.get("id")
         if not isinstance(source, str) or not isinstance(targets, Sequence):
             continue
         kind = "indirect_call" if raw.get("kind") == "indirect_call" else "direct"
@@ -10322,11 +10359,6 @@ def _outgoing_edges(
                     kind,
                     target,
                     event_index,
-                    authority_dependency=(
-                        str(dependency)
-                        if isinstance(dependency, str) and dependency
-                        else None
-                    ),
                 ))
     return result
 
