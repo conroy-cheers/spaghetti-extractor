@@ -395,6 +395,259 @@ class InterfaceProvenanceTests(unittest.TestCase):
             result["counts"]["transfer_evaluations"],
         )
 
+    def test_parametric_callee_dispatch_is_instantiated_at_reached_call(self) -> None:
+        invoke = {
+            "kind": "internal_call",
+            "target_rva": 0x2000,
+            "register_inputs": {
+                register: reg(register) for register in REGISTERS
+            },
+        }
+        invoke["register_inputs"]["ecx"] = reg("eax")
+        units = [
+            factory_unit(),
+            unit("object", 0x1200, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            unit("invoke", 0x1300, events=[invoke], ordered=[invoke]),
+            unit("done", 0x1301),
+            indirect_call("callee-dispatch", 0x2000),
+        ]
+        result = self._run(
+            units,
+            [
+                edge("factory", "object"),
+                edge("object", "invoke"),
+                edge("invoke", "done"),
+            ],
+            roots=["factory"],
+            internal_edges=[{
+                "source_unit_id": "invoke",
+                "source_event_index": 0,
+                "target_unit_id": "callee-dispatch",
+                "status": "resolved",
+            }],
+            indirect_exits=[{
+                "id": "exit:callee-dispatch",
+                "source_unit_id": "callee-dispatch",
+                "source_rva": 0x2000,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(reg("ecx")),
+            }],
+            internal_call_parametric_indirect_exits={
+                IMAGE_BASE + 0x2000: ({
+                    "id": "parametric-indirect-exit:test",
+                    "origin_exit_id": "exit:callee-dispatch",
+                    "source_summary_unit_id": "callee-dispatch",
+                    "source_unit_id": "callee-dispatch",
+                    "source_rva": 0x2000,
+                    "source_event_index": 0,
+                    "kind": "indirect_call",
+                    "original_target_expression": load(reg("ecx")),
+                    "status": "complete",
+                    "target_expression": {
+                        "op": "load",
+                        "width": 4,
+                        "address": {
+                            "op": "add32",
+                            "args": [
+                                {
+                                    "op": "load",
+                                    "width": 4,
+                                    "address": {
+                                        "op": "summary_input_register",
+                                        "register": "ecx",
+                                    },
+                                },
+                                {"op": "constant", "value": 0, "width": 32},
+                            ],
+                        },
+                    },
+                    "failure": None,
+                },),
+            },
+        )
+
+        resolution = result["resolutions"][0]
+        self.assertEqual(resolution["status"], "recovered", resolution)
+        self.assertEqual(
+            resolution["proposal_source"],
+            "parametric_indirect_exit_summary_v1",
+        )
+        self.assertEqual(
+            resolution["external_targets"][0]["external_protocol"]["method"],
+            "Release",
+        )
+        self.assertTrue(has_profile_dispatch_dependency_v2(resolution))
+
+    def test_parametric_dispatch_unions_every_reached_call_site(self) -> None:
+        def invoke(identifier: str, rva: int) -> dict:
+            event = {
+                "kind": "internal_call",
+                "target_rva": 0x2000,
+                "register_inputs": {
+                    **{register: reg(register) for register in REGISTERS},
+                    "ecx": reg("eax"),
+                },
+            }
+            return unit(identifier, rva, events=[event], ordered=[event])
+
+        units = [
+            factory_unit("factory-left", 0x1100),
+            factory_unit("factory-right", 0x1110),
+            unit("object-left", 0x1200, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            unit("object-right", 0x1210, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            invoke("invoke-left", 0x1300),
+            invoke("invoke-right", 0x1310),
+            indirect_call("callee-dispatch", 0x2000),
+        ]
+        summary = ({
+            "id": "parametric-indirect-exit:test",
+            "origin_exit_id": "exit:callee-dispatch",
+            "source_summary_unit_id": "callee-dispatch",
+            "status": "complete",
+            "target_expression": {
+                "op": "load",
+                "width": 4,
+                "address": {
+                    "op": "add32",
+                    "args": [
+                        {
+                            "op": "load",
+                            "width": 4,
+                            "address": {
+                                "op": "summary_input_register",
+                                "register": "ecx",
+                            },
+                        },
+                        {"op": "constant", "value": 0, "width": 32},
+                    ],
+                },
+            },
+            "failure": None,
+        },)
+        result = self._run(
+            units,
+            [
+                edge("factory-left", "object-left"),
+                edge("object-left", "invoke-left"),
+                edge("factory-right", "object-right"),
+                edge("object-right", "invoke-right"),
+            ],
+            roots=["factory-left", "factory-right"],
+            internal_edges=[
+                {
+                    "source_unit_id": source,
+                    "source_event_index": 0,
+                    "target_unit_id": "callee-dispatch",
+                    "status": "resolved",
+                }
+                for source in ("invoke-left", "invoke-right")
+            ],
+            indirect_exits=[{
+                "id": "exit:callee-dispatch",
+                "source_unit_id": "callee-dispatch",
+                "source_rva": 0x2000,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(reg("ecx")),
+            }],
+            internal_call_parametric_indirect_exits={
+                IMAGE_BASE + 0x2000: summary,
+            },
+        )
+
+        resolution = result["resolutions"][0]
+        self.assertEqual(resolution["status"], "recovered", resolution)
+        self.assertEqual(
+            len(resolution["parametric_summary_instantiations"]), 2
+        )
+        self.assertEqual(resolution["origin_count"], 2)
+
+    def test_parametric_dispatch_is_poisoned_by_one_unknown_call_site(self) -> None:
+        def invoke(identifier: str, rva: int, receiver: str) -> dict:
+            event = {
+                "kind": "internal_call",
+                "target_rva": 0x2000,
+                "register_inputs": {
+                    **{register: reg(register) for register in REGISTERS},
+                    "ecx": reg(receiver),
+                },
+            }
+            return unit(identifier, rva, events=[event], ordered=[event])
+
+        units = [
+            factory_unit(),
+            unit("object", 0x1200, writes=[{
+                "register": "eax", "value": load(const(SLOT)),
+            }]),
+            invoke("invoke-known", 0x1300, "eax"),
+            invoke("invoke-unknown", 0x1310, "edx"),
+            indirect_call("callee-dispatch", 0x2000),
+        ]
+        result = self._run(
+            units,
+            [
+                edge("factory", "object"),
+                edge("object", "invoke-known"),
+                edge("object", "invoke-unknown"),
+            ],
+            roots=["factory"],
+            internal_edges=[
+                {
+                    "source_unit_id": source,
+                    "source_event_index": 0,
+                    "target_unit_id": "callee-dispatch",
+                    "status": "resolved",
+                }
+                for source in ("invoke-known", "invoke-unknown")
+            ],
+            indirect_exits=[{
+                "id": "exit:callee-dispatch",
+                "source_unit_id": "callee-dispatch",
+                "source_rva": 0x2000,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": load(reg("ecx")),
+            }],
+            internal_call_parametric_indirect_exits={
+                IMAGE_BASE + 0x2000: ({
+                    "id": "parametric-indirect-exit:test",
+                    "origin_exit_id": "exit:callee-dispatch",
+                    "source_summary_unit_id": "callee-dispatch",
+                    "status": "complete",
+                    "target_expression": {
+                        "op": "load",
+                        "width": 4,
+                        "address": {
+                            "op": "add32",
+                            "args": [
+                                {
+                                    "op": "load",
+                                    "width": 4,
+                                    "address": {
+                                        "op": "summary_input_register",
+                                        "register": "ecx",
+                                    },
+                                },
+                                {"op": "constant", "value": 0, "width": 32},
+                            ],
+                        },
+                    },
+                    "failure": None,
+                },),
+            },
+        )
+
+        resolution = result["resolutions"][0]
+        self.assertNotEqual(resolution["status"], "recovered", resolution)
+        self.assertNotIn("parametric_summary_instantiations", resolution)
+
     def test_interface_instances_retain_distinct_producer_identities(self) -> None:
         units = [
             factory_unit("factory-left", 0x1100),
@@ -5504,6 +5757,10 @@ class InterfaceProvenanceTests(unittest.TestCase):
             [cause["code"] for cause in frontier["causes"]],
             ["symbolic_memory_fact_missing"],
         )
+        self.assertEqual(
+            result["contextual_recovery"],
+            {"required": False, "executed": False},
+        )
 
     def test_nested_dispatch_reports_deepest_missing_receiver_load(self) -> None:
         target = load(add(const(48), load(load(reg("edx")))))
@@ -5541,6 +5798,10 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertEqual(
             receiver["cause"]["causes"][0]["code"],
             "symbolic_memory_fact_missing",
+        )
+        self.assertEqual(
+            result["contextual_recovery"],
+            {"required": False, "executed": False},
         )
 
     def test_unknown_call_preservation_is_bootstrap_only(self) -> None:
@@ -6476,6 +6737,9 @@ class InterfaceProvenanceTests(unittest.TestCase):
         internal_call_memory_result_relations: dict[
             int, dict[ValueOrigin, frozenset[ValueOrigin] | None]
         ] | None = None,
+        internal_call_parametric_indirect_exits: dict[
+            int, tuple[dict[str, object], ...]
+        ] | None = None,
         initial_known_slots: dict[object, object] | None = None,
         initial_event_known_slots: dict[
             CallSiteId, dict[object, object]
@@ -6547,6 +6811,9 @@ class InterfaceProvenanceTests(unittest.TestCase):
             internal_call_memory_frames=internal_call_memory_frames or {},
             internal_call_memory_result_relations=(
                 internal_call_memory_result_relations or {}
+            ),
+            internal_call_parametric_indirect_exits=(
+                internal_call_parametric_indirect_exits or {}
             ),
             image_base=IMAGE_BASE,
             image_size=image_size,

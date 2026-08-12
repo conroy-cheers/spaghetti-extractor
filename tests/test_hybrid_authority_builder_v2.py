@@ -37,6 +37,9 @@ from spaghetti_extractor.hybrid_authority_v2 import (
     canonical_json_bytes,
 )
 from spaghetti_extractor.machine_abi import build_pe32_normal_call_abi_premise
+from spaghetti_extractor.parametric_indirect_exit_v2 import (
+    ParametricIndirectExitSummaryV2,
+)
 
 from tests.test_isa_kernel_selection import BINARY_SHA, _authority
 
@@ -549,11 +552,179 @@ class HybridAuthorityBuilderV2Tests(unittest.TestCase):
                 "call_frame_summary", family_frame.content_id
             ),),
         )
+
         self.assertNotIn(
             "analysis_dependency_kind_unsupported",
             {issue.code for issue in certificate.issues},
         )
         self.assertNotIn("contradictory_subject_claims", bundle.diagnostics)
+
+    def test_parametric_indirect_exit_family_authorizes_instantiated_target(
+        self,
+    ) -> None:
+        rows = [
+            _at(_row(external_events=[{
+                "kind": "internal_call",
+                "instruction_rva": 0x1000,
+                "target_rva": 0x2000,
+            }]), "unit:entry", 0x1000),
+            _indirect_row("unit:callee", 0x2000, "eax"),
+        ]
+        recovery = _recovery_for(
+            rows,
+            "unit:callee",
+            target_unit_ids=["unit:entry"],
+        )
+        exit_id = str(recovery["id"])
+        binary = BinaryBinding(BINARY_SHA, machine_ir_sha256(rows))
+        exact_bindings = build_machine_ir_authority_bindings(
+            rows, pe_sha256=BINARY_SHA
+        )
+        exit_binding = next(
+            parsed
+            for raw in exact_bindings["indirect_exits"]
+            for parsed in (IndirectExitBinding.parse(raw),)
+            if parsed.exit_id == exit_id
+        )
+        parametric_summary = ParametricIndirectExitSummaryV2.complete(
+            summary_unit=recompute_unit_binding(rows[1], binary=binary),
+            exit_binding=exit_binding,
+            target_expression={
+                "op": "summary_input_register",
+                "register": "eax",
+            },
+        )
+        dependency = call_frame_family_dependency_id(
+            "unit:entry",
+            0,
+            "unit:callee",
+            "indirect_exit",
+            exit_id,
+        )
+        recovery["analysis_dependencies"] = [dependency]
+        recovery["parametric_summary_instantiations"] = [{
+            "caller_unit_id": "unit:entry",
+            "caller_event_index": 0,
+            "callee_address": 0x402000,
+            "callee_unit_id": "unit:callee",
+            "summary_id": parametric_summary.summary_id,
+        }]
+        interprocedural = _interprocedural(recoveries=[recovery])
+        interprocedural["call_summaries"] = {"summaries": [{
+            "target_unit_id": "unit:callee",
+            "status": "incomplete",
+            "preserved_registers": [],
+            "register_preservation": {"status": "incomplete"},
+            "stack_cleanup": {"status": "incomplete"},
+            "return_instruction_cleanup": {"status": "incomplete"},
+            "result_register_origins": {"status": "incomplete"},
+            "result_memory_origins": {"status": "incomplete"},
+            "return_behavior": {"status": "incomplete"},
+            "memory_effects": {"status": "incomplete"},
+            "callback_effects": {"status": "incomplete"},
+            "world_effects": {"status": "incomplete"},
+            "parametric_indirect_exits": {
+                "status": "complete",
+                "exits": [parametric_summary.to_payload()],
+            },
+        }]}
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=interprocedural,
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        family_frame = next(
+            record
+            for record in bundle.records
+            if isinstance(record, CallFrameSummary)
+            and record.analysis_fact_id
+            == call_summary_family_node_id(
+                "unit:callee", "indirect_exit", exit_id
+            )
+        )
+        certificate = next(
+            record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+            and record.analysis_fact_id == exit_id
+        )
+        self.assertEqual(family_frame.status, AuthorityStatus.COMPLETE)
+        self.assertEqual(
+            certificate.dependencies,
+            (AuthorityDependency(
+                "call_frame_summary", family_frame.content_id
+            ),),
+        )
+
+        corrupted = parametric_summary.to_payload()
+        corrupted["target_expression"] = {
+            "op": "summary_input_register",
+            "register": "ebx",
+        }
+        corrupt_interprocedural = copy.deepcopy(interprocedural)
+        corrupt_interprocedural["call_summaries"]["summaries"][0][
+            "parametric_indirect_exits"
+        ]["exits"] = [corrupted]
+        corrupt_bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=corrupt_interprocedural,
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+        corrupt_frame = next(
+            record
+            for record in corrupt_bundle.records
+            if isinstance(record, CallFrameSummary)
+            and record.analysis_fact_id
+            == call_summary_family_node_id(
+                "unit:callee", "indirect_exit", exit_id
+            )
+        )
+        corrupt_certificate = next(
+            record
+            for record in corrupt_bundle.records
+            if isinstance(record, IndirectExitCertificate)
+            and record.analysis_fact_id == exit_id
+        )
+        self.assertEqual(corrupt_frame.status, AuthorityStatus.VIOLATED)
+        self.assertEqual(
+            corrupt_certificate.status, AuthorityStatus.VIOLATED
+        )
+
+        stale_interprocedural = copy.deepcopy(interprocedural)
+        stale_interprocedural["recovered_targets"][0][
+            "parametric_summary_instantiations"
+        ][0]["summary_id"] = "parametric-indirect-exit-v2:" + "0" * 64
+        stale_bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=stale_interprocedural,
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+        stale_certificate = next(
+            record
+            for record in stale_bundle.records
+            if isinstance(record, IndirectExitCertificate)
+            and record.analysis_fact_id == exit_id
+        )
+        self.assertEqual(stale_certificate.status, AuthorityStatus.VIOLATED)
+        self.assertIn(
+            "parametric_indirect_exit_instantiation_mismatch",
+            {issue.code for issue in stale_certificate.issues},
+        )
 
     def test_missing_global_slot_is_not_reclassified_as_unknown_call_fact(self) -> None:
         rows = [_indirect_row("unit:entry", 0x1000, "eax")]

@@ -683,6 +683,33 @@ let
         '';
       };
 
+      parametricIndirectExitSummaries = {
+        derivationSuffix = "parametric-indirect-exit-summaries-v2";
+        kind = "parametric-indirect-exit-summaries-v2";
+        artifactName = "parametric-indirect-exit-summaries-v2.json";
+        expectedFormat =
+          "spaghetti-extractor-parametric-indirect-exit-inventory-v2";
+        allowedStatuses = [ "complete" "incomplete" "violated" ];
+        pythonModules = [
+          "spaghetti_extractor.parametric_indirect_exit_v2"
+        ];
+        inputs = { };
+        program = ''
+          from spaghetti_extractor.parametric_indirect_exit_v2 import (
+              build_parametric_indirect_exit_inventory_v2,
+          )
+
+          seed = json.loads(
+              inputs["interprocedural_seed"].read_text(encoding="utf-8")
+          )
+          payload = build_parametric_indirect_exit_inventory_v2(seed)
+          output.write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+        '';
+      };
+
       controlInvariantCertificates = {
         derivationSuffix = "control-invariants-v2";
         kind = "control-invariants-v2";
@@ -782,6 +809,7 @@ let
           "spaghetti_extractor.launch_memory_ranges_v2"
           "spaghetti_extractor.memory_range_invariants_v2"
           "spaghetti_extractor.mutable_slot_candidates_v2"
+          "spaghetti_extractor.parametric_indirect_exit_v2"
           "spaghetti_extractor.internal_function_contracts"
           "spaghetti_extractor.stack_range_analysis_v2"
         ];
@@ -845,6 +873,9 @@ let
               derive_mutable_slot_candidates,
               derive_proposal_slot_dependencies,
           )
+          from spaghetti_extractor.parametric_indirect_exit_v2 import (
+              build_parametric_indirect_exit_inventory_v2,
+          )
           from spaghetti_extractor.stack_range_analysis_v2 import (
               derive_stack_range_analysis_v2,
           )
@@ -858,6 +889,17 @@ let
           manifest = json.loads(inputs["machine_ir_manifest"].read_text(encoding="utf-8"))
           base_graph = json.loads(inputs["base_graph"].read_text(encoding="utf-8"))
           seed = json.loads(inputs["interprocedural_seed"].read_text(encoding="utf-8"))
+          parametric_indirect_exit_summaries = json.loads(
+              inputs["parametric_indirect_exit_summaries"].read_text(
+                  encoding="utf-8"
+              )
+          )
+          if parametric_indirect_exit_summaries != (
+              build_parametric_indirect_exit_inventory_v2(seed)
+          ):
+              raise ValueError(
+                  "parametric indirect-exit phase is stale for the proposal seed"
+              )
           inventory = json.loads(inputs["selected_profiles"].read_text(encoding="utf-8"))
           checked_control_invariants = json.loads(
               inputs["control_invariants"].read_text(encoding="utf-8")

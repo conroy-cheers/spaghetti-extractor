@@ -37,6 +37,7 @@ from .authority_dependencies_v2 import (
     call_frame_family_dependency_id,
     parse_call_frame_dependency,
 )
+from .authority_bindings_v2 import AuthorityDataError
 from .call_frame_hypotheses import (
     PreservedRegisterHypothesis,
     hypothesis_id as call_frame_hypothesis_id,
@@ -99,6 +100,11 @@ from .provenance_domain import (
     value_dependencies,
     with_origin_dependencies,
     with_value_dependencies,
+)
+from .parametric_indirect_exit_v2 import (
+    PARAMETRIC_INDIRECT_EXIT_SUMMARY_V2,
+    ParametricIndirectExitSummaryV2,
+    validate_parametric_target_expression_v2,
 )
 
 
@@ -764,6 +770,9 @@ def recover_external_interface_targets(
         int, Sequence[CallWriteSpan]
     ] | None = None,
     internal_call_memory_result_relations: Mapping[int, Any] | None = None,
+    internal_call_parametric_indirect_exits: Mapping[
+        int, Sequence[Mapping[str, Any]]
+    ] | None = None,
     prepared_memory_access_facts: Mapping[
         str, PreparedMemoryAccessFact
     ] | None = None,
@@ -886,6 +895,12 @@ def recover_external_interface_targets(
     supplied_call_memory_results = _normalize_internal_call_memory_results(
         internal_call_memory_result_relations or {},
         finite_value_budget=finite_value_budget,
+    )
+    supplied_parametric_indirect_exits = (
+        _normalize_parametric_indirect_exit_summaries(
+            internal_call_parametric_indirect_exits or {},
+            finite_value_budget=finite_value_budget,
+        )
     )
     internal_call_dependency_ids: dict[tuple[str, int], frozenset[str]] = {}
     for edge in internal_call_edges:
@@ -1028,6 +1043,9 @@ def recover_external_interface_targets(
             internal_call_memory_frames=supplied_call_memory_frames,
             internal_call_memory_result_relations=(
                 supplied_call_memory_results
+            ),
+            internal_call_parametric_indirect_exits=(
+                supplied_parametric_indirect_exits
             ),
             internal_call_dependency_ids=internal_call_dependency_ids,
             recovered_calls=recovered_calls,
@@ -2427,6 +2445,97 @@ def _normalize_internal_call_memory_results(
     return result
 
 
+def _normalize_parametric_indirect_exit_summaries(
+    values: Mapping[int, Sequence[Mapping[str, Any]]],
+    *,
+    finite_value_budget: int,
+) -> dict[int, tuple[Mapping[str, Any], ...]]:
+    """Validate structural target templates before rooted instantiation."""
+
+    result: dict[int, tuple[Mapping[str, Any], ...]] = {}
+    for target, raw_rows in values.items():
+        if (
+            not isinstance(target, int)
+            or isinstance(target, bool)
+            or not 0 <= target <= 0xFFFFFFFF
+            or not isinstance(raw_rows, Sequence)
+            or isinstance(raw_rows, (str, bytes))
+        ):
+            raise ValueError("parametric indirect-exit summary is malformed")
+        rows: list[Mapping[str, Any]] = []
+        seen: set[str] = set()
+        for raw in raw_rows:
+            if not isinstance(raw, Mapping):
+                raise ValueError(
+                    "parametric indirect-exit summary row is malformed"
+                )
+            typed: ParametricIndirectExitSummaryV2 | None = None
+            if raw.get("format") == PARAMETRIC_INDIRECT_EXIT_SUMMARY_V2:
+                try:
+                    typed = ParametricIndirectExitSummaryV2.parse(raw)
+                except AuthorityDataError as exc:
+                    raise ValueError(
+                        "parametric indirect-exit summary row is malformed"
+                    ) from exc
+            exit_id = (
+                typed.exit_binding.exit_id
+                if typed is not None
+                else raw.get("origin_exit_id")
+            )
+            expression = (
+                typed.target_expression.to_value()
+                if typed is not None and typed.target_expression is not None
+                else raw.get("target_expression")
+            )
+            summary_unit_id = (
+                typed.summary_unit.unit_id
+                if typed is not None
+                else raw.get("source_summary_unit_id")
+            )
+            if (
+                raw.get("status") != "complete"
+                or not isinstance(exit_id, str)
+                or not exit_id
+                or not isinstance(summary_unit_id, str)
+                or not summary_unit_id
+                or exit_id in seen
+                or not isinstance(expression, Mapping)
+            ):
+                raise ValueError(
+                    "parametric indirect-exit summary row is malformed"
+                )
+            # Reject noncanonical objects and accidental mutable aliases at the
+            # analysis boundary.  The target-expression parser below remains
+            # the semantic authority for supported forms.
+            try:
+                validate_parametric_target_expression_v2(
+                    expression,
+                    finite_alternative_budget=finite_value_budget,
+                )
+                normalized = json.loads(json.dumps(
+                    {
+                        **dict(raw),
+                        "origin_exit_id": exit_id,
+                        "source_summary_unit_id": summary_unit_id,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                    allow_nan=False,
+                ))
+            except (AuthorityDataError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    "parametric indirect-exit summary is not canonical JSON"
+                ) from exc
+            seen.add(exit_id)
+            rows.append(normalized)
+        if rows:
+            result[target] = tuple(sorted(
+                rows, key=lambda row: str(row["origin_exit_id"])
+            ))
+    return result
+
+
 def _normalize_internal_call_memory_frames(
     values: Mapping[int, Sequence[CallWriteSpan]],
     *,
@@ -2681,6 +2790,9 @@ def _run_dataflow(
     internal_call_memory_preservation: Mapping[int, bool],
     internal_call_memory_frames: _InternalCallMemoryFrames,
     internal_call_memory_result_relations: _InternalCallMemoryResults,
+    internal_call_parametric_indirect_exits: Mapping[
+        int, tuple[Mapping[str, Any], ...]
+    ],
     internal_call_dependency_ids: Mapping[tuple[str, int], frozenset[str]],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
     checked_write_footprints: Mapping[
@@ -3122,7 +3234,9 @@ def _run_dataflow(
         component_path_recoveries = tuple(
             (identity, key, candidate)
             for identity in sorted(component_exit_ids)
-            for key, candidate in sorted(path_recoveries[identity].items())
+            for key, candidate in sorted(
+                path_recoveries.get(identity, {}).items()
+            )
         )
         new_observations = observed_transfer_keys - observations_before
         transfer_cache.put_scc(
@@ -3199,6 +3313,20 @@ def _run_dataflow(
         known_slots=known_slots,
         event_known_slots=event_known_slots,
         finite_value_budget=finite_value_budget,
+    )
+    resolutions = _merge_parametric_indirect_exit_resolutions(
+        resolutions,
+        by_id=by_id,
+        final_transfers=final_transfers,
+        internal_call_parametric_indirect_exits=(
+            internal_call_parametric_indirect_exits
+        ),
+        recovered_calls=recovered_calls,
+        inventory=inventory,
+        import_abis=import_abis,
+        known_slots=known_slots,
+        finite_value_budget=finite_value_budget,
+        image_base=image_base,
     )
     legacy_path_proposals = _finalize_path_recovery_proposals(
         resolutions, path_recoveries
@@ -9714,6 +9842,315 @@ def _operation_target_origin(
             guard.mask,
         ),
     )
+
+
+def _merge_parametric_indirect_exit_resolutions(
+    resolutions: Sequence[Mapping[str, Any]],
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    final_transfers: Mapping[str, _UnitTransfer],
+    internal_call_parametric_indirect_exits: Mapping[
+        int, tuple[Mapping[str, Any], ...]
+    ],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    inventory: _ProfileInventory,
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    known_slots: Mapping[_MemoryLocation, _Value],
+    finite_value_budget: int,
+    image_base: int,
+) -> list[dict[str, Any]]:
+    """Instantiate structural target templates at every reached call site."""
+
+    if not internal_call_parametric_indirect_exits:
+        return [copy.deepcopy(dict(row)) for row in resolutions]
+    observed: dict[str, set[_Origin]] = defaultdict(set)
+    dependencies: dict[str, set[str]] = defaultdict(set)
+    sites: dict[str, set[tuple[str, int, int, str, str]]] = defaultdict(set)
+    poisoned: set[str] = set()
+    for source_id, transfer in final_transfers.items():
+        unit = by_id.get(source_id)
+        if unit is None:
+            continue
+        call_entries = transfer[0][1]
+        events = _events(unit)
+        for event_index, pre_call in call_entries.items():
+            if not 0 <= event_index < len(events):
+                continue
+            event = events[event_index]
+            target_addresses = _parametric_call_target_addresses(
+                event,
+                recovery=recovered_calls.get((source_id, event_index)),
+                image_base=image_base,
+            )
+            for target_address in target_addresses:
+                for row in internal_call_parametric_indirect_exits.get(
+                    target_address, ()
+                ):
+                    exit_id = str(row["origin_exit_id"])
+                    value = _evaluate_parametric_target_expression(
+                        row["target_expression"],
+                        pre_call=pre_call,
+                        inventory=inventory,
+                        known_slots=known_slots,
+                        budget=finite_value_budget,
+                        producer_unit_id=source_id,
+                        event_index=event_index,
+                    )
+                    if value is None:
+                        poisoned.add(exit_id)
+                        continue
+                    combined = observed[exit_id] | set(value)
+                    if len(combined) > finite_value_budget:
+                        poisoned.add(exit_id)
+                        continue
+                    observed[exit_id] = combined
+                    target_unit_id = str(
+                        row.get("source_summary_unit_id") or ""
+                    )
+                    dependency = call_frame_family_dependency_id(
+                        source_id,
+                        event_index,
+                        target_unit_id,
+                        "indirect_exit",
+                        exit_id,
+                    )
+                    dependencies[exit_id].update(
+                        set(pre_call.control_dependencies)
+                        | set(value_dependencies(value))
+                        | {dependency}
+                    )
+                    sites[exit_id].add((
+                        source_id,
+                        event_index,
+                        target_address,
+                        str(row.get("id") or ""),
+                        target_unit_id,
+                    ))
+
+    by_exit = {
+        str(row.get("id")): copy.deepcopy(dict(row))
+        for row in resolutions
+        if isinstance(row.get("id"), str)
+    }
+    for exit_id, raw_origins in sorted(observed.items()):
+        if exit_id in poisoned or not raw_origins:
+            continue
+        base = by_exit.get(exit_id)
+        if base is None or base.get("status") == "recovered":
+            continue
+        origins = frozenset(raw_origins)
+        classified = _classify_target_origins(
+            origins,
+            inventory=inventory,
+            import_abis=import_abis,
+            transfer=(
+                "call" if base.get("kind") == "indirect_call" else "jump"
+            ),
+        )
+        if classified is None:
+            continue
+        internal, external, target_kinds = classified
+        recovery = {
+            **base,
+            "status": "recovered",
+            "closure": (
+                "checked_profile_interface_method_inventory"
+                if target_kinds == {"interface_operation"}
+                else "checked_external_operation_inventory"
+                if target_kinds == {"profile_operation"}
+                else "checked_resolver_export_inventory"
+                if target_kinds == {"resolved_export"}
+                else "checked_finite_operation_origin_inventory"
+            ),
+            "target_rvas": sorted({item[0] for item in internal}),
+            "target_unit_ids": sorted({item[1] for item in internal}),
+            "external_targets": sorted(
+                external,
+                key=lambda row: json.dumps(row, sort_keys=True),
+            ),
+            "origin_count": len(origins),
+            "origin_kinds": sorted(target_kinds),
+            "target_origin_witnesses": origins_json(origins),
+            "analysis_dependencies": sorted(dependencies[exit_id]),
+            "parametric_summary_instantiations": [
+                {
+                    "caller_unit_id": source,
+                    "caller_event_index": event_index,
+                    "callee_address": address,
+                    "summary_id": summary_id,
+                    "callee_unit_id": callee_unit_id,
+                }
+                for source, event_index, address, summary_id, callee_unit_id in sorted(
+                    sites[exit_id]
+                )
+            ],
+            "proposal_source": "parametric_indirect_exit_summary_v1",
+            "failure": None,
+        }
+        if recovery["closure"] in {
+            "checked_profile_interface_method_inventory",
+            "checked_external_operation_inventory",
+        }:
+            if _profile_dispatch_origins_are_instance_bound(origins):
+                recovery["target_set_dependency"] = (
+                    build_profile_dispatch_dependency_v2(recovery)
+                )
+            else:
+                continue
+        by_exit[exit_id] = recovery
+    return [by_exit[key] for key in sorted(by_exit)]
+
+
+def _parametric_call_target_addresses(
+    event: Mapping[str, Any],
+    *,
+    recovery: Mapping[str, Any] | None,
+    image_base: int,
+) -> tuple[int, ...]:
+    if event.get("kind") == "internal_call":
+        rva = _integer(event.get("target_rva"))
+        return () if rva is None else (((image_base + rva) & 0xFFFFFFFF),)
+    if event.get("kind") != "indirect_call" or recovery is None:
+        return ()
+    raw_rvas = recovery.get("target_rvas")
+    if not isinstance(raw_rvas, Sequence) or isinstance(raw_rvas, (str, bytes)):
+        return ()
+    result = {
+        (image_base + int(rva)) & 0xFFFFFFFF
+        for rva in raw_rvas
+        if isinstance(rva, int) and not isinstance(rva, bool)
+    }
+    return tuple(sorted(result))
+
+
+def _evaluate_parametric_target_expression(
+    expression: Any,
+    *,
+    pre_call: _State,
+    inventory: _ProfileInventory,
+    known_slots: Mapping[_MemoryLocation, _Value],
+    budget: int,
+    producer_unit_id: str,
+    event_index: int,
+) -> _Value:
+    row = _mapping(expression)
+    op = str(row.get("op") or "").lower()
+    if op == "summary_input_register":
+        register = row.get("register")
+        return pre_call.registers.get(str(register)) if register in _REGISTERS else None
+    if op == "summary_input_stack_word":
+        return _input_stack_summary_value(
+            {"kind": "input_stack_word", "offset": row.get("offset")},
+            pre_call=pre_call,
+        )
+    if op in {"constant", "const"}:
+        value = _integer(row.get("value"))
+        return None if value is None else frozenset({_Origin("exact", (value & 0xFFFFFFFF,))})
+    if op == "summary_value":
+        outputs = _internal_call_result_outputs(
+            {"eax": [_mapping(row.get("value"))]},
+            producer_unit_id=producer_unit_id,
+            event_index=event_index,
+            pre_call=pre_call,
+            inventory=inventory,
+            budget=budget,
+        )
+        return outputs.get(_Origin("register_location", ("eax",)))
+    if op == "finite_alternatives":
+        alternatives = row.get("values")
+        if not isinstance(alternatives, list):
+            return None
+        result: set[_Origin] = set()
+        for alternative in alternatives:
+            value = _evaluate_parametric_target_expression(
+                alternative,
+                pre_call=pre_call,
+                inventory=inventory,
+                known_slots=known_slots,
+                budget=budget,
+                producer_unit_id=producer_unit_id,
+                event_index=event_index,
+            )
+            if value is None:
+                return None
+            result.update(value)
+            if len(result) > budget:
+                return None
+        return frozenset(result) if result else None
+    if op in {"load", "read32", "mem32"}:
+        addresses = _evaluate_parametric_target_expression(
+            row.get("address"),
+            pre_call=pre_call,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+            producer_unit_id=producer_unit_id,
+            event_index=event_index,
+        )
+        if addresses is None:
+            return None
+        registers = dict(pre_call.registers)
+        registers["eax"] = addresses
+        return _evaluate(
+            {"op": "load", "width": 4, "address": {"op": "reg", "name": "eax"}},
+            _State(
+                registers,
+                dict(pre_call.memory),
+                dict(pre_call.stack),
+                pre_call.memory_invalidated,
+                pre_call.control_dependencies,
+            ),
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+        )
+    if op in {"neg", "neg32"}:
+        value = _evaluate_parametric_target_expression(
+            row.get("arg", row.get("value")),
+            pre_call=pre_call,
+            inventory=inventory,
+            known_slots=known_slots,
+            budget=budget,
+            producer_unit_id=producer_unit_id,
+            event_index=event_index,
+        )
+        return _negate_values(value, budget=budget)
+    operands = row.get("args")
+    if (
+        op not in {"add", "add32", "sub", "sub32", "mul", "mul32", "and", "and32"}
+        or not isinstance(operands, list)
+        or len(operands) != 2
+    ):
+        return None
+    left = _evaluate_parametric_target_expression(
+        operands[0],
+        pre_call=pre_call,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+        producer_unit_id=producer_unit_id,
+        event_index=event_index,
+    )
+    right = _evaluate_parametric_target_expression(
+        operands[1],
+        pre_call=pre_call,
+        inventory=inventory,
+        known_slots=known_slots,
+        budget=budget,
+        producer_unit_id=producer_unit_id,
+        event_index=event_index,
+    )
+    if op in {"add", "add32", "sub", "sub32"}:
+        return _add_values(
+            left,
+            right,
+            subtract=op in {"sub", "sub32"},
+            budget=budget,
+            inventory=inventory,
+        )
+    if op in {"mul", "mul32"}:
+        return _multiply_values(left, right, budget=budget)
+    return _bitwise_and_values(left, right, budget=budget)
 
 
 def _resolve_exits(

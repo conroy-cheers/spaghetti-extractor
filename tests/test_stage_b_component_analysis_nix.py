@@ -271,6 +271,40 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             joint_phase,
         )
 
+    def test_parametric_indirect_exits_have_a_ca_phase_boundary(self) -> None:
+        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
+            encoding="utf-8"
+        )
+        graph = (
+            ROOT / "nix" / "stage-b-static-hybrid-authority-v2.nix"
+        ).read_text(encoding="utf-8")
+        phase = module[
+            module.index("      parametricIndirectExitSummaries = {") :
+            module.index("      controlInvariantCertificates = {")
+        ]
+        joint = module[
+            module.index("      jointInterproceduralV2 = {") :
+            module.index("      interproceduralV2 = {")
+        ]
+
+        self.assertIn("__contentAddressed = true;", module)
+        self.assertIn(
+            "build_parametric_indirect_exit_inventory_v2", phase
+        )
+        self.assertNotIn("selected_profiles", phase)
+        self.assertIn('inputs["interprocedural_seed"]', phase)
+        self.assertIn(
+            'inputs["parametric_indirect_exit_summaries"]', joint
+        )
+        self.assertIn(
+            'parametricIndirectExitSummaries = mkPhase '
+            '"parametricIndirectExitSummaries"',
+            graph,
+        )
+        self.assertIn(
+            "parametric_indirect_exit_summaries =", graph
+        )
+
     def test_interprocedural_phase_does_not_import_pipeline_or_audit_layers(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
             encoding="utf-8"

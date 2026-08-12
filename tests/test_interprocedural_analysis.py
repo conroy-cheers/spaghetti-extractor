@@ -2928,6 +2928,92 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(callee_summary["stack_cleanup"]["status"], "complete")
 
+    def test_parametric_indirect_exit_family_closes_in_cold_replay(self) -> None:
+        exit_row = indirect_exit("exit:inner:0", "inner")
+        dependency = call_frame_family_dependency_id(
+            "caller", 0, "callee", "indirect_exit", exit_row["id"]
+        )
+        template = {
+            "id": "parametric-indirect-exit:test",
+            "origin_exit_id": exit_row["id"],
+            "source_summary_unit_id": "callee",
+            "source_unit_id": "inner",
+            "source_rva": 0x3000,
+            "source_event_index": 0,
+            "kind": "indirect_call",
+            "original_target_expression": reg("eax"),
+            "status": "complete",
+            "target_expression": {
+                "op": "summary_input_register",
+                "register": "eax",
+            },
+            "failure": None,
+        }
+
+        def summaries(**kwargs: Any) -> dict[str, object]:
+            result = summary_adapter(**kwargs)
+            rows = result["summaries"]
+            assert isinstance(rows, list)
+            for row in rows:
+                if row.get("target_unit_id") == "callee":
+                    row["parametric_indirect_exits"] = {
+                        "status": "complete",
+                        "exits": [template],
+                    }
+            return result
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            templates = kwargs.get("internal_call_parametric_indirect_exits")
+            if not isinstance(templates, dict) or not templates:
+                return {"resolutions": [incomplete_recovery(exit_row)]}
+            replayed = recovered(exit_row, "target")
+            replayed.update({
+                "analysis_dependencies": [dependency],
+                "parametric_summary_instantiations": [{
+                    "caller_unit_id": "caller",
+                    "caller_event_index": 0,
+                    "callee_address": IMAGE_BASE + 0x2000,
+                    "callee_unit_id": "callee",
+                    "summary_id": template["id"],
+                }],
+                "origin_count": 1,
+                "origin_kinds": ["internal"],
+                "target_origin_witnesses": [{
+                    "kind": "static_code",
+                    "key": [IMAGE_BASE + 0x4000, 0],
+                }],
+            })
+            return {"resolutions": [replayed]}
+
+        result = self._run(
+            units=[
+                unit("caller", 0x1000, calls=(0x2000,)),
+                unit("callee", 0x2000),
+                unit("inner", 0x3000),
+                unit("target", 0x4000),
+            ],
+            roots=["inner"],
+            calls=[call_edge("caller", "callee")],
+            exits=[exit_row],
+            resolver=resolver,
+            summary_resolver=summaries,
+            authority_only=True,
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        family_node = call_summary_family_node_id(
+            "callee", "indirect_exit", exit_row["id"]
+        )
+        self.assertEqual(result.recovered_targets[0]["status"], "recovered")
+        self.assertIn(
+            family_node,
+            {
+                str(row["id"])
+                for row in result.fixed_point["dependencies"]
+                if row.get("status") == "complete"
+            },
+        )
+
     def test_missing_register_fact_cannot_authorize_family_dependency(
         self,
     ) -> None:

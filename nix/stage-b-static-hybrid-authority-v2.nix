@@ -19,6 +19,7 @@ let
     "exactUnitPrep"
     "baseGraph"
     "interproceduralSeed"
+    "parametricIndirectExitSummaries"
     "controlInvariantCertificates"
     "memoryRangeInvariants"
     "jointInterproceduralV2"
@@ -78,6 +79,9 @@ let
     exact_unit_prep = exactUnitPrep.artifact;
     base_graph = baseGraph.artifact;
   };
+  parametricIndirectExitSummaries = mkPhase "parametricIndirectExitSummaries" {
+    interprocedural_seed = interproceduralSeed.artifact;
+  };
   controlInvariantCertificates = mkPhase "controlInvariantCertificates" {
     exact_unit_prep = exactUnitPrep.artifact;
   };
@@ -88,6 +92,8 @@ let
     exact_unit_prep = exactUnitPrep.artifact;
     base_graph = baseGraph.artifact;
     interprocedural_seed = interproceduralSeed.artifact;
+    parametric_indirect_exit_summaries =
+      parametricIndirectExitSummaries.artifact;
     control_invariants = controlInvariantCertificates.artifact;
     memory_range_invariants = memoryRangeInvariants.artifact;
   };
@@ -168,6 +174,7 @@ let
     exactUnitPrep
     baseGraph
     interproceduralSeed
+    parametricIndirectExitSummaries
     controlInvariantCertificates
     memoryRangeInvariants
     jointInterproceduralV2
@@ -196,6 +203,7 @@ assert contentAddressed;
     exactUnitPrep
     baseGraph
     interproceduralSeed
+    parametricIndirectExitSummaries
     controlInvariantCertificates
     memoryRangeInvariants
     jointInterproceduralV2

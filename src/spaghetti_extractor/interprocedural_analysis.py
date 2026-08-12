@@ -86,6 +86,7 @@ from .provenance_domain import (
     parse_finite_value,
     parse_value_origin,
 )
+from .parametric_indirect_exit_v2 import ParametricIndirectExitSummaryV2
 from .value_provenance import legacy_value_provenance_view
 
 
@@ -265,7 +266,12 @@ class _PassAnalysisWorkspace:
     validated_memory_accesses: _BoundedResultCache
 
     @classmethod
-    def for_unit_count(cls, unit_count: int) -> "_PassAnalysisWorkspace":
+    def for_unit_count(
+        cls,
+        unit_count: int,
+        *,
+        call_summary_components: _InternalCallSummaryComponentCache,
+    ) -> "_PassAnalysisWorkspace":
         return cls(
             interface_transfers=InterfaceTransferCache.for_unit_count(
                 max(1, unit_count)
@@ -273,9 +279,7 @@ class _PassAnalysisWorkspace:
             mutable_sccs=_MutableSCCCache.for_unit_count(unit_count),
             mutable_replays=_BoundedResultCache(128),
             call_summaries=_BoundedResultCache(128),
-            call_summary_components=(
-                _InternalCallSummaryComponentCache.for_unit_count(unit_count)
-            ),
+            call_summary_components=call_summary_components,
             validated_memory_accesses=_BoundedResultCache(128),
         )
 
@@ -285,14 +289,18 @@ class InterproceduralAnalysisWorkspace:
 
     Cached values carry no authority.  A workspace binds to one exact immutable
     analysis context and rejects accidental reuse for another binary, machine
-    IR, profile inventory, graph, or resource policy.  Discovery, cold, and
-    inductive passes have separate namespaces because their static-data and
-    hypothesis policies differ.
+    IR, profile inventory, graph, or resource policy. Discovery, cold, and
+    inductive passes keep separate result namespaces because their static-data
+    and hypothesis policies differ. Exact structural call-summary SCCs share a
+    non-authorizing component cache; its key includes every transfer input.
     """
 
     def __init__(self) -> None:
         self._context_key: Hashable | None = None
         self._passes: dict[str, _PassAnalysisWorkspace] = {}
+        self._call_summary_components: (
+            _InternalCallSummaryComponentCache | None
+        ) = None
 
     @property
     def bound(self) -> bool:
@@ -314,7 +322,14 @@ class InterproceduralAnalysisWorkspace:
         existing = self._passes.get(pass_kind)
         if existing is not None:
             return existing
-        created = _PassAnalysisWorkspace.for_unit_count(unit_count)
+        if self._call_summary_components is None:
+            self._call_summary_components = (
+                _InternalCallSummaryComponentCache.for_unit_count(unit_count)
+            )
+        created = _PassAnalysisWorkspace.for_unit_count(
+            unit_count,
+            call_summary_components=self._call_summary_components,
+        )
         self._passes[pass_kind] = created
         return created
 
@@ -1981,6 +1996,10 @@ def _run_typed_pass(
             image_base=image_base,
             finite_value_budget=finite_value_budget,
         )
+        parametric_indirect_exits = _call_summary_parametric_indirect_exits(
+            summaries,
+            image_base=image_base,
+        )
         memory_preservation = _call_summary_memory_preservation(
             summaries, image_base=image_base
         )
@@ -2013,6 +2032,9 @@ def _run_typed_pass(
                 internal_call_stack_cleanup=cleanup,
                 internal_call_result_relations=results,
                 internal_call_memory_result_relations=memory_results,
+                internal_call_parametric_indirect_exits=(
+                    parametric_indirect_exits
+                ),
                 internal_call_memory_preservation=memory_preservation,
                 internal_call_memory_frames=internal_memory_frames,
                 prepared_memory_access_facts=validated_memory_access_facts,
@@ -5217,6 +5239,21 @@ def _typed_proposals(
                         family, family in available
                     )
                 )
+            indirect_inventory = raw.get("parametric_indirect_exits")
+            indirect_rows = (
+                indirect_inventory.get("exits")
+                if isinstance(indirect_inventory, Mapping)
+                else None
+            )
+            if isinstance(indirect_rows, list):
+                for indirect_row in indirect_rows:
+                    if not isinstance(indirect_row, Mapping):
+                        continue
+                    exit_id = _parametric_summary_exit_id(indirect_row)
+                    if isinstance(exit_id, str) and exit_id:
+                        result[call_summary_family_node_id(
+                            unit_id, "indirect_exit", exit_id
+                        )] = _summary_indirect_exit_state(indirect_row)
     for raw in recoveries:
         identity = raw.get("id")
         if isinstance(identity, str):
@@ -5362,13 +5399,23 @@ def _call_frame_family_projection_state(
 ) -> _NodeState:
     """Bind one call-site family use to target and callee evidence."""
 
-    source, event_index, target, family, _subject = parsed
-    exact_site = (
+    source, event_index, target, family, subject = parsed
+    parametric_site = (
+        family == "indirect_exit"
+        and _parametric_recovery_has_instantiation(
+            recovery,
+            source=source,
+            event_index=event_index,
+            target_unit_id=target,
+            exit_id=subject,
+        )
+    )
+    exact_site = parametric_site or (
         recovery.get("source_unit_id") == source
         and recovery.get("source_event_index") == event_index
     )
     recovered_targets = recovery.get("target_unit_ids")
-    target_bound = (
+    target_bound = parametric_site or (
         recovery.get("status") != "recovered"
         or (
             isinstance(recovered_targets, Sequence)
@@ -5390,7 +5437,11 @@ def _call_frame_family_projection_state(
         if not provider_state.failure_reasons:
             reasons.add(f"call_summary_{family}_unknown")
     complete = not reasons
-    fallback = _summary_scalar_family_state(family, False)
+    fallback = (
+        _summary_indirect_exit_state({})
+        if family == "indirect_exit"
+        else _summary_scalar_family_state(family, False)
+    )
     return _NodeState(
         fallback.fact if provider_state is None else provider_state.fact,
         "complete" if complete else "incomplete",
@@ -5594,6 +5645,57 @@ def _summary_scalar_family_state(
         "complete" if available else "incomplete",
         reasons,
     )
+
+
+def _summary_indirect_exit_state(raw: Mapping[str, Any]) -> _NodeState:
+    typed = _parse_parametric_indirect_exit_summary(raw)
+    complete = bool(
+        (
+            typed is not None
+            and typed.status == "complete"
+            and typed.target_expression is not None
+        )
+        or (
+            raw.get("status") == "complete"
+            and isinstance(raw.get("origin_exit_id"), str)
+            and isinstance(raw.get("target_expression"), Mapping)
+            and raw.get("failure") is None
+        )
+    )
+    reasons = () if complete else ("call_summary_indirect_exit_unknown",)
+    return _NodeState(
+        InterproceduralFact(
+            may_values=Bottom(),
+            preserved_registers=MustPreservedRegisters(_REGISTER_UNIVERSE),
+            stack_cleanup=NoExactValue(),
+            results=NoExactValue(),
+            return_behavior=ReturnBehavior(),
+            taint=Taint.of(reasons),
+        ),
+        "complete" if complete else "incomplete",
+        reasons,
+    )
+
+
+def _parse_parametric_indirect_exit_summary(
+    raw: Mapping[str, Any],
+) -> ParametricIndirectExitSummaryV2 | None:
+    try:
+        return ParametricIndirectExitSummaryV2.parse(raw)
+    except AuthorityDataError:
+        return None
+
+
+def _parametric_summary_exit_id(raw: Mapping[str, Any]) -> str | None:
+    typed = _parse_parametric_indirect_exit_summary(raw)
+    if typed is not None:
+        return typed.exit_binding.exit_id
+    value = raw.get("origin_exit_id")
+    if isinstance(value, str) and value:
+        return value
+    binding = raw.get("exit_binding")
+    value = binding.get("id") if isinstance(binding, Mapping) else None
+    return value if isinstance(value, str) and value else None
 
 
 def _summary_family_availability(
@@ -6072,7 +6174,39 @@ def _call_frame_family_is_recovered_site(
     parsed: tuple[str, int, str, str, str | None],
     recovery: Mapping[str, Any],
 ) -> bool:
+    if parsed[3] == "indirect_exit":
+        return _parametric_recovery_has_instantiation(
+            recovery,
+            source=parsed[0],
+            event_index=parsed[1],
+            target_unit_id=parsed[2],
+            exit_id=parsed[4],
+        )
     return _call_frame_is_recovered_site(parsed[:3], recovery)
+
+
+def _parametric_recovery_has_instantiation(
+    recovery: Mapping[str, Any],
+    *,
+    source: str,
+    event_index: int,
+    target_unit_id: str,
+    exit_id: str | None,
+) -> bool:
+    if recovery.get("status") != "recovered" or recovery.get("id") != exit_id:
+        return False
+    rows = recovery.get("parametric_summary_instantiations")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return False
+    return any(
+        isinstance(row, Mapping)
+        and row.get("caller_unit_id") == source
+        and row.get("caller_event_index") == event_index
+        and row.get("callee_unit_id") == target_unit_id
+        and isinstance(row.get("summary_id"), str)
+        and bool(row.get("summary_id"))
+        for row in rows
+    )
 
 
 def _call_frame_projection_node(dependency: object) -> str:
@@ -6323,6 +6457,44 @@ def _summary_memory_results(
             "value": normalized_value,
         })
     return tuple(result)
+
+
+def _call_summary_parametric_indirect_exits(
+    summaries: Mapping[str, Any],
+    *,
+    image_base: int,
+) -> dict[int, tuple[Mapping[str, Any], ...]]:
+    """Project complete structural target templates by callee address."""
+
+    result: dict[int, tuple[Mapping[str, Any], ...]] = {}
+    for raw in summaries.get("summaries", []):
+        if not isinstance(raw, Mapping):
+            continue
+        rva = raw.get("target_rva")
+        inventory = raw.get("parametric_indirect_exits")
+        rows = (
+            inventory.get("exits")
+            if isinstance(inventory, Mapping)
+            else None
+        )
+        if (
+            not isinstance(rva, int)
+            or isinstance(rva, bool)
+            or not isinstance(rows, list)
+        ):
+            continue
+        complete_rows = [
+            row
+            for row in rows
+            if isinstance(row, Mapping)
+            and row.get("status") == "complete"
+            and isinstance(row.get("target_expression"), Mapping)
+        ]
+        if complete_rows:
+            result[(image_base + rva) & 0xFFFFFFFF] = tuple(
+                copy.deepcopy(dict(row)) for row in complete_rows
+            )
+    return result
 
 
 def _call_summary_memory_preservation(

@@ -195,6 +195,8 @@
             dxball.analysis.staticHybridAuthorityV2.jointInterproceduralV2.derivation;
           dxball-interprocedural-seed-v2 =
             dxball.analysis.staticHybridAuthorityV2.interproceduralSeed.derivation;
+          dxball-parametric-indirect-exit-summaries-v2 =
+            dxball.analysis.staticHybridAuthorityV2.parametricIndirectExitSummaries.derivation;
           dxball-interprocedural-v2 =
             dxball.analysis.staticHybridAuthorityV2.interproceduralV2.derivation;
           dxball-global-slot-analysis-v2 =

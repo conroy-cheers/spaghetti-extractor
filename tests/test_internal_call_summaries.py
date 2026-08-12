@@ -2,13 +2,25 @@ from __future__ import annotations
 
 import unittest
 
+from spaghetti_extractor.authority_bindings_v2 import (
+    BinaryBinding,
+    IndirectExitBinding,
+)
 from spaghetti_extractor.import_abi import SelectedImportABI
 from spaghetti_extractor.internal_call_summaries import (
     INTERNAL_CALL_SUMMARY_FORMAT,
+    _force_incomplete,
     derive_internal_call_preservation_summaries,
 )
 from spaghetti_extractor.machine_abi import resolve_machine_call_abi
 from spaghetti_extractor.machine_import_profiles import MachineImportIdentity
+from spaghetti_extractor.machine_ir_authority_v2 import (
+    build_machine_ir_authority_bindings,
+    machine_ir_sha256,
+)
+from spaghetti_extractor.parametric_indirect_exit_v2 import (
+    ParametricIndirectExitSummaryV2,
+)
 
 
 REGISTERS = ("eax", "ebp", "ebx", "ecx", "edi", "edx", "esi", "esp")
@@ -93,6 +105,28 @@ def internal_call(
 
 
 class InternalCallSummaryTests(unittest.TestCase):
+    def test_forced_incomplete_invalidates_parametric_exit_inventory(self) -> None:
+        summary = {
+            "status": "complete",
+            "parametric_indirect_exits": {
+                "status": "complete",
+                "exits": [{"status": "complete"}],
+                "blocker_codes": [],
+            },
+        }
+
+        result = _force_incomplete(
+            summary, {"call_dependency_inventory_budget_exceeded"}
+        )
+
+        self.assertEqual(
+            result["parametric_indirect_exits"]["status"], "incomplete"
+        )
+        self.assertEqual(
+            result["parametric_indirect_exits"]["blocker_codes"],
+            ["call_dependency_inventory_budget_exceeded"],
+        )
+
     def test_callee_private_stack_write_does_not_escape_memory_frame(self) -> None:
         result = self._derive(
             units=[
@@ -1846,6 +1880,237 @@ class InternalCallSummaryTests(unittest.TestCase):
             "return_instruction_indirect_frontier_open",
             summary["return_instruction_cleanup"]["blocker_codes"],
         )
+
+    def test_unresolved_dispatch_exports_parametric_target_expression(self) -> None:
+        target = load(add(reg("ecx"), const(28)))
+        event = {
+            "kind": "indirect_call",
+            "target": target,
+            "register_inputs": {
+                register: reg(register) for register in REGISTERS
+            },
+        }
+        units = [
+            unit(
+                "root",
+                0x1000,
+                outcome="fallthrough",
+                events=[internal_call(0x2000)],
+            ),
+            unit(
+                "callee-argument",
+                0x2000,
+                outcome="fallthrough",
+                writes=[{
+                    "register": "eax",
+                    "value": load(add(reg("esp"), const(4))),
+                }],
+            ),
+            unit(
+                "callee-table",
+                0x2001,
+                outcome="fallthrough",
+                writes=[{
+                    "register": "ecx",
+                    "value": load(reg("eax")),
+                }],
+            ),
+            unit(
+                "callee-dispatch",
+                0x2002,
+                outcome="fallthrough",
+                events=[event],
+            ),
+            unit("done", 0x1001, outcome="return"),
+        ]
+        result = derive_internal_call_preservation_summaries(
+            units=units,
+            roots=["root"],
+            direct_edges=[
+                self._edge("root", "done"),
+                self._edge("callee-argument", "callee-table"),
+                self._edge("callee-table", "callee-dispatch"),
+            ],
+            internal_call_edges=[
+                self._call_edge("root", "callee-argument", 0)
+            ],
+            recovered_indirect_targets=[],
+            indirect_exits=[{
+                "id": "dispatch-exit",
+                "source_unit_id": "callee-dispatch",
+                "source_rva": 0x2002,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": target,
+            }],
+            import_abis={},
+        )
+
+        inventory = self._summary(result, "callee-argument")[
+            "parametric_indirect_exits"
+        ]
+        self.assertEqual(inventory["status"], "incomplete")
+        self.assertEqual(
+            inventory["blocker_codes"],
+            ["parametric_indirect_exit_inventory_incomplete"],
+        )
+        self.assertEqual(len(inventory["exits"]), 1)
+        template = inventory["exits"][0]
+        self.assertEqual(template["status"], "complete")
+        self.assertEqual(template["origin_exit_id"], "dispatch-exit")
+        self.assertEqual(
+            template["target_expression"],
+            {
+                "op": "load",
+                "width": 4,
+                "address": {
+                    "op": "add32",
+                    "args": [
+                        {
+                            "op": "load",
+                            "width": 4,
+                            "address": {
+                                "op": "summary_input_stack_word",
+                                "offset": 4,
+                            },
+                        },
+                        {"op": "constant", "value": 28, "width": 32},
+                    ],
+                },
+            },
+        )
+
+    def test_parametric_target_summary_binds_the_exact_exit(self) -> None:
+        target = load(add(reg("ecx"), const(28)))
+        units = [
+            unit(
+                "root",
+                0x1000,
+                outcome="fallthrough",
+                events=[internal_call(0x2000)],
+            ),
+            unit(
+                "callee",
+                0x2000,
+                outcome="fallthrough",
+                events=[{
+                    "kind": "indirect_call",
+                    "target": target,
+                    "register_inputs": {
+                        register: reg(register) for register in REGISTERS
+                    },
+                }],
+            ),
+            unit("done", 0x1001, outcome="return"),
+        ]
+        for row in units:
+            row["source"]["instruction_bytes_sha256"] = "1" * 64
+        pe_sha256 = "2" * 64
+        bindings = build_machine_ir_authority_bindings(
+            units, pe_sha256=pe_sha256
+        )
+        exact_exit = IndirectExitBinding.parse(bindings["indirect_exits"][0])
+        result = derive_internal_call_preservation_summaries(
+            units=units,
+            roots=["root"],
+            direct_edges=[self._edge("root", "done")],
+            internal_call_edges=[self._call_edge("root", "callee", 0)],
+            recovered_indirect_targets=[],
+            indirect_exits=[{
+                **exact_exit.identity_payload(),
+                "id": exact_exit.exit_id,
+            }],
+            import_abis={},
+            binary_binding=BinaryBinding(
+                pe_sha256, machine_ir_sha256(units)
+            ),
+        )
+
+        raw = self._summary(result, "callee")[
+            "parametric_indirect_exits"
+        ]["exits"][0]
+        summary = ParametricIndirectExitSummaryV2.parse(raw)
+        self.assertEqual(summary.exit_binding, exact_exit)
+        self.assertEqual(summary.summary_unit.unit_id, "callee")
+        self.assertEqual(summary.status, "complete")
+
+    def test_nested_callee_target_template_is_composed_at_call_boundary(self) -> None:
+        target = load(add(load(reg("ecx")), const(28)))
+        inner_dispatch = {
+            "kind": "indirect_call",
+            "target": target,
+            "register_inputs": {
+                register: reg(register) for register in REGISTERS
+            },
+        }
+        inner_call = internal_call(0x3000)
+        inner_call["register_inputs"]["ecx"] = reg("eax")
+        units = [
+            unit(
+                "root",
+                0x1000,
+                outcome="fallthrough",
+                events=[internal_call(0x2000)],
+            ),
+            unit(
+                "outer",
+                0x2000,
+                outcome="fallthrough",
+                writes=[{
+                    "register": "eax",
+                    "value": load(add(reg("esp"), const(4))),
+                }],
+            ),
+            unit(
+                "outer-call",
+                0x2001,
+                outcome="fallthrough",
+                events=[inner_call],
+            ),
+            unit(
+                "inner",
+                0x3000,
+                outcome="fallthrough",
+                events=[inner_dispatch],
+            ),
+            unit("outer-return", 0x2002, outcome="return"),
+            unit("done", 0x1001, outcome="return"),
+        ]
+        result = derive_internal_call_preservation_summaries(
+            units=units,
+            roots=["root"],
+            direct_edges=[
+                self._edge("root", "done"),
+                self._edge("outer", "outer-call"),
+                self._edge("outer-call", "outer-return"),
+            ],
+            internal_call_edges=[
+                self._call_edge("root", "outer", 0),
+                self._call_edge("outer-call", "inner", 0),
+            ],
+            recovered_indirect_targets=[],
+            indirect_exits=[{
+                "id": "nested-dispatch-exit",
+                "source_unit_id": "inner",
+                "source_rva": 0x3000,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": target,
+            }],
+            import_abis={},
+        )
+
+        inventory = self._summary(result, "outer")[
+            "parametric_indirect_exits"
+        ]
+        self.assertEqual(inventory["status"], "complete")
+        self.assertEqual(
+            inventory["exits"][0]["origin_exit_id"],
+            "nested-dispatch-exit",
+        )
+        rendered = inventory["exits"][0]["target_expression"]
+        self.assertEqual(rendered["op"], "load")
+        self.assertIn("summary_input_stack_word", repr(rendered))
 
     def test_return_instruction_cleanup_is_independent_of_other_families(
         self,

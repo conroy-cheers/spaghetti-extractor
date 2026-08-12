@@ -65,6 +65,7 @@ from .machine_ir_isa_selection_v2 import (
     MachineIRISASelectionCertificateV2,
     parse_machine_ir_isa_selection_certificate_v2,
 )
+from .parametric_indirect_exit_v2 import ParametricIndirectExitSummaryV2
 from .internal_call_summaries import checked_summary_register_frame_complete
 from .indirect_target_dependency_v2 import (
     IndirectTargetDependencyV2Error,
@@ -1251,6 +1252,16 @@ def _checked_call_frame_dependencies(
                 f"target provenance requires unavailable frame {dependency_id}",
             ))
             continue
+        family_scope = parse_call_frame_family_dependency(dependency_id)
+        if family_scope is not None and family_scope[3] == "indirect_exit":
+            issue = _parametric_instantiation_issue(
+                recovery,
+                scope=family_scope,
+                frame=frame,
+            )
+            if issue is not None:
+                issues.append(issue)
+                continue
         dependencies.add(AuthorityDependency(
             "call_frame_summary", frame.content_id
         ))
@@ -1260,6 +1271,73 @@ def _checked_call_frame_dependencies(
                 f"target provenance crosses incomplete frame {dependency_id}",
             ))
     return tuple(sorted(dependencies)), _issues(issues)
+
+
+def _parametric_instantiation_issue(
+    recovery: Mapping[str, Any],
+    *,
+    scope: tuple[str, int, str, str, str | None],
+    frame: CallFrameSummary,
+) -> EvidenceIssue | None:
+    source, event_index, target_unit_id, _family, subject = scope
+    alternatives = frame.alternatives
+    if alternatives is None or len(alternatives.values) != 1:
+        return _missing(
+            "parametric_indirect_exit_summary_missing",
+            "indirect target provenance has no checked parametric summary",
+        )
+    alternative = alternatives.values[0].to_value()
+    result_origins = (
+        alternative.get("result_origins")
+        if isinstance(alternative, Mapping)
+        else None
+    )
+    raw_summary = (
+        result_origins.get("summary")
+        if isinstance(result_origins, Mapping)
+        else None
+    )
+    try:
+        summary = ParametricIndirectExitSummaryV2.parse(raw_summary)
+    except AuthorityDataError:
+        return _contradiction(
+            "parametric_indirect_exit_summary_corrupt",
+            "indirect target provenance refers to corrupt summary evidence",
+        )
+    if (
+        summary.status != "complete"
+        or summary.summary_unit.unit_id != target_unit_id
+        or summary.exit_binding.exit_id != subject
+    ):
+        return _contradiction(
+            "parametric_indirect_exit_summary_mismatch",
+            "indirect target provenance refers to another exact exit",
+        )
+    rows = recovery.get("parametric_summary_instantiations")
+    if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes)):
+        return _contradiction(
+            "parametric_indirect_exit_instantiation_corrupt",
+            "parametric summary instantiations are not an array",
+        )
+    matches = [
+        row
+        for row in rows
+        if isinstance(row, Mapping)
+        and row.get("caller_unit_id") == source
+        and row.get("caller_event_index") == event_index
+        and row.get("callee_unit_id") == target_unit_id
+    ]
+    if not matches:
+        return _missing(
+            "parametric_indirect_exit_instantiation_missing",
+            "the reached call site has no parametric summary instantiation",
+        )
+    if len(matches) != 1 or matches[0].get("summary_id") != summary.summary_id:
+        return _contradiction(
+            "parametric_indirect_exit_instantiation_mismatch",
+            "the reached call site names stale parametric summary evidence",
+        )
+    return None
 
 
 def _indirect_analysis_dependency_ids(
@@ -1579,6 +1657,7 @@ def _call_frame_family_alternative(
         "world_effects": dict(not_applicable),
     }
     field = {
+        "indirect_exit": "result_origins",
         "memory": "memory_effects",
         "register": "register_preservation",
         "result": "result_origins",
@@ -1602,6 +1681,52 @@ def _call_frame_family_projection(
     family: str,
     subject: str | None,
 ) -> dict[str, Any]:
+    if family == "indirect_exit":
+        inventory = _mapping_or_empty(
+            summary.get("parametric_indirect_exits")
+        )
+        rows = inventory.get("exits")
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, Mapping)
+            and row.get("origin_exit_id") == subject
+        ] if isinstance(rows, list) else []
+        if len(matches) == 0 and isinstance(rows, list):
+            matches = [
+                row
+                for row in rows
+                if isinstance(row, Mapping)
+                and _declared_parametric_exit_id(row) == subject
+            ]
+        if len(matches) == 1:
+            row = matches[0]
+            try:
+                typed = ParametricIndirectExitSummaryV2.parse(row)
+            except AuthorityDataError:
+                typed = None
+            if (
+                typed is not None
+                and typed.status == "complete"
+                and typed.target_expression is not None
+                and typed.exit_binding.exit_id == subject
+                and typed.summary_unit.unit_id
+                == summary.get("target_unit_id")
+            ):
+                return {
+                    "status": "complete",
+                    "summary": typed.to_payload(),
+                }
+            if row.get("format") is not None:
+                return {
+                    "status": "violated",
+                    "summary": dict(row),
+                }
+        return {
+            "status": "incomplete",
+            "summary": None,
+        }
+
     if family == "register":
         preserved = summary.get("preserved_registers")
         preservation = _mapping_or_empty(summary.get("register_preservation"))
@@ -1733,6 +1858,15 @@ def _call_frame_family_projection(
     raise HybridAuthorityBuilderV2Error(
         f"unsupported call-summary family {family!r}"
     )
+
+
+def _declared_parametric_exit_id(row: Mapping[str, Any]) -> str | None:
+    try:
+        return ParametricIndirectExitSummaryV2.parse(row).exit_binding.exit_id
+    except AuthorityDataError:
+        binding = row.get("exit_binding")
+        value = binding.get("id") if isinstance(binding, Mapping) else None
+        return value if isinstance(value, str) and value else None
 
 
 def _call_frame_families_complete(summary: Mapping[str, Any]) -> bool:

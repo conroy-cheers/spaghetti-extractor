@@ -18,6 +18,7 @@ CALL_FRAME_FAMILY_DEPENDENCY_PREFIX = "call-frame-family:"
 CALL_SUMMARY_FAMILY_NODE_PREFIX = "call-summary-family:"
 
 _CALL_SUMMARY_FAMILIES = frozenset({
+    "indirect_exit",
     "memory",
     "register",
     "result",
@@ -148,9 +149,10 @@ def _validate_call_family_parts(
         raise ValueError("call-frame family is unsupported")
     if subject is not None and (not isinstance(subject, str) or not subject):
         raise ValueError("call-frame family subject must be null or non-empty")
-    if (family == "register") != (subject is not None):
+    if (family in {"register", "indirect_exit"}) != (subject is not None):
         raise ValueError(
-            "register call-frame facts require one subject; other families do not"
+            "register and indirect-exit call-frame facts require one subject; "
+            "other families do not"
         )
 
 

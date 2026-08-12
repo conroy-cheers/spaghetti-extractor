@@ -756,7 +756,8 @@
         "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_ir_authority_v2",
         "spaghetti_extractor.machine_ir_isa_requirements_v2",
-        "spaghetti_extractor.machine_ir_isa_selection_v2"
+        "spaghetti_extractor.machine_ir_isa_selection_v2",
+        "spaghetti_extractor.parametric_indirect_exit_v2"
       ],
       "path": "src/spaghetti_extractor/hybrid_authority_builder_v2.py"
     },
@@ -768,7 +769,8 @@
         "spaghetti_extractor.authority_record_core_v2",
         "spaghetti_extractor.entry_state_contract_v2",
         "spaghetti_extractor.global_slot_contract_v2",
-        "spaghetti_extractor.machine_abi"
+        "spaghetti_extractor.machine_abi",
+        "spaghetti_extractor.parametric_indirect_exit_v2"
       ],
       "path": "src/spaghetti_extractor/hybrid_authority_v2.py"
     },
@@ -800,6 +802,7 @@
         "spaghetti_extractor",
         "spaghetti_extractor.address_expression_v2",
         "spaghetti_extractor.analysis.scc_worklist",
+        "spaghetti_extractor.authority_bindings_v2",
         "spaghetti_extractor.authority_dependencies_v2",
         "spaghetti_extractor.call_arguments",
         "spaghetti_extractor.call_frame_hypotheses",
@@ -815,6 +818,7 @@
         "spaghetti_extractor.intrinsic_call_site_effects",
         "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_import_profiles",
+        "spaghetti_extractor.parametric_indirect_exit_v2",
         "spaghetti_extractor.provenance_domain"
       ],
       "path": "src/spaghetti_extractor/interface_provenance.py"
@@ -828,6 +832,8 @@
         "spaghetti_extractor.import_abi",
         "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_import_profiles",
+        "spaghetti_extractor.machine_ir_authority_v2",
+        "spaghetti_extractor.parametric_indirect_exit_v2",
         "spaghetti_extractor.provenance_domain"
       ],
       "path": "src/spaghetti_extractor/internal_call_summaries.py"
@@ -863,6 +869,7 @@
         "spaghetti_extractor.internal_call_summaries",
         "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_import_profiles",
+        "spaghetti_extractor.parametric_indirect_exit_v2",
         "spaghetti_extractor.provenance_domain",
         "spaghetti_extractor.value_provenance"
       ],
@@ -1227,6 +1234,13 @@
         "spaghetti_extractor.artifact_formats"
       ],
       "path": "src/spaghetti_extractor/operation_provenance.py"
+    },
+    "spaghetti_extractor.parametric_indirect_exit_v2": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.authority_bindings_v2"
+      ],
+      "path": "src/spaghetti_extractor/parametric_indirect_exit_v2.py"
     },
     "spaghetti_extractor.pe": {
       "dependencies": [

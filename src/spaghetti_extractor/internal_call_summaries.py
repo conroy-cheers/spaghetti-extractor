@@ -22,7 +22,12 @@ from .call_site_effects import (
     CallWriteSpan,
     parse_call_site_effects,
 )
-from .authority_bindings_v2 import BinaryBinding
+from .authority_bindings_v2 import (
+    AuthorityDataError,
+    BinaryBinding,
+    IndirectExitBinding,
+    UnitBinding,
+)
 from .checked_memory_access_v2 import (
     PreparedMemoryAccessFact,
     validate_prepared_memory_access_facts_v2,
@@ -30,6 +35,8 @@ from .checked_memory_access_v2 import (
 from .import_abi import SelectedImportABI
 from .machine_abi import resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity
+from .machine_ir_authority_v2 import machine_events, recompute_unit_binding
+from .parametric_indirect_exit_v2 import ParametricIndirectExitSummaryV2
 from .provenance_domain import (
     ValueOrigin,
     origin_concrete_value,
@@ -132,6 +139,18 @@ _Value = (
     | _TypedOrigins
     | None
 )
+
+
+# Canonical, hashable expression over one summary root's entry state.  The
+# tuple representation is private; generated artifacts use the explicit JSON
+# form emitted by ``_target_expression_json`` below.
+_TargetExpression = tuple[Any, ...]
+
+
+@dataclass
+class _TargetState:
+    registers: dict[str, _TargetExpression | None]
+    stack_words: dict[int, _TargetExpression | None]
 
 
 @dataclass
@@ -287,6 +306,20 @@ def derive_internal_call_preservation_summaries(
     by_id = {str(unit["id"]): unit for unit in units}
     if len(by_id) != len(units):
         raise ValueError("internal call summaries require unique unit IDs")
+    exact_units = (
+        {}
+        if binary_binding is None
+        else {
+            unit_id: recompute_unit_binding(unit, binary=binary_binding)
+            for unit_id, unit in by_id.items()
+        }
+    )
+    exact_exit_bindings = {
+        binding.exit_id: binding
+        for item in machine_events(units, exact_units)
+        for binding in (item.get("indirect_exit"),)
+        if isinstance(binding, IndirectExitBinding)
+    } if exact_units else {}
     effects_by_site = parse_call_site_effects(
         call_site_effects,
         finite_value_budget=max_value_alternatives,
@@ -538,6 +571,9 @@ def derive_internal_call_preservation_summaries(
                     unresolved_jump_sources=unresolved_jump_sources,
                     direct_calls=direct_calls,
                     recovered_calls=recovered_calls,
+                    indirect_exits=indirect_exits,
+                    exact_units=exact_units,
+                    exact_exit_bindings=exact_exit_bindings,
                     completed_summaries=summaries,
                     import_abis=import_abis,
                     call_site_effects=effects_by_site,
@@ -577,6 +613,9 @@ def derive_internal_call_preservation_summaries(
             unresolved_jump_sources=unresolved_jump_sources,
             direct_calls=direct_calls,
             recovered_calls=recovered_calls,
+            indirect_exits=indirect_exits,
+            exact_units=exact_units,
+            exact_exit_bindings=exact_exit_bindings,
             summaries=summaries,
             import_abis=import_abis,
             call_site_effects=effects_by_site,
@@ -1242,6 +1281,14 @@ def _force_incomplete(
         "status": "incomplete",
         "locations": [],
     }
+    parametric = _mapping(result.get("parametric_indirect_exits"))
+    result["parametric_indirect_exits"] = {
+        **dict(parametric),
+        "status": "incomplete",
+        "blocker_codes": sorted(
+            set(parametric.get("blocker_codes", [])) | blocker_codes
+        ),
+    }
     result["caller_memory_frame"] = {
         "status": "incomplete",
         "preserved": False,
@@ -1280,6 +1327,7 @@ def _recursive_seed_summary() -> dict[str, Any]:
         },
         "result_register_origins": {"status": "complete", "registers": {}},
         "result_memory_origins": {"status": "complete", "locations": []},
+        "parametric_indirect_exits": {"status": "complete", "exits": []},
         "caller_memory_frame": {
             "status": "incomplete",
             "preserved": False,
@@ -1313,6 +1361,9 @@ def _analyze_recursive_component(
     unresolved_jump_sources: set[str],
     direct_calls: Mapping[tuple[str, int], str],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    indirect_exits: Sequence[Mapping[str, Any]],
+    exact_units: Mapping[str, UnitBinding],
+    exact_exit_bindings: Mapping[str, IndirectExitBinding],
     completed_summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
@@ -1347,6 +1398,9 @@ def _analyze_recursive_component(
                 unresolved_jump_sources=unresolved_jump_sources,
                 direct_calls=direct_calls,
                 recovered_calls=recovered_calls,
+                indirect_exits=indirect_exits,
+                exact_units=exact_units,
+                exact_exit_bindings=exact_exit_bindings,
                 summaries=assumptions,
                 import_abis=import_abis,
                 call_site_effects=call_site_effects,
@@ -1399,6 +1453,9 @@ def _recursive_summary_projection(
             "register_preservation": summary.get("register_preservation"),
             "result_register_origins": summary.get("result_register_origins"),
             "result_memory_origins": summary.get("result_memory_origins"),
+            "parametric_indirect_exits": summary.get(
+                "parametric_indirect_exits"
+            ),
             "caller_memory_frame": summary.get("caller_memory_frame"),
             "stack_cleanup": summary.get("stack_cleanup"),
             "return_instruction_cleanup": summary.get(
@@ -1415,6 +1472,823 @@ def _recursive_summary_projection(
     }
 
 
+def _collect_parametric_indirect_exits(
+    *,
+    summary_root: str,
+    unit_id: str,
+    unit: Mapping[str, Any],
+    value_state: _State,
+    target_state: _TargetState,
+    indirect_exits: Sequence[Mapping[str, Any]],
+    exact_exit_bindings: Mapping[str, IndirectExitBinding],
+    summaries: Mapping[str, Mapping[str, Any]],
+    direct_calls: Mapping[tuple[str, int], str],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    values: dict[str, _TargetExpression | None],
+    records: dict[str, dict[str, Any]],
+    overflow: set[str],
+    maximum: int,
+) -> None:
+    """Collect local and delegated exits as root-entry-relative templates."""
+
+    local = [
+        row
+        for row in indirect_exits
+        if row.get("source_unit_id") == unit_id
+    ]
+    events = _events(unit)
+    for row in local:
+        event_index = _integer(row.get("source_event_index"))
+        expression = row.get("target_expression")
+        event_value_state = value_state
+        event_target_state = target_state
+        if event_index is not None:
+            if not 0 <= event_index < len(events):
+                expression = None
+            else:
+                event = events[event_index]
+                expression = event.get("target", expression)
+                event_value_state = _event_state(event, value_state)
+                event_target_state = _target_event_state(
+                    event,
+                    target_state=target_state,
+                    value_state=value_state,
+                )
+        target = _target_evaluate(
+            expression,
+            target_state=event_target_state,
+            value_state=event_value_state,
+        )
+        _record_parametric_indirect_exit(
+            summary_root=summary_root,
+            record=row,
+            exit_binding=exact_exit_bindings.get(
+                str(row.get("origin_exit_id", row.get("id")))
+            ),
+            target=target,
+            dependencies=(),
+            values=values,
+            records=records,
+            overflow=overflow,
+            maximum=maximum,
+        )
+
+    # A caller summary also exports the exits of every nested callee, already
+    # instantiated into this summary root's entry state.  This makes rooted
+    # analysis instantiate one compositional summary instead of replaying the
+    # complete call path.
+    for event_index, event in enumerate(events):
+        if event.get("kind") not in {"internal_call", "indirect_call"}:
+            continue
+        nested = _nested_call_summaries(
+            unit_id=unit_id,
+            event_index=event_index,
+            direct_calls=direct_calls,
+            recovered_calls=recovered_calls,
+            summaries=summaries,
+        )
+        if not nested:
+            continue
+        pre_value = _event_state(event, value_state)
+        pre_target = _target_event_state(
+            event,
+            target_state=target_state,
+            value_state=value_state,
+        )
+        for summary in nested:
+            inventory = _mapping(summary.get("parametric_indirect_exits"))
+            rows = inventory.get("exits")
+            if not isinstance(rows, list):
+                continue
+            for raw in rows:
+                row = _mapping(raw)
+                typed: ParametricIndirectExitSummaryV2 | None = None
+                try:
+                    typed = ParametricIndirectExitSummaryV2.parse(row)
+                except AuthorityDataError:
+                    pass
+                expression = _parse_target_expression_json(
+                    row.get("target_expression")
+                )
+                target = (
+                    None
+                    if row.get("status") != "complete" or expression is None
+                    else _instantiate_target_expression(
+                        expression,
+                        target_state=pre_target,
+                        value_state=pre_value,
+                    )
+                )
+                _record_parametric_indirect_exit(
+                    summary_root=summary_root,
+                    record=row,
+                    exit_binding=(
+                        typed.exit_binding if typed is not None else None
+                    ),
+                    target=target,
+                    dependencies=(
+                        (typed.summary_id,)
+                        if typed is not None
+                        else (
+                            (str(row["id"]),)
+                            if isinstance(row.get("id"), str)
+                            else ()
+                        )
+                    ),
+                    values=values,
+                    records=records,
+                    overflow=overflow,
+                    maximum=maximum,
+                )
+
+
+def _nested_call_summaries(
+    *,
+    unit_id: str,
+    event_index: int,
+    direct_calls: Mapping[tuple[str, int], str],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    summaries: Mapping[str, Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    targets: set[str] = set()
+    direct = direct_calls.get((unit_id, event_index))
+    if direct is not None:
+        targets.add(direct)
+    recovery = recovered_calls.get((unit_id, event_index))
+    if recovery is not None:
+        raw_targets = recovery.get("target_unit_ids")
+        if isinstance(raw_targets, Sequence) and not isinstance(
+            raw_targets, (str, bytes)
+        ):
+            targets.update(str(target) for target in raw_targets)
+    return tuple(summaries[target] for target in sorted(targets) if target in summaries)
+
+
+def _record_parametric_indirect_exit(
+    *,
+    summary_root: str,
+    record: Mapping[str, Any],
+    exit_binding: IndirectExitBinding | None,
+    target: _TargetExpression | None,
+    dependencies: Sequence[str],
+    values: dict[str, _TargetExpression | None],
+    records: dict[str, dict[str, Any]],
+    overflow: set[str],
+    maximum: int,
+) -> None:
+    exit_id = (
+        exit_binding.exit_id
+        if exit_binding is not None
+        else record.get("origin_exit_id", record.get("id"))
+    )
+    if not isinstance(exit_id, str) or not exit_id:
+        return
+    if exit_id in records:
+        joined, exceeded = _join_target_expression(
+            values.get(exit_id), target, maximum=maximum
+        )
+        values[exit_id] = joined
+        if exceeded:
+            overflow.add(exit_id)
+        records[exit_id]["dependencies"].update(dependencies)
+        if records[exit_id].get("exit_binding") is None:
+            records[exit_id]["exit_binding"] = exit_binding
+        return
+    records[exit_id] = {
+        "origin_exit_id": exit_id,
+        "source_summary_unit_id": summary_root,
+        "source_unit_id": record.get("source_unit_id"),
+        "source_rva": record.get("source_rva"),
+        "source_event_index": record.get("source_event_index"),
+        "kind": record.get("kind"),
+        "original_target_expression": copy.deepcopy(
+            record.get(
+                "original_target_expression",
+                record.get("target_expression"),
+            )
+        ),
+        "exit_binding": exit_binding,
+        "dependencies": set(dependencies),
+    }
+    values[exit_id] = target
+
+
+def _parametric_indirect_exit_rows(
+    *,
+    records: Mapping[str, Mapping[str, Any]],
+    values: Mapping[str, _TargetExpression | None],
+    overflow: set[str],
+    summary_unit: UnitBinding | None,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for exit_id in sorted(records):
+        record = records[exit_id]
+        target = values.get(exit_id)
+        exit_binding = record.get("exit_binding")
+        failure_code = (
+            "parametric_target_alternative_budget_exceeded"
+            if exit_id in overflow
+            else "parametric_target_expression_unresolved"
+        )
+        if (
+            summary_unit is not None
+            and isinstance(exit_binding, IndirectExitBinding)
+        ):
+            typed = (
+                ParametricIndirectExitSummaryV2.complete(
+                    summary_unit=summary_unit,
+                    exit_binding=exit_binding,
+                    target_expression=_target_expression_json(target),
+                    dependencies=sorted(record["dependencies"]),
+                )
+                if target is not None
+                else ParametricIndirectExitSummaryV2.incomplete(
+                    summary_unit=summary_unit,
+                    exit_binding=exit_binding,
+                    failure_reasons=(failure_code,),
+                    dependencies=sorted(record["dependencies"]),
+                )
+            )
+            rows.append(typed.to_payload())
+            continue
+        payload = {
+            "source_summary_unit_id": record.get("source_summary_unit_id"),
+            "origin_exit_id": exit_id,
+            "source_unit_id": record.get("source_unit_id"),
+            "source_rva": record.get("source_rva"),
+            "source_event_index": record.get("source_event_index"),
+            "kind": record.get("kind"),
+            "original_target_expression": record.get(
+                "original_target_expression"
+            ),
+        }
+        identity = "parametric-indirect-exit:" + hashlib.sha256(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+                allow_nan=False,
+            ).encode("ascii")
+        ).hexdigest()[:20]
+        rows.append({
+            "id": identity,
+            **copy.deepcopy(payload),
+            "status": "complete" if target is not None else "incomplete",
+            "target_expression": (
+                None if target is None else _target_expression_json(target)
+            ),
+            "failure": (
+                None
+                if target is not None
+                else {
+                    "code": failure_code
+                }
+            ),
+        })
+    return rows
+
+
+def _target_event_state(
+    event: Mapping[str, Any],
+    *,
+    target_state: _TargetState,
+    value_state: _State,
+) -> _TargetState:
+    raw = event.get("register_inputs")
+    registers = (
+        {
+            register: _target_evaluate(
+                raw.get(register),
+                target_state=target_state,
+                value_state=value_state,
+            )
+            for register in _REGISTERS
+        }
+        if isinstance(raw, Mapping)
+        else dict(target_state.registers)
+    )
+    return _TargetState(registers, dict(target_state.stack_words))
+
+
+def _transfer_target_state(
+    *,
+    unit_id: str,
+    unit: Mapping[str, Any],
+    value_state: _State,
+    target_state: _TargetState,
+    direct_calls: Mapping[tuple[str, int], str],
+    recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    summaries: Mapping[str, Mapping[str, Any]],
+    import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
+    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
+    maximum: int,
+) -> _TargetState:
+    events = _events(unit)
+    calls = [
+        (index, event)
+        for index, event in enumerate(events)
+        if event.get("kind") in _CALL_KINDS
+    ]
+    if calls:
+        if len(calls) != 1:
+            return _unknown_target_state()
+        event_index, event = calls[0]
+        pre_value = _event_state(event, value_state)
+        pre_target = _target_event_state(
+            event,
+            target_state=target_state,
+            value_state=value_state,
+        )
+        frame = _unit_call_frame(
+            unit_id=unit_id,
+            unit=unit,
+            direct_calls=direct_calls,
+            recovered_calls=recovered_calls,
+            summaries=summaries,
+            import_abis=import_abis,
+            call_site_effects=call_site_effects,
+            input_state=pre_value,
+        )
+        if frame is None:
+            return _unknown_target_state()
+        registers = {
+            register: (
+                pre_target.registers.get(register)
+                if register in frame.preserved_registers
+                else None
+            )
+            for register in _REGISTERS
+        }
+        registers.update({
+            register: _target_expression_from_value(value)
+            for register, value in frame.result_registers.items()
+        })
+        registers["esp"] = _target_add_stack_transform(
+            pre_target.registers.get("esp"),
+            frame.stack_cleanup,
+            pre_target.registers,
+        )
+        stack_words = {
+            offset: pre_target.stack_words.get(offset)
+            for offset in _stack_words_preserved_across_call(
+                event=event, pre_call=pre_value
+            )
+            if offset in pre_target.stack_words
+        }
+        result = _TargetState(registers, stack_words)
+        return _compose_target_stack_delta(
+            result,
+            input_esp=target_state.registers.get("esp"),
+            semantics=_mapping(unit.get("semantics")),
+        )
+
+    semantics = _mapping(unit.get("semantics"))
+    writes = semantics.get("register_writes")
+    if not isinstance(writes, list):
+        return _unknown_target_state()
+    registers = dict(target_state.registers)
+    for raw in writes:
+        write = _mapping(raw)
+        register = write.get("register")
+        if isinstance(register, str) and register in registers:
+            registers[register] = _target_evaluate(
+                write.get("value"),
+                target_state=target_state,
+                value_state=value_state,
+            )
+    stack_words = dict(target_state.stack_words)
+    memory_events = semantics.get("memory_events")
+    if not isinstance(memory_events, list):
+        stack_words.clear()
+    else:
+        for raw in memory_events:
+            event = _mapping(raw)
+            if event.get("kind") != "write":
+                continue
+            width = _integer(event.get("width"))
+            address = _evaluate(event.get("address"), value_state)
+            if (
+                not isinstance(address, _StackAddress)
+                or address.register_terms
+                or width is None
+            ):
+                stack_words.clear()
+                continue
+            _invalidate_overlapping(stack_words, address.offset, width)
+            target = _target_evaluate(
+                event.get("value"),
+                target_state=target_state,
+                value_state=value_state,
+            )
+            if width == 4 and target is not None:
+                stack_words[address.offset] = target
+    return _compose_target_stack_delta(
+        _TargetState(registers, stack_words),
+        input_esp=target_state.registers.get("esp"),
+        semantics=semantics,
+    )
+
+
+def _compose_target_stack_delta(
+    state: _TargetState,
+    *,
+    input_esp: _TargetExpression | None,
+    semantics: Mapping[str, Any],
+) -> _TargetState:
+    stack_delta = _mapping(semantics.get("stack_delta"))
+    net_bytes = _integer(stack_delta.get("net_bytes"))
+    if stack_delta.get("status") != "derived" or net_bytes is None:
+        return state
+    registers = dict(state.registers)
+    registers["esp"] = _target_binary("add32", input_esp, ("constant", net_bytes))
+    return _TargetState(registers, dict(state.stack_words))
+
+
+def _target_add_stack_transform(
+    value: _TargetExpression | None,
+    transform: _StackTransform | None,
+    registers: Mapping[str, _TargetExpression | None],
+) -> _TargetExpression | None:
+    if value is None or transform is None:
+        return None
+    result = _target_binary(
+        "add32", value, ("constant", transform.constant)
+    )
+    for register, coefficient in transform.register_terms:
+        term = registers.get(register)
+        if term is None:
+            return None
+        if coefficient != 1:
+            term = _target_binary(
+                "mul32", term, ("constant", coefficient)
+            )
+        result = _target_binary("add32", result, term)
+    return result
+
+
+def _target_evaluate(
+    expression: Any,
+    *,
+    target_state: _TargetState,
+    value_state: _State,
+) -> _TargetExpression | None:
+    if not isinstance(expression, Mapping):
+        return None
+    op = str(expression.get("op") or "").lower()
+    if op in {"reg", "input_reg", "register"}:
+        name = expression.get("name", expression.get("reg"))
+        return target_state.registers.get(str(name).lower()) if name is not None else None
+    if op in {"const", "constant"}:
+        value = _integer(expression.get("value"))
+        return None if value is None else ("constant", value & 0xFFFFFFFF)
+    if op in {"add", "add32", "sub", "sub32", "mul", "mul32", "and", "and32"}:
+        operands = expression.get("args")
+        if not isinstance(operands, Sequence) or isinstance(operands, (str, bytes)):
+            operands = (
+                (expression.get("left"), expression.get("right"))
+                if "left" in expression and "right" in expression
+                else ()
+            )
+        if len(operands) < 2:
+            return None
+        normalized_op = {
+            "add": "add32",
+            "sub": "sub32",
+            "mul": "mul32",
+            "and": "and32",
+        }.get(op, op)
+        result = _target_evaluate(
+            operands[0], target_state=target_state, value_state=value_state
+        )
+        for operand in operands[1:]:
+            result = _target_binary(
+                normalized_op,
+                result,
+                _target_evaluate(
+                    operand,
+                    target_state=target_state,
+                    value_state=value_state,
+                ),
+            )
+            if result is None:
+                return None
+        return result
+    if op in {"neg", "neg32"}:
+        operand = expression.get("value", expression.get("arg"))
+        return _target_unary(
+            "neg32",
+            _target_evaluate(
+                operand, target_state=target_state, value_state=value_state
+            ),
+        )
+    if op not in {"load", "read32", "mem32"}:
+        return None
+    width = expression.get("width", expression.get("width_bits", 4))
+    if width not in {4, 32, None}:
+        return None
+    known = _evaluate(expression, value_state)
+    known_expression = _target_expression_from_value(known)
+    if known_expression is not None:
+        return known_expression
+    address_value = _evaluate(expression.get("address"), value_state)
+    if isinstance(address_value, _StackAddress) and not address_value.register_terms:
+        if address_value.offset in target_state.stack_words:
+            return target_state.stack_words[address_value.offset]
+        if (
+            value_state.input_stack_valid
+            and address_value.offset >= 4
+            and not any(
+                start < address_value.offset + 4 and address_value.offset < end
+                for start, end in value_state.input_stack_kills
+            )
+        ):
+            return ("input_stack_word", address_value.offset)
+    address = _target_evaluate(
+        expression.get("address"),
+        target_state=target_state,
+        value_state=value_state,
+    )
+    return None if address is None else ("load32", address)
+
+
+def _target_expression_from_value(
+    value: _Value,
+) -> _TargetExpression | None:
+    if value is None:
+        return None
+    if isinstance(value, _RegisterOrigin):
+        return ("input_register", value.register)
+    if isinstance(value, _InputStackWord):
+        return ("input_stack_word", value.offset)
+    if isinstance(value, _Exact):
+        return ("constant", value.value & 0xFFFFFFFF)
+    if isinstance(value, _ParametricWord):
+        result: _TargetExpression | None = ("constant", value.constant)
+        for term in value.terms:
+            source = (
+                ("input_register", str(term.source))
+                if term.source_kind == "input_register"
+                else ("input_stack_word", int(term.source))
+            )
+            if term.coefficient != 1:
+                source = _target_binary(
+                    "mul32", source, ("constant", term.coefficient)
+                )
+            result = _target_binary("add32", result, source)
+        return result
+    if isinstance(value, _StackAddress):
+        result: _TargetExpression | None = ("input_register", "esp")
+        result = _target_binary(
+            "add32", result, ("constant", value.offset)
+        )
+        for register, coefficient in value.register_terms:
+            source: _TargetExpression | None = ("input_register", register)
+            if coefficient != 1:
+                source = _target_binary(
+                    "mul32", source, ("constant", coefficient)
+                )
+            result = _target_binary("add32", result, source)
+        return result
+    serialized = _serialize_summary_value(value)
+    if serialized is None:
+        return None
+    return (
+        "summary_value",
+        json.dumps(
+            serialized,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            allow_nan=False,
+        ),
+    )
+
+
+def _target_binary(
+    op: str,
+    left: _TargetExpression | None,
+    right: _TargetExpression | None,
+) -> _TargetExpression | None:
+    if left is None or right is None:
+        return None
+    if left[0] == "constant" and right[0] == "constant":
+        lhs = int(left[1])
+        rhs = int(right[1])
+        value = {
+            "add32": lhs + rhs,
+            "sub32": lhs - rhs,
+            "mul32": lhs * rhs,
+            "and32": lhs & rhs,
+        }.get(op)
+        if value is not None:
+            return ("constant", value & 0xFFFFFFFF)
+    if op == "add32" and right == ("constant", 0):
+        return left
+    if op == "add32" and left == ("constant", 0):
+        return right
+    return (op, left, right)
+
+
+def _target_unary(
+    op: str, value: _TargetExpression | None
+) -> _TargetExpression | None:
+    if value is None:
+        return None
+    if op == "neg32" and value[0] == "constant":
+        return ("constant", (-int(value[1])) & 0xFFFFFFFF)
+    return (op, value)
+
+
+def _instantiate_target_expression(
+    expression: _TargetExpression,
+    *,
+    target_state: _TargetState,
+    value_state: _State,
+) -> _TargetExpression | None:
+    kind = expression[0]
+    if kind == "input_register":
+        return target_state.registers.get(str(expression[1]))
+    if kind == "input_stack_word":
+        offset = int(expression[1]) - 4
+        esp = value_state.registers.get("esp")
+        if isinstance(esp, _StackAddress) and not esp.register_terms:
+            actual = esp.offset + offset
+            if actual in target_state.stack_words:
+                return target_state.stack_words[actual]
+        address = _target_binary(
+            "add32",
+            target_state.registers.get("esp"),
+            ("constant", offset),
+        )
+        return None if address is None else ("load32", address)
+    if kind in {"constant", "summary_value"}:
+        return expression
+    if kind == "load32":
+        address = _instantiate_target_expression(
+            expression[1], target_state=target_state, value_state=value_state
+        )
+        return None if address is None else ("load32", address)
+    if kind == "finite_alternatives":
+        result: _TargetExpression | None = None
+        for alternative in expression[1]:
+            result, exceeded = _join_target_expression(
+                result,
+                _instantiate_target_expression(
+                    alternative,
+                    target_state=target_state,
+                    value_state=value_state,
+                ),
+                maximum=len(expression[1]),
+            )
+            if exceeded:
+                return None
+        return result
+    if kind == "neg32":
+        return _target_unary(
+            kind,
+            _instantiate_target_expression(
+                expression[1], target_state=target_state, value_state=value_state
+            ),
+        )
+    if kind in {"add32", "sub32", "mul32", "and32"}:
+        return _target_binary(
+            kind,
+            _instantiate_target_expression(
+                expression[1], target_state=target_state, value_state=value_state
+            ),
+            _instantiate_target_expression(
+                expression[2], target_state=target_state, value_state=value_state
+            ),
+        )
+    return None
+
+
+def _join_target_expression(
+    left: _TargetExpression | None,
+    right: _TargetExpression | None,
+    *,
+    maximum: int,
+) -> tuple[_TargetExpression | None, bool]:
+    if left is None or right is None:
+        return None, False
+    if left == right:
+        return left, False
+    alternatives: set[_TargetExpression] = set()
+    alternatives.update(left[1] if left[0] == "finite_alternatives" else (left,))
+    alternatives.update(right[1] if right[0] == "finite_alternatives" else (right,))
+    if len(alternatives) > maximum:
+        return None, True
+    return ("finite_alternatives", tuple(sorted(alternatives, key=repr))), False
+
+
+def _join_target_states(
+    left: _TargetState,
+    right: _TargetState,
+    *,
+    maximum: int,
+) -> _TargetState:
+    registers = {
+        register: _join_target_expression(
+            left.registers.get(register),
+            right.registers.get(register),
+            maximum=maximum,
+        )[0]
+        for register in _REGISTERS
+    }
+    stack_words: dict[int, _TargetExpression | None] = {}
+    for offset in left.stack_words.keys() & right.stack_words.keys():
+        stack_words[offset] = _join_target_expression(
+            left.stack_words.get(offset),
+            right.stack_words.get(offset),
+            maximum=maximum,
+        )[0]
+    return _TargetState(registers, stack_words)
+
+
+def _unknown_target_state() -> _TargetState:
+    return _TargetState({register: None for register in _REGISTERS}, {})
+
+
+def _target_expression_json(expression: _TargetExpression) -> dict[str, Any]:
+    kind = expression[0]
+    if kind == "input_register":
+        return {"op": "summary_input_register", "register": expression[1]}
+    if kind == "input_stack_word":
+        return {"op": "summary_input_stack_word", "offset": expression[1]}
+    if kind == "constant":
+        return {"op": "constant", "value": expression[1], "width": 32}
+    if kind == "summary_value":
+        return {"op": "summary_value", "value": json.loads(expression[1])}
+    if kind == "load32":
+        return {
+            "op": "load",
+            "width": 4,
+            "address": _target_expression_json(expression[1]),
+        }
+    if kind == "finite_alternatives":
+        return {
+            "op": "finite_alternatives",
+            "values": [_target_expression_json(value) for value in expression[1]],
+        }
+    if kind == "neg32":
+        return {"op": kind, "arg": _target_expression_json(expression[1])}
+    if kind in {"add32", "sub32", "mul32", "and32"}:
+        return {
+            "op": kind,
+            "args": [
+                _target_expression_json(expression[1]),
+                _target_expression_json(expression[2]),
+            ],
+        }
+    raise AssertionError(f"unknown target-expression kind {kind!r}")
+
+
+def _parse_target_expression_json(value: Any) -> _TargetExpression | None:
+    row = _mapping(value)
+    op = row.get("op")
+    if op == "summary_input_register" and row.get("register") in _REGISTERS:
+        return ("input_register", str(row["register"]))
+    if op == "summary_input_stack_word":
+        offset = _integer(row.get("offset"))
+        return None if offset is None or offset < 4 else ("input_stack_word", offset)
+    if op in {"constant", "const"}:
+        exact = _integer(row.get("value"))
+        return None if exact is None else ("constant", exact & 0xFFFFFFFF)
+    if op == "summary_value":
+        parsed = _parse_summary_value(row.get("value"))
+        return _target_expression_from_value(parsed)
+    if op in {"load", "read32", "mem32"}:
+        address = _parse_target_expression_json(row.get("address"))
+        return None if address is None else ("load32", address)
+    if op == "finite_alternatives":
+        raw_values = row.get("values")
+        if not isinstance(raw_values, list) or not raw_values:
+            return None
+        parsed = tuple(_parse_target_expression_json(item) for item in raw_values)
+        if any(item is None for item in parsed):
+            return None
+        alternatives = tuple(item for item in parsed if item is not None)
+        return ("finite_alternatives", alternatives)
+    if op in {"neg", "neg32"}:
+        operand = _parse_target_expression_json(row.get("arg", row.get("value")))
+        return None if operand is None else ("neg32", operand)
+    if op in {"add", "add32", "sub", "sub32", "mul", "mul32", "and", "and32"}:
+        operands = row.get("args")
+        if not isinstance(operands, list) or len(operands) != 2:
+            return None
+        left = _parse_target_expression_json(operands[0])
+        right = _parse_target_expression_json(operands[1])
+        normalized = {
+            "add": "add32",
+            "sub": "sub32",
+            "mul": "mul32",
+            "and": "and32",
+        }.get(str(op), str(op))
+        return _target_binary(normalized, left, right)
+    return None
+
+
 def _analyze_callee(
     *,
     root: str,
@@ -1424,6 +2298,9 @@ def _analyze_callee(
     unresolved_jump_sources: set[str],
     direct_calls: Mapping[tuple[str, int], str],
     recovered_calls: Mapping[tuple[str, int], Mapping[str, Any]],
+    indirect_exits: Sequence[Mapping[str, Any]],
+    exact_units: Mapping[str, UnitBinding],
+    exact_exit_bindings: Mapping[str, IndirectExitBinding],
     summaries: Mapping[str, Mapping[str, Any]],
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     call_site_effects: Mapping[CallSiteId, CallSiteEffect],
@@ -1446,7 +2323,15 @@ def _analyze_callee(
         },
         stack_words={},
     )
+    initial_targets = _TargetState(
+        registers={
+            register: ("input_register", register)
+            for register in _REGISTERS
+        },
+        stack_words={},
+    )
     states = {root: initial}
+    target_states = {root: initial_targets}
     work = deque([root])
     return_states: list[_State] = []
     return_unit_ids: set[str] = set()
@@ -1454,6 +2339,9 @@ def _analyze_callee(
     blockers: set[str] = set()
     register_frames_complete = True
     memory_fact_dependencies: set[str] = set()
+    parametric_exits: dict[str, dict[str, Any]] = {}
+    parametric_exit_values: dict[str, _TargetExpression | None] = {}
+    parametric_exit_overflow: set[str] = set()
     evaluations = 0
     while work:
         unit_id = work.popleft()
@@ -1462,6 +2350,22 @@ def _analyze_callee(
             blockers.add("callee_summary_budget_exceeded")
             break
         unit = by_id[unit_id]
+        _collect_parametric_indirect_exits(
+            summary_root=root,
+            unit_id=unit_id,
+            unit=unit,
+            value_state=states[unit_id],
+            target_state=target_states[unit_id],
+            indirect_exits=indirect_exits,
+            exact_exit_bindings=exact_exit_bindings,
+            summaries=summaries,
+            direct_calls=direct_calls,
+            recovered_calls=recovered_calls,
+            values=parametric_exit_values,
+            records=parametric_exits,
+            overflow=parametric_exit_overflow,
+            maximum=max_value_alternatives,
+        )
         successors = normal_edges.get(unit_id, set())
         if _has_checked_terminating_disposition(unit):
             if successors:
@@ -1503,6 +2407,18 @@ def _analyze_callee(
             max_stack_words=max_stack_words,
             max_memory_words=max_memory_words,
         )
+        target_output = _transfer_target_state(
+            unit_id=unit_id,
+            unit=unit,
+            value_state=states[unit_id],
+            target_state=target_states[unit_id],
+            direct_calls=direct_calls,
+            recovered_calls=recovered_calls,
+            summaries=summaries,
+            import_abis=import_abis,
+            call_site_effects=call_site_effects,
+            maximum=max_value_alternatives,
+        )
         blockers.update(transfer_blockers)
         memory_fact_dependencies.update(transfer_dependencies)
         if "register_write_inventory_invalid" in transfer_blockers:
@@ -1535,6 +2451,7 @@ def _analyze_callee(
             continue
         for target in sorted(successors):
             prior = states.get(target)
+            prior_target = target_states.get(target)
             joined = (
                 copy.deepcopy(output)
                 if prior is None
@@ -1545,8 +2462,18 @@ def _analyze_callee(
                     max_memory_writes=max_memory_words,
                 )
             )
-            if prior != joined:
+            joined_target = (
+                copy.deepcopy(target_output)
+                if prior_target is None
+                else _join_target_states(
+                    prior_target,
+                    target_output,
+                    maximum=max_value_alternatives,
+                )
+            )
+            if prior != joined or prior_target != joined_target:
                 states[target] = joined
+                target_states[target] = joined_target
                 work.append(target)
 
     if not return_states and not nonreturning_nodes:
@@ -1692,6 +2619,18 @@ def _analyze_callee(
         control_complete=control_complete,
         maximum=max_memory_words,
     )
+    parametric_exit_rows = _parametric_indirect_exit_rows(
+        records=parametric_exits,
+        values=parametric_exit_values,
+        overflow=parametric_exit_overflow,
+        summary_unit=exact_units.get(root),
+    )
+    parametric_collection_complete = not {
+        "callee_summary_budget_exceeded",
+        "unresolved_direct_control",
+        "unterminated_control_path",
+        "terminating_control_has_successors",
+    } & blockers
     return {
         "status": "complete" if summary_complete else "incomplete",
         # Positive preservation claims remain useful when another register or
@@ -1733,6 +2672,22 @@ def _analyze_callee(
             ),
         },
         "caller_memory_frame": caller_memory_frame,
+        "parametric_indirect_exits": {
+            "status": (
+                "complete"
+                if parametric_collection_complete
+                and all(row["status"] == "complete" for row in parametric_exit_rows)
+                else "incomplete"
+            ),
+            "exits": parametric_exit_rows,
+            "blocker_codes": sorted(
+                {
+                    "parametric_indirect_exit_inventory_incomplete"
+                    for _ in [0]
+                    if not parametric_collection_complete
+                }
+            ),
+        },
         "stack_cleanup": stack_cleanup,
         "return_behavior": {
             "status": "complete" if control_complete else "incomplete",

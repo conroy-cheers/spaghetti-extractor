@@ -74,6 +74,7 @@ from .global_slot_contract_v2 import (
     GlobalSlotInvariant,
 )
 from .machine_abi import NormalCallABIPremise, parse_normal_call_abi_premise
+from .parametric_indirect_exit_v2 import ParametricIndirectExitSummaryV2
 
 
 VALUE_FACT_FORMAT = "spaghetti-extractor-value-fact-v2"
@@ -482,6 +483,7 @@ def _call_frame_family_alternative_corrupt(
         return True
 
     selected = {
+        "indirect_exit": "result_origins",
         "memory": "memory_effects",
         "register": "register_preservation",
         "result": "result_origins",
@@ -514,6 +516,23 @@ def _call_frame_family_alternative_corrupt(
             set(projection) != {"status", "registers"}
             or projection.get("registers")
             != ([] if projection.get("status") != "complete" else [subject])
+        )
+    if family == "indirect_exit":
+        if set(projection) != {"status", "summary"}:
+            return True
+        if projection.get("status") != "complete":
+            return projection.get("summary") is not None
+        try:
+            summary = ParametricIndirectExitSummaryV2.parse(
+                projection.get("summary")
+            )
+        except AuthorityDataError:
+            return True
+        return not (
+            summary.status == "complete"
+            and summary.target_expression is not None
+            and summary.summary_unit == callee
+            and summary.exit_binding.exit_id == subject
         )
     if family == "stack":
         delta = projection.get("stack_delta")
