@@ -877,20 +877,6 @@ def write_static_hybrid_completeness_report(
         control.get("internal_call_preservation"),
         "internal-call preservation inventory",
     )
-    if (
-        internal_calls.get("status") != "complete"
-        or internal_calls.get("fixed_point_complete") is not True
-    ):
-        blockers.append(_Blocker(
-            family="callbacks_and_returns",
-            code="call_summary_fixed_point_incomplete",
-            message="call/behavioral-root summaries did not reach a complete fixed point",
-            next_action="close all call targets and recompute summaries to a stable fixed point",
-            details={
-                "status": internal_calls.get("status"),
-                "fixed_point_complete": internal_calls.get("fixed_point_complete"),
-            },
-        ))
     internal_summaries = _list(
         internal_calls.get("summaries"), "internal-call summaries"
     )
@@ -969,6 +955,18 @@ def write_static_hybrid_completeness_report(
                 "stack_cleanup": stack_cleanup,
                 "graph_problems": graph_problems,
             },
+        ))
+
+    for root_unit_id in sorted(roots - summary_by_target.keys()):
+        blockers.append(_Blocker(
+            family="callbacks_and_returns",
+            code="behavioral_root_summary_missing",
+            message="a behavioral root has no call-frame/termination summary",
+            next_action=(
+                "derive a complete summary for every PE entry, export, TLS, and "
+                "registered callback root"
+            ),
+            location=_row_location(rows_by_id[root_unit_id]),
         ))
 
     executable_instruction_count = 0

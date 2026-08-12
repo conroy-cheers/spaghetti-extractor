@@ -1207,6 +1207,61 @@ class StaticHybridCompletenessTests(unittest.TestCase):
                 {item["code"] for item in report["blockers"]},
             )
 
+    def test_unreachable_incomplete_summary_does_not_block_rooted_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine_ir, manifest_path, load_image, profile = self._fixture(root)
+            units = [
+                json.loads(line)
+                for line in machine_ir.read_text(encoding="utf-8").splitlines()
+            ]
+            dead = json.loads(json.dumps(units[0]))
+            dead["id"] = "unit:dead"
+            dead["reachable"] = False
+            dead["reachability"] = "confirmed_unreachable"
+            dead["source"]["original"].update({
+                "rva_start": 0x2000,
+                "rva_end": 0x2001,
+            })
+            self._bind_instruction_schedule(dead)
+            units.append(dead)
+            manifest = self._rewrite_units(machine_ir, manifest_path, units)
+            reachability = manifest["control"]["reachability"]
+            reachability["confirmed_unreachable_units"] = ["unit:dead"]
+            summaries = manifest["control"]["internal_call_preservation"]
+            summaries["status"] = "incomplete"
+            summaries["summaries"].append({
+                "status": "incomplete",
+                "target_unit_id": "unit:dead",
+                "target_rva": 0x2000,
+                "root_kind": "callee",
+                "blocker_codes": ["dead_fixture_frontier"],
+            })
+            self._write_manifest(manifest_path, manifest)
+
+            report = self._report(
+                root, machine_ir, manifest_path, load_image, profile
+            )
+
+            self.assertEqual(report["status"], "complete", report["blockers"])
+
+    def test_missing_behavioral_root_summary_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine_ir, manifest_path, load_image, profile = self._fixture(root)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["control"]["internal_call_preservation"]["summaries"] = []
+            self._write_manifest(manifest_path, manifest)
+
+            report = self._report(
+                root, machine_ir, manifest_path, load_image, profile
+            )
+
+            self.assertIn(
+                "behavioral_root_summary_missing",
+                {item["code"] for item in report["blockers"]},
+            )
+
     def test_reachable_return_missing_from_summary_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

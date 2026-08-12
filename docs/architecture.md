@@ -103,8 +103,12 @@ The v2 evidence graph is fail-closed:
    only through exact event-bound spatial facts replayed from the corresponding
    private launch-range contract. Such facts establish separation, not
    immutability of stack or TEB contents.
-3. Call summaries and indirect targets converge together over an SCC worklist,
-   then replay from no proposal seeds. Expensive bounded-context recovery runs
+3. The call-summary universe contains every exact direct call target and every
+   recovered finite indirect target, whether or not its call site is currently
+   rooted-reachable. Declared launch entries are stable structural cutpoints;
+   callback discovery may grow rooted propagation without redefining that
+   inventory. Call summaries and indirect targets converge together over an SCC
+   worklist, then replay from no proposal seeds. Expensive bounded-context recovery runs
    only as a checkpoint after ordinary propagation stabilizes; a checkpoint
    that discovers new driver facts resumes ordinary propagation before another
    checkpoint may authorize contextual memory evidence. Bootstrap mutable-slot
@@ -264,6 +268,18 @@ workspace; the resulting typed facts are shared by call-summary and provenance
 analysis instead of being revalidated independently. Whole-summary and
 component caches remain pass-local proposal optimizations, while the emitted
 artifact and downstream authority replay are unchanged.
+
+The structural callee inventory is independent of rooted reachability.
+Root-specific propagation may add registered callbacks and other event-derived
+entries; those entries receive summaries, but they do not add or remove direct
+structural callees merely by becoming reachable. A newly recovered indirect
+target extends the structural call inventory through its explicit target
+certificate and invalidates only the affected summary SCC and callers.
+
+Structural summaries are conditional facts, not reachability claims. The typed
+authority lattice starts from behavioral-entry summary nodes and follows their
+actual dependencies. An incomplete unreachable structural summary remains a
+diagnostic frontier, while an incomplete root or rooted callee fails closed.
 
 Each joint fixed-point round runs dependency-scoped global-slot analysis once.
 The round emits a distinct non-authorizing promotion artifact from the

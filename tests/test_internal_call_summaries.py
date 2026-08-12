@@ -851,6 +851,41 @@ class InternalCallSummaryTests(unittest.TestCase):
         self.assertEqual(result["counts"]["call_targets"], 1)
         self.assertEqual(self._summary(result, "callee")["status"], "complete")
 
+    def test_unreachable_call_site_still_contributes_structural_callee(self) -> None:
+        result = derive_internal_call_preservation_summaries(
+            units=[
+                unit("entry", 0x1000, outcome="return"),
+                unit(
+                    "unreached-caller",
+                    0x2000,
+                    outcome="return",
+                    events=[internal_call(0x3000)],
+                ),
+                unit("structural-callee", 0x3000, outcome="return"),
+            ],
+            roots=["entry"],
+            direct_edges=[],
+            internal_call_edges=[],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+        )
+
+        self.assertEqual(
+            result["selection_policy"],
+            "all_structural_call_targets_and_declared_entries",
+        )
+        self.assertEqual(result["counts"]["call_targets"], 0)
+        self.assertEqual(result["counts"]["structural_call_targets"], 1)
+        self.assertEqual(
+            self._summary(result, "structural-callee")["status"], "complete"
+        )
+        self.assertNotIn("structural-callee", result["eligible_units"])
+        self.assertNotIn(
+            "unreached-caller",
+            {row["target_unit_id"] for row in result["summaries"]},
+        )
+
     def test_ambiguous_direct_call_rva_fails_closed(self) -> None:
         result = self._derive(
             units=[

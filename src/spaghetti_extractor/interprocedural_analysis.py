@@ -94,6 +94,10 @@ _REGISTER_UNIVERSE = frozenset(
 )
 _CALL_SUMMARY_PRESERVED_REGISTERS = ("ebp", "ebx", "edi", "esi")
 _CALL_SUMMARY_SCALAR_FAMILIES = ("memory", "result", "return", "stack")
+_CALL_FRAME_PROJECTION_PREFIX = "interprocedural:call-frame-binding:"
+_CALL_FRAME_FAMILY_PROJECTION_PREFIX = (
+    "interprocedural:call-frame-family-binding:"
+)
 
 
 @dataclass(frozen=True, order=True)
@@ -363,7 +367,7 @@ class _PassResult:
     @property
     def lattice_complete(self) -> bool:
         required = _required_lattice_nodes(
-            self.facts, self.dependency_edges
+            self.facts, self.dependency_edges, roots=self.roots
         )
         return all(
             (state := self.facts.get(node)) is not None
@@ -376,6 +380,8 @@ class _PassResult:
 def _required_lattice_nodes(
     facts: Mapping[str, _NodeState],
     dependency_edges: frozenset[tuple[str, str]],
+    *,
+    roots: Sequence[str],
 ) -> frozenset[str]:
     """Close authorizing outputs over the exact facts they consume.
 
@@ -384,11 +390,11 @@ def _required_lattice_nodes(
     it, but an unused family is not itself a whole-program obligation.
     """
 
-    required = {
-        node
-        for node in facts
-        if not node.startswith(CALL_SUMMARY_FAMILY_NODE_PREFIX)
-    }
+    # Structural summaries and target proposals are conditional facts.  Their
+    # mere presence must not make dead code an acceptance obligation.  Start at
+    # the behavioral entry summaries and close over exactly the providers those
+    # summaries consume.
+    required = {_summary_node(root) for root in roots}
     incoming: dict[str, set[str]] = defaultdict(set)
     for dependency, dependent in dependency_edges:
         incoming[dependent].add(dependency)
@@ -1397,6 +1403,20 @@ def _complete_output_nodes(
         and state.status == "complete"
         and state.fact.complete
     )
+    complete.update(
+        node
+        for node, state in result.facts.items()
+        if node.startswith(_CALL_FRAME_PROJECTION_PREFIX)
+        and state.status == "complete"
+        and state.fact.complete
+    )
+    complete.update(
+        node
+        for node, state in result.facts.items()
+        if node.startswith(_CALL_FRAME_FAMILY_PROJECTION_PREFIX)
+        and state.status == "complete"
+        and state.fact.complete
+    )
     return complete
 
 
@@ -1866,7 +1886,7 @@ def _run_typed_pass(
                 validated_memory_access_facts,
             )
         summary_key = _call_summary_input_key(
-            roots=current_roots,
+            entry_roots=current_roots,
             recoveries_key=input_recoveries,
             call_site_effects_key=input_call_site_effects,
             memory_access_facts_key=input_memory_access_facts,
@@ -2974,7 +2994,7 @@ def _mutable_influence_input_key(
 
 def _call_summary_input_key(
     *,
-    roots: Sequence[str],
+    entry_roots: Sequence[str],
     recoveries_key: Hashable,
     call_site_effects_key: Hashable,
     memory_access_facts_key: Hashable,
@@ -2984,7 +3004,7 @@ def _call_summary_input_key(
 
     return (
         "internal-call-summaries-v1",
-        tuple(sorted(roots)),
+        tuple(sorted(entry_roots)),
         recoveries_key,
         call_site_effects_key,
         memory_access_facts_key,
@@ -5152,6 +5172,55 @@ def _typed_proposals(
             result[identity] = _recovery_state(
                 raw, finite_value_budget=finite_value_budget
             )
+    for raw in recoveries:
+        identity = raw.get("id")
+        dependencies = raw.get("analysis_dependencies", ())
+        if (
+            not isinstance(identity, str)
+            or not isinstance(dependencies, Sequence)
+            or isinstance(dependencies, (str, bytes))
+        ):
+            continue
+        for dependency in dependencies:
+            call_frame = parse_call_frame_dependency(dependency)
+            if (
+                call_frame is not None
+                and _call_frame_is_recovered_site(call_frame, raw)
+            ):
+                state = _call_frame_projection_state(
+                    recovery_state=result[identity],
+                    provider_state=result.get(_summary_node(call_frame[2])),
+                )
+                projection = _call_frame_projection_node(dependency)
+                previous = result.get(projection)
+                if previous is not None and previous != state:
+                    raise ValueError(
+                        "call-frame projection has conflicting providers"
+                    )
+                result[projection] = state
+            parsed = parse_call_frame_family_dependency(dependency)
+            if (
+                parsed is None
+                or not _call_frame_family_is_recovered_site(parsed, raw)
+            ):
+                continue
+            state = _call_frame_family_projection_state(
+                parsed=parsed,
+                recovery=raw,
+                recovery_state=result[identity],
+                provider_state=result.get(
+                    call_summary_family_node_id(
+                        parsed[2], parsed[3], parsed[4]
+                    )
+                ),
+            )
+            projection = _call_frame_family_projection_node(dependency)
+            previous = result.get(projection)
+            if previous is not None and previous != state:
+                raise ValueError(
+                    "call-frame family projection has conflicting providers"
+                )
+            result[projection] = state
     for invariant in global_slot_invariants:
         result[invariant.content_id] = _global_slot_state(
             invariant, finite_value_budget=finite_value_budget
@@ -5176,6 +5245,37 @@ def _typed_proposals(
     return result
 
 
+def _call_frame_projection_state(
+    *,
+    recovery_state: _NodeState,
+    provider_state: _NodeState | None,
+) -> _NodeState:
+    """Bind an indirect call's aggregate frame to its recovered callee."""
+
+    reasons: set[str] = set()
+    if recovery_state.status != "complete":
+        reasons.add("call_frame_target_unresolved")
+    if provider_state is None:
+        reasons.add("call_frame_provider_missing")
+    elif provider_state.status != "complete":
+        reasons.update(provider_state.failure_reasons)
+        if not provider_state.failure_reasons:
+            reasons.add("call_summary_incomplete")
+    fallback = InterproceduralFact(
+        may_values=Bottom(),
+        preserved_registers=MustPreservedRegisters(frozenset()),
+        stack_cleanup=NoExactValue(),
+        results=NoExactValue(),
+        return_behavior=ReturnBehavior(),
+        taint=Taint.of(reasons),
+    )
+    return _NodeState(
+        fallback if provider_state is None else provider_state.fact,
+        "complete" if not reasons else "incomplete",
+        tuple(sorted(reasons)),
+    )
+
+
 def _normal_call_abi_premise_state(
     premise: NormalCallABIPremise,
 ) -> _NodeState:
@@ -5192,6 +5292,51 @@ def _normal_call_abi_premise_state(
         ),
         "complete",
         (),
+    )
+
+
+def _call_frame_family_projection_state(
+    *,
+    parsed: tuple[str, int, str, str, str | None],
+    recovery: Mapping[str, Any],
+    recovery_state: _NodeState,
+    provider_state: _NodeState | None,
+) -> _NodeState:
+    """Bind one call-site family use to target and callee evidence."""
+
+    source, event_index, target, family, _subject = parsed
+    exact_site = (
+        recovery.get("source_unit_id") == source
+        and recovery.get("source_event_index") == event_index
+    )
+    recovered_targets = recovery.get("target_unit_ids")
+    target_bound = (
+        recovery.get("status") != "recovered"
+        or (
+            isinstance(recovered_targets, Sequence)
+            and not isinstance(recovered_targets, (str, bytes))
+            and target in recovered_targets
+        )
+    )
+    reasons: set[str] = set()
+    if not exact_site:
+        reasons.add("call_frame_family_site_mismatch")
+    if not target_bound:
+        reasons.add("call_frame_family_target_mismatch")
+    if recovery_state.status != "complete":
+        reasons.add("call_frame_family_target_unresolved")
+    if provider_state is None:
+        reasons.add("call_frame_family_provider_missing")
+    elif provider_state.status != "complete":
+        reasons.update(provider_state.failure_reasons)
+        if not provider_state.failure_reasons:
+            reasons.add(f"call_summary_{family}_unknown")
+    complete = not reasons
+    fallback = _summary_scalar_family_state(family, False)
+    return _NodeState(
+        fallback.fact if provider_state is None else provider_state.fact,
+        "complete" if complete else "incomplete",
+        tuple(sorted(reasons)),
     )
 
 
@@ -5744,31 +5889,6 @@ def _derive_dependency_edges(
             if dependency in memory_access_fact_ids:
                 dependencies.add((str(dependency), consumer))
 
-    # An indirect target certificate is also the reachability authority for
-    # each callee summary introduced through that edge.  Without this edge a
-    # stale target hypothesis could expose a valid leaf summary even when the
-    # target itself was not reproduced.
-    for recovery_id, recovery in recovery_by_id.items():
-        if recovery.get("status") != "recovered":
-            continue
-        for target in recovery.get("target_unit_ids", ()):
-            if isinstance(target, str) and target in summary_roots:
-                dependencies.add((recovery_id, _summary_node(target)))
-                dependencies.update(
-                    (
-                        recovery_id,
-                        _summary_register_node(target, register),
-                    )
-                    for register in _CALL_SUMMARY_PRESERVED_REGISTERS
-                )
-                dependencies.update(
-                    (
-                        recovery_id,
-                        _summary_family_node(target, family),
-                    )
-                    for family in _CALL_SUMMARY_SCALAR_FAMILIES
-                )
-
     # Target provenance carries the exact summaries used to preserve or
     # produce that value.  Path-wide attribution invents dependencies from
     # unrelated calls and creates artificial recursive SCCs.
@@ -5790,18 +5910,29 @@ def _derive_dependency_edges(
             if isinstance(dependency, str) and dependency == premise_id:
                 dependencies.add((dependency, recovery_id))
                 continue
-            target = _call_frame_dependency_target(dependency)
+            call_frame = parse_call_frame_dependency(dependency)
+            target = None if call_frame is None else call_frame[2]
             if target is not None and target in summary_roots:
-                dependencies.add((_summary_node(target), recovery_id))
+                if _call_frame_is_recovered_site(call_frame, recovery):
+                    projection = _call_frame_projection_node(dependency)
+                    dependencies.add((_summary_node(target), projection))
+                    dependencies.add((recovery_id, projection))
+                    dependencies.add((projection, recovery_id))
+                else:
+                    dependencies.add((_summary_node(target), recovery_id))
                 continue
             family = parse_call_frame_family_dependency(dependency)
             if family is not None and family[2] in summary_roots:
-                dependencies.add((
-                    call_summary_family_node_id(
-                        family[2], family[3], family[4]
-                    ),
-                    recovery_id,
-                ))
+                provider = call_summary_family_node_id(
+                    family[2], family[3], family[4]
+                )
+                if _call_frame_family_is_recovered_site(family, recovery):
+                    projection = _call_frame_family_projection_node(dependency)
+                    dependencies.add((provider, projection))
+                    dependencies.add((recovery_id, projection))
+                    dependencies.add((projection, recovery_id))
+                else:
+                    dependencies.add((provider, recovery_id))
 
     recoveries_by_site = {
         (row.get("source_unit_id"), row.get("source_event_index")): identity
@@ -5864,9 +5995,42 @@ def _derive_dependency_edges(
     return frozenset(dependencies)
 
 
-def _call_frame_dependency_target(value: Any) -> str | None:
-    parsed = parse_call_frame_dependency(value)
-    return None if parsed is None else parsed[2]
+def _call_frame_is_recovered_site(
+    parsed: tuple[str, int, str], recovery: Mapping[str, Any]
+) -> bool:
+    source, event_index, target = parsed
+    targets = recovery.get("target_unit_ids")
+    return (
+        recovery.get("kind") == "indirect_call"
+        and recovery.get("source_unit_id") == source
+        and recovery.get("source_event_index") == event_index
+        and isinstance(targets, Sequence)
+        and not isinstance(targets, (str, bytes))
+        and target in targets
+    )
+
+
+def _call_frame_family_is_recovered_site(
+    parsed: tuple[str, int, str, str, str | None],
+    recovery: Mapping[str, Any],
+) -> bool:
+    return _call_frame_is_recovered_site(parsed[:3], recovery)
+
+
+def _call_frame_projection_node(dependency: object) -> str:
+    if not isinstance(dependency, str) or parse_call_frame_dependency(
+        dependency
+    ) is None:
+        raise ValueError("call-frame projection dependency is malformed")
+    return f"{_CALL_FRAME_PROJECTION_PREFIX}{dependency}"
+
+
+def _call_frame_family_projection_node(dependency: object) -> str:
+    if not isinstance(dependency, str) or parse_call_frame_family_dependency(
+        dependency
+    ) is None:
+        raise ValueError("call-frame family projection dependency is malformed")
+    return f"{_CALL_FRAME_FAMILY_PROJECTION_PREFIX}{dependency}"
 
 
 def _call_targets_by_source(
@@ -6909,6 +7073,10 @@ def _dependency_inventory(
                     if node_id.startswith("call-summary:")
                     else "call_summary_family"
                     if node_id.startswith("call-summary-family:")
+                    else "call_frame_projection"
+                    if node_id.startswith(_CALL_FRAME_PROJECTION_PREFIX)
+                    else "call_frame_family_projection"
+                    if node_id.startswith(_CALL_FRAME_FAMILY_PROJECTION_PREFIX)
                     else "global_slot_invariant"
                     if node_id.startswith("global_slot_invariant:")
                     else "normal_call_abi_premise"

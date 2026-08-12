@@ -361,6 +361,36 @@ def summary_adapter(**kwargs: Any) -> dict[str, object]:
     assert isinstance(internal_edges, list)
     assert isinstance(recoveries, list)
     by_id = {str(row["id"]): row for row in units}
+    by_rva = {
+        int(row["source"]["original"]["rva_start"]): str(row["id"])
+        for row in units
+    }
+    roots.update(
+        str(raw["target_unit_id"])
+        for raw in internal_edges
+        if isinstance(raw.get("target_unit_id"), str)
+        and raw["target_unit_id"] in by_id
+    )
+    roots.update(
+        target
+        for raw in recoveries
+        if raw.get("status") == "recovered"
+        for target in raw.get("target_unit_ids", [])
+        if isinstance(target, str) and target in by_id
+    )
+    for row in units:
+        semantics = row.get("semantics")
+        events = (
+            semantics.get("external_events")
+            if isinstance(semantics, dict)
+            else None
+        )
+        for event in events if isinstance(events, list) else ():
+            if event.get("kind") != "internal_call":
+                continue
+            target = by_rva.get(event.get("target_rva"))
+            if target is not None:
+                roots.add(target)
     pending = list(roots)
     while pending:
         source = pending.pop()
@@ -514,6 +544,67 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             isinstance(arguments, dict) and arguments.get("callback")
             for _roots, arguments in observed
         ))
+
+    def test_callback_root_growth_adds_entry_without_defining_callees(self) -> None:
+        summary_entries: list[tuple[str, ...]] = []
+
+        def summaries(**kwargs: Any) -> dict[str, object]:
+            summary_entries.append(tuple(sorted(kwargs["roots"])))
+            return summary_adapter(**kwargs)
+
+        def resolver(**_kwargs: Any) -> dict[str, object]:
+            return {
+                "resolutions": [],
+                "call_site_effects": [],
+                "callback_registrations": [{
+                    "status": "complete",
+                    "target_unit_ids": ["callback"],
+                    "callback_entry_arguments": [],
+                }],
+            }
+
+        result = self._run(
+            units=[unit("entry", 0x1000), unit("callback", 0x2000)],
+            roots=["entry"],
+            resolver=resolver,
+            summary_resolver=summaries,
+        )
+
+        self.assertEqual(result.fixed_point["status"], "complete")
+        self.assertTrue(summary_entries)
+        self.assertIn(("entry",), summary_entries)
+        self.assertIn(("callback", "entry"), summary_entries)
+
+    def test_unreachable_incomplete_structural_summary_is_not_required(self) -> None:
+        def summaries(**kwargs: Any) -> dict[str, object]:
+            result = summary_adapter(**kwargs)
+            rows = result["summaries"]
+            assert isinstance(rows, list)
+            for row in rows:
+                if row.get("target_unit_id") == "dead-callee":
+                    row["status"] = "incomplete"
+                    row["blocker_codes"] = ["dead_fixture_frontier"]
+            result["status"] = "incomplete"
+            return result
+
+        result = self._run(
+            units=[
+                unit("entry", 0x1000),
+                unit("dead-caller", 0x2000, calls=(0x3000,)),
+                unit("dead-callee", 0x3000),
+            ],
+            roots=["entry"],
+            resolver=lambda **_kwargs: {"resolutions": []},
+            summary_resolver=summaries,
+        )
+
+        self.assertTrue(result.complete, result.fixed_point)
+        dead = next(
+            row
+            for row in result.call_summaries["summaries"]
+            if row["target_unit_id"] == "dead-callee"
+        )
+        self.assertEqual(dead["status"], "incomplete")
 
     def test_call_site_memory_frames_use_independent_family_status(self) -> None:
         abi = resolve_machine_call_abi("pe32-cdecl-v1")
@@ -2175,6 +2266,9 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             inventory["call-summary:a"]["dependencies"],
             ["call-summary:b", "exit:a:0"],
         )
+        self.assertNotIn(
+            "exit:a:0", inventory["call-summary:b"]["dependencies"]
+        )
 
     def test_recursive_summaries_are_one_dependency_scc(self) -> None:
         result = self._run(
@@ -2879,6 +2973,71 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             result.fixed_point["inductive_replay"]["accepted_nodes"],
         )
 
+    def test_propagated_family_dependency_does_not_rebind_to_later_exit(
+        self,
+    ) -> None:
+        first_exit = indirect_exit("exit:a:0", "a")
+        later_exit = indirect_exit("exit:later:0", "later")
+        dependency = call_frame_family_dependency_id(
+            "a", 0, "callee", "register", "edi"
+        )
+        first_seed = recovered(first_exit, "callee")
+        later_seed = recovered(later_exit, "other")
+        first_seed["analysis_dependencies"] = [dependency]
+        later_seed["analysis_dependencies"] = [dependency]
+
+        def resolver(**kwargs: object) -> dict[str, object]:
+            selected = kwargs["recovered_indirect_edges"]
+            assert isinstance(selected, list)
+            current = {
+                str(row.get("id")): row
+                for row in selected
+                if isinstance(row, dict)
+            }
+            resolutions: list[dict[str, object]] = []
+            for exit_row, seed in (
+                (first_exit, first_seed),
+                (later_exit, later_seed),
+            ):
+                if current.get(str(exit_row["id"]), {}).get("status") != "recovered":
+                    resolutions.append(incomplete_recovery(exit_row))
+                    continue
+                replayed = dict(seed)
+                replayed.update({
+                    "origin_count": 1,
+                    "origin_kinds": ["internal"],
+                    "target_origin_witnesses": [{
+                        "kind": "static_code",
+                        "key": [IMAGE_BASE + 0x2000, 0],
+                    }],
+                })
+                resolutions.append(replayed)
+            return {"resolutions": resolutions}
+
+        result = self._run(
+            units=[
+                unit("a", 0x1000),
+                unit("callee", 0x2000),
+                unit("later", 0x3000),
+                unit("other", 0x4000),
+            ],
+            roots=["a", "later"],
+            exits=[first_exit, later_exit],
+            inductive=[first_seed, later_seed],
+            resolver=resolver,
+            authority_only=True,
+        )
+
+        recoveries = {str(row["id"]): row for row in result.recovered_targets}
+        self.assertEqual(recoveries[first_exit["id"]]["status"], "recovered")
+        self.assertEqual(recoveries[later_exit["id"]]["status"], "recovered")
+        projections = [
+            row
+            for row in result.fixed_point["dependencies"]
+            if row["kind"] == "call_frame_family_projection"
+        ]
+        self.assertEqual(len(projections), 1)
+
     def test_memory_family_can_authorize_without_complete_call_summary(
         self,
     ) -> None:
@@ -3117,7 +3276,13 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         self.assertIn("exit:a:0", replay["accepted_nodes"])
         self.assertNotIn("exit:c:0", replay["accepted_nodes"])
         self.assertIn("call-summary:b", replay["accepted_nodes"])
-        self.assertNotIn("call-summary:d", replay["accepted_nodes"])
+        # Structural callee summaries are valid independently of whether a
+        # particular rooted caller can recover that callee.  The failed
+        # caller's site projection and exit certificate remain unaccepted.
+        self.assertIn("call-summary:d", replay["accepted_nodes"])
+        self.assertNotIn(
+            'call-frame:["c",0,"d"]', replay["accepted_nodes"]
+        )
 
     def test_incomplete_analysis_retains_actionable_failure(self) -> None:
         exit_row = indirect_exit("exit:a:0", "a")

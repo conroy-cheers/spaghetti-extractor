@@ -2334,8 +2334,6 @@ def _machine_ir_internal_call_preservation(
         raise StageAInputError(
             "machine-IR manifest has no internal-call preservation inventory"
         )
-    if summaries.get("fixed_point_complete") is not True:
-        return {}
     rows = summaries.get("summaries")
     if not isinstance(rows, list):
         raise StageAInputError("internal-call preservation summaries must be a list")

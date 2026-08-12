@@ -1,4 +1,4 @@
-"""Fail-closed frame summaries for PE32 calls and behavioral roots.
+"""Fail-closed frame summaries for PE32 calls and declared entry roots.
 
 The summaries are proposal evidence, not acceptance authority.  They traverse
 the exported machine IR, retain only values whose origins survive every
@@ -263,7 +263,14 @@ def derive_internal_call_preservation_summaries(
         str, PreparedMemoryAccessFact
     ] | None = None,
 ) -> dict[str, Any]:
-    """Propose frame/return facts for reachable callees and behavioral roots."""
+    """Propose parametric frame/return facts for structural call targets.
+
+    ``roots`` names declared entry cutpoints that also need summaries.  Callee
+    discovery is deliberately independent of reachability from those entries:
+    every exact direct target and every recovered finite indirect target is
+    summarized.  Rooted analysis later decides which summaries can affect an
+    execution; it does not define the structural summary universe.
+    """
 
     if min(
         max_units_per_summary,
@@ -421,14 +428,23 @@ def derive_internal_call_preservation_summaries(
                 if isinstance(target, str) and target in by_id:
                     recovered_call_targets[source].add(target)
 
-    behavioral_roots = {str(root) for root in roots if str(root) in by_id}
-    eligible_units, callee_roots = _reachable_call_roots(
-        roots=behavioral_roots,
+    entry_roots = {str(root) for root in roots if str(root) in by_id}
+    callee_roots = {
+        target for target in direct_calls.values() if target in by_id
+    }
+    callee_roots.update(
+        target
+        for targets in recovered_call_targets.values()
+        for target in targets
+        if target in by_id
+    )
+    eligible_units, rooted_callee_roots = _reachable_call_roots(
+        roots=entry_roots,
         normal_edges=normal_edges,
         direct_calls=direct_calls,
         recovered_call_targets=recovered_call_targets,
     )
-    summary_roots = behavioral_roots | callee_roots
+    summary_roots = entry_roots | callee_roots
     return_instruction_cleanups = {
         root: _derive_return_instruction_cleanup(
             root=root,
@@ -595,7 +611,7 @@ def derive_internal_call_preservation_summaries(
     rows: list[dict[str, Any]] = []
     for root in sorted(summary_roots):
         source = _mapping(_mapping(by_id[root].get("source")).get("original"))
-        is_behavioral_root = root in behavioral_roots
+        is_behavioral_root = root in entry_roots
         is_callee = root in callee_roots
         rows.append(
             {
@@ -638,6 +654,7 @@ def derive_internal_call_preservation_summaries(
         ),
         "proof_authority": False,
         "required_replay": "Lean must replay CFG closure and every preserved origin",
+        "selection_policy": "all_structural_call_targets_and_declared_entries",
         "budgets": {
             "max_units_per_summary": max_units_per_summary,
             "max_stack_words": max_stack_words,
@@ -655,8 +672,9 @@ def derive_internal_call_preservation_summaries(
         "summaries": rows,
         "counts": {
             "eligible_units": len(eligible_units),
-            "call_targets": len(callee_roots),
-            "behavioral_roots": len(behavioral_roots),
+            "call_targets": len(rooted_callee_roots),
+            "structural_call_targets": len(callee_roots),
+            "behavioral_roots": len(entry_roots),
             "summary_roots": len(rows),
             "recursive_summary_roots": len(dependency_plan.recursive_roots),
             "dependency_inventory_incomplete_roots": len(

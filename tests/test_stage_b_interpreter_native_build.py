@@ -40,6 +40,7 @@ from spaghetti_extractor.stage_b_interpreter_native_build import (
     prepare_stage_b_interpreter_native_object_graph,
 )
 from spaghetti_extractor.stage_b_native_engine import (
+    _machine_ir_internal_call_preservation,
     write_stage_b_native_engine_package,
 )
 from spaghetti_extractor.stage_b_native_runtime import (
@@ -97,6 +98,36 @@ def _refresh_source_binding(manifest_path: Path, source_path: Path) -> None:
         raise AssertionError(f"expected one source binding for {source_path.name}")
     matches[0]["sha256"] = sha256_file(source_path)
     _write_json(manifest_path, manifest)
+
+
+class StageBNativeSummarySelectionTests(unittest.TestCase):
+    def test_complete_rows_survive_unrelated_global_incompleteness(self) -> None:
+        payload = {
+            "control": {
+                "internal_call_preservation": {
+                    "format": "stage-a-internal-call-preservation-v1",
+                    "status": "incomplete",
+                    "fixed_point_complete": False,
+                    "summaries": [
+                        {
+                            "status": "complete",
+                            "target_rva": 0x1000,
+                            "preserved_registers": ["ebx", "esi"],
+                        },
+                        {
+                            "status": "incomplete",
+                            "target_rva": 0x2000,
+                            "preserved_registers": [],
+                        },
+                    ],
+                }
+            }
+        }
+
+        self.assertEqual(
+            _machine_ir_internal_call_preservation(payload),
+            {0x1000: frozenset({"ebx", "esi"})},
+        )
 
 
 def _transfer(rva: int = 0x1000) -> dict[str, Any]:
