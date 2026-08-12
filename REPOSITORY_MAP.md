@@ -112,6 +112,10 @@ conservative self-map used to emit a baseline contract and state machine.
 | `hybrid_authority_v2.py` | Immutable v2 authority records, exact bindings, finite alternatives, dependencies, and bundle closure. |
 | `machine_ir_authority_v2.py` | Stable exact unit/event binding kernel shared by machine-IR extraction and downstream authority replay. |
 | `analysis_schema_v2.py`, `artifact_identity_v2.py`, `artifact_projection_v2.py` | Shared v2 wire formats, canonical content identities, and independently cached artifact projections. |
+| `artifact_set_v3.py` | Canonical manifest plus bounded compressed NDJSON packs, recursive value interning, streaming indexed reads, and structural/dependency scheduling manifests. |
+| `phase_framework_v3.py` | Typed map-unit, map-SCC, and checked-reduce phase definitions with automatic dependency recording and completeness enforcement. |
+| `transition_summary_v2.py`, `transition_inventory_v2.py`, `memory_version_graph_v2.py`, `structural_target_proposals_v2.py` | Root-independent normalized transition, memory-SSA, and finite target proposal artifacts used by inductive analysis during the v3 migration. |
+| `invariant_certificate_v2.py`, `inductive_invariant_input_v2.py`, `inductive_authority_phase_v2.py`, `inductive_dependency_closure_v2.py`, `parametric_indirect_exit_v2.py` | Typed inductive SCC proposal, replay, dependency closure, and parametric indirect-exit machinery. |
 | `authority_bindings_v2.py`, `authority_dependencies_v2.py`, `authority_record_core_v2.py` | Exact binary/unit/event bindings, canonical proof-dependency identities, and common immutable authority-record validation. |
 | `address_expression_v2.py` | Normalized address-expression IR used by provenance and target certificates. |
 | `checked_memory_access_v2.py` | Exact event-bound finite memory-address facts emitted by cold interprocedural replay. |
@@ -298,6 +302,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-a-isa-conformance.nix` | One cached Lean/Unicorn/Bochs corpus evaluation. |
 | `stage-a-isa-qualification-graph.nix` | Sharded ISA evidence and qualification DAG. |
 | `stage-a-isa-semantic-kernel.nix` | Stable compiled Lean semantic kernel packaged independently of target evidence. |
+| `stage-a-isa-conformance-kernel.nix`, `stage-a-inductive-certificate-kernel.nix` | Shared compiled Lean conformance and inductive-certificate kernels reused by granular tests and target evidence. |
 | `stage-a-machine-ir-isa-qualification-v2.nix` | Binary-specific machine-IR requirement, oracle, selection, and authority DAG. |
 | `stage-a-roundtrip-corpus.nix` | Generated static corpus and qualification result. |
 | `bochs-conformance.nix` | Pinned batched Bochs adapter. |
@@ -315,9 +320,10 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-b-static-hybrid-completeness.nix` | Emits the legacy cacheable v1 diagnostic/proposal report; no candidate authority. |
 | `stage-b-static-hybrid-authority-v2.nix` | Content-addressed v2 evidence DAG from exact unit preparation through separately cached mutable-slot replay/promotion, SCC analysis, root/external/ISA/exception closure, and the final audit. |
 | `ca-python-json-phase.nix` | Generic CA phase constructor with explicit store dependencies, schema/status checking, and phase manifests. |
+| `artifact-set-v3.nix`, `artifact-phase-v3.nix` | Typed streaming artifact validation and framework-owned map/reduce/SCC phase execution over bounded CA packs. |
+| `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix` | Convention-discovered stable test shards and shared heavy fixtures; the aggregate never reruns an unchanged shard. |
 | `stage-b-headless-diagnostic-run.nix` | Runs only a statically closed candidate in an isolated headless Wine session. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure for phase-specific invalidation. |
-| `python-module-validation.nix` | Per-module content-addressed import validation; closures depend only on validators for their selected modules. |
 | `python-module-index.json` | Generated checked local-import graph consumed by phase-specific Python closures. |
 | `stage-b-linked-libraries.nix` | Library constellation and replacement-plan DAG. |
 | `stage-b-source-call-substitutions.nix` | Call-frontier through source-binding DAG. |
@@ -383,6 +389,13 @@ Intent JSON and source are authored. Downloaded binaries and generated analyses
 must not be committed.
 
 ## Tests
+
+`src/spaghetti_extractor/testkit/` owns convention discovery, import/resource
+impact, stable shard planning, shared fixture lookup, scaffolding, environment
+diagnosis, and rebuild explanations. `nix run .#test -- affected` selects only
+impacted shard outputs; `nix run .#test -- full` and `nix flake check` are the
+complete generic gates. Direct heavyweight tool execution in new tests is a
+policy error with a fixture-based remediation.
 
 Tests are phase-oriented by filename:
 

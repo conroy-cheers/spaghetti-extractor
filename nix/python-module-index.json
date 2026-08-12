@@ -248,6 +248,12 @@
       ],
       "path": "src/spaghetti_extractor/artifact_projection_v2.py"
     },
+    "spaghetti_extractor.artifact_set_v3": {
+      "dependencies": [
+        "spaghetti_extractor"
+      ],
+      "path": "src/spaghetti_extractor/artifact_set_v3.py"
+    },
     "spaghetti_extractor.authority_bindings_v2": {
       "dependencies": [
         "spaghetti_extractor"
@@ -1307,6 +1313,13 @@
       ],
       "path": "src/spaghetti_extractor/pe.py"
     },
+    "spaghetti_extractor.phase_framework_v3": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifact_set_v3"
+      ],
+      "path": "src/spaghetti_extractor/phase_framework_v3.py"
+    },
     "spaghetti_extractor.provenance_domain": {
       "dependencies": [
         "spaghetti_extractor"
@@ -1891,6 +1904,132 @@
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/target_intent.py"
+    },
+    "spaghetti_extractor.testkit": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit.diagnostics",
+        "spaghetti_extractor.testkit.discovery",
+        "spaghetti_extractor.testkit.doctor",
+        "spaghetti_extractor.testkit.fixtures",
+        "spaghetti_extractor.testkit.model",
+        "spaghetti_extractor.testkit.planning",
+        "spaghetti_extractor.testkit.rebuild",
+        "spaghetti_extractor.testkit.scaffold"
+      ],
+      "path": "src/spaghetti_extractor/testkit/__init__.py"
+    },
+    "spaghetti_extractor.testkit.__main__": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.cli"
+      ],
+      "path": "src/spaghetti_extractor/testkit/__main__.py"
+    },
+    "spaghetti_extractor.testkit.cli": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.diagnostics",
+        "spaghetti_extractor.testkit.discovery",
+        "spaghetti_extractor.testkit.doctor",
+        "spaghetti_extractor.testkit.fixtures",
+        "spaghetti_extractor.testkit.io",
+        "spaghetti_extractor.testkit.model",
+        "spaghetti_extractor.testkit.planning",
+        "spaghetti_extractor.testkit.rebuild",
+        "spaghetti_extractor.testkit.scaffold"
+      ],
+      "path": "src/spaghetti_extractor/testkit/cli.py"
+    },
+    "spaghetti_extractor.testkit.diagnostics": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit"
+      ],
+      "path": "src/spaghetti_extractor/testkit/diagnostics.py"
+    },
+    "spaghetti_extractor.testkit.discovery": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.diagnostics",
+        "spaghetti_extractor.testkit.model"
+      ],
+      "path": "src/spaghetti_extractor/testkit/discovery.py"
+    },
+    "spaghetti_extractor.testkit.doctor": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.diagnostics",
+        "spaghetti_extractor.testkit.discovery",
+        "spaghetti_extractor.testkit.fixtures"
+      ],
+      "path": "src/spaghetti_extractor/testkit/doctor.py"
+    },
+    "spaghetti_extractor.testkit.fixtures": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.diagnostics"
+      ],
+      "path": "src/spaghetti_extractor/testkit/fixtures.py"
+    },
+    "spaghetti_extractor.testkit.io": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.diagnostics",
+        "spaghetti_extractor.testkit.model"
+      ],
+      "path": "src/spaghetti_extractor/testkit/io.py"
+    },
+    "spaghetti_extractor.testkit.model": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.diagnostics"
+      ],
+      "path": "src/spaghetti_extractor/testkit/model.py"
+    },
+    "spaghetti_extractor.testkit.planning": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.diagnostics",
+        "spaghetti_extractor.testkit.model"
+      ],
+      "path": "src/spaghetti_extractor/testkit/planning.py"
+    },
+    "spaghetti_extractor.testkit.rebuild": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.diagnostics",
+        "spaghetti_extractor.testkit.model"
+      ],
+      "path": "src/spaghetti_extractor/testkit/rebuild.py"
+    },
+    "spaghetti_extractor.testkit.runner": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.diagnostics",
+        "spaghetti_extractor.testkit.discovery",
+        "spaghetti_extractor.testkit.planning"
+      ],
+      "path": "src/spaghetti_extractor/testkit/runner.py"
+    },
+    "spaghetti_extractor.testkit.scaffold": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.testkit",
+        "spaghetti_extractor.testkit.diagnostics",
+        "spaghetti_extractor.testkit.model"
+      ],
+      "path": "src/spaghetti_extractor/testkit/scaffold.py"
     },
     "spaghetti_extractor.transition_inventory_v2": {
       "dependencies": [

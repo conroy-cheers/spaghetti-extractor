@@ -21,6 +21,8 @@ conformance = [
 [project.scripts]
 spaghetti-extractor = "spaghetti_extractor.cli:main"
 spaghetti-extractor-slice = "spaghetti_extractor.slice_loop:main"
+spaghetti-extractor-test = "spaghetti_extractor.testkit.runner:main"
+spaghetti-extractor-dev = "spaghetti_extractor.testkit.cli:main"
 
 [project.urls]
 Repository = "https://github.com/conroy-cheers/spaghetti-extractor"
@@ -34,11 +36,17 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
 [tool.setuptools.data-files]
 "share/spaghetti-extractor/nix" = [
   "nix/bochs-conformance.nix",
+  "nix/artifact-phase-v3.nix",
+  "nix/artifact-set-v3.nix",
   "nix/ca-python-json-phase.nix",
   "nix/callable-external-runtime-contract.py",
   "nix/machine-import-control-profile.nix",
   "nix/python-module-closure.nix",
   "nix/python-module-index.json",
+  "nix/test-suite-fixtures.nix",
+  "nix/test-suite-plan.nix",
+  "nix/test-suite-shard.nix",
+  "nix/test-suite.nix",
   "nix/singlestep-80386-conformance.nix",
   "nix/stage-a-builder-public-keys",
   "nix/stage-a-builders",

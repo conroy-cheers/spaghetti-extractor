@@ -53,9 +53,29 @@ spaghetti-extractor stage-a-export-opaque-reconstruction \
 The release gates are Nix-native and content-addressed:
 
 ```console
+nix run .#test -- smoke
+nix run .#test -- affected
+nix run .#test -- full
+nix run .#test -- target dxball
+nix run .#test -- benchmark
 nix flake check
 nix build .#roundtrip-qualification --no-link
 nix build .#isa-kernel --no-link
+```
+
+`nix run .#test` is the only supported test execution path. It creates a
+filtered source snapshot, plans import/resource impact, and realizes stable CA
+shards. Unchanged shards substitute without executing a builder. Heavy tests
+consume shared compiler, Lean, Bochs, Nix, PE32, and headless-Wine fixtures.
+
+Developer operations use the same conventions:
+
+```console
+nix run .#dev -- doctor
+nix run .#dev -- fixtures
+nix run .#dev -- scaffold test control branch_targets
+nix run .#dev -- scaffold phase map-sccs pointer_provenance
+nix run .#dev -- explain-rebuild --before before.json --after after.json
 ```
 
 Use `spaghetti-extractor-slice` for repeated local candidate edits after the
@@ -67,6 +87,9 @@ and invalidates candidate checks by content hash.
 - `spaghetti-extractor`: inventory, contract, ISA, machine-IR, component,
   source-rendering, candidate assurance, and functional-test commands.
 - `spaghetti-extractor-slice`: incremental component/slice iteration.
+- `nix run .#test`: cached smoke, affected, full, target, and benchmark gates.
+- `nix run .#dev`: scaffolding, fixture discovery, environment diagnosis, and
+  rebuild explanations.
 - `flake.lib`: generic Nix constructors for ISA qualification, round trips,
   components, libraries, static hybrid completeness, gated candidate builds,
   headless diagnostics, source substitutions, and functional suites.

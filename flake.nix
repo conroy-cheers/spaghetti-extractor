@@ -32,6 +32,9 @@
         mkStaticHybridCompleteness =
           import ./nix/stage-b-static-hybrid-completeness.nix;
         mkCAJsonPhase = import ./nix/ca-python-json-phase.nix;
+        mkArtifactSetV3 = import ./nix/artifact-set-v3.nix;
+        mkArtifactPhaseV3 = import ./nix/artifact-phase-v3.nix;
+        mkTestSuite = import ./nix/test-suite.nix;
         mkStaticHybridAuthorityV2Graph =
           import ./nix/stage-b-static-hybrid-authority-v2.nix;
         mkHybridCandidate = import ./nix/stage-b-hybrid-candidate.nix;
@@ -128,6 +131,83 @@
           bochsConformance = pkgs.callPackage ./nix/bochs-conformance.nix {
             instrumentationSrc = ./tools/bochs-conformance;
           };
+          headlessWineFixture = pkgs.writeShellApplication {
+            name = "spaghetti-headless-wine";
+            runtimeInputs = [ pkgs.wineWow64Packages.stableFull pkgs.xvfb-run ];
+            text = ''
+              export WINEPREFIX="''${WINEPREFIX:-$TMPDIR/spaghetti-wine}"
+              export WINEDEBUG="''${WINEDEBUG:--all}"
+              exec xvfb-run -a -s '-screen 0 1024x768x24' wine "$@"
+            '';
+          };
+          minimalImportCallFixture = pkgs.runCommand
+            "spaghetti-pe32-minimal-import-call" {
+              nativeBuildInputs = [ pkgs.pkgsCross.mingw32.stdenv.cc ];
+              __contentAddressed = true;
+            } ''
+              mkdir -p "$out"
+              cat > fixture.c <<'EOF'
+              #include <windows.h>
+              int main(void) {
+                static const char text[] = "fixture\n";
+                DWORD written = 0;
+                WriteFile(GetStdHandle(STD_OUTPUT_HANDLE), text, sizeof(text) - 1, &written, 0);
+                return written == sizeof(text) - 1 ? 0 : 1;
+              }
+              EOF
+              i686-w64-mingw32-gcc -Os -s fixture.c -o "$out/minimal-import-call.exe"
+            '';
+          testFixtures = {
+            bochs-conformance = {
+              path = bochsConformance;
+              nativeBuildInputs = [ bochsConformance ];
+              environment.SPAGHETTI_BOCHS_INTEGRATION_RUNNER =
+                "${bochsConformance}/bin/spaghetti-bochs-conformance-runner";
+              description = "Batched pinned Bochs ISA executor";
+              capabilities = [ "bochs" "isa" ];
+            };
+            compiler = {
+              path = pkgs.pkgsCross.mingw32.stdenv.cc;
+              nativeBuildInputs = [
+                pkgs.pkgsCross.mingw32.stdenv.cc
+                pkgs.pkgsCross.mingw32.buildPackages.binutils
+              ];
+              description = "Pinned PE32 cross-compiler toolchain";
+              capabilities = [ "compiler" ];
+            };
+            headless-wine = {
+              path = headlessWineFixture;
+              nativeBuildInputs = [ headlessWineFixture ];
+              description = "Candidate-only Wine runner in a headless X session";
+              capabilities = [ "wine" ];
+            };
+            lean-isa-runner = {
+              path = leanKernel;
+              nativeBuildInputs = [ pkgs.lean4 ];
+              environment.SPAGHETTI_LEAN_KERNEL_CACHE = leanKernel;
+              description = "Precompiled Lean ISA conformance runner";
+              capabilities = [ "isa" "lean" ];
+            };
+            nix = {
+              path = pkgs.nix;
+              nativeBuildInputs = [ pkgs.nix ];
+              description = "Pinned Nix evaluator and build client";
+              capabilities = [ "nix" ];
+            };
+            pe32-minimal-import-call = {
+              path = minimalImportCallFixture;
+              description = "Small deterministic PE32 import-call fixture";
+              capabilities = [ "native" ];
+            };
+          };
+          mkTestSuite = mode: import ./nix/test-suite.nix {
+            inherit pkgs pythonEnv mode;
+            repositoryRoot = ./.;
+            fixtures = testFixtures;
+          };
+          smokeSuite = mkTestSuite "smoke";
+          fullSuite = mkTestSuite "full";
+          benchmarkSuite = mkTestSuite "benchmark";
           roundtrip = import ./nix/stage-a-roundtrip-corpus.nix {
             inherit pkgs pythonEnv;
             source = analysisSource;
@@ -159,6 +239,15 @@
           isa-semantic-kernel = isaSemanticKernel;
           inductive-certificate-kernel = inductiveCertificateKernel;
           bochs-conformance = bochsConformance;
+          test-smoke = smokeSuite.aggregate;
+          test-full = fullSuite.aggregate;
+          test-benchmark = benchmarkSuite.aggregate;
+          test-fixture-bochs-conformance = bochsConformance;
+          test-fixture-compiler = pkgs.pkgsCross.mingw32.stdenv.cc;
+          test-fixture-headless-wine = headlessWineFixture;
+          test-fixture-lean-isa-runner = leanKernel;
+          test-fixture-nix = pkgs.nix;
+          test-fixture-pe32-minimal-import-call = minimalImportCallFixture;
           roundtrip-corpus = roundtrip.corpus;
           roundtrip-qualification = roundtrip.qualification;
           gnu-hello-candidate = gnuHello.idiomaticCandidate;
@@ -286,7 +375,61 @@
               pythonEnv = testPython;
               pythonSource = testSource;
             };
-        in {
+          testFixtures = {
+            bochs-conformance = {
+              path = self.packages.${system}.test-fixture-bochs-conformance;
+              nativeBuildInputs = [ self.packages.${system}.test-fixture-bochs-conformance ];
+              environment.SPAGHETTI_BOCHS_INTEGRATION_RUNNER =
+                "${self.packages.${system}.test-fixture-bochs-conformance}/bin/spaghetti-bochs-conformance-runner";
+              description = "Batched pinned Bochs ISA executor";
+              capabilities = [ "bochs" "isa" ];
+            };
+            compiler = {
+              path = self.packages.${system}.test-fixture-compiler;
+              nativeBuildInputs = [
+                self.packages.${system}.test-fixture-compiler
+                pkgs.pkgsCross.mingw32.buildPackages.binutils
+              ];
+              description = "Pinned PE32 cross-compiler toolchain";
+              capabilities = [ "compiler" ];
+            };
+            headless-wine = {
+              path = self.packages.${system}.test-fixture-headless-wine;
+              nativeBuildInputs = [ self.packages.${system}.test-fixture-headless-wine ];
+              description = "Candidate-only Wine runner in a headless X session";
+              capabilities = [ "wine" ];
+            };
+            lean-isa-runner = {
+              path = self.packages.${system}.test-fixture-lean-isa-runner;
+              nativeBuildInputs = [ pkgs.lean4 ];
+              environment.SPAGHETTI_LEAN_KERNEL_CACHE =
+                self.packages.${system}.test-fixture-lean-isa-runner;
+              description = "Precompiled Lean ISA conformance runner";
+              capabilities = [ "isa" "lean" ];
+            };
+            nix = {
+              path = self.packages.${system}.test-fixture-nix;
+              nativeBuildInputs = [ self.packages.${system}.test-fixture-nix ];
+              description = "Pinned Nix evaluator and build client";
+              capabilities = [ "nix" ];
+            };
+            pe32-minimal-import-call = {
+              path = self.packages.${system}.test-fixture-pe32-minimal-import-call;
+              description = "Small deterministic PE32 import-call fixture";
+              capabilities = [ "native" ];
+            };
+          };
+          fullTestSuite = import ./nix/test-suite.nix {
+            inherit pkgs;
+            pythonEnv = testPython;
+            repositoryRoot = ./.;
+            mode = "full";
+            fixtures = testFixtures;
+          };
+          shardChecks = pkgs.lib.mapAttrs'
+            (id: derivation: pkgs.lib.nameValuePair "test-shard-${id}" derivation)
+            fullTestSuite.shards;
+        in ({
           import-smoke = pkgs.runCommand "spaghetti-extractor-import-smoke" {
             nativeBuildInputs = [ package ];
           } ''
@@ -295,18 +438,7 @@
             spaghetti-extractor stage-b-create-component --help >/dev/null
             touch "$out"
           '';
-          python-tests = pkgs.runCommand "spaghetti-extractor-python-tests" {
-            nativeBuildInputs = [ testPython ];
-          } ''
-            export PYTHONPATH=${testSource}/src:${testSource}/tests
-            cd ${testSource}
-            python tools/update-python-module-index.py \
-              --repository ${testSource} \
-              --out ${testSource}/nix/python-module-index.json \
-              --check
-            python -m unittest discover -s tests -p 'test_*.py'
-            touch "$out"
-          '';
+          test-suite = fullTestSuite.aggregate;
           python-module-closure = pkgs.runCommand
             "spaghetti-extractor-python-module-closure-check"
             { nativeBuildInputs = [ testPython ]; }
@@ -332,7 +464,7 @@
           inductive-certificate-kernel =
             self.packages.${system}.inductive-certificate-kernel;
           roundtrip = self.packages.${system}.roundtrip-qualification;
-        });
+        } // shardChecks));
 
       apps = forAllSystems (system: {
         default = {
@@ -344,6 +476,16 @@
           type = "app";
           program = "${self.packages.${system}.spaghetti-extractor}/bin/spaghetti-extractor-slice";
           meta.description = "Incremental candidate repair loop";
+        };
+        test = {
+          type = "app";
+          program = "${self.packages.${system}.spaghetti-extractor}/bin/spaghetti-extractor-test";
+          meta.description = "Nix-first cached smoke, affected, full, target, and benchmark validation";
+        };
+        dev = {
+          type = "app";
+          program = "${self.packages.${system}.spaghetti-extractor}/bin/spaghetti-extractor-dev";
+          meta.description = "Test scaffolding, fixture discovery, rebuild explanation, and environment diagnosis";
         };
       });
 
