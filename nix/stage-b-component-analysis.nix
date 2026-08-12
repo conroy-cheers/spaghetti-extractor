@@ -20,6 +20,7 @@
   launchProfileTemplate ? null,
   isaSelectionAuthority ? null,
   exceptionCertificates ? null,
+  inductiveInvariantProposal ? null,
   namePrefix,
   maxUnits ? 512,
   maxCandidatesPerSeed ? 12,
@@ -513,6 +514,104 @@ let
         '';
       };
 
+      transitionSummaries = {
+        derivationSuffix = "transition-summaries-v2";
+        kind = "transition-summaries-v2";
+        artifactName = "transition-summaries-v2.json";
+        expectedFormat =
+          "spaghetti-extractor-transition-summary-inventory-v2";
+        allowedStatuses = [ "complete" "incomplete" "violated" ];
+        pythonModules = [
+          "spaghetti_extractor.transition_inventory_v2"
+        ];
+        inputs = {
+          original_pe = original;
+          machine_ir = "${machineIr}/machine-ir.jsonl";
+        };
+        program = ''
+          import hashlib
+
+          from spaghetti_extractor.authority_bindings_v2 import BinaryBinding
+          from spaghetti_extractor.machine_ir_authority_v2 import (
+              machine_ir_sha256,
+          )
+          from spaghetti_extractor.transition_inventory_v2 import (
+              build_transition_summary_inventory_v2,
+          )
+
+          rows = [
+              json.loads(line)
+              for line in inputs["machine_ir"].read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+          exact = json.loads(
+              inputs["exact_unit_prep"].read_text(encoding="utf-8")
+          )
+          binary = BinaryBinding(
+              hashlib.sha256(inputs["original_pe"].read_bytes()).hexdigest(),
+              machine_ir_sha256(rows),
+          )
+          payload = build_transition_summary_inventory_v2(
+              units=rows,
+              binary=binary,
+          ).to_payload()
+          if exact.get("status") != "complete":
+              raise ValueError(
+                  "transition summaries require complete exact-unit authority"
+              )
+          output.write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+        '';
+      };
+
+      memoryVersionGraph = {
+        derivationSuffix = "memory-version-graph-v2";
+        kind = "memory-version-graph-v2";
+        artifactName = "memory-version-graph-v2.json";
+        expectedFormat = "spaghetti-extractor-memory-version-graph-v2";
+        allowedStatuses = [ "complete" "incomplete" "violated" ];
+        pythonModules = [
+          "spaghetti_extractor.memory_version_graph_v2"
+          "spaghetti_extractor.transition_inventory_v2"
+        ];
+        inputs = {
+          machine_ir = "${machineIr}/machine-ir.jsonl";
+        };
+        program = ''
+          from spaghetti_extractor.memory_version_graph_v2 import (
+              derive_memory_version_graph_v2,
+          )
+          from spaghetti_extractor.transition_inventory_v2 import (
+              TransitionSummaryInventoryV2,
+          )
+
+          rows = [
+              json.loads(line)
+              for line in inputs["machine_ir"].read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+          inventory = TransitionSummaryInventoryV2.parse(json.loads(
+              inputs["transition_summaries"].read_text(encoding="utf-8")
+          ))
+          payload = derive_memory_version_graph_v2(
+              units=rows,
+              binary=inventory.binary,
+              transition_summaries=inventory.summaries,
+              unknown_alias_policy="fail_closed",
+          ).to_payload()
+          output.write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+        '';
+      };
+
       baseGraph = {
         derivationSuffix = "base-graph-v2";
         kind = "base-graph";
@@ -557,6 +656,70 @@ let
                   "status": payload["status"],
                   "code": "exact_unit_prep_not_complete",
               })
+          output.write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+        '';
+      };
+
+      structuralTargetProposals = {
+        derivationSuffix = "structural-target-proposals-v2";
+        kind = "structural-target-proposals-v2";
+        artifactName = "structural-target-proposals-v2.json";
+        expectedFormat =
+          "spaghetti-extractor-structural-target-proposals-v2";
+        allowedStatuses = [ "complete" "incomplete" "violated" ];
+        pythonModules = [
+          "spaghetti_extractor.structural_target_proposals_v2"
+          "spaghetti_extractor.transition_inventory_v2"
+        ];
+        inputs = {
+          machine_ir = "${machineIr}/machine-ir.jsonl";
+          machine_ir_manifest = "${machineIr}/machine-ir-manifest.json";
+        };
+        program = ''
+          from spaghetti_extractor.structural_target_proposals_v2 import (
+              build_structural_target_proposals_v2,
+          )
+          from spaghetti_extractor.transition_inventory_v2 import (
+              TransitionSummaryInventoryV2,
+          )
+
+          units = [
+              json.loads(line)
+              for line in inputs["machine_ir"].read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+          exact = json.loads(
+              inputs["exact_unit_prep"].read_text(encoding="utf-8")
+          )
+          if exact.get("status") != "complete":
+              raise ValueError(
+                  "structural target proposals require complete exact-unit authority"
+              )
+          manifest = json.loads(
+              inputs["machine_ir_manifest"].read_text(encoding="utf-8")
+          )
+          control = manifest.get("control")
+          if not isinstance(control, dict):
+              raise ValueError("machine-IR control inventory is malformed")
+          proposed = control.get("recovered_indirect_targets", [])
+          if not isinstance(proposed, list):
+              raise ValueError("static target proposal inventory is malformed")
+          payload = build_structural_target_proposals_v2(
+              units=units,
+              transition_summaries=TransitionSummaryInventoryV2.parse(
+                  json.loads(
+                      inputs["transition_summaries"].read_text(
+                          encoding="utf-8"
+                      )
+                  )
+              ),
+              proposed_recoveries=proposed,
+          )
           output.write_text(
               json.dumps(payload, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
@@ -834,6 +997,7 @@ let
               exact_control_inventory_v2,
           )
           from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
+          from spaghetti_extractor.authority_bindings_v2 import BinaryBinding
           from spaghetti_extractor.external_capabilities import load_callable_external_profile
           from spaghetti_extractor.external_interface_profiles import load_external_interface_profile
           from spaghetti_extractor.external_operation_profiles import load_external_operation_profile
@@ -1306,6 +1470,227 @@ let
         '';
       };
 
+      inductiveCertificateProposals = {
+        derivationSuffix = "inductive-certificate-proposals-v2";
+        kind = "inductive-certificate-proposals-v2";
+        artifactName = "inductive-certificate-proposals-v2.json";
+        expectedFormat =
+          "spaghetti-extractor-inductive-authority-proposals-v2";
+        allowedStatuses = [ "complete" "incomplete" "violated" ];
+        pythonModules = [
+          "spaghetti_extractor.inductive_authority_phase_v2"
+          "spaghetti_extractor.inductive_invariant_input_v2"
+          "spaghetti_extractor.invariant_certificate_v2"
+          "spaghetti_extractor.memory_version_graph_v2"
+          "spaghetti_extractor.transition_inventory_v2"
+        ];
+        inputs = {
+          machine_ir = "${machineIr}/machine-ir.jsonl";
+          selected_profiles = selectedProfileInventory;
+        } // lib.optionalAttrs (inductiveInvariantProposal != null) {
+          inductive_invariant_proposal = inductiveInvariantProposal;
+        };
+        program = ''
+          from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
+          from spaghetti_extractor.authority_bindings_v2 import BinaryBinding
+          from spaghetti_extractor.inductive_authority_phase_v2 import (
+              build_inductive_authority_proposals_v2,
+          )
+          from spaghetti_extractor.invariant_certificate_v2 import EntryFactsV2
+          from spaghetti_extractor.inductive_invariant_input_v2 import (
+              InductiveInvariantInputV2,
+          )
+
+          units = [
+              json.loads(line)
+              for line in inputs["machine_ir"].read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+          base_graph = json.loads(
+              inputs["base_graph"].read_text(encoding="utf-8")
+          )
+          target_proposals = json.loads(
+              inputs["structural_target_proposals"].read_text(
+                  encoding="utf-8"
+              )
+          )
+          base_roots = [
+              row["unit_id"]
+              for row in base_graph.get("roots", [])
+              if isinstance(row, dict)
+              and isinstance(row.get("unit_id"), str)
+          ]
+          root_ids = sorted(set(base_roots))
+          roots = tuple(
+              EntryFactsV2(
+                  entry_id=f"structural-root:{unit_id}",
+                  kind="root",
+                  target_cutpoint=unit_id,
+                  transition_id=None,
+                  facts=(),
+              )
+              for unit_id in sorted(set(root_ids))
+          )
+          selected_profiles = json.loads(
+              inputs["selected_profiles"].read_text(encoding="utf-8")
+          )
+          profile_sha256 = canonical_sha256({
+              "selected_profiles": selected_profiles,
+          })
+          transition_summaries = json.loads(
+              inputs["transition_summaries"].read_text(encoding="utf-8")
+          )
+          cutpoint_facts = {}
+          required_exports = ()
+          if "inductive_invariant_proposal" in inputs:
+              invariant_input = InductiveInvariantInputV2.parse(
+                  json.loads(
+                      inputs["inductive_invariant_proposal"].read_text(
+                          encoding="utf-8"
+                      )
+                  ),
+                  binary=BinaryBinding.parse(transition_summaries["binary"]),
+                  profile_sha256=profile_sha256,
+                  known_cutpoints=tuple(
+                      sorted(str(unit["id"]) for unit in units)
+                  ),
+              )
+              cutpoint_facts = invariant_input.cutpoint_facts
+              required_exports = invariant_input.required_exports
+          payload = build_inductive_authority_proposals_v2(
+              units=units,
+              transition_summaries=transition_summaries,
+              memory_version_graph=json.loads(
+                  inputs["memory_version_graph"].read_text(encoding="utf-8")
+              ),
+              interprocedural_proposal=target_proposals,
+              profile_sha256=profile_sha256,
+              root_unit_ids=tuple(sorted(set(root_ids))),
+              root_entry_facts=roots,
+              cutpoint_facts=cutpoint_facts,
+              required_exports=required_exports,
+          )
+          output.write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+        '';
+      };
+
+      inductiveCertificateAuthority = {
+        derivationSuffix = "inductive-certificate-authority-v2";
+        kind = "inductive-certificate-authority-v2";
+        artifactName = "inductive-certificate-authority-v2.json";
+        expectedFormat =
+          "spaghetti-extractor-inductive-authority-check-v2";
+        allowedStatuses = [ "complete" "incomplete" "violated" ];
+        pythonModules = [
+          "spaghetti_extractor.inductive_authority_phase_v2"
+          "spaghetti_extractor.inductive_invariant_input_v2"
+          "spaghetti_extractor.invariant_certificate_v2"
+          "spaghetti_extractor.memory_version_graph_v2"
+          "spaghetti_extractor.transition_inventory_v2"
+        ];
+        inputs = {
+          machine_ir = "${machineIr}/machine-ir.jsonl";
+          selected_profiles = selectedProfileInventory;
+        } // lib.optionalAttrs (inductiveInvariantProposal != null) {
+          inductive_invariant_proposal = inductiveInvariantProposal;
+        };
+        program = ''
+          from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
+          from spaghetti_extractor.authority_bindings_v2 import BinaryBinding
+          from spaghetti_extractor.inductive_authority_phase_v2 import (
+              check_inductive_authority_proposals_v2,
+          )
+          from spaghetti_extractor.invariant_certificate_v2 import EntryFactsV2
+          from spaghetti_extractor.inductive_invariant_input_v2 import (
+              InductiveInvariantInputV2,
+          )
+
+          units = [
+              json.loads(line)
+              for line in inputs["machine_ir"].read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+          base_graph = json.loads(
+              inputs["base_graph"].read_text(encoding="utf-8")
+          )
+          target_proposals = json.loads(
+              inputs["structural_target_proposals"].read_text(
+                  encoding="utf-8"
+              )
+          )
+          base_roots = [
+              row["unit_id"]
+              for row in base_graph.get("roots", [])
+              if isinstance(row, dict)
+              and isinstance(row.get("unit_id"), str)
+          ]
+          root_ids = sorted(set(base_roots))
+          roots = tuple(
+              EntryFactsV2(
+                  entry_id=f"structural-root:{unit_id}",
+                  kind="root",
+                  target_cutpoint=unit_id,
+                  transition_id=None,
+                  facts=(),
+              )
+              for unit_id in sorted(set(root_ids))
+          )
+          selected_profiles = json.loads(
+              inputs["selected_profiles"].read_text(encoding="utf-8")
+          )
+          memory = json.loads(
+              inputs["memory_version_graph"].read_text(encoding="utf-8")
+          )
+          transition_summaries = json.loads(
+              inputs["transition_summaries"].read_text(encoding="utf-8")
+          )
+          profile_sha256 = canonical_sha256({
+              "selected_profiles": selected_profiles,
+          })
+          required_exports = ()
+          if "inductive_invariant_proposal" in inputs:
+              required_exports = InductiveInvariantInputV2.parse(
+                  json.loads(
+                      inputs["inductive_invariant_proposal"].read_text(
+                          encoding="utf-8"
+                      )
+                  ),
+                  binary=BinaryBinding.parse(transition_summaries["binary"]),
+                  profile_sha256=profile_sha256,
+                  known_cutpoints=tuple(
+                      sorted(str(unit["id"]) for unit in units)
+                  ),
+              ).required_exports
+          proposal = json.loads(
+              inputs["inductive_certificate_proposals"].read_text(
+                  encoding="utf-8"
+              )
+          )
+          payload = check_inductive_authority_proposals_v2(
+              proposal,
+              units=units,
+              transition_summaries=transition_summaries,
+              memory_version_graph=memory,
+              interprocedural_proposal=target_proposals,
+              profile_sha256=profile_sha256,
+              root_unit_ids=tuple(sorted(set(root_ids))),
+              root_entry_facts=roots,
+              required_exports=required_exports,
+          )
+          output.write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+        '';
+      };
+
       interproceduralV2 = {
         derivationSuffix = "interprocedural-v2";
         kind = "interprocedural-v2";
@@ -1689,6 +2074,147 @@ let
                   "global_slot_invariants", []
               ),
           )
+          output.write_text(
+              json.dumps(payload, indent=2, sort_keys=True) + "\n",
+              encoding="utf-8",
+          )
+        '';
+      };
+
+      inductiveDependencyClosure = {
+        derivationSuffix = "inductive-dependency-closure-v2";
+        kind = "inductive-dependency-closure-v2";
+        artifactName = "inductive-dependency-closure-v2.json";
+        expectedFormat =
+          "spaghetti-extractor-inductive-dependency-closure-v2";
+        allowedStatuses = [ "complete" "incomplete" "violated" ];
+        pythonModules = [
+          "spaghetti_extractor.inductive_dependency_closure_v2"
+          "spaghetti_extractor.inductive_authority_phase_v2"
+          "spaghetti_extractor.inductive_invariant_input_v2"
+          "spaghetti_extractor.invariant_certificate_v2"
+          "spaghetti_extractor.global_slot_authority_v2"
+          "spaghetti_extractor.stage_binary"
+        ];
+        inputs = {
+          original_pe = original;
+          machine_ir = "${machineIr}/machine-ir.jsonl";
+          selected_profiles = selectedProfileInventory;
+        } // lib.optionalAttrs (inductiveInvariantProposal != null) {
+          inductive_invariant_proposal = inductiveInvariantProposal;
+        };
+        program = ''
+          from spaghetti_extractor.artifact_identity_v2 import canonical_sha256
+          from spaghetti_extractor.authority_bindings_v2 import BinaryBinding
+          from spaghetti_extractor.entry_state_analysis_v2 import (
+              parse_callback_entry_state_contracts_v2,
+          )
+          from spaghetti_extractor.external_profile_authority_v2 import (
+              parse_external_profile_authority_v2,
+          )
+          from spaghetti_extractor.inductive_dependency_closure_v2 import (
+              close_inductive_dependencies_v2,
+          )
+          from spaghetti_extractor.invariant_certificate_v2 import EntryFactsV2
+          from spaghetti_extractor.inductive_invariant_input_v2 import (
+              InductiveInvariantInputV2,
+          )
+          from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+
+          units = [
+              json.loads(line)
+              for line in inputs["machine_ir"].read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+          proposal = json.loads(
+              inputs["inductive_certificate_proposals"].read_text(
+                  encoding="utf-8"
+              )
+          )
+          root_ids = tuple(proposal["root_unit_ids"])
+          roots = tuple(
+              EntryFactsV2(
+                  entry_id=f"structural-root:{unit_id}",
+                  kind="root",
+                  target_cutpoint=unit_id,
+                  transition_id=None,
+                  facts=(),
+              )
+              for unit_id in root_ids
+          )
+          profile_sha256 = canonical_sha256({
+              "selected_profiles": json.loads(
+                  inputs["selected_profiles"].read_text(encoding="utf-8")
+              ),
+          })
+          transition_summaries = json.loads(
+              inputs["transition_summaries"].read_text(encoding="utf-8")
+          )
+          required_exports = ()
+          if "inductive_invariant_proposal" in inputs:
+              required_exports = InductiveInvariantInputV2.parse(
+                  json.loads(
+                      inputs["inductive_invariant_proposal"].read_text(
+                          encoding="utf-8"
+                      )
+                  ),
+                  binary=BinaryBinding.parse(transition_summaries["binary"]),
+                  profile_sha256=profile_sha256,
+                  known_cutpoints=tuple(
+                      sorted(str(unit["id"]) for unit in units)
+                  ),
+              ).required_exports
+          external_profile_phase = json.loads(
+              inputs["external_profile_authority"].read_text(
+                  encoding="utf-8"
+              )
+          )
+          callback_entries = json.loads(
+              inputs["callback_entry_contracts"].read_text(encoding="utf-8")
+          )
+          binary = _parse_stage_a_pe(inputs["original_pe"])
+          parse_callback_entry_state_contracts_v2(callback_entries)
+          payload = close_inductive_dependencies_v2(
+              proposal,
+              local_authority=json.loads(
+                  inputs["local_inductive_authority"].read_text(
+                      encoding="utf-8"
+                  )
+              ),
+              units=units,
+              transition_summaries=transition_summaries,
+              memory_version_graph=json.loads(
+                  inputs["memory_version_graph"].read_text(encoding="utf-8")
+              ),
+              target_proposals=json.loads(
+                  inputs["structural_target_proposals"].read_text(
+                      encoding="utf-8"
+                  )
+              ),
+              environment_interprocedural_proposal=json.loads(
+                  inputs["interprocedural_v2"].read_text(encoding="utf-8")
+              ),
+              profile_sha256=profile_sha256,
+              root_unit_ids=root_ids,
+              root_entry_facts=roots,
+              required_exports=required_exports,
+              reachable_unit_ids=json.loads(
+                  inputs["rooted_closure"].read_text(encoding="utf-8")
+              )["reachable_units"],
+              external_site_proposals=json.loads(
+                  inputs["checked_external_sites"].read_text(encoding="utf-8")
+              ),
+              external_profile_authority=parse_external_profile_authority_v2(
+                  external_profile_phase["authority"]
+              ),
+              callback_entry_contracts=callback_entries,
+              callback_image_base=binary.image_base,
+              callback_size_of_image=binary.size_of_image,
+              global_slot_authority=json.loads(
+                  inputs["global_slot_authority"].read_text(encoding="utf-8")
+              ),
           output.write_text(
               json.dumps(payload, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
@@ -2180,6 +2706,9 @@ let
               checked_exception_records=exceptions.get("authority_records", []),
               isa_selection_authority=isa.get("selection_certificate"),
               isa_requirements=isa_requirements,
+              inductive_certificate_authority=load(
+                  "inductive_certificate_authority"
+              ),
           )
           output.write_bytes(canonical_json_bytes(report))
         '';

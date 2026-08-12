@@ -77,8 +77,14 @@ artifact. Hashes bind artifacts but do not prove semantic correctness.
 
 The active static gate is the v2 authority graph. Its immutable records bind an
 exact PE, machine-IR unit or event, finite alternatives, dependencies, and
-explicit missing or contradictory evidence. The final audit cold-replays the
-bundle and is the only static input that may authorize candidate generation.
+explicit missing or contradictory evidence. Rooted state propagation uses
+certificate-checked inductive abstract interpretation: proposal code may
+synthesize invariants, but a separate checker reconstructs the exact transition,
+memory-version, dependency, control-edge, root, and budget inventories before it
+checks initiation and preservation. The final audit rechecks the resulting
+bound receipts and is the only static input that may authorize candidate
+generation. This audit is deterministic certificate checking, not a fresh
+abstract interpretation of every execution path.
 
 The older `stage-b-static-hybrid-completeness-v1` report remains useful for
 proposal generation and diagnostics. It cannot authorize a candidate. In
@@ -104,19 +110,81 @@ The v2 evidence graph is fail-closed:
    private launch-range contract. Such facts establish separation, not
    immutability of stack or TEB contents.
 3. The call-summary universe contains every exact direct call target and every
-   recovered finite indirect target, whether or not its call site is currently
+   proposed finite indirect target, whether or not its call site is currently
    rooted-reachable. Declared launch entries are stable structural cutpoints;
    callback discovery may grow rooted propagation without redefining that
-   inventory. Call summaries and indirect targets converge together over an SCC
-   worklist, then replay from no proposal seeds. Expensive bounded-context recovery runs
-   only as a checkpoint after ordinary propagation stabilizes; a checkpoint
-   that discovers new driver facts resumes ordinary propagation before another
-   checkpoint may authorize contextual memory evidence. Bootstrap mutable-slot
-   replay may propose bounded values at exact read events to break a cyclic
-   slot/call dependency. These hypotheses are event-hash-bound,
-   non-authorizing, and used only for the first authority round; converged
-   point-sensitive replay must derive the final invariant inventory without
-   target proposal seeds.
+   inventory. Every structural unit receives a root-independent normalized
+   transition/effect summary. Concrete memory ranges become sparse checked
+   versions and merge nodes only where a unit actually accesses that alias
+   component. An unknown or aliasing write kills the affected fact. A compact
+   `all_components` scope represents a fully unknown write without serializing
+   the complete component inventory at every site. Value, memory, target, call,
+   callback, external-site, and resource facts inhabit one typed dependency
+   graph. Each control SCC consumes only its actual dependency predecessors and
+   carries a bounded invariant certificate.
+
+   Incoming facts bind an exact transition ID, exact exit ID, and target
+   cutpoint. The checker derives rooted closure from checked control edges and
+   requires induction only for rooted SCCs. Disconnected structural units remain
+   fully summarized without acquiring false root obligations. A reachable
+   unresolved indirect exit still makes closure incomplete.
+
+   Static target discoveries first enter a compact, non-authorizing structural
+   proposal artifact. Local induction depends on that artifact, not on the
+   legacy interprocedural fixed point. The exact transition inventory still
+   covers every structural unit, while certificate proposal and checking are
+   limited to the independently derived rooted closure. Consequently, a small
+   rooted-unit count is not a completeness claim: every reachable unresolved
+   target retains an `indirect_target` dependency, and adding a checked finite
+   target expands the closure and invalidates the affected certificates.
+
+   Large independently checked artifacts compose through content identities.
+   Transition-witness identities bind ordered checked summary IDs rather than
+   embedding the full summary payload again, and induction proposals bind a
+   reconstructed dependency-graph identity. The checker rebuilds both from its
+   exact Nix dependencies. Shared transition, dependency-SCC, incoming-edge,
+   and memory-discharge indexes are constructed once per checker process;
+   individual certificates inspect only their members and incident edges.
+
+   Cycles are closed by checked induction, not bounded execution replay. A loop
+   invariant may be proposed by static analysis, an operator, or Z3. Authority
+   follows only when the checker establishes root initiation, every represented
+   transition's preservation step, complete outgoing control, finite target
+   bounds, and all external dependency receipts. The Lean kernel proves that
+   these premises imply the invariant for every finite execution prefix, so a
+   nonterminating game loop does not need to be unrolled.
+
+   Local induction is cached independently of environment evidence. A later
+   dependency-closure phase may discharge only typed nodes whose ID, kind, and
+   exact transition-exit binding match a receipt from the checker that owns the
+   evidence. External-site receipts are re-derived from exact machine IR,
+   rooted reachability, recovered targets, and the pinned profile index.
+   Callback-bearing calls require both that external-site receipt and a
+   binary-bound registration/entry contract. Indirect targets, call summaries,
+   resources, and callbacks without matching owner receipts remain incomplete;
+   a bare list of available dependency IDs has no authority. Local induction
+   and dependency closure use distinct artifact formats and content IDs. The
+   final static gate accepts only the latter, preventing a cached local report
+   from being mistaken for environment-closed authority.
+
+   During migration, external-site and callback receipts still consume the
+   richer legacy interprocedural proposal in the late dependency-closure phase.
+   This dependency cannot invalidate local induction, and remains visible as a
+   separate expensive DAG branch until those owner analyses move to typed SCC
+   certificates.
+
+   Invariant inputs may also request typed exports at named cutpoints. Export
+   requests are non-authorizing and independently threaded through proposal,
+   local checking, and dependency closure. A fact is emitted only when the
+   checked invariant implies it. Mutable-slot, callback, and resource
+   authorities can therefore migrate to exact inductive exports without
+   treating analyzer proposals as globally valid facts.
+
+   The older discovery/cold/inductive fixed-point loops temporarily remain as
+   non-authorizing proposal producers for call and target facts. Their copied
+   status, convergence, and replay fields cannot discharge a certificate
+   dependency. They are removed as each target, call, mutable-slot, callback,
+   and resource family moves to the typed checker path.
    Caller evidence is projected onto independently checked summary families.
    A value retained in a preserved register depends on that register's summary
    fact, rather than an aggregate summary which may remain incomplete because
@@ -181,6 +249,14 @@ analysis, source checks, candidate builds, and behavior suites. Original-side
 artifacts should remain unchanged during source repair. Content-addressed
 derivations allow local and remote builders to substitute identical work.
 
+CA phase outputs never embed their resolved dependency store paths. Those
+paths may legitimately differ between equivalent CA realizations and would
+therefore make an otherwise deterministic output acquire a new content hash on
+every build. Phase manifests instead record stable file/tree SHA-256 identities,
+sizes, and the checked Python-module-closure manifest digest. The derivation DAG
+retains the exact producing dependencies. The phase-graph fixture rejects any
+manifest that leaks a `store_path` field.
+
 The v2 static-authority graph has explicit CA phases for exact unit
 preparation, base control, point-sensitive mutable-slot replay, slot promotion,
 interprocedural SCC summaries, rooted closure, external-profile and site
@@ -194,7 +270,10 @@ this derivation-path contract alongside profile-only and audit-only mutations.
 An unchanged CA build may still print the input-addressed derivations Nix would
 realize before resolving their content-addressed outputs. The operational cache
 criterion is that no builders execute and the same output path is returned;
-the warm DX-Ball final-audit build is the benchmark for this behavior.
+the warm DX-Ball final-audit build is the benchmark for this behavior. After
+the path-free manifest migration, the three-stage DX-Ball structural-target,
+induction-proposal, and local-authority chain reuses its output in roughly
+1.3 seconds instead of rerunning about 52 seconds of authority checking.
 
 Native candidate preparation emits a deterministic checked object graph, then
 compiles and assembles that graph in a content-addressed realization. It does
@@ -232,14 +311,17 @@ their blocker inventories are cacheable and inspectable. Policy enforcement is
 kept in a separate closure gate; an incomplete analysis must not discard hours
 of extraction work, but it also must never become an executable candidate.
 
-Within one immutable interprocedural pass, unit transfers are retained in a
+## Proposal Discovery And Certificate Caching
+
+Within one immutable proposal pass, unit transfers are retained in a
 bounded in-memory cache across fixed-point evaluations. Ordinary units are
 keyed by their exact abstract input and local slot environment. Call-bearing
 units additionally include the complete call-summary, recovered-target, and
 hypothesis environment, so an evolving call contract invalidates only
-call-sensitive transfers. The cache is created afresh for each discovery,
-cold, or inductive pass, is never serialized, and carries no authority; all
-accepted artifacts still come from the final converged proposal graph.
+call-sensitive transfers. The cache is created afresh for each legacy
+discovery pass, is never serialized, and carries no authority. Accepted facts
+come from typed certificate checkers, not from convergence of this proposal
+graph.
 Mutable-slot influence has a separate pass-scoped memo keyed only by the exact
 roots, recovered control, call-result, and memory-frame projection that its
 transfer function consumes. Changes confined to provenance hypotheses do not
@@ -247,19 +329,18 @@ replay that graph; changes to any mutable-analysis dependency invalidate the
 memo. Within a replay, independently converged SCC summaries are also retained
 under exact incoming-state, local-control, target, and consumed-call-fact keys.
 A proposal pass uses the same SCC schedule while retaining finite target hints
-observed before a local join. Those hints remain non-authorizing: bounded
-contextual recovery must establish complete context coverage, and the final
-cold or inductive pass must reproduce every accepted target without proposal
-seeds. The SCC cache binds and restores the hints only to avoid repeating the
-same proposal computation.
+observed before a local join. Those hints remain non-authorizing. A checked
+target-expression or call-summary dependency must establish complete context
+coverage before an invariant certificate can consume it. The SCC cache binds
+and restores hints only to avoid repeating proposal computation.
 A hit restores the checked final member states, outgoing contributions, and
 the final per-unit transfers used by diagnostics and mutable-slot proposal
 extraction. Finalization therefore consumes converged transfer evidence without
 executing every reached unit again. Changed edges or predecessor facts
 invalidate the affected SCC and descendants. These caches are intermediate
-optimizations, are discarded between discovery, cold, and inductive passes,
-and carry no authority. The durable boundary remains independently realizable
-SCC summaries and their true condensation-graph descendants.
+optimizations and carry no authority. The durable boundary is the
+content-addressed transition summary, memory-version graph, invariant proposal,
+checker receipt, and true condensation-graph descendants.
 
 Internal-call summaries use the same dependency discipline. Callee SCCs are
 cached under their local control closure, unresolved exits, call effects,
@@ -270,7 +351,7 @@ facts are validated once per exact frozen inventory in the context-bound pass
 workspace; the resulting typed facts are shared by call-summary and provenance
 analysis instead of being revalidated independently. Whole-summary and
 component caches remain pass-local proposal optimizations, while the emitted
-artifact and downstream authority replay are unchanged.
+artifact and downstream certificate checker remain unchanged.
 
 The structural callee inventory is independent of rooted reachability.
 Root-specific propagation may add registered callbacks and other event-derived

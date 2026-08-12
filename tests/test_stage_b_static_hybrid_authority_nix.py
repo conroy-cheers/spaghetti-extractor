@@ -19,10 +19,12 @@ class StageBStaticHybridAuthorityNixTests(unittest.TestCase):
         for name in (
             "exactUnitPrep",
             "baseGraph",
+            "structuralTargetProposals",
             "interproceduralSeed",
             "controlInvariantCertificates",
             "jointInterproceduralV2",
             "interproceduralV2",
+            "inductiveDependencyClosure",
             "rootedClosure",
             "checkedExternalSites",
             "globalSlotAnalysis",
@@ -39,6 +41,9 @@ class StageBStaticHybridAuthorityNixTests(unittest.TestCase):
         self.assertIn("__contentAddressed = true", phase)
         self.assertIn("python-module-closure.nix", phase)
         self.assertIn("every CA phase input must be a Nix store path", phase)
+        self.assertIn('"manifest_sha256"', phase)
+        self.assertIn('has("store_path")', phase)
+        self.assertNotIn('"store_path": path', phase)
         self.assertNotIn("pkgs.writeText", phase)
         self.assertNotIn("wine", graph.lower())
         self.assertNotIn("wine", phase.lower())
@@ -50,6 +55,10 @@ class StageBStaticHybridAuthorityNixTests(unittest.TestCase):
 
         self.assertIn("exact_unit_prep = exactUnitPrep.artifact", graph)
         self.assertIn("base_graph = baseGraph.artifact", graph)
+        self.assertIn(
+            "structural_target_proposals = structuralTargetProposals.artifact",
+            graph,
+        )
         self.assertIn(
             "control_invariants = controlInvariantCertificates.artifact", graph
         )
@@ -87,12 +96,14 @@ class StageBStaticHybridAuthorityNixTests(unittest.TestCase):
         for module in (
             "spaghetti_extractor.reconstruction_ir",
             "spaghetti_extractor.reconstruction_control",
+            "spaghetti_extractor.structural_target_proposals_v2",
             "spaghetti_extractor.interprocedural_phase_v2",
             "spaghetti_extractor.control_invariant_phase_v2",
             "spaghetti_extractor.joint_fixed_point_v2",
             "spaghetti_extractor.joint_interprocedural_analysis_v2",
             "spaghetti_extractor.artifact_projection_v2",
             "spaghetti_extractor.external_site_proposals_v2",
+            "spaghetti_extractor.inductive_dependency_closure_v2",
             "spaghetti_extractor.behavioral_roots",
             "spaghetti_extractor.callback_contracts",
             "spaghetti_extractor.exception_phase_v2",
@@ -107,6 +118,7 @@ class StageBStaticHybridAuthorityNixTests(unittest.TestCase):
         self.assertIn("__contentAddressed = true;", fixture)
         self.assertIn("auditMutation", fixture)
         self.assertIn("externalProfileMutation", fixture)
+        self.assertIn("invariantInputMutation", fixture)
         self.assertIn("jointInterproceduralMutation", fixture)
         self.assertIn("final_audit_changed", fixture)
         self.assertIn("authority_bundle_changed", fixture)

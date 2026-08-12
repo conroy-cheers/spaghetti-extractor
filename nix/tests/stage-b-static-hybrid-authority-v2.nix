@@ -72,6 +72,25 @@ let
         state_machine = mkInput "state-machine";
       };
     };
+    transitionSummaries = mkSpec {
+      derivationSuffix = "transition-summaries";
+      kind = "transition-summaries-v2";
+      artifactName = "transition-summaries-v2.json";
+      expectedFormat =
+        "spaghetti-extractor-transition-summary-inventory-v2";
+      pythonModules = [
+        "spaghetti_extractor.transition_inventory_v2"
+      ];
+    };
+    memoryVersionGraph = mkSpec {
+      derivationSuffix = "memory-version-graph";
+      kind = "memory-version-graph-v2";
+      artifactName = "memory-version-graph-v2.json";
+      expectedFormat = "spaghetti-extractor-memory-version-graph-v2";
+      pythonModules = [
+        "spaghetti_extractor.memory_version_graph_v2"
+      ];
+    };
     baseGraph = mkSpec {
       derivationSuffix = "base-graph";
       kind = "base-graph";
@@ -80,6 +99,16 @@ let
       pythonModules = [ "spaghetti_extractor.reconstruction_control" ];
       inputs.behavioral_roots = mkInput "behavioral-roots";
     };
+    structuralTargetProposals = mkSpec {
+      derivationSuffix = "structural-target-proposals";
+      kind = "structural-target-proposals-v2";
+      artifactName = "structural-target-proposals-v2.json";
+      expectedFormat =
+        "spaghetti-extractor-structural-target-proposals-v2";
+      pythonModules = [
+        "spaghetti_extractor.structural_target_proposals_v2"
+      ];
+    };
     interproceduralSeed = mkSpec {
       derivationSuffix = "interprocedural-seed";
       kind = "interprocedural-seed-v2";
@@ -87,6 +116,16 @@ let
       expectedFormat = "stage-a-interprocedural-analysis-v2";
       pythonModules = [ "spaghetti_extractor.interprocedural_phase_v2" ];
       inputs.call_profile = mkInput "call-profile";
+    };
+    parametricIndirectExitSummaries = mkSpec {
+      derivationSuffix = "parametric-indirect-exit-summaries";
+      kind = "parametric-indirect-exit-summaries-v2";
+      artifactName = "parametric-indirect-exit-summaries-v2.json";
+      expectedFormat =
+        "spaghetti-extractor-parametric-indirect-exit-inventory-v2";
+      pythonModules = [
+        "spaghetti_extractor.parametric_indirect_exit_v2"
+      ];
     };
     controlInvariantCertificates = mkSpec {
       derivationSuffix = "control-invariants";
@@ -116,6 +155,28 @@ let
         "spaghetti_extractor.joint_interprocedural_analysis_v2"
       ];
       inputs.joint_policy = mkInput "joint-policy";
+    };
+    inductiveCertificateProposals = mkSpec {
+      derivationSuffix = "inductive-certificate-proposals";
+      kind = "inductive-certificate-proposals-v2";
+      artifactName = "inductive-certificate-proposals-v2.json";
+      expectedFormat =
+        "spaghetti-extractor-inductive-authority-proposals-v2";
+      pythonModules = [
+        "spaghetti_extractor.inductive_authority_phase_v2"
+      ];
+      inputs.inductive_invariant_proposal = mkInput "inductive-invariant";
+    };
+    inductiveCertificateAuthority = mkSpec {
+      derivationSuffix = "inductive-certificate-authority";
+      kind = "inductive-certificate-authority-v2";
+      artifactName = "inductive-certificate-authority-v2.json";
+      expectedFormat =
+        "spaghetti-extractor-inductive-authority-check-v2";
+      pythonModules = [
+        "spaghetti_extractor.inductive_authority_phase_v2"
+      ];
+      inputs.inductive_invariant_proposal = mkInput "inductive-invariant";
     };
     interproceduralV2 = mkSpec {
       derivationSuffix = "interprocedural-v2";
@@ -171,6 +232,17 @@ let
       artifactName = "callback-entry-contracts-v2.json";
       expectedFormat = "spaghetti-extractor-callback-entry-state-analysis-v2";
       pythonModules = [ "spaghetti_extractor.entry_state_analysis_v2" ];
+    };
+    inductiveDependencyClosure = mkSpec {
+      derivationSuffix = "inductive-dependency-closure";
+      kind = "inductive-dependency-closure-v2";
+      artifactName = "inductive-dependency-closure-v2.json";
+      expectedFormat =
+        "spaghetti-extractor-inductive-dependency-closure-v2";
+      pythonModules = [
+        "spaghetti_extractor.inductive_dependency_closure_v2"
+      ];
+      inputs.inductive_invariant_proposal = mkInput "inductive-invariant";
     };
     finalizedLaunchProfile = mkSpec {
       derivationSuffix = "finalized-launch-profile";
@@ -289,6 +361,26 @@ let
       };
     }
   );
+  invariantInputMutation =
+    let
+      mutated = mkInput "inductive-invariant-mutated";
+      withMutation = spec: spec // {
+        inputs = spec.inputs // {
+          inductive_invariant_proposal = mutated;
+        };
+      };
+    in
+    mkGraph (
+      phaseSpecs
+      // {
+        inductiveCertificateProposals =
+          withMutation phaseSpecs.inductiveCertificateProposals;
+        inductiveCertificateAuthority =
+          withMutation phaseSpecs.inductiveCertificateAuthority;
+        inductiveDependencyClosure =
+          withMutation phaseSpecs.inductiveDependencyClosure;
+      }
+    );
   sameDrv = left: right: left.derivation.drvPath == right.derivation.drvPath;
   invalidationContract =
     pkgs.writeText "spaghetti-extractor-static-hybrid-v2-invalidation-contract.json"
@@ -297,7 +389,14 @@ let
           format = "spaghetti-extractor-static-hybrid-v2-invalidation-check-v1";
           audit_policy_only = {
             exact_unit_prep_unchanged = sameDrv graph.exactUnitPrep auditMutation.exactUnitPrep;
+            transition_summaries_unchanged = sameDrv graph.transitionSummaries auditMutation.transitionSummaries;
+            memory_version_graph_unchanged = sameDrv graph.memoryVersionGraph auditMutation.memoryVersionGraph;
+            inductive_proposals_unchanged = sameDrv graph.inductiveCertificateProposals auditMutation.inductiveCertificateProposals;
+            inductive_authority_unchanged = sameDrv graph.inductiveCertificateAuthority auditMutation.inductiveCertificateAuthority;
+            inductive_dependency_closure_unchanged = sameDrv graph.inductiveDependencyClosure auditMutation.inductiveDependencyClosure;
             base_graph_unchanged = sameDrv graph.baseGraph auditMutation.baseGraph;
+            structural_target_proposals_unchanged =
+              sameDrv graph.structuralTargetProposals auditMutation.structuralTargetProposals;
             memory_range_invariants_unchanged =
               sameDrv graph.memoryRangeInvariants auditMutation.memoryRangeInvariants;
             interprocedural_unchanged = sameDrv graph.interproceduralV2 auditMutation.interproceduralV2;
@@ -317,7 +416,15 @@ let
           };
           external_profile_only = {
             exact_unit_prep_unchanged = sameDrv graph.exactUnitPrep externalProfileMutation.exactUnitPrep;
+            transition_summaries_unchanged = sameDrv graph.transitionSummaries externalProfileMutation.transitionSummaries;
+            memory_version_graph_unchanged = sameDrv graph.memoryVersionGraph externalProfileMutation.memoryVersionGraph;
+            inductive_proposals_unchanged = sameDrv graph.inductiveCertificateProposals externalProfileMutation.inductiveCertificateProposals;
+            inductive_authority_unchanged = sameDrv graph.inductiveCertificateAuthority externalProfileMutation.inductiveCertificateAuthority;
+            inductive_dependency_closure_changed =
+              !(sameDrv graph.inductiveDependencyClosure externalProfileMutation.inductiveDependencyClosure);
             base_graph_unchanged = sameDrv graph.baseGraph externalProfileMutation.baseGraph;
+            structural_target_proposals_unchanged =
+              sameDrv graph.structuralTargetProposals externalProfileMutation.structuralTargetProposals;
             memory_range_invariants_unchanged =
               sameDrv graph.memoryRangeInvariants externalProfileMutation.memoryRangeInvariants;
             interprocedural_unchanged = sameDrv graph.interproceduralV2 externalProfileMutation.interproceduralV2;
@@ -344,15 +451,64 @@ let
             authority_bundle_changed = !(sameDrv graph.authorityBundle externalProfileMutation.authorityBundle);
             final_audit_changed = !(sameDrv graph.finalAudit externalProfileMutation.finalAudit);
           };
+          invariant_input_only = {
+            exact_unit_prep_unchanged =
+              sameDrv graph.exactUnitPrep invariantInputMutation.exactUnitPrep;
+            transition_summaries_unchanged =
+              sameDrv graph.transitionSummaries invariantInputMutation.transitionSummaries;
+            memory_version_graph_unchanged =
+              sameDrv graph.memoryVersionGraph invariantInputMutation.memoryVersionGraph;
+            base_graph_unchanged =
+              sameDrv graph.baseGraph invariantInputMutation.baseGraph;
+            structural_target_proposals_unchanged =
+              sameDrv graph.structuralTargetProposals invariantInputMutation.structuralTargetProposals;
+            interprocedural_unchanged =
+              sameDrv graph.interproceduralV2 invariantInputMutation.interproceduralV2;
+            inductive_proposals_changed = !(
+              sameDrv graph.inductiveCertificateProposals
+                invariantInputMutation.inductiveCertificateProposals
+            );
+            inductive_authority_changed = !(
+              sameDrv graph.inductiveCertificateAuthority
+                invariantInputMutation.inductiveCertificateAuthority
+            );
+            inductive_dependency_closure_changed = !(
+              sameDrv graph.inductiveDependencyClosure
+                invariantInputMutation.inductiveDependencyClosure
+            );
+            global_slot_authority_unchanged =
+              sameDrv graph.globalSlotAuthority invariantInputMutation.globalSlotAuthority;
+            callback_entry_contracts_unchanged =
+              sameDrv graph.callbackEntryContracts invariantInputMutation.callbackEntryContracts;
+            static_authority_changed = !(
+              sameDrv graph.staticAuthority invariantInputMutation.staticAuthority
+            );
+            authority_bundle_changed = !(
+              sameDrv graph.authorityBundle invariantInputMutation.authorityBundle
+            );
+            final_audit_changed = !(
+              sameDrv graph.finalAudit invariantInputMutation.finalAudit
+            );
+          };
           joint_interprocedural_only = {
             exact_unit_prep_unchanged = sameDrv graph.exactUnitPrep jointInterproceduralMutation.exactUnitPrep;
+            transition_summaries_unchanged = sameDrv graph.transitionSummaries jointInterproceduralMutation.transitionSummaries;
+            memory_version_graph_unchanged = sameDrv graph.memoryVersionGraph jointInterproceduralMutation.memoryVersionGraph;
             base_graph_unchanged = sameDrv graph.baseGraph jointInterproceduralMutation.baseGraph;
+            structural_target_proposals_unchanged =
+              sameDrv graph.structuralTargetProposals jointInterproceduralMutation.structuralTargetProposals;
             interprocedural_seed_unchanged =
               sameDrv graph.interproceduralSeed jointInterproceduralMutation.interproceduralSeed;
             memory_range_invariants_unchanged =
               sameDrv graph.memoryRangeInvariants jointInterproceduralMutation.memoryRangeInvariants;
             joint_interprocedural_changed =
               !(sameDrv graph.jointInterproceduralV2 jointInterproceduralMutation.jointInterproceduralV2);
+            inductive_proposals_unchanged =
+              sameDrv graph.inductiveCertificateProposals jointInterproceduralMutation.inductiveCertificateProposals;
+            inductive_authority_unchanged =
+              sameDrv graph.inductiveCertificateAuthority jointInterproceduralMutation.inductiveCertificateAuthority;
+            inductive_dependency_closure_changed =
+              !(sameDrv graph.inductiveDependencyClosure jointInterproceduralMutation.inductiveDependencyClosure);
             global_slot_analysis_changed =
               !(sameDrv graph.globalSlotAnalysis jointInterproceduralMutation.globalSlotAnalysis);
             global_slot_authority_changed =
@@ -386,11 +542,17 @@ let
       );
   phases = [
     graph.exactUnitPrep
+    graph.transitionSummaries
+    graph.memoryVersionGraph
     graph.baseGraph
+    graph.structuralTargetProposals
     graph.interproceduralSeed
+    graph.parametricIndirectExitSummaries
     graph.controlInvariantCertificates
     graph.memoryRangeInvariants
     graph.jointInterproceduralV2
+    graph.inductiveCertificateProposals
+    graph.inductiveCertificateAuthority
     graph.interproceduralV2
     graph.rootedClosure
     graph.externalProfileAuthority
@@ -398,6 +560,7 @@ let
     graph.globalSlotAnalysis
     graph.globalSlotAuthority
     graph.callbackEntryContracts
+    graph.inductiveDependencyClosure
     graph.finalizedLaunchProfile
     graph.entryRootClosure
     graph.isaRequirements
@@ -424,7 +587,11 @@ let
             jq -e '
               .format == "spaghetti-extractor-ca-phase-manifest-v1" and
               .content_addressed and
-              (.artifact.sha256 | test("^[0-9a-f]{64}$"))
+              (.artifact.sha256 | test("^[0-9a-f]{64}$")) and
+              ([.inputs[].sha256] | all(test("^[0-9a-f]{64}$"))) and
+              ([.inputs[] | has("store_path")] | any | not) and
+              (.python_module_closure.manifest_sha256
+                | test("^[0-9a-f]{64}$"))
             ' "$manifest" >/dev/null
           done
           jq -e '
@@ -450,6 +617,7 @@ let
               "exact_unit_prep",
               "exception_certificates",
               "external_profile_authority",
+              "inductive_certificate_authority",
               "interprocedural_v2",
               "isa_requirements",
               "isa_selection_authority",
@@ -460,6 +628,7 @@ let
             .format == "spaghetti-extractor-static-hybrid-v2-invalidation-check-v1" and
             ([.audit_policy_only[]] | all) and
             ([.external_profile_only[]] | all) and
+            ([.invariant_input_only[]] | all) and
             ([.joint_interprocedural_only[]] | all)
           ' ${invalidationContract} >/dev/null
           touch "$out"

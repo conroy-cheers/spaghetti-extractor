@@ -144,6 +144,7 @@ def build_static_hybrid_authority_v2(
         | None
     ),
     isa_requirements: Mapping[str, Any] | None = None,
+    inductive_certificate_authority: Mapping[str, Any] | None = None,
     v1_diagnostics: Any = None,
 ) -> dict[str, Any]:
     """Build and replay the sole v2 static candidate-generation authority.
@@ -259,6 +260,14 @@ def build_static_hybrid_authority_v2(
         ),
         blockers=blockers,
     )
+    inductive_authority = _inductive_certificate_authority(
+        inductive_certificate_authority,
+        binary=binary,
+        required_root_unit_ids=tuple(
+            sorted(record.entry.unit_id for record in entries)
+        ),
+        blockers=blockers,
+    )
 
     bundle: AuthorityBundle | None = None
     replay_status = "incomplete"
@@ -341,6 +350,7 @@ def build_static_hybrid_authority_v2(
         "v1_authorizes": False,
         "binary": None if binary is None else binary.to_payload(),
         "authority_bundle": None if bundle is None else bundle.to_payload(),
+        "inductive_certificate_authority": inductive_authority,
         "replay": {
             "status": replay_status,
             "deterministic": replay_status == "complete",
@@ -368,6 +378,7 @@ def validate_static_hybrid_authority_v2(value: Mapping[str, Any]) -> dict[str, A
         "v1_authorizes",
         "binary",
         "authority_bundle",
+        "inductive_certificate_authority",
         "replay",
         "diagnostics",
         "primary_blocker_ids",
@@ -403,6 +414,25 @@ def validate_static_hybrid_authority_v2(value: Mapping[str, Any]) -> dict[str, A
             raise StaticHybridAuthorityV2Error(
                 f"authority bundle replay failed: {exc}"
             ) from exc
+
+    inductive = normalized["inductive_certificate_authority"]
+    if inductive is not None:
+        if not isinstance(inductive, Mapping):
+            raise StaticHybridAuthorityV2Error(
+                "inductive certificate authority receipt is malformed"
+            )
+        inductive_body = dict(inductive)
+        observed_id = inductive_body.pop("id", None)
+        if (
+            inductive_body.get("format")
+            != "spaghetti-extractor-inductive-dependency-closure-v2"
+            or observed_id
+            != "inductive-dependency-closure-v2:"
+            + _canonical_sha256(inductive_body)
+        ):
+            raise StaticHybridAuthorityV2Error(
+                "inductive certificate authority receipt is stale"
+            )
 
     diagnostics = normalized["diagnostics"]
     if not isinstance(diagnostics, Mapping):
@@ -449,6 +479,87 @@ def validate_static_hybrid_authority_v2(value: Mapping[str, Any]) -> dict[str, A
         raise StaticHybridAuthorityV2Error(
             "static authority status or authorization claim is stale"
         )
+    return normalized
+
+
+def _inductive_certificate_authority(
+    value: Mapping[str, Any] | None,
+    *,
+    binary: BinaryBinding | None,
+    required_root_unit_ids: Sequence[str],
+    blockers: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Validate the new induction gate when the production pipeline supplies it."""
+
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        blockers.append(_blocker(
+            status="violated",
+            category="inductive_certificate",
+            code="inductive_certificate_authority_corrupt",
+            message="the inductive certificate authority receipt is malformed",
+            next_action="rebuild the certificate checker phase from exact inputs",
+        ))
+        return None
+    normalized = _safe_json(value)
+    assert isinstance(normalized, dict)
+    body = dict(normalized)
+    observed_id = body.pop("id", None)
+    expected_id = "inductive-dependency-closure-v2:" + _canonical_sha256(body)
+    receipt_binary = normalized.get("binary")
+    malformed = (
+        normalized.get("format")
+        != "spaghetti-extractor-inductive-dependency-closure-v2"
+        or observed_id != expected_id
+        or normalized.get("status")
+        not in {"complete", "incomplete", "violated"}
+        or not isinstance(normalized.get("certificate_reports"), list)
+        or not isinstance(normalized.get("issues"), list)
+        or not isinstance(normalized.get("root_unit_ids"), list)
+        or not isinstance(normalized.get("local_authority_id"), str)
+        or (binary is not None and receipt_binary != binary.to_payload())
+    )
+    if malformed:
+        blockers.append(_blocker(
+            status="violated",
+            category="inductive_certificate",
+            code="inductive_certificate_authority_corrupt",
+            message="the inductive certificate authority receipt is stale or contradictory",
+            next_action="rebuild transition, memory, and invariant certificates",
+        ))
+        return None
+    receipt_roots = normalized["root_unit_ids"]
+    required_roots = set(required_root_unit_ids)
+    if (
+        receipt_roots != sorted(set(receipt_roots))
+        or any(not isinstance(root, str) for root in receipt_roots)
+        or not required_roots <= set(receipt_roots)
+    ):
+        blockers.append(_blocker(
+            status="violated",
+            category="inductive_certificate",
+            code="inductive_certificate_root_inventory_contradiction",
+            message="the inductive receipt omits or corrupts an authoritative entry root",
+            next_action="rebuild induction certificates from the finalized root inventory",
+            details={
+                "required_root_unit_ids": sorted(required_roots),
+                "receipt_root_unit_ids": receipt_roots,
+            },
+        ))
+    status = str(normalized["status"])
+    if status != "complete" or normalized.get("authorizing") is not True:
+        blockers.append(_blocker(
+            status="violated" if status == "violated" else "incomplete",
+            category="inductive_certificate",
+            code="inductive_certificate_authority_not_closed",
+            message="reachable structural SCCs are not all closed by checked induction",
+            next_action="resolve the primary certificate, target, memory, or environment frontier",
+            details={
+                "receipt_status": status,
+                "issues": normalized.get("issues", []),
+            },
+        ))
     return normalized
 
 

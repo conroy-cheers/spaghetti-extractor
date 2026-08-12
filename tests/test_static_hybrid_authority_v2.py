@@ -343,6 +343,7 @@ def _complete_report(
     external_profile_authority: ExternalProfileAuthorityV2 | None = None,
     isa_requirements: dict | None = None,
     exact_unit_preparation: dict | None = None,
+    inductive_certificate_authority: dict | None = None,
     v1_diagnostics=None,
 ) -> dict:
     if isa is None:
@@ -368,12 +369,34 @@ def _complete_report(
             if isa_requirements is None
             else isa_requirements
         ),
+        inductive_certificate_authority=inductive_certificate_authority,
         v1_diagnostics=v1_diagnostics,
     )
 
 
 def _sha256(value) -> str:
     return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+
+
+def _inductive_receipt(rows: list[dict], status: str = "complete") -> dict:
+    body = {
+        "format": "spaghetti-extractor-inductive-dependency-closure-v2",
+        "status": status,
+        "authorizing": status == "complete",
+        "local_authority_id": "inductive-authority-v2:" + "d" * 64,
+        "binary": BinaryBinding(BINARY_SHA, machine_ir_sha256(rows)).to_payload(),
+        "root_unit_ids": ["unit:entry"],
+        "certificate_reports": [],
+        "issues": (
+            []
+            if status == "complete"
+            else [{"status": status, "code": "fixture_frontier"}]
+        ),
+    }
+    return {
+        **body,
+        "id": "inductive-dependency-closure-v2:" + _sha256(body),
+    }
 
 
 def _write_external_profile(path: Path) -> str:
@@ -547,6 +570,75 @@ class StaticHybridAuthorityV2Tests(unittest.TestCase):
         self.assertTrue(report["replay"]["deterministic"])
         self.assertEqual(report, validate_static_hybrid_authority_v2(report))
         self.assertEqual(report, _complete_report(rows))
+
+    def test_production_inductive_receipt_is_a_fail_closed_gate(self) -> None:
+        rows = [_row()]
+        complete = _complete_report(
+            rows,
+            inductive_certificate_authority=_inductive_receipt(rows),
+        )
+        self.assertEqual(complete["status"], "complete")
+        self.assertEqual(
+            complete["inductive_certificate_authority"]["status"], "complete"
+        )
+
+        incomplete = _complete_report(
+            rows,
+            inductive_certificate_authority=_inductive_receipt(
+                rows, "incomplete"
+            ),
+        )
+        self.assertEqual(incomplete["status"], "incomplete")
+        self.assertIn(
+            "inductive_certificate_authority_not_closed",
+            {
+                row["details"]["code"]
+                for row in incomplete["diagnostics"]["blockers"]
+            },
+        )
+
+        corrupt = _inductive_receipt(rows)
+        corrupt["id"] = "inductive-dependency-closure-v2:" + "0" * 64
+        violated = _complete_report(
+            rows, inductive_certificate_authority=corrupt
+        )
+        self.assertEqual(violated["status"], "violated")
+
+        omitted_root = _inductive_receipt(rows)
+        omitted_root["root_unit_ids"] = []
+        body = dict(omitted_root)
+        body.pop("id")
+        omitted_root["id"] = (
+            "inductive-dependency-closure-v2:" + _sha256(body)
+        )
+        violated = _complete_report(
+            rows, inductive_certificate_authority=omitted_root
+        )
+        self.assertEqual(violated["status"], "violated")
+        self.assertIn(
+            "inductive_certificate_root_inventory_contradiction",
+            {
+                row["details"]["code"]
+                for row in violated["diagnostics"]["blockers"]
+            },
+        )
+
+        local_only = _inductive_receipt(rows)
+        local_only["format"] = "spaghetti-extractor-inductive-authority-check-v2"
+        local_body = dict(local_only)
+        local_body.pop("id")
+        local_only["id"] = "inductive-authority-v2:" + _sha256(local_body)
+        rejected = _complete_report(
+            rows, inductive_certificate_authority=local_only
+        )
+        self.assertEqual(rejected["status"], "violated")
+        self.assertIn(
+            "inductive_certificate_authority_corrupt",
+            {
+                row["details"]["code"]
+                for row in rejected["diagnostics"]["blockers"]
+            },
+        )
 
     def test_isa_request_binding_is_replayed_from_exact_machine_ir(self) -> None:
         rows = [_row()]

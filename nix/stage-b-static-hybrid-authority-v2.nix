@@ -17,13 +17,19 @@ let
   lib = pkgs.lib;
   requiredPhaseNames = [
     "exactUnitPrep"
+    "transitionSummaries"
+    "memoryVersionGraph"
     "baseGraph"
+    "structuralTargetProposals"
     "interproceduralSeed"
     "parametricIndirectExitSummaries"
     "controlInvariantCertificates"
     "memoryRangeInvariants"
     "jointInterproceduralV2"
     "interproceduralV2"
+    "inductiveCertificateProposals"
+    "inductiveCertificateAuthority"
+    "inductiveDependencyClosure"
     "rootedClosure"
     "externalProfileAuthority"
     "checkedExternalSites"
@@ -72,8 +78,19 @@ let
     };
 
   exactUnitPrep = mkPhase "exactUnitPrep" { };
+  transitionSummaries = mkPhase "transitionSummaries" {
+    exact_unit_prep = exactUnitPrep.artifact;
+  };
+  memoryVersionGraph = mkPhase "memoryVersionGraph" {
+    exact_unit_prep = exactUnitPrep.artifact;
+    transition_summaries = transitionSummaries.artifact;
+  };
   baseGraph = mkPhase "baseGraph" {
     exact_unit_prep = exactUnitPrep.artifact;
+  };
+  structuralTargetProposals = mkPhase "structuralTargetProposals" {
+    exact_unit_prep = exactUnitPrep.artifact;
+    transition_summaries = transitionSummaries.artifact;
   };
   interproceduralSeed = mkPhase "interproceduralSeed" {
     exact_unit_prep = exactUnitPrep.artifact;
@@ -97,6 +114,24 @@ let
     control_invariants = controlInvariantCertificates.artifact;
     memory_range_invariants = memoryRangeInvariants.artifact;
   };
+  interproceduralV2 = mkPhase "interproceduralV2" {
+    joint_interprocedural = jointInterproceduralV2.artifact;
+  };
+  inductiveCertificateProposals = mkPhase "inductiveCertificateProposals" {
+    exact_unit_prep = exactUnitPrep.artifact;
+    transition_summaries = transitionSummaries.artifact;
+    memory_version_graph = memoryVersionGraph.artifact;
+    base_graph = baseGraph.artifact;
+    structural_target_proposals = structuralTargetProposals.artifact;
+  };
+  inductiveCertificateAuthority = mkPhase "inductiveCertificateAuthority" {
+    exact_unit_prep = exactUnitPrep.artifact;
+    transition_summaries = transitionSummaries.artifact;
+    memory_version_graph = memoryVersionGraph.artifact;
+    base_graph = baseGraph.artifact;
+    structural_target_proposals = structuralTargetProposals.artifact;
+    inductive_certificate_proposals = inductiveCertificateProposals.artifact;
+  };
   globalSlotAnalysis = mkPhase "globalSlotAnalysis" {
     joint_interprocedural = jointInterproceduralV2.artifact;
   };
@@ -104,9 +139,6 @@ let
     joint_interprocedural = jointInterproceduralV2.artifact;
     base_graph = baseGraph.artifact;
     memory_range_invariants = memoryRangeInvariants.artifact;
-  };
-  interproceduralV2 = mkPhase "interproceduralV2" {
-    joint_interprocedural = jointInterproceduralV2.artifact;
   };
   externalProfileAuthority = mkPhase "externalProfileAuthority" { };
   rootedClosure = mkPhase "rootedClosure" {
@@ -123,6 +155,20 @@ let
     base_graph = baseGraph.artifact;
     global_slot_authority = globalSlotAuthority.artifact;
     interprocedural_v2 = interproceduralV2.artifact;
+  };
+  inductiveDependencyClosure = mkPhase "inductiveDependencyClosure" {
+    exact_unit_prep = exactUnitPrep.artifact;
+    transition_summaries = transitionSummaries.artifact;
+    memory_version_graph = memoryVersionGraph.artifact;
+    structural_target_proposals = structuralTargetProposals.artifact;
+    interprocedural_v2 = interproceduralV2.artifact;
+    inductive_certificate_proposals = inductiveCertificateProposals.artifact;
+    local_inductive_authority = inductiveCertificateAuthority.artifact;
+    rooted_closure = rootedClosure.artifact;
+    external_profile_authority = externalProfileAuthority.artifact;
+    checked_external_sites = checkedExternalSites.artifact;
+    callback_entry_contracts = callbackEntryContracts.artifact;
+    global_slot_authority = globalSlotAuthority.artifact;
   };
   finalizedLaunchProfile = mkPhase "finalizedLaunchProfile" {
     base_graph = baseGraph.artifact;
@@ -161,6 +207,7 @@ let
     isa_requirements = isaRequirements.artifact;
     isa_selection_authority = isaSelectionAuthority.artifact;
     exception_certificates = exceptionCertificates.artifact;
+    inductive_certificate_authority = inductiveDependencyClosure.artifact;
   };
   authorityBundle = mkPhase "authorityBundle" {
     static_authority = staticAuthority.artifact;
@@ -172,19 +219,25 @@ let
 
   phaseList = [
     exactUnitPrep
+    transitionSummaries
+    memoryVersionGraph
     baseGraph
+    structuralTargetProposals
     interproceduralSeed
     parametricIndirectExitSummaries
     controlInvariantCertificates
     memoryRangeInvariants
     jointInterproceduralV2
+    interproceduralV2
+    inductiveCertificateProposals
+    inductiveCertificateAuthority
     globalSlotAnalysis
     globalSlotAuthority
-    interproceduralV2
     rootedClosure
     externalProfileAuthority
     checkedExternalSites
     callbackEntryContracts
+    inductiveDependencyClosure
     finalizedLaunchProfile
     entryRootClosure
     isaRequirements
@@ -201,12 +254,18 @@ assert contentAddressed;
 {
   inherit
     exactUnitPrep
+    transitionSummaries
+    memoryVersionGraph
     baseGraph
+    structuralTargetProposals
     interproceduralSeed
     parametricIndirectExitSummaries
     controlInvariantCertificates
     memoryRangeInvariants
     jointInterproceduralV2
+    inductiveCertificateProposals
+    inductiveCertificateAuthority
+    inductiveDependencyClosure
     interproceduralV2
     rootedClosure
     externalProfileAuthority

@@ -136,20 +136,76 @@ let
                 "phase artifact status is outside the declared fail-closed set: "
                 f"{artifact.get('status')!r}"
             )
+        def content_identity(path_text):
+            path = pathlib.Path(path_text)
+            if not path_text.startswith("/nix/store/"):
+                raise SystemExit("every CA phase input must be a Nix store path")
+            if path.is_file():
+                data = path.read_bytes()
+                return {
+                    "kind": "file",
+                    "sha256": hashlib.sha256(data).hexdigest(),
+                    "size_bytes": len(data),
+                }
+            if not path.is_dir():
+                raise SystemExit(f"CA phase input does not exist: {path_text}")
+
+            digest = hashlib.sha256()
+            file_count = 0
+            size_bytes = 0
+            for child in sorted(path.rglob("*")):
+                relative = child.relative_to(path).as_posix().encode("utf-8")
+                if child.is_symlink():
+                    kind = b"symlink"
+                    data = child.readlink().as_posix().encode("utf-8")
+                elif child.is_file():
+                    kind = b"file"
+                    data = child.read_bytes()
+                    file_count += 1
+                    size_bytes += len(data)
+                elif child.is_dir():
+                    kind = b"directory"
+                    data = b""
+                else:
+                    raise SystemExit(
+                        f"CA phase input contains an unsupported node: {child}"
+                    )
+                executable = b"1" if child.stat().st_mode & 0o111 else b"0"
+                for field in (kind, relative, executable, data):
+                    digest.update(len(field).to_bytes(8, "big"))
+                    digest.update(field)
+            return {
+                "kind": "directory",
+                "sha256": digest.hexdigest(),
+                "file_count": file_count,
+                "size_bytes": size_bytes,
+            }
+
         input_rows = [
-            {"name": name, "store_path": path}
+            {"name": name, **content_identity(path)}
             for name, path in sorted(declared["inputs"].items())
         ]
-        if any(not row["store_path"].startswith("/nix/store/") for row in input_rows):
-            raise SystemExit("every CA phase input must be a Nix store path")
+        closure_manifest_path = pathlib.Path(
+            "${phasePythonSource}/python-module-closure.json"
+        )
+        closure_manifest_bytes = closure_manifest_path.read_bytes()
+        closure_manifest = json.loads(closure_manifest_bytes)
+        if (
+            not isinstance(closure_manifest, dict)
+            or closure_manifest.get("format")
+            != "spaghetti-extractor-python-module-closure-v1"
+        ):
+            raise SystemExit("Python module closure manifest is malformed")
         manifest = {
             "format": "spaghetti-extractor-ca-phase-manifest-v1",
             "phase": phase_kind,
             "content_addressed": content_addressed_text == "true",
             "inputs": input_rows,
             "python_module_closure": {
-                "store_path": "${phasePythonSource}",
-                "manifest": "${phasePythonSource}/python-module-closure.json",
+                "manifest_sha256": hashlib.sha256(
+                    closure_manifest_bytes
+                ).hexdigest(),
+                "file_count": len(closure_manifest.get("files", [])),
             },
             "artifact": {
                 "name": artifact_name,
@@ -171,7 +227,10 @@ let
           .phase == $phase and .content_addressed == ${if contentAddressed then "true" else "false"} and
           .artifact.name == $artifact and
           (.artifact.sha256 | test("^[0-9a-f]{64}$")) and
-          ([.inputs[].name] == ([.inputs[].name] | sort | unique))
+          ([.inputs[].name] == ([.inputs[].name] | sort | unique)) and
+          ([.inputs[].sha256] | all(test("^[0-9a-f]{64}$"))) and
+          ([.inputs[] | has("store_path")] | any | not) and
+          (.python_module_closure.manifest_sha256 | test("^[0-9a-f]{64}$"))
         ' "$out/phase-manifest.json" >/dev/null
       '';
 in

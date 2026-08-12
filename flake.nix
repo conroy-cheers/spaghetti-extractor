@@ -14,6 +14,8 @@
         mkMachineIRISAQualificationV2 =
           import ./nix/stage-a-machine-ir-isa-qualification-v2.nix;
         mkISASemanticKernel = import ./nix/stage-a-isa-semantic-kernel.nix;
+        mkInductiveCertificateKernel =
+          import ./nix/stage-a-inductive-certificate-kernel.nix;
         mkRoundtripCorpus = import ./nix/stage-a-roundtrip-corpus.nix;
         mkExternalInterfaceProfile = import ./nix/stage-a-external-interface-profile.nix;
         mkComponentAnalysis = import ./nix/stage-b-component-analysis.nix;
@@ -129,6 +131,11 @@
             inherit pkgs;
             leanSource = ./src/spaghetti_extractor/lean;
           };
+          inductiveCertificateKernel =
+            import ./nix/stage-a-inductive-certificate-kernel.nix {
+              inherit pkgs;
+              leanSource = ./src/spaghetti_extractor/lean;
+            };
           bochsConformance = pkgs.callPackage ./nix/bochs-conformance.nix {
             instrumentationSrc = ./tools/bochs-conformance;
           };
@@ -161,6 +168,7 @@
           spaghetti-extractor = package;
           isa-kernel = leanKernel;
           isa-semantic-kernel = isaSemanticKernel;
+          inductive-certificate-kernel = inductiveCertificateKernel;
           bochs-conformance = bochsConformance;
           roundtrip-corpus = roundtrip.corpus;
           roundtrip-qualification = roundtrip.qualification;
@@ -179,6 +187,18 @@
             dxball.analysis.staticHybridCompleteness.report;
           dxball-static-hybrid-authority-v2 =
             dxball.analysis.staticHybridAuthorityV2.finalAudit.derivation;
+          dxball-transition-summaries-v2 =
+            dxball.analysis.staticHybridAuthorityV2.transitionSummaries.derivation;
+          dxball-memory-version-graph-v2 =
+            dxball.analysis.staticHybridAuthorityV2.memoryVersionGraph.derivation;
+          dxball-structural-target-proposals-v2 =
+            dxball.analysis.staticHybridAuthorityV2.structuralTargetProposals.derivation;
+          dxball-inductive-certificate-proposals-v2 =
+            dxball.analysis.staticHybridAuthorityV2.inductiveCertificateProposals.derivation;
+          dxball-local-inductive-authority-v2 =
+            dxball.analysis.staticHybridAuthorityV2.inductiveCertificateAuthority.derivation;
+          dxball-inductive-dependency-closure-v2 =
+            dxball.analysis.staticHybridAuthorityV2.inductiveDependencyClosure.derivation;
           dxball-external-site-proposals-v2 =
             dxball.analysis.staticHybridAuthorityV2.checkedExternalSites.derivation;
           dxball-diagnostic-external-site-proposals-v2 =
@@ -320,6 +340,8 @@
           static-hybrid-v2-phase-graph = staticHybridV2GraphFixture.check;
           machine-import-control-profile = machineImportControlProfileFixture;
           isa-kernel = self.packages.${system}.isa-kernel;
+          inductive-certificate-kernel =
+            self.packages.${system}.inductive-certificate-kernel;
           roundtrip = self.packages.${system}.roundtrip-qualification;
         });
 

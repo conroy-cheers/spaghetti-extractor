@@ -47,6 +47,7 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
   "nix/stage-a-isa-conformance.nix",
   "nix/stage-a-isa-qualification-graph.nix",
   "nix/stage-a-isa-semantic-kernel.nix",
+  "nix/stage-a-inductive-certificate-kernel.nix",
   "nix/stage-a-machine-ir-isa-qualification-v2.nix",
   "nix/stage-a-lightweight-ca-builders",
   "nix/stage-a-roundtrip-corpus.nix",
