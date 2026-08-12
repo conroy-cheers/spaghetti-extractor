@@ -86,11 +86,12 @@ particular, copied v1 completion fields, target inventories, ABI statuses, and
 profile hashes are not authority.
 
 Fallback coverage is deliberately separate. It checks that every unit in the
-exact rooted machine-IR partition has exactly one portable or machine-IR
-implementation and that the selected fallback lowering exists. It does not
-claim that the rooted partition is behaviorally complete; the v2 final audit
-establishes that prerequisite independently. Candidate generation requires
-both receipts, bound to the same machine IR and manifest.
+complete structural machine-IR universe has exactly one portable or machine-IR
+implementation and that the selected fallback lowering exists. It has no
+rooted-reachability authority; the v2 final audit independently establishes
+that every transfer possible from the declared roots remains inside that
+structural universe. Candidate generation requires both receipts, bound to the
+same machine IR and manifest.
 
 The v2 evidence graph is fail-closed:
 
@@ -265,13 +266,21 @@ component caches remain pass-local proposal optimizations, while the emitted
 artifact and downstream authority replay are unchanged.
 
 Each joint fixed-point round runs dependency-scoped global-slot analysis once.
-The round promotes that already cold-replayed artifact to obtain the invariant
-facts needed by the next iteration; it does not reconstruct and rerun the same
-analysis inside the promotion callback. The separately cached
-`globalSlotAuthority` phase reconstructs the exact final inputs, replays the
-submitted analysis, and compares it byte-for-byte before those invariants can
-authorize any downstream artifact. Iteration therefore avoids duplicate work
-without moving the authority boundary or trusting the joint-phase cache.
+The round emits a distinct non-authorizing promotion artifact from the
+just-produced stack and slot inventories; it does not replay stack-range
+analysis merely to feed the next lattice iteration. The separately cached
+`globalSlotAuthority` phase reconstructs the exact final inputs, independently
+replays stack ranges and slot analysis, and compares the submitted analysis
+byte-for-byte before those invariants can authorize any downstream artifact.
+Iteration therefore avoids duplicate work without moving the authority boundary
+or treating fixed-point promotion as candidate authority.
+
+The independent replay implementation lives outside the joint fixed-point
+Python closure. Checker-only changes therefore rebuild the final authority
+phase without invalidating the expensive joint artifact. Provenance-alternative
+and stack-offset budgets are separate bound inputs and must match the producing
+analysis exactly; canonical serialized content, rather than Python container
+identity, defines replay equality.
 
 Joint convergence is extensional over the facts consumed by the next typed
 analysis pass. Global-slot record identities remain part of that state because

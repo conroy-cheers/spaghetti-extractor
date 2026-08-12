@@ -82,6 +82,7 @@ class _CoverageFixture:
     def _write_manifest(self) -> None:
         _write_json(self.manifest, {
             "format": "stage-a-machine-ir-v2",
+            "counts": {"units": len(self.units)},
             "artifacts": {
                 "machine_ir": {
                     "format": "stage-a-machine-ir-v2",
@@ -200,7 +201,7 @@ class _CoverageFixture:
 
 
 class StageBFallbackCoverageTests(unittest.TestCase):
-    def test_receipt_binds_exact_inputs_and_assigns_each_reachable_unit(self) -> None:
+    def test_receipt_binds_exact_inputs_and_assigns_each_structural_unit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             fixture = _CoverageFixture(Path(temporary) / "fixture")
             payload = fixture.write_coverage()
@@ -209,14 +210,16 @@ class StageBFallbackCoverageTests(unittest.TestCase):
             self.assertEqual(payload["format"], FALLBACK_COVERAGE_RECEIPT_FORMAT)
             self.assertEqual(payload["status"], "complete")
             self.assertEqual(
-                payload["reachability"]["reachable_unit_ids"],
-                ["unit:entry", "unit:reachable"],
-            )
-            self.assertEqual(
                 [entry["implementation_kind"] for entry in payload["entries"]],
-                ["machine_ir_fallback", "machine_ir_fallback"],
+                [
+                    "machine_ir_fallback",
+                    "machine_ir_fallback",
+                    "machine_ir_fallback",
+                ],
             )
-            self.assertEqual(payload["counts"]["implementation_entries"], 2)
+            self.assertNotIn("reachability", payload)
+            self.assertEqual(payload["counts"]["structural_units"], 3)
+            self.assertEqual(payload["counts"]["implementation_entries"], 3)
             self.assertEqual(
                 receipt.machine_ir_sha256, sha256_file(fixture.machine_ir)
             )
@@ -228,20 +231,23 @@ class StageBFallbackCoverageTests(unittest.TestCase):
                 {
                     fixture.units[0]["source"]["contract_sha256"],
                     fixture.units[1]["source"]["contract_sha256"],
+                    fixture.units[2]["source"]["contract_sha256"],
                 },
             )
 
-    def test_rejects_a_rooted_reachable_unit_missing_from_lowering(self) -> None:
+    def test_rejects_a_structural_unit_missing_from_lowering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             fixture = _CoverageFixture(Path(temporary) / "fixture")
             transfers = [
-                row for row in fixture._transfers() if row["id"] != "unit:reachable"
+                row
+                for row in fixture._transfers()
+                if row["id"] != "unit:unreachable"
             ]
             fixture._write_lowering(transfers)
 
             with self.assertRaisesRegex(
                 FallbackCoverageReceiptError,
-                "rooted reachable unit cannot be lowered: unit:reachable",
+                "structural machine-IR unit cannot be lowered: unit:unreachable",
             ):
                 fixture.write_coverage()
 

@@ -907,6 +907,9 @@ def _check_fallback_coverage(
     policy = _optional_mapping(receipt.get("policy"))
     for key, expected in (
         ("potential_transfers_may_be_deferred", False),
+        ("structural_units_require_lowering", True),
+        ("one_implementation_kind_per_structural_unit", True),
+        ("rooted_containment_authority", False),
         ("candidate_generation_fails_closed", True),
     ):
         observed = policy.get(key)
@@ -985,52 +988,22 @@ def _check_fallback_coverage(
             "fallback coverage contains duplicate implementation entries",
         )
 
-    reachability = _optional_mapping(receipt.get("reachability"))
-    reachable_ids = _string_set(reachability.get("reachable_unit_ids"))
-    manifest_reachability = _optional_mapping(
-        _optional_mapping(
-            None if manifest_artifact.payload is None
-            else manifest_artifact.payload.get("control")
-        ).get("reachability")
-    )
-    expected_reachable = _string_set(
-        manifest_reachability.get("reachable_units")
-    )
-    expected_roots = _string_set(manifest_reachability.get("roots"))
-    coverage_roots = _string_set(reachability.get("roots"))
-    reachability_matches = (
-        reachability.get("status") == "complete"
-        and coverage_roots == expected_roots
-        and reachable_ids == expected_reachable
-    )
-    if not reachability_matches:
-        if status == "complete":
-            decision.violated(
-                "fallback_reachability_claim_conflict",
-                "complete fallback coverage binds a different rooted closure",
-            )
-        else:
-            decision.incomplete(
-                "fallback_reachability_incomplete",
-                "fallback coverage lacks the complete rooted closure",
-            )
+    structural_ids = set(unit_rows)
     complete_entries = (
-        reachability_matches
-        and set(entry_by_id) == expected_reachable
+        set(entry_by_id) == structural_ids
         and all(_fallback_entry_matches(entry_by_id[unit_id], unit_rows[unit_id])
-                for unit_id in expected_reachable if unit_id in unit_rows)
-        and expected_reachable <= unit_rows.keys()
+                for unit_id in structural_ids)
     )
     if not complete_entries:
         if status == "complete":
             decision.violated(
                 "fallback_coverage_claim_conflict",
-                "complete fallback coverage does not exactly cover rooted units",
+                "complete fallback coverage does not exactly cover structural units",
             )
         else:
             decision.incomplete(
                 "fallback_coverage_units_missing",
-                "fallback coverage does not exactly cover rooted units",
+                "fallback coverage does not exactly cover structural units",
             )
 
     fallback_count = counts.get("machine_ir_fallback")
@@ -1043,7 +1016,7 @@ def _check_fallback_coverage(
         and fallback_count + portable_count == len(entries)
     )
     count_matches = (
-        _exact_count(counts.get("rooted_reachable_units"), len(expected_reachable))
+        _exact_count(counts.get("structural_units"), len(structural_ids))
         and _exact_count(counts.get("implementation_entries"), len(entries))
         and _exact_count(counts.get("blockers"), len(blockers))
         and implementation_total_matches
@@ -1067,8 +1040,10 @@ def _check_fallback_coverage(
         and blockers == []
         and complete_entries
         and count_matches
-        and reachability_matches
         and policy.get("potential_transfers_may_be_deferred") is False
+        and policy.get("structural_units_require_lowering") is True
+        and policy.get("one_implementation_kind_per_structural_unit") is True
+        and policy.get("rooted_containment_authority") is False
         and policy.get("candidate_generation_fails_closed") is True
     )
     decision.check("fallback_coverage_complete", complete)
@@ -1084,6 +1059,8 @@ def _fallback_entry_matches(
     return (
         entry.get("rva") == original.get("rva_start")
         and entry.get("unit_contract_sha256") == source.get("contract_sha256")
+        and entry.get("source_span_sha256")
+        == source.get("instruction_bytes_sha256")
         and entry.get("machine_ir_record_sha256") == _canonical_sha256(unit)
         and entry.get("implementation_kind")
         in {"machine_ir_fallback", "portable_replacement"}

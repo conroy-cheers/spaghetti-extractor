@@ -380,9 +380,34 @@ def analyze_global_slots_v2(
         issue for issue in global_issues if issue not in inductive_graph_frontiers
     ]
 
-    first = _analyze_once(
+    # Event extraction and graph construction are pure normalization of the
+    # submitted evidence.  Build them once, then independently replay the
+    # slot-flow transfer over the same immutable normalized inputs.  Rebuilding
+    # the event graph for the cold replay used to rescan every event once per
+    # reachable unit and dominated the DX-Ball fixed point.
+    reachable = frozenset(str(value) for value in graph_info["reachable_units"])
+    events = _events(
+        normalized_units,
+        reachable,
+        call_site_effects=normalized_call_effects,
+        interprocedural_authority_sha256=interprocedural_authority_sha256,
+    )
+    event_graph = _event_graph(
         units=normalized_units,
+        reachable=reachable,
+        roots=graph_info["roots"],
+        successors=graph_info["successors"],
+        events=events,
+    )
+    normalized_machine_ir_sha256 = canonical_sha256(
+        [normalized_units[unit_id] for unit_id in sorted(normalized_units)]
+    )
+
+    first = _analyze_once(
         graph_info=graph_info,
+        events=events,
+        event_graph=event_graph,
+        machine_ir_sha256=normalized_machine_ir_sha256,
         slots=normalized_slots,
         access_facts=access_facts,
         address_domain_facts=address_domain_facts,
@@ -393,15 +418,15 @@ def analyze_global_slots_v2(
         inductive_graph_frontiers=inductive_graph_frontiers,
         relevant_reads=relevant_reads,
         launch_initial_values=initial_values,
-        call_site_effects=normalized_call_effects,
-        interprocedural_authority_sha256=interprocedural_authority_sha256,
     )
     first_bytes = _canonical_json(first).encode("ascii")
     first_digest = sha256(first_bytes).hexdigest()
     del first
     second = _analyze_once(
-        units=normalized_units,
         graph_info=graph_info,
+        events=events,
+        event_graph=event_graph,
+        machine_ir_sha256=normalized_machine_ir_sha256,
         slots=normalized_slots,
         access_facts=access_facts,
         address_domain_facts=address_domain_facts,
@@ -412,8 +437,6 @@ def analyze_global_slots_v2(
         inductive_graph_frontiers=inductive_graph_frontiers,
         relevant_reads=relevant_reads,
         launch_initial_values=initial_values,
-        call_site_effects=normalized_call_effects,
-        interprocedural_authority_sha256=interprocedural_authority_sha256,
     )
     second_digest = canonical_sha256(second)
     del second
@@ -513,8 +536,10 @@ def analyze_global_slots_v2(
 
 def _analyze_once(
     *,
-    units: Mapping[str, Mapping[str, Any]],
     graph_info: Mapping[str, Any],
+    events: Mapping[str, _Event],
+    event_graph: Mapping[str, Any],
+    machine_ir_sha256: str,
     slots: Sequence[int],
     access_facts: Mapping[str, CheckedMemoryAccessFact],
     address_domain_facts: Mapping[str, CheckedMemoryAddressDomain],
@@ -525,26 +550,7 @@ def _analyze_once(
     inductive_graph_frontiers: Sequence[Mapping[str, Any]],
     relevant_reads: Mapping[int, Mapping[str, Any]] | None,
     launch_initial_values: Mapping[int, int],
-    call_site_effects: Mapping[CallSiteId, CallSiteEffect],
-    interprocedural_authority_sha256: str | None,
 ) -> dict[str, Any]:
-    reachable = frozenset(str(value) for value in graph_info["reachable_units"])
-    events = _events(
-        units,
-        reachable,
-        call_site_effects=call_site_effects,
-        interprocedural_authority_sha256=interprocedural_authority_sha256,
-    )
-    event_graph = _event_graph(
-        units=units,
-        reachable=reachable,
-        roots=graph_info["roots"],
-        successors=graph_info["successors"],
-        events=events,
-    )
-    machine_ir_sha256 = canonical_sha256(
-        [units[unit_id] for unit_id in sorted(units)]
-    )
     machine_ir_dependency = {
         "kind": "machine_ir_inventory",
         "id": f"machine-ir:{machine_ir_sha256}",
@@ -2346,17 +2352,15 @@ def _event_graph(
         for unit_id, unit in units.items()
     }
     call_routing: dict[str, tuple[tuple[str, ...], str]] = {}
+    events_by_unit: dict[str, list[_Event]] = {}
+    for event in events.values():
+        events_by_unit.setdefault(event.site.unit_id, []).append(event)
+    for unit_events in events_by_unit.values():
+        unit_events.sort(key=lambda event: (event.order_key, event.node_id))
     for unit_id in sorted(reachable):
         entry = _entry_node(unit_id)
         exit_node = _exit_node(unit_id)
-        unit_events = sorted(
-            (
-                event
-                for event in events.values()
-                if event.site.unit_id == unit_id
-            ),
-            key=lambda event: (event.order_key, event.node_id),
-        )
+        unit_events = events_by_unit.get(unit_id, ())
         ordinary_nodes = [
             event.node_id
             for event in unit_events

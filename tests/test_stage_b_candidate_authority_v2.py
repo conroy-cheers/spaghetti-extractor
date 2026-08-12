@@ -95,6 +95,7 @@ class StageBCandidateAuthorityV2Tests(unittest.TestCase):
         self.manifest = self.root / "manifest.json"
         manifest = {
             "format": "stage-a-machine-ir-v2",
+            "counts": {"units": 1},
             "inputs": {"original_pe": {"sha256": PE_SHA256}},
             "binary": {"sha256": PE_SHA256},
             "artifacts": {
@@ -190,6 +191,9 @@ class StageBCandidateAuthorityV2Tests(unittest.TestCase):
             "unit_id": "unit:entry",
             "rva": 0x1000,
             "unit_contract_sha256": self.row["source"]["contract_sha256"],
+            "source_span_sha256": self.row["source"][
+                "instruction_bytes_sha256"
+            ],
             "machine_ir_record_sha256": _canonical_sha256(self.row),
             "lowering_transfer_sha256": LOWERING_SHA256,
             "implementation_kind": "machine_ir_fallback",
@@ -207,6 +211,9 @@ class StageBCandidateAuthorityV2Tests(unittest.TestCase):
             "schemas": {},
             "policy": {
                 "potential_transfers_may_be_deferred": False,
+                "structural_units_require_lowering": True,
+                "one_implementation_kind_per_structural_unit": True,
+                "rooted_containment_authority": False,
                 "candidate_generation_fails_closed": True,
             },
             "inputs": {
@@ -220,13 +227,8 @@ class StageBCandidateAuthorityV2Tests(unittest.TestCase):
                     "sha256": hashlib.sha256(b"legacy-report").hexdigest(),
                 },
             },
-            "reachability": {
-                "status": "complete" if complete else "incomplete",
-                "roots": ["unit:entry"],
-                "reachable_unit_ids": ["unit:entry"] if complete else [],
-            },
             "counts": {
-                "rooted_reachable_units": 1 if complete else 0,
+                "structural_units": 1,
                 "implementation_entries": len(entries),
                 "machine_ir_fallback": len(entries),
                 "portable_replacement": 0,

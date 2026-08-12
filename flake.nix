@@ -216,6 +216,8 @@
           dxball-reconstruction-plan = dxball.analysis.reconstructionPlan;
           dxball-component-proposals = dxball.analysis.componentProposals;
           dxball-interpreter = dxball.hybrid.interpreter;
+          dxball-fallback-coverage-receipt =
+            dxball.hybrid.fallbackCoverageReceipt;
           dxball-native-engine = dxball.hybrid.nativeEngine;
           dxball-native-runtime = dxball.hybrid.nativeRuntime;
           dxball-native-objects = dxball.hybrid.nativeObjects.package;

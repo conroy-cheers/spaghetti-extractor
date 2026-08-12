@@ -494,7 +494,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("parse_external_site_proposals_v2", authority)
         self.assertNotIn("checked_external_sites", authority.split("inputs = {", 1)[1].split("};", 1)[0])
 
-    def test_fallback_coverage_is_v2_and_has_no_v1_authority_dependency(self) -> None:
+    def test_fallback_coverage_is_v3_and_has_no_v1_authority_dependency(self) -> None:
         module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
             encoding="utf-8"
         )
@@ -502,9 +502,29 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         end = module.index("candidateAuthorityReport =", start)
         phase = module[start:end]
 
-        self.assertIn("stage-b-fallback-coverage-receipt-v2", phase)
+        self.assertIn("stage-b-fallback-coverage-receipt-v3", phase)
+        self.assertIn("structural_units_require_lowering", phase)
+        self.assertIn("rooted_containment_authority", phase)
         self.assertNotIn("static_completeness_report", phase)
         self.assertNotIn("staticCompletenessReport", phase)
+
+    def test_global_slot_replay_is_outside_the_joint_fixed_point_closure(self) -> None:
+        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
+            encoding="utf-8"
+        )
+        joint_start = module.index("jointInterproceduralV2 =")
+        joint_end = module.index("interproceduralV2 =", joint_start)
+        authority_start = module.index("globalSlotAuthority =")
+        authority_end = module.index("callbackEntryContracts =", authority_start)
+
+        self.assertNotIn(
+            "global_slot_authority_replay_v2",
+            module[joint_start:joint_end],
+        )
+        self.assertIn(
+            "global_slot_authority_replay_v2",
+            module[authority_start:authority_end],
+        )
 
     def test_v2_entry_isa_and_exception_phases_use_canonical_apis(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(

@@ -7,11 +7,15 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from spaghetti_extractor.global_slot_authority_v2 import (
     GLOBAL_SLOT_AUTHORITY_V2_FORMAT,
+    GLOBAL_SLOT_PROMOTION_V2_FORMAT,
     apply_global_slot_authority_v2,
     build_global_slot_authority_v2,
+)
+from spaghetti_extractor.global_slot_authority_replay_v2 import (
     replay_global_slot_authority_v2,
 )
 from spaghetti_extractor.global_slot_analysis_v2 import analyze_global_slots_v2
@@ -28,6 +32,7 @@ from spaghetti_extractor.launch_memory_ranges_v2 import (
 from spaghetti_extractor.stage_binary import _parse_stage_a_pe
 from spaghetti_extractor.stack_range_analysis_v2 import (
     derive_stack_range_analysis_v2,
+    validate_stack_range_analysis_v2,
 )
 from tests.pe_fixtures import pe32_image_with_writable_data
 
@@ -201,6 +206,37 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
         self.assertEqual(authority["status"], "complete", authority["issues"])
         self.assertEqual(len(_invariants(authority, "finite_set")), 1)
         self.assertEqual(len(_invariants(authority, "finite_set_at_read")), 1)
+
+    def test_independent_replay_uses_the_distinct_stack_offset_budget(self) -> None:
+        analysis, replay_inputs = self._replay_fixture()
+
+        with patch(
+            "spaghetti_extractor.global_slot_authority_v2."
+            "validate_stack_range_analysis_v2",
+            wraps=validate_stack_range_analysis_v2,
+        ) as validate_stack:
+            authority = replay_global_slot_authority_v2(
+                submitted_analysis=analysis,
+                stack_finite_offset_budget=64,
+                **replay_inputs,
+            )
+
+        self.assertEqual(authority["status"], "complete", authority["issues"])
+        self.assertEqual(
+            validate_stack.call_args.kwargs["finite_offset_budget"], 64
+        )
+
+    def test_independent_replay_compares_canonical_serialized_content(self) -> None:
+        analysis, replay_inputs = self._replay_fixture()
+        equivalent = copy.deepcopy(analysis)
+        equivalent["issues"] = tuple(equivalent["issues"])
+
+        authority = replay_global_slot_authority_v2(
+            submitted_analysis=equivalent,
+            **replay_inputs,
+        )
+
+        self.assertEqual(authority["status"], "complete", authority["issues"])
 
     def test_independent_replay_checks_temporary_proposal_slot(self) -> None:
         _analysis, replay_inputs = self._replay_fixture()
@@ -433,6 +469,32 @@ class GlobalSlotAuthorityV2Tests(unittest.TestCase):
         self.assertIn(
             "checked_memory_spatial_binding_invalid",
             {row["code"] for row in rejected["issues"]},
+        )
+
+        promotion = build_global_slot_authority_v2(
+            provenance=_provenance(),
+            global_slot_analysis=analysis,
+            units=units,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_sha,
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            stack_range_analysis=corrupted,
+            stack_graph=graph,
+            stack_launch_assumptions=launch,
+            promotion_only=True,
+        )
+        self.assertEqual(promotion["format"], GLOBAL_SLOT_PROMOTION_V2_FORMAT)
+        self.assertEqual(promotion["status"], "complete", promotion["issues"])
+        self.assertFalse(
+            promotion["constraints"]["candidate_acceptance_authority"]
+        )
+        self.assertTrue(
+            promotion["constraints"]["independent_source_replay_deferred"]
+        )
+        self.assertEqual(
+            promotion["global_slot_invariants"],
+            authority["global_slot_invariants"],
         )
 
     def _writable_data_binary(self, *, relocated: bool = False):

@@ -1131,6 +1131,7 @@ let
                   stack_finite_offset_budget=analysis_stack_offset_budget,
                   launch_memory_range_analysis=launch_memory_ranges,
                   launch_memory_assumptions={"assumptions": assumptions},
+                  promotion_only=True,
               )
 
           def derive_global_slot_hypotheses(bootstrap_slot_analysis):
@@ -1421,7 +1422,7 @@ let
         allowedStatuses = [ "complete" "incomplete" "violated" ];
         pythonModules = [
           "spaghetti_extractor.control_analysis_v2"
-          "spaghetti_extractor.global_slot_authority_v2"
+          "spaghetti_extractor.global_slot_authority_replay_v2"
           "spaghetti_extractor.launch_profile_v2"
           "spaghetti_extractor.stage_binary"
         ];
@@ -1440,7 +1441,7 @@ let
           from spaghetti_extractor.control_analysis_v2 import (
               derive_rooted_control_closure_v2,
           )
-          from spaghetti_extractor.global_slot_authority_v2 import (
+          from spaghetti_extractor.global_slot_authority_replay_v2 import (
               replay_global_slot_authority_v2,
           )
           from spaghetti_extractor.launch_profile_v2 import (
@@ -1448,6 +1449,9 @@ let
               parse_launch_profile_v2,
           )
           from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+
+          analysis_finite_value_budget = 32
+          analysis_stack_offset_budget = 64
 
           units = [
               json.loads(line)
@@ -1515,7 +1519,8 @@ let
               machine_ir_sha256=hashlib.sha256(
                   inputs["machine_ir"].read_bytes()
               ).hexdigest(),
-              finite_value_budget=32,
+              finite_value_budget=analysis_finite_value_budget,
+              stack_finite_offset_budget=analysis_stack_offset_budget,
               proposal_slot_dependencies=joint.get(
                   "bootstrap_diagnostics", {}
               ).get("proposal_slot_dependencies", []),

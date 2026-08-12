@@ -8,6 +8,9 @@ from typing import Any, Sequence
 from spaghetti_extractor.global_slot_analysis_v2 import (
     CHECKED_MEMORY_RANGE_FACT_V2_FORMAT,
     GLOBAL_SLOT_ANALYSIS_V2_FORMAT,
+    _Event,
+    _Site,
+    _event_graph,
     analyze_global_slots_v2,
 )
 from spaghetti_extractor.entry_state_analysis_v2 import propose_global_slot_invariant
@@ -324,6 +327,45 @@ def _call_effect(
 
 
 class GlobalSlotAnalysisV2Tests(unittest.TestCase):
+    def test_event_graph_indexes_events_once_for_all_units(self) -> None:
+        units = {
+            f"unit-{index}": _unit(f"unit-{index}", 0x1000 + index * 4, [])
+            for index in range(8)
+        }
+
+        class CountingEvents(dict[str, _Event]):
+            values_calls = 0
+
+            def values(self):  # type: ignore[override]
+                self.values_calls += 1
+                return super().values()
+
+        events = CountingEvents({
+            f"event-{index}": _Event(
+                node_id=f"event-{index}",
+                site=_Site(f"unit-{index}", 0, 0x1000 + index * 4),
+                kind="read",
+                width=4,
+                address=_const(SLOT),
+                value=None,
+                raw=_read(),
+                order_key=(0x1000 + index * 4, 0, 0),
+            )
+            for index in range(8)
+        })
+        _event_graph(
+            units=units,
+            reachable=frozenset(units),
+            roots=["unit-0"],
+            successors={
+                f"unit-{index}": [f"unit-{index + 1}"]
+                for index in range(7)
+            },
+            events=events,
+        )
+
+        self.assertEqual(events.values_calls, 1)
+
     def test_internal_call_summary_does_not_precede_callee_entry(self) -> None:
         caller = _unit(
             "caller",

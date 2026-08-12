@@ -149,7 +149,7 @@ let
   };
 
   fallbackCoverageReceipt = pkgs.runCommand
-    "${namePrefix}-fallback-coverage-receipt-v2"
+    "${namePrefix}-fallback-coverage-receipt-v3"
     {
       nativeBuildInputs = [ pythonEnv pkgs.jq ];
       preferLocalBuild = false;
@@ -186,12 +186,13 @@ let
       )
       PY
       jq -e '
-        .format == "stage-b-fallback-coverage-receipt-v2" and
+        .format == "stage-b-fallback-coverage-receipt-v3" and
         .status == "complete" and
-        (.authority | contains("no behavioral acceptance authority")) and
-        .policy.rooted_reachable_units_require_lowering and
-        .policy.one_implementation_kind_per_reachable_unit and
-        .counts.rooted_reachable_units == .counts.implementation_entries and
+        (.authority | contains("implementation availability only")) and
+        .policy.structural_units_require_lowering and
+        .policy.one_implementation_kind_per_structural_unit and
+        (.policy.rooted_containment_authority | not) and
+        .counts.structural_units == .counts.implementation_entries and
         .counts.blockers == 0
       ' "$out/fallback-coverage-receipt.json" >/dev/null
     '';

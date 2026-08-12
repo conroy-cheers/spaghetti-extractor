@@ -333,6 +333,9 @@ class _Packages:
             "unit_id": unit["id"],
             "rva": 0x1000,
             "unit_contract_sha256": unit["source"]["contract_sha256"],
+            "source_span_sha256": unit["source"][
+                "instruction_bytes_sha256"
+            ],
             "machine_ir_record_sha256": _canonical_sha256(unit),
             "lowering_transfer_sha256": hashlib.sha256(b"lowering").hexdigest(),
             "implementation_kind": "machine_ir_fallback",
@@ -351,6 +354,9 @@ class _Packages:
             "schemas": {},
             "policy": {
                 "potential_transfers_may_be_deferred": False,
+                "structural_units_require_lowering": True,
+                "one_implementation_kind_per_structural_unit": True,
+                "rooted_containment_authority": False,
                 "candidate_generation_fails_closed": True,
             },
             "inputs": {
@@ -359,13 +365,8 @@ class _Packages:
                     "sha256": sha256_file(self.machine_ir_manifest)
                 },
             },
-            "reachability": {
-                "status": "complete",
-                "roots": [unit["id"]],
-                "reachable_unit_ids": [unit["id"]],
-            },
             "counts": {
-                "rooted_reachable_units": 1,
+                "structural_units": 1,
                 "implementation_entries": 1,
                 "machine_ir_fallback": 1,
                 "portable_replacement": 0,

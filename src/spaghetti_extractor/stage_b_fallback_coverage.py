@@ -1,8 +1,8 @@
 """Hash-bound implementation coverage for static-hybrid candidate generation.
 
-This receipt has no behavioral or static-completeness authority.  It proves
-only that the exact rooted machine-IR inventory has one selected dispatch
-implementation per reachable unit and that every fallback entry exists in the
+This receipt has no behavioral or static-completeness authority.  It checks
+only that every unit in the exact structural machine-IR inventory has one
+selected dispatch implementation and that every fallback entry exists in the
 selected semantic-interpreter lowering.  The independent v2 final audit is the
 sole static authority consumed by the candidate-authority receipt.
 """
@@ -22,9 +22,9 @@ from .stage_b_interpreter_backend import (
 from .util import sha256_bytes, sha256_file, write_json
 
 
-FALLBACK_COVERAGE_RECEIPT_FORMAT = "stage-b-fallback-coverage-receipt-v2"
+FALLBACK_COVERAGE_RECEIPT_FORMAT = "stage-b-fallback-coverage-receipt-v3"
 FALLBACK_COVERAGE_CHECKER_ID = "spaghetti-extractor-fallback-coverage-checker"
-FALLBACK_COVERAGE_CHECKER_VERSION = 2
+FALLBACK_COVERAGE_CHECKER_VERSION = 3
 PORTABLE_REPLACEMENT_SELECTION_FORMAT = (
     "stage-b-portable-replacement-selection-v1"
 )
@@ -79,7 +79,7 @@ def write_stage_b_fallback_coverage_receipt(
         Sequence[Mapping[str, Any]] | Path | str | None
     ) = None,
 ) -> dict[str, Any]:
-    """Write a deterministic receipt for exact rooted implementation coverage."""
+    """Write a deterministic receipt for the complete structural universe."""
 
     payload = _expected_fallback_coverage_payload(
         machine_ir=Path(machine_ir),
@@ -152,7 +152,7 @@ def _expected_fallback_coverage_payload(
     units = _read_machine_ir_units(machine_ir)
     unit_by_id = {unit["id"]: unit for unit in units}
     manifest = _read_object(machine_ir_manifest, "machine-IR manifest")
-    roots, reachable_ids = _validate_manifest_reachability(
+    _validate_manifest_binding(
         manifest, machine_ir_sha256=machine_ir_sha256, units=unit_by_id
     )
     package = _read_object(package_path, "semantic-interpreter package")
@@ -166,20 +166,26 @@ def _expected_fallback_coverage_payload(
         units=unit_by_id,
     )
 
-    missing_lowerings = sorted(set(reachable_ids) - set(lowering_by_id))
+    structural_ids = set(unit_by_id)
+    missing_lowerings = sorted(structural_ids - set(lowering_by_id))
     if missing_lowerings:
         raise FallbackCoverageReceiptError(
-            "rooted reachable unit cannot be lowered: " + ", ".join(missing_lowerings)
+            "structural machine-IR unit cannot be lowered: "
+            + ", ".join(missing_lowerings)
+        )
+    if set(lowering_by_id) != structural_ids:
+        raise FallbackCoverageReceiptError(
+            "semantic-interpreter lowering does not exactly cover the structural universe"
         )
     replacements, replacement_binding = _portable_replacement_selections(
         portable_replacements,
-        reachable_ids=set(reachable_ids),
+        structural_ids=structural_ids,
         units=unit_by_id,
     )
 
     entries: list[dict[str, Any]] = []
     for unit_id in sorted(
-        reachable_ids, key=lambda identity: (unit_by_id[identity]["rva"], identity)
+        structural_ids, key=lambda identity: (unit_by_id[identity]["rva"], identity)
     ):
         unit = unit_by_id[unit_id]
         lowering = lowering_by_id[unit_id]
@@ -193,6 +199,7 @@ def _expected_fallback_coverage_payload(
             "unit_id": unit_id,
             "rva": unit["rva"],
             "unit_contract_sha256": unit["contract_sha256"],
+            "source_span_sha256": unit["source_span_sha256"],
             "machine_ir_record_sha256": unit["record_sha256"],
             "lowering_transfer_sha256": lowering["transfer_sha256"],
             "implementation_kind": implementation_kind,
@@ -205,18 +212,18 @@ def _expected_fallback_coverage_payload(
         }
         entries.append({**body, "entry_sha256": _canonical_sha256(body)})
 
-    if len(entries) != len(reachable_ids) or len({
+    if len(entries) != len(structural_ids) or len({
         row["unit_id"] for row in entries
     }) != len(entries):
         raise FallbackCoverageReceiptError(
-            "rooted reachable units do not have exactly one implementation kind"
+            "structural units do not have exactly one implementation kind"
         )
 
     core: dict[str, Any] = {
         "format": FALLBACK_COVERAGE_RECEIPT_FORMAT,
         "status": "complete",
         "authority": (
-            "candidate generation prerequisite only; no behavioral acceptance authority"
+            "implementation availability only; no reachability or behavioral acceptance authority"
         ),
         "checker": {
             "id": FALLBACK_COVERAGE_CHECKER_ID,
@@ -230,8 +237,9 @@ def _expected_fallback_coverage_payload(
         },
         "policy": {
             "potential_transfers_may_be_deferred": False,
-            "rooted_reachable_units_require_lowering": True,
-            "one_implementation_kind_per_reachable_unit": True,
+            "structural_units_require_lowering": True,
+            "one_implementation_kind_per_structural_unit": True,
+            "rooted_containment_authority": False,
             "default_implementation_kind": "machine_ir_fallback",
             "portable_replacements_must_be_explicit": True,
             "portable_fallback_on_unimplemented": False,
@@ -245,13 +253,8 @@ def _expected_fallback_coverage_payload(
             "semantic_interpreter_lowering": lowering_binding,
             "portable_replacements": replacement_binding,
         },
-        "reachability": {
-            "status": "complete",
-            "roots": list(roots),
-            "reachable_unit_ids": list(reachable_ids),
-        },
         "counts": {
-            "rooted_reachable_units": len(reachable_ids),
+            "structural_units": len(structural_ids),
             "implementation_entries": len(entries),
             "machine_ir_fallback": sum(
                 row["implementation_kind"] == "machine_ir_fallback"
@@ -324,12 +327,12 @@ def _read_machine_ir_units(path: Path) -> tuple[dict[str, Any], ...]:
     return tuple(result)
 
 
-def _validate_manifest_reachability(
+def _validate_manifest_binding(
     manifest: Mapping[str, Any],
     *,
     machine_ir_sha256: str,
     units: Mapping[str, Mapping[str, Any]],
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
+) -> None:
     if manifest.get("format") != MACHINE_IR_FORMAT:
         raise FallbackCoverageReceiptError(
             "machine-IR manifest has an unsupported format"
@@ -343,35 +346,11 @@ def _validate_manifest_reachability(
         raise FallbackCoverageReceiptError(
             "machine-IR manifest does not bind the submitted machine IR"
         )
-    control = _object(manifest.get("control"), "machine-IR control")
-    reachability = _object(control.get("reachability"), "rooted reachability")
-    inventories = {
-        field: _identity_list(reachability.get(field), f"reachability {field}")
-        for field in (
-            "roots",
-            "reachable_units",
-            "potential_units",
-            "confirmed_unreachable_units",
-        )
-    }
-    roots = set(inventories["roots"])
-    reachable = set(inventories["reachable_units"])
-    potential = set(inventories["potential_units"])
-    unreachable = set(inventories["confirmed_unreachable_units"])
-    frontiers = _list(reachability.get("frontiers"), "reachability frontiers")
-    if (
-        reachability.get("status") != "complete"
-        or not roots
-        or not roots <= reachable
-        or potential
-        or frontiers
-        or reachable & unreachable
-        or reachable | unreachable != set(units)
-    ):
+    counts = _object(manifest.get("counts"), "machine-IR counts")
+    if counts.get("units") != len(units):
         raise FallbackCoverageReceiptError(
-            "machine-IR rooted reachability is not a complete unit partition"
+            "machine-IR manifest unit count does not match the submitted structural universe"
         )
-    return tuple(sorted(roots)), tuple(sorted(reachable))
 
 
 def _interpreter_artifact_paths(path: Path) -> tuple[Path, Path]:
@@ -603,7 +582,7 @@ def _validated_adapted_semantics(root: Path, value: Any) -> dict[str, str]:
 def _portable_replacement_selections(
     value: Sequence[Mapping[str, Any]] | Path | str | None,
     *,
-    reachable_ids: set[str],
+    structural_ids: set[str],
     units: Mapping[str, Mapping[str, Any]],
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
     artifact_binding: dict[str, Any] | None = None
@@ -643,9 +622,9 @@ def _portable_replacement_selections(
         )
         rva = _u32(row.get("rva"), f"portable replacement {index} RVA")
         unit = units.get(identity)
-        if identity not in reachable_ids or unit is None or unit["rva"] != rva:
+        if identity not in structural_ids or unit is None or unit["rva"] != rva:
             raise FallbackCoverageReceiptError(
-                "portable replacement does not bind one rooted reachable machine-IR unit"
+                "portable replacement does not bind one structural machine-IR unit"
             )
         if identity in result or rva in seen_rvas:
             raise FallbackCoverageReceiptError(
@@ -741,13 +720,6 @@ def _list(value: Any, context: str) -> list[Any]:
     if not isinstance(value, list):
         raise FallbackCoverageReceiptError(f"{context} must be a list")
     return value
-
-
-def _identity_list(value: Any, context: str) -> tuple[str, ...]:
-    result = tuple(_identity(item, context) for item in _list(value, context))
-    if len(set(result)) != len(result):
-        raise FallbackCoverageReceiptError(f"{context} contains duplicates")
-    return result
 
 
 def _identity(value: Any, context: str) -> str:
