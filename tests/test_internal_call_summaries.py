@@ -322,6 +322,14 @@ class InternalCallSummaryTests(unittest.TestCase):
             root["result_register_origins"]["registers"]["eax"],
             {"kind": "input_register", "register": "ecx"},
         )
+        for summary in (callee, root):
+            result_registers = set(
+                summary["result_register_origins"]["registers"]
+            )
+            self.assertFalse(
+                result_registers & set(summary["preserved_registers"])
+            )
+            self.assertNotIn("esp", result_registers)
 
     def test_declared_internal_contract_is_an_opaque_callee_summary(self) -> None:
         declaration = {

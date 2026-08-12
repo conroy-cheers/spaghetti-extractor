@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping, TypeAlias
 
 from .machine_abi import MachineCallABI, resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity
@@ -35,6 +35,13 @@ _CALLBACK_PREREQUISITE = "candidate_preserves_native_callback_boundary"
 INTERFACE_CALLER_MEMORY_FRAME_MODEL = (
     "pe32-declared-pointer-arguments-v1"
 )
+RECEIVER_RESOURCE_REQUIRED_STATE = "live"
+ReceiverLifecycleEffect: TypeAlias = Literal[
+    "preserve", "may_release", "release"
+]
+RECEIVER_RESOURCE_LIFECYCLE_EFFECTS = frozenset({
+    "preserve", "may_release", "release",
+})
 
 
 class ExternalInterfaceProfileError(StageAInputError):
@@ -194,6 +201,30 @@ class InterfaceCallerMemoryFrame:
         }
 
 
+@dataclass(frozen=True, order=True)
+class ReceiverResourceContract:
+    argument_index: int
+    view_id: str
+    required_state: str
+    dispatch_slot: int
+    lifecycle_effect: ReceiverLifecycleEffect
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "argument_index": self.argument_index,
+            "view_id": self.view_id,
+            "required_state": self.required_state,
+            "dispatch_slot": self.dispatch_slot,
+            "lifecycle_effect": self.lifecycle_effect,
+        }
+
+
+def default_receiver_lifecycle_effect(name: str) -> ReceiverLifecycleEffect:
+    """Return the conservative compatibility default for a method name."""
+
+    return "may_release" if "release" in name.casefold() else "preserve"
+
+
 @dataclass(frozen=True)
 class InterfaceFactory:
     identity: MachineImportIdentity
@@ -213,6 +244,7 @@ class InterfaceMethod:
     abi: MachineCallABI
     argument_words: int
     outputs: tuple[InterfaceOutput, ...]
+    receiver_resource: ReceiverResourceContract
     effects: InterfaceEffectContract | None = None
     caller_memory_frame: InterfaceCallerMemoryFrame | None = None
 
@@ -223,19 +255,28 @@ class InterfaceMethod:
     def target_json(
         self, *, profile_id: str, profile_sha256: str
     ) -> dict[str, Any]:
+        receiver_resource = self.receiver_resource.as_json()
+        profile_binding = {
+            "profile_id": profile_id,
+            "profile_sha256": profile_sha256,
+            "receiver_resource": receiver_resource,
+        }
         result = {
             "external_protocol": {
                 "kind": "pe32-interface-method",
                 "profile_id": profile_id,
                 "profile_sha256": profile_sha256,
+                "profile_binding": profile_binding,
                 "interface_id": self.interface_id,
                 "method": self.name,
                 "slot": self.slot,
                 "offset": self.offset,
             },
+            "profile_binding": profile_binding,
             "abi": self.abi.as_json(),
             "argument_words": self.argument_words,
             "out_interfaces": [output.as_json() for output in self.outputs],
+            "receiver_resource": receiver_resource,
         }
         if self.effects is not None:
             result.update(self.effects.as_json())
@@ -452,6 +493,7 @@ def _method(
         raise ExternalInterfaceProfileError(
             f"{interface_id} method inventory is not contiguous PE32 vtable order"
         )
+    name = _nonempty(row.get("name"), f"{interface_id} method {expected_slot} name")
     argument_words = _bounded_words(
         row.get("argument_words"), f"{interface_id} method {expected_slot} arguments"
     )
@@ -473,7 +515,7 @@ def _method(
     )
     return InterfaceMethod(
         interface_id=interface_id,
-        name=_nonempty(row.get("name"), f"{interface_id} method {expected_slot} name"),
+        name=name,
         slot=expected_slot,
         abi=abi,
         argument_words=argument_words,
@@ -484,6 +526,14 @@ def _method(
             interface_vtable_sizes=interface_vtable_sizes,
             context=f"{interface_id} method {expected_slot}",
         ),
+        receiver_resource=_receiver_resource_contract(
+            row.get("receiver_resource"),
+            default_view_id=interface_id,
+            default_dispatch_slot=expected_slot,
+            default_lifecycle_effect=default_receiver_lifecycle_effect(name),
+            argument_words=argument_words,
+            context=f"{interface_id} method {expected_slot}",
+        ),
         effects=effects,
         caller_memory_frame=_caller_memory_frame(
             row.get("caller_memory_frame"),
@@ -491,6 +541,58 @@ def _method(
             required=require_call_through,
             context=f"{interface_id} method {expected_slot}",
         ),
+    )
+
+
+def _receiver_resource_contract(
+    value: Any,
+    *,
+    default_view_id: str,
+    default_dispatch_slot: int,
+    default_lifecycle_effect: ReceiverLifecycleEffect,
+    argument_words: int,
+    context: str,
+) -> ReceiverResourceContract:
+    if value is None:
+        return ReceiverResourceContract(
+            argument_index=0,
+            view_id=default_view_id,
+            required_state=RECEIVER_RESOURCE_REQUIRED_STATE,
+            dispatch_slot=default_dispatch_slot,
+            lifecycle_effect=default_lifecycle_effect,
+        )
+    row = _object(value, f"{context} receiver resource")
+    expected_fields = {
+        "argument_index", "view_id", "required_state", "dispatch_slot",
+        "lifecycle_effect",
+    }
+    if set(row) != expected_fields:
+        raise ExternalInterfaceProfileError(
+            f"{context} receiver-resource fields differ from the supported contract"
+        )
+    argument_index = row.get("argument_index")
+    view_id = row.get("view_id")
+    dispatch_slot = row.get("dispatch_slot")
+    lifecycle_effect = row.get("lifecycle_effect")
+    if (
+        not isinstance(argument_index, int)
+        or isinstance(argument_index, bool)
+        or not 0 <= argument_index < argument_words
+        or argument_index != 0
+        or view_id != default_view_id
+        or row.get("required_state") != RECEIVER_RESOURCE_REQUIRED_STATE
+        or dispatch_slot != default_dispatch_slot
+        or lifecycle_effect not in RECEIVER_RESOURCE_LIFECYCLE_EFFECTS
+    ):
+        raise ExternalInterfaceProfileError(
+            f"{context} receiver-resource contract does not match its interface dispatch"
+        )
+    return ReceiverResourceContract(
+        argument_index=argument_index,
+        view_id=str(view_id),
+        required_state=RECEIVER_RESOURCE_REQUIRED_STATE,
+        dispatch_slot=dispatch_slot,
+        lifecycle_effect=lifecycle_effect,
     )
 
 
@@ -851,6 +953,11 @@ __all__ = [
     "InterfaceMemoryArgument",
     "InterfaceMethod",
     "InterfaceOutput",
+    "RECEIVER_RESOURCE_LIFECYCLE_EFFECTS",
+    "RECEIVER_RESOURCE_REQUIRED_STATE",
+    "ReceiverLifecycleEffect",
+    "ReceiverResourceContract",
+    "default_receiver_lifecycle_effect",
     "load_external_interface_profile",
     "same_library_callback_call_through_effect_json",
     "same_library_call_through_effect_json",

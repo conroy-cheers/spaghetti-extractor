@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, TypeAlias
@@ -26,7 +26,11 @@ from .artifact_formats import (
 )
 from .external_interface_profiles import (
     EXTERNAL_INTERFACE_PROFILE_FORMAT,
+    RECEIVER_RESOURCE_LIFECYCLE_EFFECTS,
+    RECEIVER_RESOURCE_REQUIRED_STATE,
     ExternalInterfaceProfile,
+    ReceiverResourceContract,
+    default_receiver_lifecycle_effect,
 )
 from .machine_abi import (
     MACHINE_CALL_ABI_REGISTERS,
@@ -366,15 +370,19 @@ class ExternalOperation:
     argument_words: int
     environment_contract_id: str
     output_rules: tuple[OutputRule, ...]
+    receiver_resource: ReceiverResourceContract | None = None
 
     def as_json(self) -> dict[str, Any]:
-        return {
+        result = {
             "id": self.operation_id,
             "abi_template": self.abi.template,
             "argument_words": self.argument_words,
             "environment_contract_id": self.environment_contract_id,
             "output_rules": [output.as_json() for output in self.output_rules],
         }
+        if self.receiver_resource is not None:
+            result["receiver_resource"] = self.receiver_resource.as_json()
+        return result
 
 
 @dataclass(frozen=True)
@@ -580,6 +588,11 @@ def parse_external_operation_profile(
             "operations have no selectors: " + ", ".join(sorted(unselected))
         )
     _reject_resolver_cycles(selectors)
+    operations = _normalize_receiver_resource_contracts(
+        operations,
+        selectors=selectors,
+        views_by_id=views_by_id,
+    )
 
     referenced_contracts: set[str] = set()
     resolver_results = {
@@ -685,15 +698,19 @@ def convert_external_interface_profile(
         argument_words: int,
         outputs: list[dict[str, Any]],
         selector: dict[str, Any],
+        receiver_resource: dict[str, Any] | None = None,
     ) -> None:
         contract_id = f"{operation_id}:environment"
-        operations.append({
+        operation = {
             "id": operation_id,
             "abi_template": abi.template,
             "argument_words": argument_words,
             "environment_contract_id": contract_id,
             "output_rules": outputs,
-        })
+        }
+        if receiver_resource is not None:
+            operation["receiver_resource"] = receiver_resource
+        operations.append(operation)
         selectors.append({**selector, "operation_id": operation_id})
         output_widths = {
             int(output["argument_index"]): int(output["write_width"])
@@ -767,6 +784,7 @@ def convert_external_interface_profile(
                     "view_id": interface.interface_id,
                     "slot": method.slot,
                 },
+                receiver_resource=method.receiver_resource.as_json(),
             )
 
     converted = {
@@ -819,7 +837,7 @@ def _operation(value: Any, index: int) -> ExternalOperation:
             "id", "abi_template", "argument_words", "environment_contract_id",
             "output_rules",
         },
-        set(),
+        {"receiver_resource"},
         context,
     )
     abi = resolve_machine_call_abi(row.get("abi_template"))
@@ -846,7 +864,118 @@ def _operation(value: Any, index: int) -> ExternalOperation:
             f"{context} environment contract ID",
         ),
         output_rules=outputs,
+        receiver_resource=(
+            None
+            if row.get("receiver_resource") is None
+            else _receiver_resource_contract(
+                row.get("receiver_resource"), context=context
+            )
+        ),
     )
+
+
+def _receiver_resource_contract(
+    value: Any, *, context: str
+) -> ReceiverResourceContract:
+    row = _object(value, f"{context} receiver resource")
+    _exact_keys(
+        row,
+        {
+            "argument_index", "view_id", "required_state", "dispatch_slot",
+            "lifecycle_effect",
+        },
+        set(),
+        f"{context} receiver resource",
+    )
+    required_state = row.get("required_state")
+    lifecycle_effect = row.get("lifecycle_effect")
+    if required_state != RECEIVER_RESOURCE_REQUIRED_STATE:
+        raise ExternalOperationProfileError(
+            f"{context} receiver resource must require a live resource"
+        )
+    if lifecycle_effect not in RECEIVER_RESOURCE_LIFECYCLE_EFFECTS:
+        raise ExternalOperationProfileError(
+            f"{context} receiver resource has an unsupported lifecycle effect"
+        )
+    return ReceiverResourceContract(
+        argument_index=_bounded_index(
+            row.get("argument_index"),
+            f"{context} receiver argument index",
+            maximum=MAX_ARGUMENT_WORDS - 1,
+        ),
+        view_id=_nonempty(row.get("view_id"), f"{context} receiver view ID"),
+        required_state=RECEIVER_RESOURCE_REQUIRED_STATE,
+        dispatch_slot=_bounded_index(
+            row.get("dispatch_slot"),
+            f"{context} receiver dispatch slot",
+            maximum=MAX_TABLE_SLOT,
+        ),
+        lifecycle_effect=lifecycle_effect,
+    )
+
+
+def _normalize_receiver_resource_contracts(
+    operations: tuple[ExternalOperation, ...],
+    *,
+    selectors: tuple[OperationSelector, ...],
+    views_by_id: Mapping[str, ExternalOperationView],
+) -> tuple[ExternalOperation, ...]:
+    selectors_by_operation: dict[str, list[OperationSelector]] = {}
+    for selector in selectors:
+        selectors_by_operation.setdefault(selector.operation_id, []).append(selector)
+
+    normalized: list[ExternalOperation] = []
+    for operation in operations:
+        operation_selectors = selectors_by_operation[operation.operation_id]
+        table_selectors = [
+            selector
+            for selector in operation_selectors
+            if isinstance(selector, TableSlotSelector)
+        ]
+        receiver_selectors = [
+            selector
+            for selector in table_selectors
+            if views_by_id[selector.view_id].access == "object_table"
+        ]
+        receiver = operation.receiver_resource
+        if receiver is None and receiver_selectors:
+            if len(operation_selectors) != 1:
+                raise ExternalOperationProfileError(
+                    f"operation {operation.operation_id!r} has ambiguous "
+                    "receiver dispatch selectors"
+                )
+            selector = receiver_selectors[0]
+            receiver = ReceiverResourceContract(
+                argument_index=0,
+                view_id=selector.view_id,
+                required_state=RECEIVER_RESOURCE_REQUIRED_STATE,
+                dispatch_slot=selector.slot,
+                lifecycle_effect=default_receiver_lifecycle_effect(
+                    operation.operation_id
+                ),
+            )
+            operation = replace(operation, receiver_resource=receiver)
+        if receiver is None:
+            normalized.append(operation)
+            continue
+        if len(operation_selectors) != 1 or len(receiver_selectors) != 1:
+            raise ExternalOperationProfileError(
+                f"operation {operation.operation_id!r} receiver resource "
+                "requires one exact table-slot selector"
+            )
+        selector = receiver_selectors[0]
+        if (
+            receiver.argument_index >= operation.argument_words
+            or receiver.view_id not in views_by_id
+            or receiver.view_id != selector.view_id
+            or receiver.dispatch_slot != selector.slot
+        ):
+            raise ExternalOperationProfileError(
+                f"operation {operation.operation_id!r} receiver resource "
+                "differs from its table dispatch"
+            )
+        normalized.append(operation)
+    return tuple(normalized)
 
 
 def _selector(value: Any, index: int) -> OperationSelector:
@@ -1603,6 +1732,7 @@ __all__ = [
     "OutputRule",
     "OutputView",
     "ResolverResultSelector",
+    "ReceiverResourceContract",
     "ReturnRegisterOperationOutput",
     "ReturnRegisterOutput",
     "SuccessGuard",

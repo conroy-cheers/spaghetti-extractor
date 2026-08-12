@@ -65,6 +65,10 @@ from .machine_ir_isa_selection_v2 import (
     parse_machine_ir_isa_selection_certificate_v2,
 )
 from .internal_call_summaries import checked_summary_register_frame_complete
+from .indirect_target_dependency_v2 import (
+    IndirectTargetDependencyV2Error,
+    validate_profile_dispatch_dependency_v2,
+)
 
 
 HybridAuthorityBuilderV2Error = MachineIRAuthorityV2Error
@@ -495,6 +499,17 @@ def build_hybrid_authority_v2(
                     or external_record_set_complete
                 )
             )
+            profile_dispatch_fact, profile_dispatch_issues = (
+                _checked_profile_dispatch_value_fact(
+                    recovery,
+                    binding=binding,
+                    dependencies=tuple(sorted({
+                        *mutable_dependencies,
+                        *call_dependencies,
+                        *indirect_dependencies,
+                    })),
+                )
+            )
             recovered = (
                 replay_authoritative
                 and recovery is not None
@@ -505,6 +520,7 @@ def build_hybrid_authority_v2(
                 and not mutable_issues
                 and not call_dependency_issues
                 and not indirect_dependency_issues
+                and not profile_dispatch_issues
                 and not recovery_issues
             )
             indirect_issues = (
@@ -513,12 +529,14 @@ def build_hybrid_authority_v2(
                     *mutable_issues,
                     *call_dependency_issues,
                     *indirect_dependency_issues,
+                    *profile_dispatch_issues,
                 ))
                 if (
                     recovery_issues
                     or mutable_issues
                     or call_dependency_issues
                     or indirect_dependency_issues
+                    or profile_dispatch_issues
                 )
                 else ()
                 if recovered
@@ -531,6 +549,11 @@ def build_hybrid_authority_v2(
                 *call_dependencies,
                 *indirect_dependencies,
             ]
+            if profile_dispatch_fact is not None:
+                add(profile_dispatch_fact, is_required=False)
+                dependencies.append(AuthorityDependency(
+                    "value_fact", profile_dispatch_fact.content_id
+                ))
             for external_record in external_records:
                 add(external_record, is_required=False)
                 dependencies.append(AuthorityDependency(
@@ -929,6 +952,86 @@ def _matching_recovery(
         else _missing(code, f"indirect exit {binding.exit_id} has no recovery fact")
     )
     return None, (issue,)
+
+
+def _checked_profile_dispatch_value_fact(
+    recovery: Mapping[str, Any] | None,
+    *,
+    binding: EventBinding,
+    dependencies: tuple[AuthorityDependency, ...],
+) -> tuple[ValueFact | None, tuple[EvidenceIssue, ...]]:
+    """Bind profile dispatch receiver instances into the v2 authority DAG."""
+
+    if recovery is None:
+        return None, ()
+    external_targets = recovery.get("external_targets")
+    if not isinstance(external_targets, list):
+        return None, ()
+    profile_kinds = {
+        protocol.get("kind")
+        for target in external_targets
+        if isinstance(target, Mapping)
+        for protocol in (target.get("external_protocol"),)
+        if isinstance(protocol, Mapping)
+        and protocol.get("kind") in {
+            "pe32-interface-method", "pe32-operation"
+        }
+    }
+    if not profile_kinds:
+        return None, ()
+    observed = recovery.get("target_set_dependency")
+    if not isinstance(observed, Mapping):
+        issue = _missing(
+            "profile_dispatch_dependency_missing",
+            "profile-backed indirect control has no checked receiver-instance certificate",
+        )
+        return ValueFact(
+            binding=binding,
+            location="indirect_target_receiver_instances",
+            width_bits=32,
+            alternatives=None,
+            dependencies=dependencies,
+            issues=(issue,),
+        ), (issue,)
+    try:
+        certificate = validate_profile_dispatch_dependency_v2(recovery)
+    except (IndirectTargetDependencyV2Error, TypeError, ValueError) as exc:
+        issue = _contradiction(
+            "profile_dispatch_dependency_corrupt",
+            f"profile-backed receiver certificate is inconsistent: {exc}",
+        )
+        return ValueFact(
+            binding=binding,
+            location="indirect_target_receiver_instances",
+            width_bits=32,
+            alternatives=None,
+            dependencies=dependencies,
+            issues=(issue,),
+        ), (issue,)
+    instances = certificate.get("receiver_instances")
+    if not isinstance(instances, list) or not instances:
+        issue = _contradiction(
+            "profile_dispatch_receiver_inventory_empty",
+            "profile-backed receiver certificate contains no instances",
+        )
+        return ValueFact(
+            binding=binding,
+            location="indirect_target_receiver_instances",
+            width_bits=32,
+            alternatives=None,
+            dependencies=dependencies,
+            issues=(issue,),
+        ), (issue,)
+    return ValueFact(
+        binding=binding,
+        location="indirect_target_receiver_instances",
+        width_bits=32,
+        alternatives=FiniteAlternatives.of(
+            instances,
+            maximum=len(instances),
+        ),
+        dependencies=dependencies,
+    ), ()
 
 
 def _checked_call_frame_dependencies(

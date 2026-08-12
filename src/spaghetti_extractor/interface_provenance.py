@@ -70,6 +70,9 @@ from .intrinsic_call_site_effects import (
     derive_intrinsic_import_call_site_effects,
     merge_intrinsic_call_site_effects,
 )
+from .indirect_target_dependency_v2 import (
+    build_profile_dispatch_dependency_v2,
+)
 from .machine_abi import (
     MachineCallABI,
     NormalCallABIPremise,
@@ -7191,6 +7194,9 @@ def _call_contract(
                 arguments,
                 factory.outputs,
                 profile_sha256=profile_sha256,
+                producer_id=(
+                    f"{unit_id}:{event_index}:factory:{factory.declaration}"
+                ),
                 issues=issues,
                 unit_id=unit_id,
             ), budget=budget, issues=issues, unit_id=unit_id)
@@ -7518,6 +7524,10 @@ def _call_contract(
             arguments,
             method.outputs,
             profile_sha256=profile_sha256,
+            producer_id=(
+                f"{unit_id}:{event_index}:method:"
+                f"{method.interface_id}.{method.name}"
+            ),
             issues=issues,
             unit_id=unit_id,
         ), budget=budget, issues=issues, unit_id=unit_id)
@@ -7928,7 +7938,12 @@ def _interface_method_callback_registration(
         entry_origins = frozenset(
             _Origin(
                 "interface_object",
-                (profile_sha256, str(argument["interface_id"])),
+                (
+                    profile_sha256,
+                    str(argument["interface_id"]),
+                    f"callback:{unit_id}:{event_index}:argument:"
+                    f"{callback_argument_index}",
+                ),
             )
             for profile_sha256, method in methods
             for argument in (method.effects.callback_arguments if method.effects else ())
@@ -8672,6 +8687,10 @@ def _instantiate_recovered_external_call_facts(
                 arguments,
                 method.outputs,
                 profile_sha256=profile_sha256,
+                producer_id=(
+                    f"{unit_id}:{event_index}:method:"
+                    f"{method.interface_id}.{method.name}"
+                ),
                 issues=issues,
                 unit_id=unit_id,
             )
@@ -9394,6 +9413,7 @@ def _output_effects(
     declarations: Sequence[Any],
     *,
     profile_sha256: str,
+    producer_id: str,
     issues: list[dict[str, Any]],
     unit_id: str,
 ) -> dict[_Origin, _Value]:
@@ -9420,7 +9440,10 @@ def _output_effects(
             continue
         address = next(iter(addresses))
         result[address] = frozenset({
-            _Origin("interface_object", (profile_sha256, output.interface_id))
+            _Origin(
+                "interface_object",
+                (profile_sha256, output.interface_id, producer_id),
+            )
         })
     return result
 
@@ -9675,7 +9698,10 @@ def _operation_target_origin(
     guard: SuccessGuard | None,
 ) -> _Origin:
     if guard is None:
-        return _Origin("operation_target", (profile_sha256, operation_id))
+        return _Origin(
+            "operation_target",
+            (profile_sha256, operation_id, producer_id),
+        )
     return _Origin(
         "guarded_operation_target",
         (
@@ -9766,7 +9792,7 @@ def _resolve_exits(
             })
             continue
         internal, targets, target_kinds = classified
-        result.append({
+        recovery = {
             **base,
             "status": "recovered",
             "closure": (
@@ -9792,8 +9818,45 @@ def _resolve_exits(
                 | (set() if state is None else set(state.control_dependencies))
             ),
             "failure": None,
-        })
+        }
+        if recovery["closure"] in {
+            "checked_profile_interface_method_inventory",
+            "checked_external_operation_inventory",
+        }:
+            if _profile_dispatch_origins_are_instance_bound(origins):
+                recovery["target_set_dependency"] = (
+                    build_profile_dispatch_dependency_v2(recovery)
+                )
+            else:
+                # Legacy summaries can still propose the finite method set for
+                # diagnostics and continued discovery, but only an
+                # instance-bearing receiver witness can authorize the dispatch.
+                recovery["target_set_dependency_failure"] = {
+                    "code": "profile_dispatch_receiver_instance_missing"
+                }
+        result.append(recovery)
     return result
+
+
+def _profile_dispatch_origins_are_instance_bound(
+    origins: _Value,
+) -> bool:
+    if not origins:
+        return False
+    for origin in origins:
+        producer_index = (
+            3
+            if origin.kind == "interface_method" and len(origin.key) == 4
+            else 2
+            if origin.kind == "operation_target" and len(origin.key) == 3
+            else None
+        )
+        if producer_index is None:
+            return False
+        producer = origin.key[producer_index]
+        if not isinstance(producer, str) or not producer:
+            return False
+    return True
 
 
 def _recovery_target_projection(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -10179,12 +10242,16 @@ def _load_origin_failure(
     if address.kind == "interface_object":
         return None
     if address.kind == "interface_vtable":
-        profile_sha256, interface_id = address.key
+        if len(address.key) not in {2, 3}:
+            return {**base, "code": "interface_resource_identity_malformed"}
+        profile_sha256, interface_id, *_ = address.key
         if inventory.method(str(profile_sha256), str(interface_id), 0) is not None:
             return None
         return {**base, "code": "interface_profile_slot_missing"}
     if address.kind == "interface_slot":
-        profile_sha256, interface_id, offset = address.key
+        if len(address.key) not in {3, 4}:
+            return {**base, "code": "interface_resource_identity_malformed"}
+        profile_sha256, interface_id, offset, *_ = address.key
         if inventory.method(
             str(profile_sha256), str(interface_id), int(offset)
         ) is not None:
@@ -10247,7 +10314,9 @@ def _classify_target_origins(
             kinds.add("import")
             continue
         if origin.kind == "interface_method":
-            profile_sha256, interface_id, slot = origin.key
+            if len(origin.key) not in {3, 4}:
+                return None
+            profile_sha256, interface_id, slot, *_ = origin.key
             method = inventory.method(
                 str(profile_sha256), str(interface_id), int(slot) * 4
             )
@@ -10263,7 +10332,9 @@ def _classify_target_origins(
             kinds.add("interface_operation")
             continue
         if origin.kind == "operation_target":
-            profile_sha256, operation_id = origin.key
+            if len(origin.key) not in {2, 3}:
+                return None
+            profile_sha256, operation_id, *_ = origin.key
             operation = inventory.operation(
                 str(profile_sha256), str(operation_id)
             )
@@ -10521,13 +10592,19 @@ def _evaluate(
                         return None
                     result.add(_Origin(
                         "operation_target",
-                        (profile_sha256, operation.operation_id),
+                        (
+                            profile_sha256,
+                            operation.operation_id,
+                            *address.key[2:],
+                        ),
                         address.dependencies,
                     ))
                 else:
                     return None
             elif address.kind == "interface_vtable":
-                profile_sha256, interface_id = address.key
+                if len(address.key) not in {2, 3}:
+                    return None
+                profile_sha256, interface_id, *resource_identity = address.key
                 method = inventory.method(
                     str(profile_sha256), str(interface_id), 0
                 )
@@ -10535,11 +10612,20 @@ def _evaluate(
                     return None
                 result.add(_Origin(
                     "interface_method",
-                    (profile_sha256, interface_id, method.slot),
+                    (
+                        profile_sha256,
+                        interface_id,
+                        method.slot,
+                        *resource_identity,
+                    ),
                     address.dependencies,
                 ))
             elif address.kind == "interface_slot":
-                profile_sha256, interface_id, offset = address.key
+                if len(address.key) not in {3, 4}:
+                    return None
+                profile_sha256, interface_id, offset, *resource_identity = (
+                    address.key
+                )
                 method = inventory.method(
                     str(profile_sha256), str(interface_id), int(offset)
                 )
@@ -10547,7 +10633,12 @@ def _evaluate(
                     return None
                 result.add(_Origin(
                     "interface_method",
-                    (profile_sha256, interface_id, method.slot),
+                    (
+                        profile_sha256,
+                        interface_id,
+                        method.slot,
+                        *resource_identity,
+                    ),
                     address.dependencies,
                 ))
             elif address.kind == "operation_table":
@@ -10559,7 +10650,11 @@ def _evaluate(
                     return None
                 result.add(_Origin(
                     "operation_target",
-                    (profile_sha256, operation.operation_id),
+                    (
+                        profile_sha256,
+                        operation.operation_id,
+                        *address.key[2:],
+                    ),
                     address.dependencies,
                 ))
             elif address.kind == "operation_slot":
@@ -10571,7 +10666,12 @@ def _evaluate(
                     return None
                 result.add(_Origin(
                     "operation_target",
-                    (profile_sha256, operation.operation_id),
+                    (
+                        profile_sha256,
+                        operation.operation_id,
+                        *address.key[3:],
+                    ),
+                    address.dependencies,
                 ))
             else:
                 return None
@@ -10621,9 +10721,15 @@ def _add_values(
                     return None
                 emit(affine)
             elif not subtract and lhs.kind == "interface_vtable" and rhs.kind == "exact":
-                emit(_Origin("interface_slot", (*lhs.key, int(rhs.key[0]))))
+                emit(_Origin(
+                    "interface_slot",
+                    (lhs.key[0], lhs.key[1], int(rhs.key[0]), *lhs.key[2:]),
+                ))
             elif not subtract and lhs.kind == "exact" and rhs.kind == "interface_vtable":
-                emit(_Origin("interface_slot", (*rhs.key, int(lhs.key[0]))))
+                emit(_Origin(
+                    "interface_slot",
+                    (rhs.key[0], rhs.key[1], int(lhs.key[0]), *rhs.key[2:]),
+                ))
             elif not subtract and lhs.kind == "operation_table" and rhs.kind == "exact":
                 emit(_Origin(
                     "operation_slot", (lhs.key[0], lhs.key[1], int(rhs.key[0]), *lhs.key[2:])
@@ -10902,9 +11008,9 @@ def _method_origins(
         return None
     result: dict[tuple[str, str, int], tuple[str, InterfaceMethod]] = {}
     for origin in origins:
-        if origin.kind != "interface_method":
+        if origin.kind != "interface_method" or len(origin.key) not in {3, 4}:
             return None
-        profile_sha256, interface_id, slot = origin.key
+        profile_sha256, interface_id, slot, *_ = origin.key
         method = inventory.method(
             str(profile_sha256), str(interface_id), int(slot) * 4
         )
@@ -10924,9 +11030,9 @@ def _operation_origins(
         return None
     result: dict[tuple[str, str], tuple[str, ExternalOperation]] = {}
     for origin in origins:
-        if origin.kind != "operation_target":
+        if origin.kind != "operation_target" or len(origin.key) not in {2, 3}:
             return None
-        profile_sha256, operation_id = origin.key
+        profile_sha256, operation_id, *_ = origin.key
         operation = inventory.operation(str(profile_sha256), str(operation_id))
         if operation is None:
             return None
@@ -11855,7 +11961,7 @@ def _refine_guarded_value(
         if origin.kind == "guarded_operation_target":
             relation = _guarded_operation_relation(origin, constraint)
             if relation is True:
-                result.add(_Origin("operation_target", origin.key[:2]))
+                result.add(_Origin("operation_target", origin.key[:3]))
             elif relation is None:
                 result.add(origin)
             continue

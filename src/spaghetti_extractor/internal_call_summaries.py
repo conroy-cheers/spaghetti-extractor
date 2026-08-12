@@ -1645,7 +1645,12 @@ def _analyze_callee(
                 continue
             value = next(iter(values))
             serialized = _serialize_summary_value(value)
-            if serialized is not None:
+            if serialized is not None and not _result_register_is_redundant(
+                register,
+                serialized,
+                checked_preserved=frozenset(checked_preserved),
+                stack_cleanup=stack_cleanup,
+            ):
                 result_registers[register] = serialized
         for location, value in _common_return_memory(
             return_states,
@@ -1728,6 +1733,33 @@ def _analyze_callee(
         **effect_families,
         "blocker_codes": sorted(blockers),
     }
+
+
+def _result_register_is_redundant(
+    register: str,
+    value: Mapping[str, Any],
+    *,
+    checked_preserved: frozenset[str],
+    stack_cleanup: Mapping[str, Any],
+) -> bool:
+    """Keep each checked call-boundary fact in one authoritative family."""
+
+    if register in checked_preserved and value == {
+        "kind": "input_register",
+        "register": register,
+    }:
+        return True
+    return bool(
+        register == "esp"
+        and stack_cleanup.get("status") == "complete"
+        and isinstance(stack_cleanup.get("return_stack_offset"), int)
+        and value
+        == {
+            "kind": "stack_address",
+            "offset": stack_cleanup["return_stack_offset"],
+            "register_terms": [],
+        }
+    )
 
 
 def _summary_effect_families(

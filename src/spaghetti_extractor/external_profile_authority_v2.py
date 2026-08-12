@@ -207,6 +207,9 @@ class ExternalProfileEntry:
                 "entry_key": self.entry_key,
                 "entry_index": self.entry_index,
             })
+        receiver_resource = self.contract.get("receiver_resource")
+        if receiver_resource is not None:
+            result["receiver_resource"] = _canonical_value(receiver_resource)
         return result
 
     def payload(self) -> dict[str, Any]:
@@ -450,10 +453,11 @@ def _profile_contract(
     callback_effect: Any,
     out_pointer_relations: Any = (),
     out_interface_relations: Any = (),
+    receiver_resource: Any = None,
     callback_profile: Any = None,
     source_contract: Any = None,
 ) -> dict[str, Any]:
-    return _canonical_value({
+    result = {
         "identity": identity,
         "contract_id": contract_id,
         "abi_template": abi_template,
@@ -469,7 +473,10 @@ def _profile_contract(
         "out_interface_relations": list(out_interface_relations),
         "callback_profile": callback_profile,
         "source_contract": source_contract,
-    })
+    }
+    if receiver_resource is not None:
+        result["receiver_resource"] = receiver_resource
+    return _canonical_value(result)
 
 
 def _entry(
@@ -684,9 +691,11 @@ def _interface_entries(
                 profile_sha256=profile.sha256,
                 operation=operation,
             )
+            receiver_resource = method.receiver_resource.as_json()
             binding = {
                 "profile_id": profile.profile_id,
                 "profile_sha256": profile.sha256,
+                "receiver_resource": receiver_resource,
             }
             callback_profile = None
             if effects is not None and effects["callback_effect"] == "explicit":
@@ -714,6 +723,7 @@ def _interface_entries(
                     world_effect=None if effects is None else effects["world_effect"],
                     callback_effect=None if effects is None else effects["callback_effect"],
                     out_interface_relations=[value.as_json() for value in method.outputs],
+                    receiver_resource=receiver_resource,
                     callback_profile=callback_profile,
                 ),
                 complete=(
@@ -764,7 +774,10 @@ def _interface_entries(
                         contract_id=operation,
                         abi_template="pe32-stdcall-v1",
                         argument_words=callback_words,
-                        profile_binding=binding,
+                        profile_binding={
+                            "profile_id": profile.profile_id,
+                            "profile_sha256": profile.sha256,
+                        },
                         memory_effect="sameProcessCallbackCallthrough",
                         world_effect="sameProcessCallbackCallthrough",
                         callback_effect="none",
@@ -798,6 +811,17 @@ def _operation_entries(
         )
         environment_payload = environment.as_json()
         environment_id = _sha256(_canonical_bytes(environment_payload))
+        receiver_resource = (
+            None
+            if operation.receiver_resource is None
+            else operation.receiver_resource.as_json()
+        )
+        binding = {
+            "profile_id": profile.profile_id,
+            "profile_sha256": profile.sha256,
+        }
+        if receiver_resource is not None:
+            binding["receiver_resource"] = receiver_resource
         callbacks = [
             selector for selector in selectors[operation.operation_id]
             if isinstance(selector, CallbackSelector)
@@ -815,15 +839,13 @@ def _operation_entries(
                 contract_id=operation.operation_id,
                 abi_template=operation.abi.template,
                 argument_words=operation.argument_words,
-                profile_binding={
-                    "profile_id": profile.profile_id,
-                    "profile_sha256": profile.sha256,
-                },
+                profile_binding=binding,
                 memory_effect=f"external-operation:{environment_id}",
                 memory_footprints=[value.as_json() for value in environment.memory_footprints],
                 world_effect=f"external-operation:{environment_id}",
                 callback_effect="explicit" if callbacks else "none",
                 out_pointer_relations=[value.as_json() for value in operation.output_rules],
+                receiver_resource=receiver_resource,
                 source_contract=environment_payload,
             ),
             complete=environment.status == "complete",

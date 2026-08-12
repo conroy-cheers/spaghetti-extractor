@@ -14,6 +14,9 @@ from spaghetti_extractor.hybrid_authority_builder_v2 import (
     machine_ir_sha256,
     recompute_unit_binding,
 )
+from spaghetti_extractor.indirect_target_dependency_v2 import (
+    build_profile_dispatch_dependency_v2,
+)
 from spaghetti_extractor.hybrid_authority_v2 import (
     AuthorityDependency,
     AuthorityStatus,
@@ -28,6 +31,7 @@ from spaghetti_extractor.hybrid_authority_v2 import (
     IndirectExitBinding,
     IndirectExitCertificate,
     ProfileBinding,
+    ValueFact,
     EventBinding,
     canonical_json_bytes,
 )
@@ -809,6 +813,102 @@ class HybridAuthorityBuilderV2Tests(unittest.TestCase):
         self.assertEqual(
             sum(record.__class__.__name__ == "CallFrameSummary" for record in bundle.records),
             0,
+        )
+
+    def test_profile_dispatch_binds_receiver_value_fact(self) -> None:
+        rows = [_row(outcome={
+            "kind": "indirect_call",
+            "instruction_rva": 0x1000,
+            "target": {"op": "reg", "name": "eax", "width": 32},
+        })]
+        manifest = _manifest(rows)
+        event = EventBinding.parse(manifest["authority_bindings"]["events"][0])
+        profile_sha256 = "6" * 64
+        external_target_row = {
+            "external_protocol": {
+                "kind": "pe32-interface-method",
+                "profile_sha256": profile_sha256,
+                "interface_id": "IThing",
+                "slot": 3,
+            },
+            "abi": {"template": "pe32-stdcall-v1"},
+        }
+        external = CheckedExternalSite(
+            site=event,
+            profile=ProfileBinding("fixture", profile_sha256, "IThing[3]"),
+            transfer_kind="call",
+            target_alternative_index=0,
+            target_alternative_sha256=hashlib.sha256(
+                canonical_json_bytes(external_target_row)
+            ).hexdigest(),
+            alternatives=FiniteAlternatives.of([{
+                "abi": "pe32-stdcall-v1",
+                "arguments": [],
+                "effects": {"memory": "none", "world": "none"},
+            }], maximum=1),
+        )
+        recovery = _recovery(
+            rows,
+            closure="checked_profile_interface_method_inventory",
+            target_rvas=[],
+            external_targets=[external_target_row],
+            origin_count=1,
+            origin_kinds=["interface_operation"],
+            target_origin_witnesses=[{
+                "kind": "interface_method",
+                "key": [profile_sha256, "IThing", 3, "factory:0:IThing"],
+            }],
+            analysis_dependencies=[],
+            failure=None,
+        )
+        recovery["target_set_dependency"] = (
+            build_profile_dispatch_dependency_v2(recovery)
+        )
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=manifest,
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=_interprocedural(recoveries=[recovery]),
+            checked_external_site_rows=[external],
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        self.assertEqual(bundle.status, AuthorityStatus.COMPLETE, bundle.diagnostics)
+        receiver = next(
+            record
+            for record in bundle.records
+            if isinstance(record, ValueFact)
+            and record.location == "indirect_target_receiver_instances"
+        )
+        certificate = next(
+            record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+        )
+        self.assertIn(
+            AuthorityDependency("value_fact", receiver.content_id),
+            certificate.dependencies,
+        )
+
+        del recovery["target_set_dependency"]
+        incomplete = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=manifest,
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=_interprocedural(recoveries=[recovery]),
+            checked_external_site_rows=[external],
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+        self.assertEqual(incomplete.status, AuthorityStatus.INCOMPLETE)
+        self.assertIn(
+            "profile_dispatch_dependency_missing",
+            {issue.code for record in incomplete.records for issue in record.issues},
         )
 
     def test_indirect_certificate_binds_exact_mutable_slot_content_id(self) -> None:

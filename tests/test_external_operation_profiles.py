@@ -286,6 +286,14 @@ class ExternalOperationProfileTests(unittest.TestCase):
 
         method = loaded.operation_for_table_slot("IRoot", 0)
         self.assertIsNotNone(method)
+        assert method is not None
+        self.assertEqual(method.receiver_resource.as_json(), {
+            "argument_index": 0,
+            "view_id": "IRoot",
+            "required_state": "live",
+            "dispatch_slot": 0,
+            "lifecycle_effect": "may_release",
+        })
         selector = next(
             item for item in loaded.selectors if isinstance(item, TableSlotSelector)
         )
@@ -307,6 +315,62 @@ class ExternalOperationProfileTests(unittest.TestCase):
             loaded.operation_for_callback("completion-callback").operation_id,
             "callback",
         )
+
+    def test_explicit_receiver_contract_can_declare_release(self) -> None:
+        payload = profile()
+        payload["operations"][1]["receiver_resource"] = {
+            "argument_index": 0,
+            "view_id": "IRoot",
+            "required_state": "live",
+            "dispatch_slot": 0,
+            "lifecycle_effect": "release",
+        }
+
+        parsed = parse_external_operation_profile(payload)
+
+        receiver = parsed.operations_by_id()["release"].receiver_resource
+        self.assertIsNotNone(receiver)
+        assert receiver is not None
+        self.assertEqual(receiver.lifecycle_effect, "release")
+        self.assertEqual(
+            parsed.as_json()["operations"][1]["receiver_resource"],
+            receiver.as_json(),
+        )
+
+    def test_rejects_receiver_contract_without_exact_table_dispatch(self) -> None:
+        cases: list[tuple[dict[str, object], str]] = []
+        wrong_slot = profile()
+        wrong_slot["operations"][1]["receiver_resource"] = {
+            "argument_index": 0,
+            "view_id": "IRoot",
+            "required_state": "live",
+            "dispatch_slot": 1,
+            "lifecycle_effect": "release",
+        }
+        cases.append((wrong_slot, "differs from its table dispatch"))
+        direct_import = profile()
+        direct_import["operations"][0]["receiver_resource"] = {
+            "argument_index": 0,
+            "view_id": "IRoot",
+            "required_state": "live",
+            "dispatch_slot": 0,
+            "lifecycle_effect": "preserve",
+        }
+        cases.append((direct_import, "requires one exact table-slot selector"))
+        not_live = profile()
+        not_live["operations"][1]["receiver_resource"] = {
+            "argument_index": 0,
+            "view_id": "IRoot",
+            "required_state": "released",
+            "dispatch_slot": 0,
+            "lifecycle_effect": "release",
+        }
+        cases.append((not_live, "must require a live resource"))
+
+        for payload, message in cases:
+            with self.subTest(message=message):
+                with self.assertRaisesRegex(ExternalOperationProfileError, message):
+                    parse_external_operation_profile(payload)
 
     def test_profile_round_trip_is_typed_and_canonical(self) -> None:
         first = parse_external_operation_profile(profile())
@@ -345,6 +409,17 @@ class ExternalOperationProfileTests(unittest.TestCase):
         payload["table_views"][1]["access"] = "descriptor_chain"
         with self.assertRaisesRegex(ExternalOperationProfileError, "access"):
             parse_external_operation_profile(payload)
+
+    def test_direct_table_dispatch_does_not_invent_a_receiver(self) -> None:
+        payload = profile()
+        payload["table_views"][1]["access"] = "direct_table"
+        payload["selectors"][1]["view_id"] = "IAlternate"
+
+        parsed = parse_external_operation_profile(payload)
+
+        self.assertIsNone(
+            parsed.operations_by_id()["release"].receiver_resource
+        )
 
     def test_environment_contract_is_standalone_and_has_no_operation_identity(self) -> None:
         payload = environment_contract(
@@ -665,6 +740,20 @@ class ExternalOperationProfileTests(unittest.TestCase):
         self.assertIsNotNone(method)
         assert method is not None
         self.assertEqual(method.argument_words, 2)
+        self.assertEqual(method.receiver_resource.as_json(), {
+            "argument_index": 0,
+            "view_id": "IRoot",
+            "required_state": "live",
+            "dispatch_slot": 1,
+            "lifecycle_effect": "preserve",
+        })
+        release = converted.operation_for_table_slot("IRoot", 0)
+        self.assertIsNotNone(release)
+        assert release is not None
+        self.assertEqual(
+            release.receiver_resource.lifecycle_effect,
+            "may_release",
+        )
         self.assertEqual(converted.views_by_id()["IRoot"].table, "IRootVtbl")
         self.assertEqual(converted.as_json()["format"], EXTERNAL_OPERATION_PROFILE_FORMAT)
 

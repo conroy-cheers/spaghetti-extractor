@@ -147,6 +147,13 @@ def _interface_profile(path: Path) -> Path:
 def _interface_site(*, profile_sha256: str) -> dict:
     effects = same_library_call_through_effect_json()
     argument = {"op": "input", "name": "this", "width": 32}
+    receiver_resource = {
+        "argument_index": 0,
+        "view_id": "IThing",
+        "required_state": "live",
+        "dispatch_slot": 0,
+        "lifecycle_effect": "may_release",
+    }
     return {
         "format": "stage-b-checked-external-site-contract-v1",
         "identity": {
@@ -176,6 +183,7 @@ def _interface_site(*, profile_sha256: str) -> dict:
         "profile_binding": {
             "profile_id": "interface-profile",
             "profile_sha256": profile_sha256,
+            "receiver_resource": receiver_resource,
         },
         "result_register_relations": [],
         "memory_effect": effects["memory_effect"],
@@ -258,6 +266,61 @@ class ExternalProfileAuthorityV2Tests(unittest.TestCase):
             self.assertEqual(replay.status, "complete", replay.message)
             assert replay.entry is not None
             self.assertEqual(replay.entry.family, "interface_method")
+            self.assertEqual(
+                replay.entry.contract["receiver_resource"],
+                replay.entry.profile_binding["receiver_resource"],
+            )
+
+    def test_receiver_resource_mismatch_is_violated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = _interface_profile(Path(temporary) / "interface.json")
+            authority = build_external_profile_authority_v2([profile])
+            site = _interface_site(
+                profile_sha256=hashlib.sha256(profile.read_bytes()).hexdigest()
+            )
+            site["profile_binding"]["receiver_resource"][
+                "lifecycle_effect"
+            ] = "preserve"
+
+            replay = authority.replay_lookup(site)
+
+            self.assertEqual(replay.status, "violated")
+            self.assertEqual(
+                replay.reason_code, "external_profile_contract_mismatch"
+            )
+            self.assertIn("profile_binding", replay.message or "")
+
+    def test_edited_receiver_index_fails_exact_byte_replay(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            profile = _interface_profile(Path(temporary) / "interface.json")
+            payload = copy.deepcopy(
+                build_external_profile_authority_v2([profile]).payload()
+            )
+            entry = next(
+                item for item in payload["entries"]
+                if item["family"] == "interface_method"
+            )
+            entry["contract"]["receiver_resource"][
+                "lifecycle_effect"
+            ] = "preserve"
+            entry["contract"]["profile_binding"]["receiver_resource"][
+                "lifecycle_effect"
+            ] = "preserve"
+            entry_body = {
+                key: value for key, value in entry.items() if key != "entry_id"
+            }
+            entry["entry_id"] = _canonical_sha256(entry_body)
+            authority_body = {
+                key: value for key, value in payload.items()
+                if key != "authority_id"
+            }
+            payload["authority_id"] = _canonical_sha256(authority_body)
+
+            with self.assertRaisesRegex(
+                ExternalProfileAuthorityV2Error,
+                "do not replay from their embedded exact bytes",
+            ):
+                parse_external_profile_authority_v2(payload)
 
     def test_profile_contract_mismatch_is_violated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -379,6 +442,22 @@ class ExternalProfileAuthorityV2Tests(unittest.TestCase):
             entry.artifact_sha256 == authority.artifacts[0].artifact_sha256
             for entry in authority.entries
         ))
+        release = next(
+            entry for entry in authority.entries
+            if entry.family == "external_operation"
+            and entry.contract["contract_id"] == "release"
+        )
+        self.assertEqual(release.contract["receiver_resource"], {
+            "argument_index": 0,
+            "view_id": "IRoot",
+            "required_state": "live",
+            "dispatch_slot": 0,
+            "lifecycle_effect": "may_release",
+        })
+        self.assertEqual(
+            release.profile_binding["receiver_resource"],
+            release.contract["receiver_resource"],
+        )
 
 
 if __name__ == "__main__":

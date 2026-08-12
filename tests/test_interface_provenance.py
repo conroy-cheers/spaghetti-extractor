@@ -28,6 +28,9 @@ from spaghetti_extractor.external_interface_profiles import (
 )
 from spaghetti_extractor.control_analysis_v2 import exact_control_inventory_v2
 from spaghetti_extractor.import_abi import SelectedImportABI
+from spaghetti_extractor.indirect_target_dependency_v2 import (
+    has_profile_dispatch_dependency_v2,
+)
 from spaghetti_extractor.interface_provenance import (
     INTERFACE_PROVENANCE_FORMAT,
     InterfaceTransferCache,
@@ -384,9 +387,53 @@ class InterfaceProvenanceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["format"], INTERFACE_PROVENANCE_FORMAT)
+        self.assertTrue(
+            has_profile_dispatch_dependency_v2(result["resolutions"][0])
+        )
         self.assertGreater(
             result["counts"]["transfer_requests"],
             result["counts"]["transfer_evaluations"],
+        )
+
+    def test_interface_instances_retain_distinct_producer_identities(self) -> None:
+        units = [
+            factory_unit("factory-left", 0x1100),
+            factory_unit("factory-right", 0x1110),
+            unit(
+                "object",
+                0x1200,
+                writes=[{"register": "eax", "value": load(const(SLOT))}],
+            ),
+            unit(
+                "vtable",
+                0x1300,
+                writes=[{"register": "ecx", "value": load(reg("eax"))}],
+            ),
+            indirect_call(),
+        ]
+        result = self._run(
+            units,
+            [
+                edge("factory-left", "object"),
+                edge("factory-right", "object"),
+                edge("object", "vtable"),
+                edge("vtable", "call"),
+            ],
+            roots=["factory-left", "factory-right"],
+        )
+
+        resolution = result["resolutions"][0]
+        self.assertEqual(resolution["status"], "recovered", resolution)
+        self.assertEqual(resolution["origin_count"], 2)
+        self.assertEqual(
+            {
+                tuple(witness["key"][-1:])
+                for witness in resolution["target_origin_witnesses"]
+            },
+            {
+                ("factory-left:0:factory:CreateThing",),
+                ("factory-right:0:factory:CreateThing",),
+            },
         )
         self.assertEqual(
             result["counts"]["transfer_cache_hits"],
@@ -1561,7 +1608,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
         interface_value = frozenset({
             ValueOrigin(
                 "interface_object",
-                (self.profile.sha256, "IThing"),
+                (self.profile.sha256, "IThing", "summary:factory-result"),
             )
         })
 
@@ -1587,6 +1634,10 @@ class InterfaceProvenanceTests(unittest.TestCase):
         )
 
         self.assertEqual(result["resolutions"][0]["status"], "recovered", result)
+        self.assertEqual(
+            result["resolutions"][0]["target_origin_witnesses"][0]["key"][-1],
+            "summary:factory-result",
+        )
         self.assertEqual(
             result["resolutions"][0]["analysis_dependencies"],
             [
@@ -4750,7 +4801,11 @@ class InterfaceProvenanceTests(unittest.TestCase):
             "argument_index": 0,
             "origins": [{
                 "kind": "interface_object",
-                "key": [self.profile.sha256, "IThing"],
+                "key": [
+                    self.profile.sha256,
+                    "IThing",
+                    "callback:call:0:argument:0",
+                ],
             }],
         }])
 
