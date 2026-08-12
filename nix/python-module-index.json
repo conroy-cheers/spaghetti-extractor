@@ -664,6 +664,7 @@
         "spaghetti_extractor.checked_memory_address_domain_v2",
         "spaghetti_extractor.launch_memory_ranges_v2",
         "spaghetti_extractor.memory_range_invariants_v2",
+        "spaghetti_extractor.provenance_domain",
         "spaghetti_extractor.stack_range_analysis_v2"
       ],
       "path": "src/spaghetti_extractor/global_slot_analysis_v2.py"
@@ -881,6 +882,7 @@
         "spaghetti_extractor.interprocedural_analysis",
         "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_import_profiles",
+        "spaghetti_extractor.memory_range_invariants_v2",
         "spaghetti_extractor.stack_range_analysis_v2",
         "spaghetti_extractor.stage_binary",
         "spaghetti_extractor.static_indirect_replay_v2"
@@ -1463,7 +1465,8 @@
         "spaghetti_extractor.call_site_effects",
         "spaghetti_extractor.checked_memory_access_v2",
         "spaghetti_extractor.control_analysis_v2",
-        "spaghetti_extractor.internal_call_summaries"
+        "spaghetti_extractor.internal_call_summaries",
+        "spaghetti_extractor.provenance_domain"
       ],
       "path": "src/spaghetti_extractor/stack_range_analysis_v2.py"
     },

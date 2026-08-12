@@ -27,6 +27,7 @@ from .checked_memory_access_v2 import (
 )
 from .control_analysis_v2 import exact_control_inventory_v2
 from .internal_call_summaries import checked_summary_preserved_registers
+from .provenance_domain import signed_stack_location_offset
 
 
 STACK_RANGE_ANALYSIS_V2_FORMAT = "spaghetti-extractor-stack-range-analysis-v2"
@@ -758,7 +759,7 @@ def _call_stack_write_spatial_facts(
         effect_payload = effect.as_json()
         effect_sha256 = canonical_sha256(effect_payload)
         for write_index, span in enumerate(effect.memory_writes):
-            offset = _signed_stack_origin_offset(span.base)
+            offset = signed_stack_location_offset(span.base)
             width = span.size
             if (
                 offset is None
@@ -803,19 +804,6 @@ def _call_stack_write_spatial_facts(
                 core, prefix="checked-call-stack-write-spatial-v2:"
             ))
     return result
-
-
-def _signed_stack_origin_offset(origin: Any) -> int | None:
-    if origin.kind != "stack_location" or len(origin.key) != 1:
-        return None
-    raw = origin.key[0]
-    if (
-        not isinstance(raw, int)
-        or isinstance(raw, bool)
-        or not 0 <= raw < _UINT32
-    ):
-        return None
-    return raw if raw < (1 << 31) else raw - _UINT32
 
 
 def _seal_spatial_fact(

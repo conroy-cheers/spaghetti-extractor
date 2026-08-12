@@ -25,6 +25,7 @@ def interprocedural_authority_signature_v2(
     call_summaries: Mapping[str, Any],
     recovered_targets: Sequence[Mapping[str, Any]],
     memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    memory_address_ranges: Sequence[Mapping[str, Any]] = (),
     memory_address_domains: Sequence[Mapping[str, Any]] = (),
     call_site_effects: Sequence[Mapping[str, Any]] = (),
     normal_call_abi_premise: Mapping[str, Any] | None = None,
@@ -64,6 +65,10 @@ def interprocedural_authority_signature_v2(
                 }
                 for row in memory_access_facts
             ),
+            key=lambda row: str(row.get("id", "")),
+        ),
+        "memory_address_ranges": sorted(
+            (dict(row) for row in memory_address_ranges),
             key=lambda row: str(row.get("id", "")),
         ),
         "memory_address_domains": sorted(

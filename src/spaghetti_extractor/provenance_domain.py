@@ -146,6 +146,27 @@ def origin_concrete_value(origin: ValueOrigin) -> int | None:
     return None
 
 
+def signed_stack_location_offset(origin: ValueOrigin) -> int | None:
+    """Return the signed IA-32 offset carried by a stack-location origin.
+
+    Older checked artifacts encode negative offsets as unsigned 32-bit words,
+    while interprocedural summaries emit signed Python integers.  They denote
+    the same address calculation and must have one interpretation before range
+    and alias checks consume them.
+    """
+
+    if origin.kind != "stack_location" or len(origin.key) != 1:
+        return None
+    raw = origin.key[0]
+    if not isinstance(raw, int) or isinstance(raw, bool):
+        return None
+    if -(1 << 31) <= raw < (1 << 31):
+        return raw
+    if (1 << 31) <= raw < (1 << 32):
+        return raw - (1 << 32)
+    return None
+
+
 def finite_value(origins: Iterable[ValueOrigin], budget: int) -> FiniteValue:
     values = frozenset(origins)
     return values if values and len(values) <= budget else None

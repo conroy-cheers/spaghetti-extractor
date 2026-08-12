@@ -475,6 +475,7 @@ def analyze_interprocedural_control(
     ] = (),
     checked_stack_entry_offsets: Mapping[str, Sequence[int]] | None = None,
     checked_nonimage_stack_units: Sequence[str] = (),
+    checked_memory_address_ranges: Sequence[Mapping[str, Any]] = (),
     normal_call_abi_premise: NormalCallABIPremise | None = None,
     finite_value_budget: int = 32,
     stack_entry_offset_budget: int | None = None,
@@ -590,6 +591,7 @@ def analyze_interprocedural_control(
             operation_profiles=operation_profiles,
             callable_profiles=callable_profiles,
             internal_function_contracts=internal_function_contracts or {},
+            checked_memory_address_ranges=checked_memory_address_ranges,
             normal_call_abi_premise=normal_call_abi_premise,
             finite_value_budget=finite_value_budget,
             stack_entry_offset_budget=effective_stack_entry_offset_budget,
@@ -633,6 +635,7 @@ def analyze_interprocedural_control(
         global_slot_invariants=normalized_global_slots,
         checked_stack_entry_offsets=checked_stack_entry_offsets or {},
         checked_nonimage_stack_units=frozenset(checked_nonimage_stack_units),
+        checked_memory_address_ranges=checked_memory_address_ranges,
         writable_image_ranges=normalized_writable_ranges,
         normal_call_abi_premise=normal_call_abi_premise,
         allow_bootstrap=True,
@@ -667,6 +670,7 @@ def analyze_interprocedural_control(
         global_slot_invariants=normalized_global_slots,
         checked_stack_entry_offsets=checked_stack_entry_offsets or {},
         checked_nonimage_stack_units=frozenset(checked_nonimage_stack_units),
+        checked_memory_address_ranges=checked_memory_address_ranges,
         writable_image_ranges=normalized_writable_ranges,
         normal_call_abi_premise=normal_call_abi_premise,
         allow_bootstrap=False,
@@ -730,6 +734,7 @@ def analyze_interprocedural_control(
             checked_nonimage_stack_units=frozenset(
                 checked_nonimage_stack_units
             ),
+            checked_memory_address_ranges=checked_memory_address_ranges,
             writable_image_ranges=normalized_writable_ranges,
             normal_call_abi_premise=normal_call_abi_premise,
             allow_bootstrap=False,
@@ -873,6 +878,7 @@ def analyze_interprocedural_control(
         call_summaries=authority_pass.summaries,
         recovered_targets=authorizing_recoveries,
         memory_access_facts=prepared_memory_access_facts,
+        memory_address_ranges=checked_memory_address_ranges,
         memory_address_domains=prepared_memory_address_domains,
         call_site_effects=_call_site_effect_rows(
             authority_pass.operation_provenance
@@ -899,6 +905,9 @@ def analyze_interprocedural_control(
     operation_provenance["checked_memory_access_facts"] = list(
         checked_memory_access_facts
     )
+    operation_provenance["checked_memory_address_ranges"] = [
+        copy.deepcopy(dict(row)) for row in checked_memory_address_ranges
+    ]
     operation_provenance["checked_memory_address_domains"] = list(
         checked_memory_address_domains
     )
@@ -1028,6 +1037,9 @@ def analyze_interprocedural_control(
         "round_bound_kind": "transfer_evaluation_resource_limit",
         "typed_fact_count": len(authority_pass.facts),
         "checked_memory_access_fact_count": len(checked_memory_access_facts),
+        "checked_memory_address_range_count": len(
+            checked_memory_address_ranges
+        ),
         "checked_memory_address_domain_count": len(
             checked_memory_address_domains
         ),
@@ -1797,6 +1809,7 @@ def _run_typed_pass(
     global_slot_invariants: Sequence[GlobalSlotInvariant],
     checked_stack_entry_offsets: Mapping[str, Sequence[int]],
     checked_nonimage_stack_units: frozenset[str],
+    checked_memory_address_ranges: Sequence[Mapping[str, Any]],
     writable_image_ranges: tuple[tuple[int, int], ...],
     normal_call_abi_premise: NormalCallABIPremise | None,
     progress: Callable[[str, Mapping[str, Any]], None] | None,
@@ -1837,6 +1850,17 @@ def _run_typed_pass(
     interface_transfer_cache = workspace.interface_transfers
     declared_summaries = internal_function_contracts if allow_bootstrap else {}
     declared_summaries_key = _freeze_value(declared_summaries)
+    checked_memory_address_ranges_by_event = {
+        f"event:{row['unit_id']}:{row['event_index']}": row
+        for row in checked_memory_address_ranges
+    }
+    if len(checked_memory_address_ranges_by_event) != len(
+        checked_memory_address_ranges
+    ):
+        raise ValueError("checked memory-address ranges duplicate an exact event")
+    checked_memory_address_ranges_key = _freeze_value(
+        list(checked_memory_address_ranges)
+    )
     _progress(progress, "pass_started", {
         "pass_kind": pass_kind,
         "units": len(units),
@@ -1892,6 +1916,7 @@ def _run_typed_pass(
             recoveries_key=input_recoveries,
             call_site_effects_key=input_call_site_effects,
             memory_access_facts_key=input_memory_access_facts,
+            memory_address_ranges_key=checked_memory_address_ranges_key,
             declared_summaries_key=declared_summaries_key,
         )
         summaries = workspace.call_summaries.get(summary_key)
@@ -1920,6 +1945,9 @@ def _run_typed_pass(
                 max_value_alternatives=finite_value_budget,
                 _component_cache=workspace.call_summary_components,
                 _validated_memory_access_facts=validated_memory_access_facts,
+                _validated_memory_address_ranges=(
+                    checked_memory_address_ranges_by_event
+                ),
             )
             workspace.call_summaries.put(summary_key, summaries)
         _progress(progress, "call_summaries_derived", {
@@ -2293,6 +2321,7 @@ def _run_typed_pass(
                 call_frame_hypotheses=next_call_frame_hypotheses,
                 call_site_effects=next_call_site_effects,
                 prepared_memory_access_facts=next_memory_access_facts,
+                checked_memory_address_ranges=checked_memory_address_ranges,
                 normal_call_abi_premise=normal_call_abi_premise,
                 finite_value_budget=finite_value_budget,
             )
@@ -2383,6 +2412,7 @@ def _run_typed_pass(
         call_frame_hypotheses=call_frame_hypotheses,
         call_site_effects=call_site_effects,
         prepared_memory_access_facts=prepared_memory_access_facts,
+        checked_memory_address_ranges=checked_memory_address_ranges,
         normal_call_abi_premise=normal_call_abi_premise,
         finite_value_budget=finite_value_budget,
     )
@@ -2434,6 +2464,7 @@ def _materialize_typed_authority_graph(
     call_frame_hypotheses: Sequence[PreservedRegisterHypothesis],
     call_site_effects: Sequence[Mapping[str, Any]],
     prepared_memory_access_facts: Sequence[Mapping[str, Any]],
+    checked_memory_address_ranges: Sequence[Mapping[str, Any]],
     normal_call_abi_premise: NormalCallABIPremise | None,
     finite_value_budget: int,
 ) -> _TypedAuthorityGraph:
@@ -2455,6 +2486,7 @@ def _materialize_typed_authority_graph(
         call_frame_hypotheses=call_frame_hypotheses,
         call_site_effects=call_site_effects,
         prepared_memory_access_facts=prepared_memory_access_facts,
+        checked_memory_address_ranges=checked_memory_address_ranges,
         normal_call_abi_premise=normal_call_abi_premise,
         finite_value_budget=finite_value_budget,
     )
@@ -2472,6 +2504,9 @@ def _materialize_typed_authority_graph(
         finite_value_budget=finite_value_budget,
         memory_access_fact_ids=frozenset(
             str(row["id"]) for row in prepared_memory_access_facts
+        ),
+        memory_address_range_fact_ids=frozenset(
+            str(row["id"]) for row in checked_memory_address_ranges
         ),
     )
     nodes = set(proposals)
@@ -3011,6 +3046,7 @@ def _call_summary_input_key(
     recoveries_key: Hashable,
     call_site_effects_key: Hashable,
     memory_access_facts_key: Hashable,
+    memory_address_ranges_key: Hashable,
     declared_summaries_key: Hashable,
 ) -> Hashable:
     """Exact changing inputs to one whole call-summary derivation."""
@@ -3021,6 +3057,7 @@ def _call_summary_input_key(
         recoveries_key,
         call_site_effects_key,
         memory_access_facts_key,
+        memory_address_ranges_key,
         declared_summaries_key,
     )
 
@@ -5153,6 +5190,7 @@ def _typed_proposals(
     call_frame_hypotheses: Sequence[PreservedRegisterHypothesis] = (),
     call_site_effects: Sequence[Mapping[str, Any]] = (),
     prepared_memory_access_facts: Sequence[Mapping[str, Any]] = (),
+    checked_memory_address_ranges: Sequence[Mapping[str, Any]] = (),
     normal_call_abi_premise: NormalCallABIPremise | None = None,
     finite_value_budget: int,
 ) -> dict[str, _NodeState]:
@@ -5253,6 +5291,13 @@ def _typed_proposals(
         if not isinstance(identity, str) or identity in result:
             raise ValueError(
                 "prepared memory-access fact has an invalid or duplicate node ID"
+            )
+        result[identity] = _memory_access_fact_state()
+    for row in checked_memory_address_ranges:
+        identity = row.get("id") if isinstance(row, Mapping) else None
+        if not isinstance(identity, str) or identity in result:
+            raise ValueError(
+                "checked memory-address range has an invalid or duplicate node ID"
             )
         result[identity] = _memory_access_fact_state()
     return result
@@ -5755,6 +5800,7 @@ def _derive_dependency_edges(
     normal_call_abi_premise: NormalCallABIPremise | None = None,
     finite_value_budget: int = 32,
     memory_access_fact_ids: frozenset[str] = frozenset(),
+    memory_address_range_fact_ids: frozenset[str] = frozenset(),
 ) -> frozenset[tuple[str, str]]:
     """Derive provider-to-consumer dependencies from represented behavior."""
 
@@ -5896,7 +5942,9 @@ def _derive_dependency_edges(
             continue
         consumer = _summary_node(root)
         for dependency in raw_dependencies:
-            if dependency in memory_access_fact_ids:
+            if dependency in (
+                memory_access_fact_ids | memory_address_range_fact_ids
+            ):
                 dependencies.add((str(dependency), consumer))
 
     # Target provenance carries the exact summaries used to preserve or
@@ -7011,6 +7059,7 @@ def _interprocedural_workspace_context_key(
     operation_profiles: Sequence[ExternalOperationProfile],
     callable_profiles: Sequence[CallableExternalProfile],
     internal_function_contracts: Mapping[str, Mapping[str, Any]],
+    checked_memory_address_ranges: Sequence[Mapping[str, Any]],
     normal_call_abi_premise: NormalCallABIPremise | None,
     finite_value_budget: int,
     stack_entry_offset_budget: int,
@@ -7062,6 +7111,7 @@ def _interprocedural_workspace_context_key(
             for profile in callable_profiles
         )),
         _freeze_value(internal_function_contracts),
+        _freeze_value(list(checked_memory_address_ranges)),
         (
             None
             if normal_call_abi_premise is None
@@ -7102,6 +7152,8 @@ def _dependency_inventory(
                     if node_id.startswith("global_slot_invariant:")
                     else "normal_call_abi_premise"
                     if node_id.startswith("normal-call-abi-premise:")
+                    else "checked_memory_address_range"
+                    if node_id.startswith("memory-address-range:")
                     else "indirect_exit"
                 ),
                 "status": state.status,

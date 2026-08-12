@@ -51,6 +51,7 @@ from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
 from .launch_memory_ranges_v2 import (
     validate_launch_memory_range_analysis_v2,
 )
+from .provenance_domain import signed_stack_location_offset
 from .stack_range_analysis_v2 import (
     CHECKED_CALL_STACK_WRITE_SPATIAL_FACT_V2_FORMAT,
     CHECKED_STACK_ORIGIN_SPATIAL_FACT_V2_FORMAT,
@@ -1991,7 +1992,7 @@ def _call_write_spatial_starts(
         raise ValueError("call-write spatial fact lacks a checked call effect")
     span = effect.memory_writes[write_index]
     width = span.size
-    offset = _signed_stack_origin_offset(span.base)
+    offset = signed_stack_location_offset(span.base)
     if (
         raw.get("memory_kind") != "write"
         or not isinstance(width, int)
@@ -2021,19 +2022,6 @@ def _call_write_spatial_starts(
         width,
         _call_memory_write_node(unit_id, event_index, write_index),
     )
-
-
-def _signed_stack_origin_offset(origin: Any) -> int | None:
-    if origin.kind != "stack_location" or len(origin.key) != 1:
-        return None
-    raw = origin.key[0]
-    if (
-        not isinstance(raw, int)
-        or isinstance(raw, bool)
-        or not 0 <= raw < _UINT32_LIMIT
-    ):
-        return None
-    return raw if raw < (1 << 31) else raw - _UINT32_LIMIT
 
 
 def _spatial_fact_node(raw: Mapping[str, Any]) -> str:
@@ -2737,9 +2725,44 @@ def _classify_access(
         return _Access(
             "alias", (identity,), "checked_address_range_may_overlap_slot"
         )
+    if event.raw.get("source") == "interprocedural_call_memory_frame":
+        origin_access = _call_frame_origin_classification(
+            event.address,
+            width=event.width,
+            slot_address=slot_address,
+        )
+        if origin_access is not None:
+            return origin_access
     if isinstance(event.address, Mapping):
         return _Access("alias", reason="symbolic_address_may_alias_slot")
     return _Access("unknown", reason="memory_address_unknown")
+
+
+def _call_frame_origin_classification(
+    value: Any,
+    *,
+    width: int,
+    slot_address: int,
+) -> _Access | None:
+    """Classify a checked interprocedural write-span origin for one PE slot."""
+
+    if not isinstance(value, Mapping) or value.get("kind") != "absolute_span":
+        return None
+    key = value.get("key")
+    if (
+        not isinstance(key, list)
+        or len(key) != 2
+        or not all(_u32(item) for item in key)
+    ):
+        return None
+    minimum, maximum_start = (int(item) for item in key)
+    if minimum > maximum_start or maximum_start + width > _UINT32_LIMIT:
+        return None
+    if width == 4 and minimum == maximum_start == slot_address:
+        return _Access("exact")
+    if maximum_start + width <= slot_address or slot_address + 4 <= minimum:
+        return _Access("disjoint")
+    return _Access("alias", reason="checked_absolute_span_may_overlap_slot")
 
 
 def _checked_domain_classification(

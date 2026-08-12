@@ -973,6 +973,11 @@ def _interprocedural_payload(
         if isinstance(operation_provenance, Mapping)
         else []
     )
+    memory_address_ranges = (
+        operation_provenance.get("checked_memory_address_ranges", [])
+        if isinstance(operation_provenance, Mapping)
+        else []
+    )
     memory_address_domains = (
         operation_provenance.get("checked_memory_address_domains", [])
         if isinstance(operation_provenance, Mapping)
@@ -1057,6 +1062,8 @@ def _interprocedural_payload(
         and all(isinstance(row, Mapping) for row in recoveries)
         and isinstance(memory_access_facts, list)
         and all(isinstance(row, Mapping) for row in memory_access_facts)
+        and isinstance(memory_address_ranges, list)
+        and all(isinstance(row, Mapping) for row in memory_address_ranges)
         and isinstance(memory_address_domains, list)
         and all(isinstance(row, Mapping) for row in memory_address_domains)
         and isinstance(call_site_effects, list)
@@ -1119,6 +1126,7 @@ def _interprocedural_payload(
             call_summaries=summaries,
             recovered_targets=recoveries,
             memory_access_facts=memory_access_facts,
+            memory_address_ranges=memory_address_ranges,
             memory_address_domains=memory_address_domains,
             call_site_effects=call_site_effects,
             normal_call_abi_premise=(

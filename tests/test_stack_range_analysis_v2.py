@@ -346,6 +346,40 @@ class StackRangeAnalysisV2Tests(unittest.TestCase):
                 call_site_effects=[effect],
             )
 
+    def test_signed_call_summary_stack_write_receives_spatial_fact(self) -> None:
+        call = {
+            "kind": "external_call",
+            "register_inputs": {"esp": _reg("esp")},
+            "abi_contract": {
+                "template": "pe32-cdecl-v1",
+                "argument_words": 0,
+                "disposition": "returns",
+            },
+        }
+        unit = _unit(
+            "call",
+            0x1000,
+            stack_delta=None,
+            external_events=[call],
+        )
+        effect = _call_effect(
+            "call",
+            transfer_kind="external_call",
+            cleanup_bytes=0,
+            memory_writes=[{
+                "base": {"kind": "stack_location", "key": [-36]},
+                "size": 4,
+            }],
+        )
+
+        result = _derive([unit], call_site_effects=[effect])
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertEqual(len(result["checked_spatial_facts"]), 1)
+        self.assertEqual(
+            result["checked_spatial_facts"][0]["address_frame_offset"], -36
+        )
+
     def test_call_summary_stack_write_requires_checked_frame_and_span(
         self,
     ) -> None:

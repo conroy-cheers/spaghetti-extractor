@@ -836,6 +836,123 @@ class GlobalSlotAnalysisV2Tests(unittest.TestCase):
         self.assertEqual(rejected["status"], "violated")
         self.assertIn("checked_memory_spatial_fact_invalid", _codes(rejected))
 
+    def test_signed_call_summary_stack_write_excludes_image_slot(self) -> None:
+        call = _unit(
+            "call",
+            0x1000,
+            [],
+            external_events=[{
+                "kind": "external_call",
+                "instruction_rva": 0x1000,
+                "register_inputs": {"esp": _reg("esp")},
+            }],
+        )
+        units = [call]
+        graph = _graph(units)
+        launch = {
+            "assumptions": {
+                "initial_stack": {
+                    "contract": "private-non-image-stack-range-v2",
+                    "mapped_separately_from_image": True,
+                    "minimum_accessible_bytes_below": 0x1000,
+                    "minimum_accessible_bytes_above": 0x1000,
+                }
+            }
+        }
+        effect = _call_effect(
+            "call",
+            memory_writes=[{
+                "base": {"kind": "stack_location", "key": [-36]},
+                "size": 4,
+            }],
+        )
+        stack = derive_stack_range_analysis_v2(
+            units=units,
+            graph=graph,
+            launch_assumptions=launch,
+            pe_sha256=PE_SHA256,
+            machine_ir_sha256=machine_ir_sha256(units),
+            image_base=IMAGE_BASE,
+            size_of_image=IMAGE_SIZE,
+            call_site_effects=[effect],
+        )
+
+        result = _analyze(
+            units,
+            graph,
+            launch_initial_values={SLOT: 0},
+            call_site_effects=[effect],
+            checked_spatial_facts=stack["checked_spatial_facts"],
+            range_binding=stack["binding"],
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertEqual(
+            result["global_slot_evidence"][0]["reachable_write_inventory"][
+                "aliasing_writes"
+            ],
+            [],
+        )
+
+    def test_checked_call_absolute_span_is_compared_with_image_slot(self) -> None:
+        call = _unit(
+            "call",
+            0x1000,
+            [],
+            external_events=[{
+                "kind": "external_call",
+                "instruction_rva": 0x1000,
+                "register_inputs": {"esp": _reg("esp")},
+            }],
+        )
+        read = _unit("read", 0x1004, [_read()])
+        units = [call, read]
+        graph = _graph(units, edges=[("call", "read")])
+        disjoint = _call_effect(
+            "call",
+            memory_writes=[{
+                "base": {
+                    "kind": "absolute_span",
+                    "key": [SLOT + 0x100, SLOT + 0x140],
+                },
+                "size": 4,
+            }],
+        )
+
+        result = _analyze(
+            units,
+            graph,
+            launch_initial_values={SLOT: 0},
+            call_site_effects=[disjoint],
+        )
+
+        self.assertEqual(result["status"], "complete", result["issues"])
+        self.assertEqual(
+            result["global_slot_evidence"][0]["reachable_write_inventory"][
+                "aliasing_writes"
+            ],
+            [],
+        )
+
+        overlapping = _call_effect(
+            "call",
+            memory_writes=[{
+                "base": {
+                    "kind": "absolute_span",
+                    "key": [SLOT - 8, SLOT + 8],
+                },
+                "size": 4,
+            }],
+        )
+        tainted = _analyze(
+            units,
+            graph,
+            launch_initial_values={SLOT: 0},
+            call_site_effects=[overlapping],
+        )
+        self.assertEqual(tainted["status"], "incomplete")
+        self.assertIn("global_slot_aliasing_write_taint", _codes(tainted))
+
     def test_checked_fs_launch_range_excludes_image_slot(self) -> None:
         fs_address = {"op": "fs_base", "width": 32}
         units = [_unit(

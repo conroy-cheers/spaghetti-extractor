@@ -34,6 +34,7 @@ from .provenance_domain import (
     ValueOrigin,
     origin_concrete_value,
     parse_value_origin,
+    signed_stack_location_offset,
 )
 
 
@@ -163,9 +164,9 @@ class _CallFrame:
 
 @dataclass(frozen=True)
 class _MemoryWriteFootprint:
-    fact_id: str
+    fact_ids: tuple[str, ...]
     stack_offsets: tuple[int, ...]
-    has_non_stack_alternative: bool
+    non_stack_origins: tuple[ValueOrigin, ...]
 
 
 @dataclass(frozen=True)
@@ -262,6 +263,9 @@ def derive_internal_call_preservation_summaries(
     _validated_memory_access_facts: Mapping[
         str, PreparedMemoryAccessFact
     ] | None = None,
+    _validated_memory_address_ranges: Mapping[
+        str, Mapping[str, Any]
+    ] | None = None,
 ) -> dict[str, Any]:
     """Propose parametric frame/return facts for structural call targets.
 
@@ -303,13 +307,13 @@ def derive_internal_call_preservation_summaries(
         raise ValueError(
             "prepared memory-access facts require an exact binary binding"
         )
-    if prepared_memory_access_facts and (
+    if (prepared_memory_access_facts or _validated_memory_address_ranges) and (
         image_base is None
         or image_size is None
         or not _valid_image_range(image_base, image_size)
     ):
         raise ValueError(
-            "prepared memory-access facts require a bounded PE image range"
+            "checked memory footprints require a bounded PE image range"
         )
     if _validated_memory_access_facts is not None:
         if any(
@@ -337,6 +341,11 @@ def derive_internal_call_preservation_summaries(
     )
     write_footprints = _memory_write_footprints(
         prepared_by_event,
+        checked_address_ranges=(
+            {}
+            if _validated_memory_address_ranges is None
+            else _validated_memory_address_ranges
+        ),
         by_id=by_id,
         recovered_external_calls=recovered_external_calls,
         import_abis=import_abis,
@@ -942,9 +951,16 @@ def _component_cache_inputs(
     for (source, event_index), footprint in memory_write_footprints.items():
         footprints_by_unit[source].append((
             event_index,
-            footprint.fact_id,
+            footprint.fact_ids,
             footprint.stack_offsets,
-            footprint.has_non_stack_alternative,
+            tuple(
+                (
+                    origin.kind,
+                    _freeze_cache_value(origin.key),
+                    origin.dependencies,
+                )
+                for origin in footprint.non_stack_origins
+            ),
         ))
     return _ComponentCacheInputs(
         normal_edges={
@@ -2514,6 +2530,7 @@ def _recovered_external_identities(
 def _memory_write_footprints(
     facts: Mapping[str, PreparedMemoryAccessFact],
     *,
+    checked_address_ranges: Mapping[str, Mapping[str, Any]],
     by_id: Mapping[str, Mapping[str, Any]],
     recovered_external_calls: Mapping[
         tuple[str, int], Mapping[str, Any]
@@ -2532,7 +2549,7 @@ def _memory_write_footprints(
     fact from becoming a usable footprint.
     """
 
-    if not facts:
+    if not facts and not checked_address_ranges:
         return {}
     assert image_base is not None and image_size is not None
     result: dict[tuple[str, int], _MemoryWriteFootprint] = {}
@@ -2540,7 +2557,7 @@ def _memory_write_footprints(
         if fact.memory_kind not in {"write", "read_write"}:
             continue
         stack_offsets: set[int] = set()
-        has_non_stack = False
+        non_stack_origins: set[ValueOrigin] = set()
         complete = True
         for raw in fact.address_origins:
             try:
@@ -2563,34 +2580,123 @@ def _memory_write_footprints(
                 image_base=image_base,
                 image_size=image_size,
             ):
-                has_non_stack = True
+                non_stack_origins.add(origin)
                 continue
             complete = False
             break
-        if not complete or not (stack_offsets or has_non_stack):
+        if not complete or not (stack_offsets or non_stack_origins):
             continue
         key = (fact.binding.unit.unit_id, fact.binding.event_index)
         if key in result:
             raise ValueError("prepared write footprints duplicate an exact event")
         result[key] = _MemoryWriteFootprint(
-            fact_id=fact.fact_id,
+            fact_ids=(fact.fact_id,),
             stack_offsets=tuple(sorted(stack_offsets)),
-            has_non_stack_alternative=has_non_stack,
+            non_stack_origins=tuple(sorted(non_stack_origins)),
         )
+    # A checked semantic address range is exhaustive for its exact event and
+    # therefore supersedes a broader finite-origin proposal for that event.
+    # The upstream phase has replayed the SCC invariant certificate; this
+    # layer rechecks the exact event binding before using the compact fact.
+    for event_node, row in checked_address_ranges.items():
+        footprint = _checked_address_range_write_footprint(
+            event_node,
+            row,
+            by_id=by_id,
+            image_base=image_base,
+            image_size=image_size,
+        )
+        if footprint is None:
+            continue
+        result[(str(row["unit_id"]), int(row["event_index"]))] = footprint
     return result
 
 
-def _stack_origin_offset(origin: ValueOrigin) -> int | None:
-    if origin.kind != "stack_location" or len(origin.key) != 1:
+def _checked_address_range_write_footprint(
+    event_node: str,
+    row: Mapping[str, Any],
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    image_base: int,
+    image_size: int,
+) -> _MemoryWriteFootprint | None:
+    unit_id = row.get("unit_id")
+    event_index = row.get("event_index")
+    width = row.get("width_bytes")
+    minimum = row.get("minimum_address")
+    maximum = row.get("maximum_address")
+    identity = row.get("id")
+    if (
+        row.get("format") != "stage-a-checked-memory-address-range-v2"
+        or row.get("status") != "complete"
+        or not isinstance(unit_id, str)
+        or not isinstance(event_index, int)
+        or isinstance(event_index, bool)
+        or event_index < 0
+        or event_node != f"event:{unit_id}:{event_index}"
+        or not isinstance(width, int)
+        or isinstance(width, bool)
+        or not 0 < width <= 4096
+        or not isinstance(minimum, int)
+        or isinstance(minimum, bool)
+        or not isinstance(maximum, int)
+        or isinstance(maximum, bool)
+        or not 0 <= minimum <= maximum < (1 << 32)
+        or maximum + width > (1 << 32)
+        or not isinstance(identity, str)
+        or not identity
+    ):
+        raise ValueError("checked memory-address range is malformed")
+    unit = by_id.get(unit_id)
+    semantics = _mapping((unit or {}).get("semantics"))
+    events = semantics.get("memory_events")
+    if (
+        unit is None
+        or not isinstance(events, list)
+        or event_index >= len(events)
+        or not isinstance(events[event_index], Mapping)
+    ):
+        raise ValueError("checked memory-address range names an unknown event")
+    event = events[event_index]
+    if (
+        row.get("memory_kind") != event.get("kind")
+        or width != event.get("width")
+        or row.get("address_expression") != event.get("address")
+    ):
+        raise ValueError(
+            "checked memory-address range contradicts its exact event"
+        )
+    if row.get("memory_kind") not in {"write", "read_write"}:
         return None
-    offset = origin.key[0]
-    return (
-        int(offset)
-        if isinstance(offset, int)
-        and not isinstance(offset, bool)
-        and -(1 << 31) <= offset < (1 << 31)
-        else None
+    if not (
+        _span_inside_image(
+            minimum,
+            width,
+            image_base=image_base,
+            image_size=image_size,
+        )
+        and _span_inside_image(
+            maximum,
+            width,
+            image_base=image_base,
+            image_size=image_size,
+        )
+    ):
+        return None
+    origin = ValueOrigin(
+        "absolute_span",
+        (minimum, maximum),
+        dependencies=(identity,),
     )
+    return _MemoryWriteFootprint(
+        fact_ids=(identity,),
+        stack_offsets=(),
+        non_stack_origins=(origin,),
+    )
+
+
+def _stack_origin_offset(origin: ValueOrigin) -> int | None:
+    return signed_stack_location_offset(origin)
 
 
 def _origin_is_checked_non_stack(
@@ -2930,7 +3036,7 @@ def _transfer(
                     input_stack_kills = ()
                     caller_memory_writes = None
                     continue
-                memory_fact_dependencies.add(footprint.fact_id)
+                memory_fact_dependencies.update(footprint.fact_ids)
                 for offset in footprint.stack_offsets:
                     caller_memory_writes = _add_caller_memory_write(
                         caller_memory_writes,
@@ -2951,12 +3057,17 @@ def _transfer(
                         input_stack_kills = ()
                     else:
                         input_stack_kills = updated_kills
-                # The fact proves separation from protected stack cells, not
-                # the identity of every non-stack location. Keep stack frame
-                # evidence but conservatively discard ordinary memory facts.
-                if footprint.has_non_stack_alternative:
+                for origin in footprint.non_stack_origins:
+                    caller_memory_writes = _add_caller_memory_write(
+                        caller_memory_writes,
+                        CallWriteSpan(origin, width),
+                        maximum=max_memory_words,
+                    )
+                # Retain the checked non-stack origins in the caller footprint,
+                # but discard ordinary memory values because a bounded span
+                # does not identify one exact written cell.
+                if footprint.non_stack_origins:
                     memory_words.clear()
-                    caller_memory_writes = None
     schedule = _mapping(semantics.get("instruction_effect_schedule"))
     blockers = schedule.get("blockers")
     if isinstance(blockers, list):

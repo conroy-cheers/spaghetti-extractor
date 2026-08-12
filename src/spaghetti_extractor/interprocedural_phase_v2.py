@@ -28,6 +28,7 @@ from .interprocedural_analysis import (
 )
 from .machine_import_profiles import MachineImportIdentity
 from .machine_abi import NormalCallABIPremise
+from .memory_range_invariants_v2 import validate_memory_range_invariants_v2
 from .stage_binary import StageABinary
 from .stack_range_analysis_v2 import validate_checked_stack_range_facts_v2
 from .static_indirect_replay_v2 import replay_exact_static_recoveries_v2
@@ -49,6 +50,7 @@ def derive_interprocedural_result_v2(
     checked_stack_entry_offsets: Mapping[str, Sequence[int]] | None = None,
     checked_stack_range_facts: Sequence[Mapping[str, Any]] = (),
     checked_control_invariants: Sequence[Mapping[str, Any]] = (),
+    memory_range_invariant_analysis: Mapping[str, Any] | None = None,
     stack_launch_assumptions_sha256: str | None = None,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI] | None = None,
     interface_profiles: Sequence[ExternalInterfaceProfile] | None = None,
@@ -151,6 +153,21 @@ def derive_interprocedural_result_v2(
         machine_ir_sha256=machine_ir_sha256,
         units=units,
     )
+    try:
+        checked_memory_address_ranges = (
+            {}
+            if memory_range_invariant_analysis is None
+            else validate_memory_range_invariants_v2(
+                memory_range_invariant_analysis,
+                units=units,
+                binary_sha256=binary.sha256,
+                machine_ir_sha256=machine_ir_sha256,
+            )
+        )
+    except ValueError as exc:
+        raise InterproceduralPhaseV2Error(
+            f"memory-range invariant artifact does not replay: {exc}"
+        ) from exc
     stack_graph_ids = {
         str(binding.get("rooted_graph_id"))
         for fact in checked_stack_range_facts
@@ -237,6 +254,9 @@ def derive_interprocedural_result_v2(
         global_slot_invariants=typed_slots,
         checked_stack_entry_offsets=checked_stack_entry_offsets,
         checked_nonimage_stack_units=tuple(sorted(checked_stack_units)),
+        checked_memory_address_ranges=tuple(
+            checked_memory_address_ranges.values()
+        ),
         normal_call_abi_premise=normal_call_abi_premise,
         finite_value_budget=finite_value_budget,
         stack_entry_offset_budget=stack_entry_offset_budget,

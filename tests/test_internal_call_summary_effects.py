@@ -207,6 +207,38 @@ def memory_fact(
     return binary, prepared
 
 
+def checked_address_range(
+    units: list[dict[str, object]],
+    *,
+    unit_id: str,
+    minimum: int,
+    maximum: int,
+    identity: str = "memory-address-range:fixture",
+) -> dict[str, object]:
+    unit_row = next(row for row in units if row["id"] == unit_id)
+    semantics = unit_row["semantics"]
+    assert isinstance(semantics, dict)
+    events = semantics["memory_events"]
+    assert isinstance(events, list) and len(events) == 1
+    event = events[0]
+    assert isinstance(event, dict)
+    return {
+        "format": "stage-a-checked-memory-address-range-v2",
+        "status": "complete",
+        "unit_id": unit_id,
+        "event_index": 0,
+        "memory_kind": event["kind"],
+        "width_bytes": event["width"],
+        "address_expression": event["address"],
+        "minimum_address": minimum,
+        "maximum_address": maximum,
+        "invariant_authority_ids": ["invariant:fixture"],
+        "certificate_id": "memory-range-scc:fixture",
+        "id": identity,
+        "fact_sha256": "f" * 64,
+    }
+
+
 def selected_allocator(identity: MachineImportIdentity) -> SelectedImportABI:
     abi = resolve_machine_call_abi("pe32-stdcall-v1")
     assert abi is not None
@@ -428,6 +460,155 @@ class InternalCallSummaryEffectTests(unittest.TestCase):
         self.assertNotIn(
             "ebp", outside_result["summaries"][0]["preserved_registers"]
         )
+
+    def test_checked_absolute_span_is_exported_in_caller_memory_frame(self) -> None:
+        units = [unit(
+            "range-write",
+            0x1000,
+            outcome="return",
+            memory=[{
+                "kind": "write",
+                "width": 4,
+                "address": reg("eax"),
+                "value": const(0),
+            }],
+        )]
+        binary, prepared = memory_fact(
+            units,
+            unit_id="range-write",
+            address_origin={
+                "kind": "absolute_span",
+                "key": [0x430000, 0x430040],
+            },
+        )
+
+        result = derive_internal_call_preservation_summaries(
+            units=units,
+            roots=["range-write"],
+            direct_edges=[],
+            internal_call_edges=[],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+            prepared_memory_access_facts=prepared,
+            binary_binding=binary,
+            image_base=0x400000,
+            image_size=0x100000,
+        )
+
+        summary = result["summaries"][0]
+        self.assertEqual(
+            summary["caller_memory_frame"],
+            {
+                "status": "complete",
+                "preserved": False,
+                "writes": [{
+                    "base": {
+                        "kind": "absolute_span",
+                        "key": [0x430000, 0x430040],
+                    },
+                    "size": 4,
+                }],
+            },
+        )
+        self.assertIn(prepared[0]["id"], summary["target_dependencies"])
+
+    def test_checked_scc_range_closes_symbolic_write_frame(self) -> None:
+        units = [unit(
+            "range-write",
+            0x1000,
+            outcome="return",
+            memory=[{
+                "kind": "write",
+                "width": 4,
+                "address": add(reg("ebx"), const(12)),
+                "value": const(0),
+            }],
+        )]
+        binary = bindable(units)
+        address_range = checked_address_range(
+            units,
+            unit_id="range-write",
+            minimum=0x430000,
+            maximum=0x430040,
+        )
+
+        result = derive_internal_call_preservation_summaries(
+            units=units,
+            roots=["range-write"],
+            direct_edges=[],
+            internal_call_edges=[],
+            recovered_indirect_targets=[],
+            indirect_exits=[],
+            import_abis={},
+            binary_binding=binary,
+            image_base=0x400000,
+            image_size=0x100000,
+            _validated_memory_address_ranges={
+                "event:range-write:0": address_range,
+            },
+        )
+
+        summary = result["summaries"][0]
+        self.assertEqual(summary["caller_memory_frame"], {
+            "status": "complete",
+            "preserved": False,
+            "writes": [{
+                "base": {
+                    "kind": "absolute_span",
+                    "key": [0x430000, 0x430040],
+                    "authority_dependencies": [address_range["id"]],
+                },
+                "size": 4,
+            }],
+        })
+        self.assertIn(address_range["id"], summary["target_dependencies"])
+
+    def test_checked_range_change_invalidates_summary_component(self) -> None:
+        units = [unit(
+            "range-write",
+            0x1000,
+            outcome="return",
+            memory=[{
+                "kind": "write",
+                "width": 4,
+                "address": reg("eax"),
+                "value": const(0),
+            }],
+        )]
+        binary = bindable(units)
+        cache = _InternalCallSummaryComponentCache(8)
+
+        def derive(minimum: int, identity: str) -> dict[str, object]:
+            row = checked_address_range(
+                units,
+                unit_id="range-write",
+                minimum=minimum,
+                maximum=minimum + 0x40,
+                identity=identity,
+            )
+            return derive_internal_call_preservation_summaries(
+                units=units,
+                roots=["range-write"],
+                direct_edges=[],
+                internal_call_edges=[],
+                recovered_indirect_targets=[],
+                indirect_exits=[],
+                import_abis={},
+                binary_binding=binary,
+                image_base=0x400000,
+                image_size=0x100000,
+                _component_cache=cache,
+                _validated_memory_address_ranges={
+                    "event:range-write:0": row,
+                },
+            )
+
+        first = derive(0x430000, "memory-address-range:first")
+        self.assertEqual((cache.requests, cache.hits), (1, 0))
+        second = derive(0x430100, "memory-address-range:second")
+        self.assertEqual((cache.requests, cache.hits), (2, 0))
+        self.assertNotEqual(first["summaries"], second["summaries"])
 
     def test_dynamic_write_requires_a_sufficient_checked_extent(self) -> None:
         identity = MachineImportIdentity(

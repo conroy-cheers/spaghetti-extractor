@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import copy
 import unittest
+from types import SimpleNamespace
+from typing import cast
 
 from spaghetti_extractor.memory_range_invariants_v2 import (
     CHECKED_MEMORY_ADDRESS_RANGE_V2_FORMAT,
@@ -9,6 +11,11 @@ from spaghetti_extractor.memory_range_invariants_v2 import (
     validate_memory_range_invariants_v2,
 )
 from spaghetti_extractor.global_slot_analysis_v2 import analyze_global_slots_v2
+from spaghetti_extractor.interprocedural_phase_v2 import (
+    InterproceduralPhaseV2Error,
+    derive_interprocedural_result_v2,
+)
+from spaghetti_extractor.stage_binary import StageABinary
 
 
 def _reg(name: str) -> dict:
@@ -139,6 +146,19 @@ def _counted_loop() -> list[dict]:
     ]
 
 
+def _returning_counted_loop() -> list[dict]:
+    units = _counted_loop()
+    terminal = next(row for row in units if row["id"] == "unit:terminal")
+    terminal["semantics"]["outcome"] = {"kind": "return"}
+    terminal["semantics"]["edge_conditions"] = []
+    terminal["semantics"]["register_writes"] = [{
+        "register": "esp",
+        "value": {"op": "add32", "args": [_reg("esp"), _const(4)]},
+    }]
+    terminal["control"]["direct_targets"] = []
+    return units
+
+
 class MemoryRangeInvariantV2Tests(unittest.TestCase):
     def test_proves_counted_loop_address_ranges(self) -> None:
         report = derive_memory_range_invariants_v2(
@@ -192,6 +212,110 @@ class MemoryRangeInvariantV2Tests(unittest.TestCase):
                 binary_sha256="1" * 64,
                 machine_ir_sha256="2" * 64,
             )
+
+    def test_interprocedural_phase_rejects_stale_range_artifact(self) -> None:
+        units = _counted_loop()
+        report = derive_memory_range_invariants_v2(
+            units=units,
+            binary_sha256="1" * 64,
+            machine_ir_sha256="2" * 64,
+        )
+        report["checked_address_ranges"][0]["maximum_address"] += 4
+        binary = cast(StageABinary, SimpleNamespace(
+            sha256="1" * 64,
+            image_base=0x400000,
+            size_of_image=0x100000,
+            imports=(),
+            sections=(),
+            pe=SimpleNamespace(get_data=lambda _rva, _size: b""),
+        ))
+        manifest = {
+            "control": {
+                "recovered_indirect_targets": [],
+                "indirect_exits": [],
+            },
+        }
+        graph = {"roots": ["unit:entry"], "direct_edges": []}
+
+        with self.assertRaisesRegex(
+            InterproceduralPhaseV2Error,
+            "memory-range invariant artifact does not replay",
+        ):
+            derive_interprocedural_result_v2(
+                manifest,
+                units=units,
+                graph=graph,
+                binary=binary,
+                machine_ir_sha256="2" * 64,
+                memory_range_invariant_analysis=report,
+                import_abis={},
+                interface_profiles=(),
+                operation_profiles=(),
+                callable_profiles=(),
+                internal_function_contracts={},
+            )
+
+    def test_interprocedural_phase_exports_checked_ranges_to_call_summary(
+        self,
+    ) -> None:
+        units = _returning_counted_loop()
+        report = derive_memory_range_invariants_v2(
+            units=units,
+            binary_sha256="1" * 64,
+            machine_ir_sha256="2" * 64,
+        )
+        binary = cast(StageABinary, SimpleNamespace(
+            sha256="1" * 64,
+            image_base=0,
+            size_of_image=0x10000,
+            imports=(),
+            sections=(),
+            pe=SimpleNamespace(get_data=lambda _rva, size: b"\0" * size),
+        ))
+        result = derive_interprocedural_result_v2(
+            {
+                "control": {
+                    "recovered_indirect_targets": [],
+                    "indirect_exits": [],
+                },
+            },
+            units=units,
+            graph={"roots": ["unit:entry"], "direct_edges": []},
+            binary=binary,
+            machine_ir_sha256="2" * 64,
+            memory_range_invariant_analysis=report,
+            import_abis={},
+            interface_profiles=(),
+            operation_profiles=(),
+            callable_profiles=(),
+            internal_function_contracts={},
+        )
+
+        range_ids = {row["id"] for row in report["checked_address_ranges"]}
+        summary = next(
+            row
+            for row in result["call_summaries"]["summaries"]
+            if row["target_unit_id"] == "unit:entry"
+        )
+        self.assertEqual(result["fixed_point"]["status"], "complete", result)
+        self.assertEqual(
+            result["fixed_point"]["checked_memory_address_range_count"],
+            2,
+        )
+        self.assertEqual(
+            result["operation_provenance"]["checked_memory_address_ranges"],
+            report["checked_address_ranges"],
+        )
+        self.assertTrue(range_ids <= set(summary["target_dependencies"]))
+        self.assertEqual(summary["caller_memory_frame"]["status"], "complete")
+        self.assertEqual(
+            {
+                row["id"]
+                for row in result["fixed_point"]["dependencies"]
+                if row["kind"] == "checked_memory_address_range"
+            },
+            range_ids,
+        )
 
     def test_global_slot_replay_consumes_only_checked_ranges(self) -> None:
         units = _counted_loop()
