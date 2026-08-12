@@ -170,6 +170,33 @@ class _CallFacts:
     ] = field(
         default_factory=dict
     )
+    # ``preserved`` contains checked positive atoms.  This bit records whether
+    # the complement is also checked (and therefore may be treated as
+    # clobbered).  ``None`` keeps old callers source-compatible while making
+    # their historical all-or-nothing meaning explicit.
+    register_frame_complete: bool | None = None
+    checked_clobbered: frozenset[str] = frozenset()
+    register_conflicts: frozenset[str] = frozenset()
+
+    def __post_init__(self) -> None:
+        if self.register_frame_complete is None:
+            object.__setattr__(
+                self,
+                "register_frame_complete",
+                self.preserved is not None,
+            )
+        if self.preserved is not None and not self.preserved <= frozenset(_REGISTERS):
+            raise ValueError("call facts preserve an unknown register")
+        if not self.register_conflicts <= frozenset(_REGISTERS):
+            raise ValueError("call facts conflict on an unknown register")
+        if not self.checked_clobbered <= frozenset(_REGISTERS):
+            raise ValueError("call facts clobber an unknown register")
+        if _known_preserved_registers(self) & self.checked_clobbered:
+            raise ValueError("call facts both preserve and clobber one register")
+
+
+def _known_preserved_registers(facts: _CallFacts) -> frozenset[str]:
+    return facts.preserved or frozenset()
 
 
 @dataclass(frozen=True, order=True)
@@ -202,10 +229,11 @@ def _with_preserved_register_hypotheses(
     facts: _CallFacts,
     hypotheses: Mapping[str, PreservedRegisterHypothesis],
 ) -> _CallFacts:
-    if facts.preserved is not None:
+    if facts.register_frame_complete:
         return facts
+    preserved = _known_preserved_registers(facts) | frozenset(hypotheses)
     return _CallFacts(
-        preserved=frozenset(hypotheses),
+        preserved=preserved,
         abi=facts.abi,
         argument_words=facts.argument_words,
         stack_cleanup_bytes=facts.stack_cleanup_bytes,
@@ -220,6 +248,9 @@ def _with_preserved_register_hypotheses(
                 for register, hypothesis in hypotheses.items()
             },
         },
+        register_frame_complete=False,
+        checked_clobbered=facts.checked_clobbered,
+        register_conflicts=facts.register_conflicts,
     )
 
 
@@ -229,11 +260,33 @@ def _with_normal_call_abi_premise(
 ) -> _CallFacts:
     """Add only normal-return nonvolatile preservation to an unknown frame."""
 
-    if facts.preserved is not None:
+    known_preserved = _known_preserved_registers(facts)
+    known_clobbered = facts.checked_clobbered
+    conflicts = (
+        frozenset(premise.preserved_registers) & known_clobbered
+    ) | (
+        known_preserved & frozenset(premise.clobbered_registers)
+    )
+    if conflicts:
+        return _CallFacts(
+            preserved=known_preserved - conflicts,
+            abi=facts.abi,
+            argument_words=facts.argument_words,
+            stack_cleanup_bytes=facts.stack_cleanup_bytes,
+            outputs=facts.outputs,
+            memory_preserved=facts.memory_preserved,
+            memory_writes=facts.memory_writes,
+            dependencies=facts.dependencies,
+            family_dependencies=facts.family_dependencies,
+            register_frame_complete=False,
+            checked_clobbered=known_clobbered,
+            register_conflicts=facts.register_conflicts | conflicts,
+        )
+    if facts.register_frame_complete:
         return facts
     dependency = frozenset({premise.dependency_id})
     return _CallFacts(
-        preserved=frozenset(premise.preserved_registers),
+        preserved=known_preserved | frozenset(premise.preserved_registers),
         abi=facts.abi,
         argument_words=facts.argument_words,
         stack_cleanup_bytes=facts.stack_cleanup_bytes,
@@ -248,6 +301,11 @@ def _with_normal_call_abi_premise(
                 for register in premise.preserved_registers
             },
         },
+        register_frame_complete=True,
+        checked_clobbered=(
+            known_clobbered | frozenset(premise.clobbered_registers)
+        ),
+        register_conflicts=facts.register_conflicts,
     )
 
 
@@ -264,7 +322,9 @@ def _call_site_effect(
         cleanup = _abi_stack_cleanup(facts.abi, facts.argument_words)
 
     register_status = (
-        "complete" if facts.preserved is not None else "incomplete"
+        "complete"
+        if facts.register_frame_complete and not facts.register_conflicts
+        else "incomplete"
     )
     stack_status = "complete" if cleanup is not None else "incomplete"
     result_status = (
@@ -278,6 +338,8 @@ def _call_site_effect(
         else "incomplete"
     )
     failures = set(failure_codes)
+    if facts.register_conflicts:
+        failures.add("normal_call_abi_premise_register_conflict")
     for status, code in (
         (register_status, "register_frame_unknown"),
         (stack_status, "stack_frame_unknown"),
@@ -292,7 +354,9 @@ def _call_site_effect(
         status="complete" if not failures else "incomplete",
         register_frame_status=register_status,
         preserved_registers=(
-            facts.preserved if facts.preserved is not None else frozenset()
+            _known_preserved_registers(facts)
+            if register_status == "complete"
+            else frozenset()
         ),
         stack_frame_status=stack_status,
         stack_cleanup_bytes=cleanup,
@@ -684,6 +748,8 @@ def recover_external_interface_targets(
     imports: Sequence[Mapping[str, Any]] = (),
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_clobbered_registers: Mapping[int, frozenset[str]] | None = None,
+    internal_call_register_frame_completeness: Mapping[int, bool] | None = None,
     image_base: int,
     image_size: int | None = None,
     internal_call_stack_cleanup: Mapping[int, int] | None = None,
@@ -774,6 +840,35 @@ def recover_external_interface_targets(
         normal_call_abi_premise, NormalCallABIPremise
     ):
         raise ValueError("normal-call ABI premise is not a checked profile")
+    supplied_register_frame_completeness = (
+        {
+            int(address): True
+            for address in internal_call_preserved_registers
+        }
+        if internal_call_register_frame_completeness is None
+        else dict(internal_call_register_frame_completeness)
+    )
+    if any(
+        not isinstance(address, int)
+        or isinstance(address, bool)
+        or not 0 <= address <= 0xFFFF_FFFF
+        or not isinstance(complete, bool)
+        for address, complete in supplied_register_frame_completeness.items()
+    ):
+        raise ValueError("internal-call register-frame completeness is malformed")
+    supplied_clobbered_registers = {
+        int(address): frozenset(registers)
+        for address, registers in (internal_call_clobbered_registers or {}).items()
+    }
+    if any(
+        not isinstance(address, int)
+        or isinstance(address, bool)
+        or not 0 <= address <= 0xFFFF_FFFF
+        or not registers <= frozenset(_REGISTERS)
+        or registers & internal_call_preserved_registers.get(address, frozenset())
+        for address, registers in supplied_clobbered_registers.items()
+    ):
+        raise ValueError("internal-call clobbered-register inventory is malformed")
     supplied_call_stack_cleanup = dict(internal_call_stack_cleanup or {})
     supplied_call_result_relations = dict(internal_call_result_relations or {})
     supplied_call_memory_preservation = dict(
@@ -918,6 +1013,10 @@ def recover_external_interface_targets(
             inventory=inventory,
             import_abis=effective_import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
+            internal_call_clobbered_registers=supplied_clobbered_registers,
+            internal_call_register_frame_completeness=(
+                supplied_register_frame_completeness
+            ),
             internal_call_stack_cleanup=call_stack_cleanup,
             internal_call_result_relations=supplied_call_result_relations,
             internal_call_memory_preservation=(
@@ -2471,6 +2570,8 @@ def _component_call_environment_key(
     by_id: Mapping[str, Mapping[str, Any]],
     image_base: int,
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_clobbered_registers: Mapping[int, frozenset[str]],
+    internal_call_register_frame_completeness: Mapping[int, bool],
     internal_call_stack_cleanup: Mapping[int, int],
     internal_call_result_relations: Mapping[
         int, Mapping[str, Sequence[Mapping[str, Any]]]
@@ -2519,6 +2620,8 @@ def _component_call_environment_key(
 
     return _freeze_transfer_cache_value((
         project_targets(internal_call_preserved_registers),
+        project_targets(internal_call_clobbered_registers),
+        project_targets(internal_call_register_frame_completeness),
         project_targets(internal_call_stack_cleanup),
         project_targets(internal_call_result_relations),
         project_targets(internal_call_memory_preservation),
@@ -2541,7 +2644,12 @@ def _component_call_environment_key(
         ),
         (
             normal_call_abi_premise.dependency_id
-            if has_indirect_call and normal_call_abi_premise is not None
+            if normal_call_abi_premise is not None
+            and any(
+                event.get("kind") in normal_call_abi_premise.transfer_kinds
+                for unit_id in component
+                for event in _events(by_id[unit_id])
+            )
             else None
         ),
         {
@@ -2561,6 +2669,8 @@ def _run_dataflow(
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_clobbered_registers: Mapping[int, frozenset[str]],
+    internal_call_register_frame_completeness: Mapping[int, bool],
     internal_call_stack_cleanup: Mapping[int, int],
     internal_call_result_relations: Mapping[
         int, Mapping[str, Sequence[Mapping[str, Any]]]
@@ -2633,6 +2743,12 @@ def _run_dataflow(
             internal_call_preserved_registers=(
                 internal_call_preserved_registers
             ),
+            internal_call_clobbered_registers=(
+                internal_call_clobbered_registers
+            ),
+            internal_call_register_frame_completeness=(
+                internal_call_register_frame_completeness
+            ),
             internal_call_stack_cleanup=internal_call_stack_cleanup,
             internal_call_result_relations=internal_call_result_relations,
             internal_call_memory_preservation=(
@@ -2694,6 +2810,10 @@ def _run_dataflow(
             inventory=inventory,
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
+            internal_call_clobbered_registers=internal_call_clobbered_registers,
+            internal_call_register_frame_completeness=(
+                internal_call_register_frame_completeness
+            ),
             internal_call_stack_cleanup=internal_call_stack_cleanup,
             internal_call_result_relations=internal_call_result_relations,
             internal_call_memory_preservation=(
@@ -2890,6 +3010,12 @@ def _run_dataflow(
                 image_base=image_base,
                 internal_call_preserved_registers=(
                     internal_call_preserved_registers
+                ),
+                internal_call_clobbered_registers=(
+                    internal_call_clobbered_registers
+                ),
+                internal_call_register_frame_completeness=(
+                    internal_call_register_frame_completeness
                 ),
                 internal_call_stack_cleanup=internal_call_stack_cleanup,
                 internal_call_result_relations=(
@@ -4655,6 +4781,8 @@ def _transfer_local_environment_key(
 def _transfer_call_environment_key(
     *,
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_clobbered_registers: Mapping[int, frozenset[str]],
+    internal_call_register_frame_completeness: Mapping[int, bool],
     internal_call_stack_cleanup: Mapping[int, int],
     internal_call_result_relations: Mapping[
         int, Mapping[str, Sequence[Mapping[str, Any]]]
@@ -4674,6 +4802,8 @@ def _transfer_call_environment_key(
 ) -> tuple[Any, ...]:
     return _freeze_transfer_cache_value((
         internal_call_preserved_registers,
+        internal_call_clobbered_registers,
+        internal_call_register_frame_completeness,
         internal_call_stack_cleanup,
         internal_call_result_relations,
         internal_call_memory_preservation,
@@ -4888,6 +5018,8 @@ def _transfer_unit(
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_clobbered_registers: Mapping[int, frozenset[str]],
+    internal_call_register_frame_completeness: Mapping[int, bool],
     internal_call_stack_cleanup: Mapping[int, int],
     internal_call_result_relations: Mapping[
         int, Mapping[str, Sequence[Mapping[str, Any]]]
@@ -4979,6 +5111,10 @@ def _transfer_unit(
             inventory=inventory,
             import_abis=import_abis,
             internal_call_preserved_registers=internal_call_preserved_registers,
+            internal_call_clobbered_registers=internal_call_clobbered_registers,
+            internal_call_register_frame_completeness=(
+                internal_call_register_frame_completeness
+            ),
             internal_call_stack_cleanup=internal_call_stack_cleanup,
             internal_call_result_relations=internal_call_result_relations,
             internal_call_memory_preservation=(
@@ -4997,8 +5133,7 @@ def _transfer_unit(
         issues.extend(call_issues)
         argument_recoveries.extend(call_argument_recoveries)
         if (
-            facts.preserved is None
-            and normal_call_abi_premise is not None
+            normal_call_abi_premise is not None
             and event.get("kind") in normal_call_abi_premise.transfer_kinds
         ):
             facts = _with_normal_call_abi_premise(
@@ -5007,7 +5142,7 @@ def _transfer_unit(
         hypotheses = preserved_register_hypotheses.get(
             CallSiteId(unit_id, event_index), {}
         )
-        if facts.preserved is None and hypotheses:
+        if not facts.register_frame_complete and hypotheses:
             facts = _with_preserved_register_hypotheses(facts, hypotheses)
             issues.append({
                 "code": "inductive_call_frame_hypothesis_used",
@@ -5018,7 +5153,7 @@ def _transfer_unit(
                 ),
             })
         if (
-            facts.preserved is None
+            not facts.register_frame_complete
             and bootstrap_unknown_call_preserved_registers is not None
         ):
             site = CallSiteId(unit_id, event_index)
@@ -5034,7 +5169,10 @@ def _transfer_unit(
                 },
             }
             facts = _CallFacts(
-                preserved=bootstrap_unknown_call_preserved_registers,
+                preserved=(
+                    _known_preserved_registers(facts)
+                    | bootstrap_unknown_call_preserved_registers
+                ),
                 abi=facts.abi,
                 argument_words=facts.argument_words,
                 stack_cleanup_bytes=facts.stack_cleanup_bytes,
@@ -5043,6 +5181,9 @@ def _transfer_unit(
                 memory_writes=facts.memory_writes,
                 dependencies=facts.dependencies,
                 family_dependencies=family_dependencies,
+                register_frame_complete=False,
+                checked_clobbered=facts.checked_clobbered,
+                register_conflicts=facts.register_conflicts,
             )
             issues.append({
                 "code": "bootstrap_call_preservation_used",
@@ -5086,7 +5227,7 @@ def _transfer_unit(
                             facts, "register", register
                         ),
                     )
-                    if facts.preserved is not None and register in facts.preserved
+                    if register in _known_preserved_registers(facts)
                     else None
                 )
                 for register in _REGISTERS
@@ -6334,6 +6475,8 @@ def _internal_target_call_facts(
     pre_call: _State,
     inventory: _ProfileInventory,
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_clobbered_registers: Mapping[int, frozenset[str]] | None = None,
+    internal_call_register_frame_completeness: Mapping[int, bool] | None = None,
     internal_call_stack_cleanup: Mapping[int, int],
     internal_call_result_relations: Mapping[
         int, Mapping[str, Sequence[Mapping[str, Any]]]
@@ -6425,6 +6568,20 @@ def _internal_target_call_facts(
         memory_writes=memory_writes,
         dependencies=dependencies,
         family_dependencies=family_dependencies,
+        register_frame_complete=(
+            preserved is not None
+            if internal_call_register_frame_completeness is None
+            else internal_call_register_frame_completeness.get(
+                target_address, False
+            )
+        ),
+        checked_clobbered=(
+            frozenset()
+            if internal_call_clobbered_registers is None
+            else internal_call_clobbered_registers.get(
+                target_address, frozenset()
+            )
+        ),
     )
 
 
@@ -6775,6 +6932,8 @@ def _call_contract(
     inventory: _ProfileInventory,
     import_abis: Mapping[MachineImportIdentity, SelectedImportABI],
     internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    internal_call_clobbered_registers: Mapping[int, frozenset[str]],
+    internal_call_register_frame_completeness: Mapping[int, bool],
     internal_call_stack_cleanup: Mapping[int, int],
     internal_call_result_relations: Mapping[
         int, Mapping[str, Sequence[Mapping[str, Any]]]
@@ -7070,6 +7229,12 @@ def _call_contract(
                 inventory=inventory,
                 internal_call_preserved_registers=(
                     internal_call_preserved_registers
+                ),
+                internal_call_clobbered_registers=(
+                    internal_call_clobbered_registers
+                ),
+                internal_call_register_frame_completeness=(
+                    internal_call_register_frame_completeness
                 ),
                 internal_call_stack_cleanup=internal_call_stack_cleanup,
                 internal_call_result_relations=internal_call_result_relations,
@@ -8541,6 +8706,9 @@ def _instantiate_recovered_external_call_facts(
                 memory_writes=_interface_memory_writes(
                     method.caller_memory_frame, arguments
                 ),
+                register_frame_complete=base.register_frame_complete,
+                checked_clobbered=base.checked_clobbered,
+                register_conflicts=base.register_conflicts,
             ),
             issues,
             recoveries,
@@ -8600,6 +8768,9 @@ def _instantiate_recovered_external_call_facts(
                 base.argument_words,
                 base.stack_cleanup_bytes,
                 outputs,
+                register_frame_complete=base.register_frame_complete,
+                checked_clobbered=base.checked_clobbered,
+                register_conflicts=base.register_conflicts,
             ),
             issues,
             recoveries,
@@ -8622,6 +8793,9 @@ def _with_call_dependencies(
         memory_writes=facts.memory_writes,
         dependencies=facts.dependencies | dependencies,
         family_dependencies=facts.family_dependencies,
+        register_frame_complete=facts.register_frame_complete,
+        checked_clobbered=facts.checked_clobbered,
+        register_conflicts=facts.register_conflicts,
     )
 
 
@@ -8781,11 +8955,11 @@ def _combine_call_facts(
     *,
     budget: int = 32,
 ) -> _CallFacts | None:
-    if not alternatives or any(facts.preserved is None for facts in alternatives):
+    if not alternatives:
         return None
-    preserved = set(alternatives[0].preserved or ())
+    preserved = set(_known_preserved_registers(alternatives[0]))
     for facts in alternatives[1:]:
-        preserved.intersection_update(facts.preserved or ())
+        preserved.intersection_update(_known_preserved_registers(facts))
     abis = {facts.abi for facts in alternatives}
     argument_counts = {facts.argument_words for facts in alternatives}
     cleanups = {facts.stack_cleanup_bytes for facts in alternatives}
@@ -8828,6 +9002,15 @@ def _combine_call_facts(
             ))
             if key[0] != "register" or key[1] in preserved
         },
+        register_frame_complete=all(
+            bool(facts.register_frame_complete) for facts in alternatives
+        ),
+        checked_clobbered=frozenset.intersection(*(
+            facts.checked_clobbered for facts in alternatives
+        )),
+        register_conflicts=frozenset().union(
+            *(facts.register_conflicts for facts in alternatives)
+        ),
     )
 
 

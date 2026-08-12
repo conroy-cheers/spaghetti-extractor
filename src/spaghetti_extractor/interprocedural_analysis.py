@@ -70,7 +70,9 @@ from .interface_provenance import (
 )
 from .internal_call_summaries import (
     _InternalCallSummaryComponentCache,
+    checked_summary_clobbered_registers,
     checked_summary_preserved_registers,
+    checked_summary_register_frame_complete,
     derive_internal_call_preservation_summaries,
 )
 from .machine_abi import NormalCallABIPremise
@@ -1939,7 +1941,14 @@ def _run_typed_pass(
                 workspace.call_summary_components.evictions
             ),
         })
-        preserved, cleanup, results, memory_results = _call_summary_inputs(
+        (
+            preserved,
+            clobbered,
+            register_frame_completeness,
+            cleanup,
+            results,
+            memory_results,
+        ) = _call_summary_inputs(
             summaries,
             image_base=image_base,
             finite_value_budget=finite_value_budget,
@@ -1969,6 +1978,10 @@ def _run_typed_pass(
                 imports=imports,
                 import_abis=import_abis,
                 internal_call_preserved_registers=preserved,
+                internal_call_clobbered_registers=clobbered,
+                internal_call_register_frame_completeness=(
+                    register_frame_completeness
+                ),
                 internal_call_stack_cleanup=cleanup,
                 internal_call_result_relations=results,
                 internal_call_memory_result_relations=memory_results,
@@ -5496,17 +5509,7 @@ def _summary_register_state(
             for value in raw_preserved
         )
     )
-    preservation = raw.get("register_preservation")
-    family_closed = inventory_valid and (
-        (
-            isinstance(preservation, Mapping)
-            and preservation.get("status") == "complete"
-        )
-        or (
-            not isinstance(preservation, Mapping)
-            and raw.get("status") == "complete"
-        )
-    )
+    family_closed = inventory_valid and checked_summary_register_frame_complete(raw)
     preserved = register in checked
     known = preserved or family_closed
     reasons = () if known else ("call_summary_register_preservation_unknown",)
@@ -5572,7 +5575,14 @@ def _summary_family_availability(
         else 32
     )
     wrapped = {"summaries": rows}
-    _preserved, cleanup, results, memory_results = _call_summary_inputs(
+    (
+        _preserved,
+        _clobbered,
+        _register_frame_completeness,
+        cleanup,
+        results,
+        memory_results,
+    ) = _call_summary_inputs(
         wrapped, image_base=0, finite_value_budget=budget
     )
     memory_preservation = _call_summary_memory_preservation(
@@ -6120,11 +6130,15 @@ def _call_summary_inputs(
     summaries: Mapping[str, Any], *, image_base: int, finite_value_budget: int = 32
 ) -> tuple[
     dict[int, frozenset[str]],
+    dict[int, frozenset[str]],
+    dict[int, bool],
     dict[int, int],
     dict[int, dict[str, list[Mapping[str, Any]]]],
     dict[int, tuple[Mapping[str, Any], ...]],
 ]:
     preserved: dict[int, frozenset[str]] = {}
+    clobbered: dict[int, frozenset[str]] = {}
+    register_frame_completeness: dict[int, bool] = {}
     cleanup: dict[int, int] = {}
     results: dict[int, dict[str, list[Mapping[str, Any]]]] = {}
     memory_results: dict[int, tuple[Mapping[str, Any], ...]] = {}
@@ -6136,12 +6150,12 @@ def _call_summary_inputs(
             continue
         address = (image_base + rva) & 0xFFFFFFFF
         checked_preserved = checked_summary_preserved_registers(raw)
-        preservation = raw.get("register_preservation")
-        if checked_preserved or (
-            isinstance(preservation, Mapping)
-            and preservation.get("status") == "complete"
-        ):
+        checked_clobbered = checked_summary_clobbered_registers(raw)
+        frame_complete = checked_summary_register_frame_complete(raw)
+        if checked_preserved or checked_clobbered or frame_complete:
             preserved[address] = checked_preserved
+            clobbered[address] = checked_clobbered
+            register_frame_completeness[address] = frame_complete
         stack = raw.get("stack_cleanup")
         return_instruction = raw.get("return_instruction_cleanup")
         cleanup_values = {
@@ -6197,7 +6211,14 @@ def _call_summary_inputs(
             )
             if normalized_memory:
                 memory_results[address] = normalized_memory
-    return preserved, cleanup, results, memory_results
+    return (
+        preserved,
+        clobbered,
+        register_frame_completeness,
+        cleanup,
+        results,
+        memory_results,
+    )
 
 
 def _summary_memory_results(

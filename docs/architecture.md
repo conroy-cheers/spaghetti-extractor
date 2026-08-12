@@ -122,7 +122,10 @@ The v2 evidence graph is fail-closed:
    fact, rather than an aggregate summary which may remain incomplete because
    of unrelated memory or result effects. Aggregate call-frame identities stay
    readable during migration but cannot stand in for a more precise family
-   witness.
+   witness. Register summaries distinguish checked preservation, checked
+   clobber, and unknown relations per register. The reviewed PE32 normal-return
+   premise may fill only unknown nonvolatile relations, applies to internal and
+   indirect calls, and fails closed if exact machine evidence contradicts it.
 4. External sites are normalized only after target recovery and are rebound to
    the exact event, ABI, arguments, effects, continuation, and selected profile.
 5. Every reachable instruction form is bound to one binary-specific qualified

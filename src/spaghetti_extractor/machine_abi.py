@@ -34,7 +34,10 @@ PE32_NORMAL_RETURN_NONVOLATILE_PREMISE_ID = (
 _NORMAL_CALL_PREMISE_AUTHORITY = "conditional_machine_abi_premise"
 _PE32_NONVOLATILE_REGISTERS = ("ebp", "ebx", "edi", "esi")
 _PE32_VOLATILE_REGISTERS = ("eax", "ecx", "edx")
-_PE32_NORMAL_CALL_PREMISE_TRANSFER_KINDS = ("indirect_call",)
+_PE32_NORMAL_CALL_PREMISE_TRANSFER_KINDS = (
+    "indirect_call",
+    "internal_call",
+)
 
 
 @dataclass(frozen=True)

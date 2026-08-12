@@ -125,6 +125,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `global_slot_hypotheses_v2.py` | Non-authorizing loader-value induction hypotheses for mutable-slot/interprocedural SCC bootstrap; cold replay must reproduce them before use. |
 | `global_slot_analysis_v2.py` | Point-sensitive mutable-slot replay, taint, dominance, finite joins, and cold replay. |
 | `global_slot_authority_v2.py` | Separately cached promotion of complete cold-replayed slots into typed v2 invariants. |
+| `global_slot_authority_replay_v2.py` | Replays normalized structural slot evidence independently before any mutable-slot fact enters v2 authority. |
 | `global_slot_contract_v2.py`, `global_slot_image_v2.py`, `global_slot_proposal_v2.py` | Typed mutable-slot invariants, exact image-span bindings, and non-authorizing replay proposals. |
 | `interprocedural_analysis.py` | Unified SCC worklist for call summaries, value provenance, indirect targets, and dependency closure. |
 | `interprocedural_phase_v2.py`, `joint_interprocedural_analysis_v2.py`, `joint_fixed_point_v2.py` | Phase adapters and the joint graph/stack/global-slot/interprocedural fixed point. |
@@ -159,7 +160,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_c_backend.py` | Deterministic semantic-state-machine to C lowering. |
 | `stage_b_interpreter_backend.py` | Portable machine-IR interpreter generation. |
 | `stage_b_interpreter_native_build.py` | Freestanding PE32 build from interpreter, engine, and runtime packages. |
-| `stage_b_fallback_coverage.py` | Replays exact interpreter lowerings and portable selections and proves one implementation kind per rooted reachable unit; it has no static authority. |
+| `stage_b_fallback_coverage.py` | Replays exact interpreter lowerings and portable selections and proves one implementation kind per unit in the complete structural universe; it has no rooted-reachability authority. |
 | `stage_b_machine_ir_scope.py` | Fail-closed partition of executable and deferred machine-IR transfers for candidate generation. |
 | `stage_b_engine_layout.py` | Structural engine layout tables. |
 | `stage_b_native_engine.py` | IA-32 ABI bridge and typed x87 native operations. |
@@ -203,7 +204,7 @@ and interfaces; it does not erase unresolved whole-program reconstruction gaps.
 
 | Module | Purpose |
 |---|---|
-| `machine_abi.py` | Machine-level calling convention data structures. |
+| `machine_abi.py` | Machine-level calling conventions and the reviewed conditional normal-return register premise. |
 | `import_abi.py` | Expands reviewed ABI policy against exact PE imports. |
 | `machine_import_profiles.py` | Imported-call profile parsing and binding. |
 | `call_arguments.py` | Argument-source recovery. |
@@ -344,6 +345,7 @@ reviewed profiles are:
 - `pe32-msvcrt-lockstep-v1.json`
 - `pe32-msvcrt-machine-runtime-v1.json`
 - `pe32-native-callthrough-runtime-v1.json`
+- `pe32-normal-return-nonvolatile-v1.json`
 - `pe32-static-cutpoints-and-paired-callables-v1.json`
 - `pe32-win32-system-dll-abi-policy-v1.json`
 - `pe32-win32-windowing-runtime-v1.json`

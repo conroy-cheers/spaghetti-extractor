@@ -7,7 +7,7 @@
     "ecx",
     "edx"
   ],
-  "content_sha256": "3af81583b7ba999e36181980c6b441d107284e1333856ff2caeb40e09318a0ea",
+  "content_sha256": "7ef15aa65e0a4e54adcc90deb0259cb57140c9711c65500ad4285467f424e4f2",
   "format": "spaghetti-extractor-normal-call-abi-premise-v1",
   "id": "pe32-normal-return-nonvolatile-v1",
   "machine": "i386",
@@ -19,6 +19,7 @@
   ],
   "schema_version": 1,
   "transfer_kinds": [
-    "indirect_call"
+    "indirect_call",
+    "internal_call"
   ]
 }

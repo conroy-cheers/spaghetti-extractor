@@ -384,7 +384,7 @@ def analyze_global_slots_v2(
     # submitted evidence.  Build them once, then independently replay the
     # slot-flow transfer over the same immutable normalized inputs.  Rebuilding
     # the event graph for the cold replay used to rescan every event once per
-    # reachable unit and dominated the DX-Ball fixed point.
+    # reachable unit and dominated large-program fixed points.
     reachable = frozenset(str(value) for value in graph_info["reachable_units"])
     events = _events(
         normalized_units,

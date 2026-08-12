@@ -1257,7 +1257,11 @@ def _recursive_seed_summary() -> dict[str, Any]:
     return {
         "status": "complete",
         "preserved_registers": [],
-        "register_preservation": {"status": "complete"},
+        "register_preservation": {
+            "status": "complete",
+            "checked_preserved_registers": [],
+            "checked_clobbered_registers": sorted(_SUMMARY_REGISTERS),
+        },
         "result_register_origins": {"status": "complete", "registers": {}},
         "result_memory_origins": {"status": "complete", "locations": []},
         "caller_memory_frame": {
@@ -1540,6 +1544,13 @@ def _analyze_callee(
             for state in return_states
         )
     )
+    clobbered = sorted(
+        register
+        for register in _SUMMARY_REGISTERS
+        if return_states
+        and register not in preserved
+        and all(state.registers.get(register) is not None for state in return_states)
+    )
     control_complete = not {
         "callee_summary_budget_exceeded",
         "call_return_behavior_incomplete",
@@ -1567,8 +1578,16 @@ def _analyze_callee(
         "multiple_calls_in_unit",
         "register_write_inventory_invalid",
     } & blockers
-    register_control_complete = register_frames_complete and register_paths_complete
+    register_inventory_complete = (
+        set(preserved) | set(clobbered) == set(_SUMMARY_REGISTERS)
+    )
+    register_control_complete = (
+        register_frames_complete
+        and register_paths_complete
+        and register_inventory_complete
+    )
     checked_preserved = preserved if register_paths_complete else []
+    checked_clobbered = clobbered if register_paths_complete else []
     return_esp_values = {state.registers.get("esp") for state in return_states}
     exact_return_esp = (
         next(iter(return_esp_values)) if len(return_esp_values) == 1 else None
@@ -1661,11 +1680,16 @@ def _analyze_callee(
         # from legacy incomplete summaries, whose top-level list is ignored.
         "preserved_registers": checked_preserved,
         "register_preservation": (
-            {"status": "complete"}
+            {
+                "status": "complete",
+                "checked_preserved_registers": checked_preserved,
+                "checked_clobbered_registers": checked_clobbered,
+            }
             if register_control_complete
             else {
                 "status": "incomplete",
                 "checked_preserved_registers": checked_preserved,
+                "checked_clobbered_registers": checked_clobbered,
             }
         ),
         "result_register_origins": {
@@ -1946,8 +1970,7 @@ def _summary_call_frame(
     if not behavior_complete:
         may_return = None
         may_not_return = None
-    preservation = _mapping(summary.get("register_preservation"))
-    register_frame_complete = preservation.get("status") == "complete"
+    register_frame_complete = checked_summary_register_frame_complete(summary)
     stack_cleanup = _summary_stack_cleanup(summary)
     stack_frame_complete = stack_cleanup is not None
     register_results = _mapping(summary.get("result_register_origins"))
@@ -2976,6 +2999,13 @@ def checked_summary_preserved_registers(
         return frozenset()
     if preservation:
         if preservation.get("status") == "complete":
+            checked = preservation.get("checked_preserved_registers")
+            if checked is not None and (
+                not isinstance(checked, list)
+                or len(checked) != len(set(map(str, checked)))
+                or frozenset(str(register) for register in checked) != normalized
+            ):
+                return frozenset()
             return normalized
         checked = preservation.get("checked_preserved_registers")
         if (
@@ -2988,6 +3018,42 @@ def checked_summary_preserved_registers(
     if summary.get("status") != "complete":
         return frozenset()
     return normalized
+
+
+def checked_summary_clobbered_registers(
+    summary: Mapping[str, Any] | None,
+) -> frozenset[str]:
+    """Return explicit non-preservation atoms from the current summary schema."""
+
+    if summary is None:
+        return frozenset()
+    preservation = _mapping(summary.get("register_preservation"))
+    raw = preservation.get("checked_clobbered_registers")
+    if (
+        not isinstance(raw, list)
+        or len(raw) != len(set(map(str, raw)))
+        or any(register not in _SUMMARY_REGISTERS for register in raw)
+    ):
+        return frozenset()
+    result = frozenset(str(register) for register in raw)
+    if result & checked_summary_preserved_registers(summary):
+        return frozenset()
+    return result
+
+
+def checked_summary_register_frame_complete(
+    summary: Mapping[str, Any] | None,
+) -> bool:
+    """Whether every nonvolatile register has an explicit checked relation."""
+
+    if summary is None:
+        return False
+    preservation = _mapping(summary.get("register_preservation"))
+    if preservation.get("status") != "complete":
+        return False
+    preserved = checked_summary_preserved_registers(summary)
+    clobbered = checked_summary_clobbered_registers(summary)
+    return preserved | clobbered == _SUMMARY_REGISTERS and not preserved & clobbered
 
 
 def _summary_preserved(summary: Mapping[str, Any] | None) -> frozenset[str]:
@@ -4346,5 +4412,8 @@ def _integer(value: Any) -> int | None:
 
 __all__ = [
     "INTERNAL_CALL_SUMMARY_FORMAT",
+    "checked_summary_clobbered_registers",
+    "checked_summary_preserved_registers",
+    "checked_summary_register_frame_complete",
     "derive_internal_call_preservation_summaries",
 ]

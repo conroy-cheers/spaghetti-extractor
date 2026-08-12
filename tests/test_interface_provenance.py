@@ -779,6 +779,116 @@ class InterfaceProvenanceTests(unittest.TestCase):
         self.assertIsNone(unknown_effect["abi"])
         self.assertIsNone(unknown_effect["argument_words"])
 
+    def test_normal_call_premise_fills_unknown_internal_nonvolatile_relation(
+        self,
+    ) -> None:
+        premise = build_pe32_normal_call_abi_premise()
+        target_address = IMAGE_BASE + 0x2000
+        seed = unit(
+            "seed",
+            0x1000,
+            writes=[{"register": "esi", "value": const(target_address)}],
+        )
+        event = {
+            "kind": "internal_call",
+            "target_rva": 0x1800,
+            "return_rva": 0x1002,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        internal = unit("internal", 0x1001, events=[event], ordered=[event])
+        dispatch = ordinary_indirect_call("dispatch", 0x1002)
+        dispatch["semantics"]["external_events"][0]["target"] = reg("esi")
+        dispatch["semantics"]["ordered_events"][-1]["target"] = reg("esi")
+        units = [
+            seed,
+            internal,
+            dispatch,
+            unit("callee", 0x1800),
+            unit("target", 0x2000),
+        ]
+        exits = [{
+            "id": "exit:dispatch",
+            "source_unit_id": "dispatch",
+            "source_rva": 0x1002,
+            "source_event_index": 0,
+            "kind": "indirect_call",
+            "target_expression": reg("esi"),
+        }]
+        result = self._run(
+            units,
+            [edge("seed", "internal"), edge("internal", "dispatch")],
+            roots=["seed"],
+            internal_edges=[{
+                "source_unit_id": "internal",
+                "source_event_index": 0,
+                "target_unit_id": "callee",
+            }],
+            indirect_exits=exits,
+            internal_call_preserved_registers={IMAGE_BASE + 0x1800: frozenset()},
+            internal_call_register_frame_completeness={
+                IMAGE_BASE + 0x1800: False
+            },
+            normal_call_abi_premise=premise,
+        )
+
+        resolution = next(row for row in result["resolutions"] if row["id"] == "exit:dispatch")
+        self.assertEqual(resolution["status"], "recovered")
+        self.assertEqual(resolution["target_unit_ids"], ["target"])
+        self.assertIn(premise.dependency_id, resolution["analysis_dependencies"])
+
+    def test_normal_call_premise_rejects_checked_internal_clobber(self) -> None:
+        premise = build_pe32_normal_call_abi_premise()
+        target_address = IMAGE_BASE + 0x2000
+        seed = unit(
+            "seed",
+            0x1000,
+            writes=[{"register": "esi", "value": const(target_address)}],
+        )
+        event = {
+            "kind": "internal_call",
+            "target_rva": 0x1800,
+            "return_rva": 0x1002,
+            "register_inputs": {name: reg(name) for name in REGISTERS},
+        }
+        internal = unit("internal", 0x1001, events=[event], ordered=[event])
+        dispatch = ordinary_indirect_call("dispatch", 0x1002)
+        dispatch["semantics"]["external_events"][0]["target"] = reg("esi")
+        dispatch["semantics"]["ordered_events"][-1]["target"] = reg("esi")
+        result = self._run(
+            [seed, internal, dispatch, unit("callee", 0x1800), unit("target", 0x2000)],
+            [edge("seed", "internal"), edge("internal", "dispatch")],
+            roots=["seed"],
+            internal_edges=[{
+                "source_unit_id": "internal",
+                "source_event_index": 0,
+                "target_unit_id": "callee",
+            }],
+            indirect_exits=[{
+                "id": "exit:dispatch",
+                "source_unit_id": "dispatch",
+                "source_rva": 0x1002,
+                "source_event_index": 0,
+                "kind": "indirect_call",
+                "target_expression": reg("esi"),
+            }],
+            internal_call_preserved_registers={IMAGE_BASE + 0x1800: frozenset()},
+            internal_call_clobbered_registers={
+                IMAGE_BASE + 0x1800: frozenset({"esi"})
+            },
+            internal_call_register_frame_completeness={
+                IMAGE_BASE + 0x1800: False
+            },
+            normal_call_abi_premise=premise,
+        )
+
+        resolution = next(row for row in result["resolutions"] if row["id"] == "exit:dispatch")
+        self.assertEqual(resolution["status"], "incomplete")
+        effect = next(row for row in result["call_site_effects"] if row["unit_id"] == "internal")
+        self.assertIn(
+            "normal_call_abi_premise_register_conflict",
+            effect["failure_codes"],
+        )
+
     def test_shared_transfer_cache_is_bounded(self) -> None:
         cache = InterfaceTransferCache(capacity=1)
         result = self._run(
@@ -6299,6 +6409,8 @@ class InterfaceProvenanceTests(unittest.TestCase):
         static_data_reader: Callable[[int, int], bytes | None] | None = None,
         bootstrap_unknown_call_preserved_registers: frozenset[str] | None = None,
         internal_call_preserved_registers: dict[int, frozenset[str]] | None = None,
+        internal_call_clobbered_registers: dict[int, frozenset[str]] | None = None,
+        internal_call_register_frame_completeness: dict[int, bool] | None = None,
         internal_call_result_relations: dict[
             int, dict[str, list[dict[str, object]]]
         ] | None = None,
@@ -6364,6 +6476,12 @@ class InterfaceProvenanceTests(unittest.TestCase):
             import_abis=import_abis,
             internal_call_preserved_registers=(
                 internal_call_preserved_registers or {}
+            ),
+            internal_call_clobbered_registers=(
+                internal_call_clobbered_registers or {}
+            ),
+            internal_call_register_frame_completeness=(
+                internal_call_register_frame_completeness
             ),
             internal_call_result_relations=(
                 internal_call_result_relations or {}

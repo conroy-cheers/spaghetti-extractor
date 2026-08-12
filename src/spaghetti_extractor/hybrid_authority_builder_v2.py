@@ -64,6 +64,7 @@ from .machine_ir_isa_selection_v2 import (
     MachineIRISASelectionCertificateV2,
     parse_machine_ir_isa_selection_certificate_v2,
 )
+from .internal_call_summaries import checked_summary_register_frame_complete
 
 
 HybridAuthorityBuilderV2Error = MachineIRAuthorityV2Error
@@ -1464,7 +1465,6 @@ def _call_frame_family_projection(
 
 def _call_frame_families_complete(summary: Mapping[str, Any]) -> bool:
     required = (
-        "register_preservation",
         "stack_cleanup",
         "result_register_origins",
         "return_behavior",
@@ -1472,7 +1472,7 @@ def _call_frame_families_complete(summary: Mapping[str, Any]) -> bool:
         "callback_effects",
         "world_effects",
     )
-    return all(
+    return checked_summary_register_frame_complete(summary) and all(
         _mapping_or_empty(summary.get(family)).get("status")
         in {"complete", "not_applicable"}
         for family in required

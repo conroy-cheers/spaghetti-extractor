@@ -23,7 +23,10 @@ class NormalCallABIPremiseTests(unittest.TestCase):
 
         self.assertEqual(parsed, built)
         self.assertEqual(profile, built)
-        self.assertEqual(profile.transfer_kinds, ("indirect_call",))
+        self.assertEqual(
+            profile.transfer_kinds,
+            ("indirect_call", "internal_call"),
+        )
         self.assertEqual(
             profile.preserved_registers,
             ("ebp", "ebx", "edi", "esi"),

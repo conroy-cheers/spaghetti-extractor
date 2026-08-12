@@ -630,6 +630,14 @@ class InternalCallSummaryTests(unittest.TestCase):
             self._summary(result, "callee")["preserved_registers"],
             ["ebp", "ebx", "edi"],
         )
+        self.assertEqual(
+            self._summary(result, "callee")["register_preservation"],
+            {
+                "status": "complete",
+                "checked_preserved_registers": ["ebp", "ebx", "edi"],
+                "checked_clobbered_registers": ["esi"],
+            },
+        )
 
     def test_unsupported_instruction_invalidates_its_decoded_register_writes(self) -> None:
         callee = unit("callee", 0x2000, outcome="return")
@@ -656,7 +664,13 @@ class InternalCallSummaryTests(unittest.TestCase):
             extra_units=[unit("done", 0x1001, outcome="return")],
         )
 
-        self.assertNotIn("esi", self._summary(result, "callee")["preserved_registers"])
+        summary = self._summary(result, "callee")
+        self.assertNotIn("esi", summary["preserved_registers"])
+        self.assertEqual(summary["register_preservation"]["status"], "incomplete")
+        self.assertNotIn(
+            "esi",
+            summary["register_preservation"]["checked_clobbered_registers"],
+        )
 
     def test_stack_save_and_restore_recovers_register_origin(self) -> None:
         result = self._derive(

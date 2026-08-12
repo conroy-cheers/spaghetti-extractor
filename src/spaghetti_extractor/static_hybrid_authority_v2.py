@@ -1027,7 +1027,7 @@ def _interprocedural_payload(
                             category="interprocedural",
                             code="normal_call_abi_premise_contradicted",
                             message=(
-                                "a checked indirect call contradicts the selected "
+                                "a checked call contradicts the selected "
                                 "normal-return preservation premise"
                             ),
                             next_action=(

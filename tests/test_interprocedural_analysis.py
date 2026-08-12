@@ -776,7 +776,14 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         })
 
     def test_partial_summary_families_remain_independently_usable(self) -> None:
-        preserved, cleanup, results, memory_results = _call_summary_inputs(
+        (
+            preserved,
+            _clobbered,
+            _register_frame_completeness,
+            cleanup,
+            results,
+            memory_results,
+        ) = _call_summary_inputs(
             {
                 "summaries": [{
                     "target_rva": 0x2000,
@@ -833,7 +840,14 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         )
 
     def test_checked_partial_register_atoms_remain_usable(self) -> None:
-        preserved, cleanup, results, memory_results = _call_summary_inputs(
+        (
+            preserved,
+            _clobbered,
+            _register_frame_completeness,
+            cleanup,
+            results,
+            memory_results,
+        ) = _call_summary_inputs(
             {
                 "summaries": [{
                     "target_rva": 0x2000,
@@ -3197,7 +3211,11 @@ class InterproceduralAnalysisTests(unittest.TestCase):
         checked_false = _summary_register_state({
             "status": "complete",
             "preserved_registers": [],
-            "register_preservation": {"status": "complete"},
+            "register_preservation": {
+                "status": "complete",
+                "checked_preserved_registers": [],
+                "checked_clobbered_registers": ["ebp", "ebx", "edi", "esi"],
+            },
         }, "edi")
         unknown = _summary_register_state({
             "status": "incomplete",
@@ -3205,6 +3223,7 @@ class InterproceduralAnalysisTests(unittest.TestCase):
             "register_preservation": {
                 "status": "incomplete",
                 "checked_preserved_registers": [],
+                "checked_clobbered_registers": [],
             },
         }, "edi")
 
