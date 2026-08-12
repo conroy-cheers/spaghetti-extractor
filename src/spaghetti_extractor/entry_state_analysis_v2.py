@@ -415,8 +415,19 @@ def derive_callback_entry_state_contracts_v2(
         unit_bindings=unit_bindings,
         issues=issues,
     )
+    required_invariant_ids = {
+        content_id
+        for registration in registrations
+        for content_id in registration.get("global_slot_invariant_ids", [])
+        if isinstance(content_id, str)
+    }
     checked_invariants = _checked_global_slot_invariant_records(
-        global_slot_invariants,
+        [
+            invariant
+            for invariant in global_slot_invariants
+            if isinstance(invariant, Mapping)
+            and invariant.get("content_id") in required_invariant_ids
+        ],
         pe_sha256=pe_sha256,
         machine_ir_sha256=machine_ir_sha256,
         issues=issues,

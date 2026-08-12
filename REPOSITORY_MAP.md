@@ -142,6 +142,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `isa_kernel_selection.py` | Binary-specific binding from reachable forms to qualified semantics and fallback capabilities. |
 | `machine_ir_isa_catalog_v2.py`, `machine_ir_isa_requirements_v2.py`, `machine_ir_isa_selection_v2.py` | Exact machine-IR ISA inventory, required-form extraction, and binary-bound qualification selection. |
 | `launch_profile_v2.py` | Conditional PE32 launch assumptions and exact static/callback root inventory. |
+| `launch_assumption_inputs_v2.py` | Content-stable, non-authorizing PE-bound assumption projection for root-independent SCC analysis. |
 | `launch_memory_ranges_v2.py` | Exact event-bound spatial separation facts for private launch ranges such as the Win32 TEB; it does not claim content immutability. |
 | `hybrid_authority_builder_v2.py` | Constructs the immutable authority bundle from independently replayed v2 records. |
 | `hybrid_diagnostics_v2.py` | Collapses dependent consequences behind deterministic primary blocker IDs. |
@@ -316,6 +317,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `ca-python-json-phase.nix` | Generic CA phase constructor with explicit store dependencies, schema/status checking, and phase manifests. |
 | `stage-b-headless-diagnostic-run.nix` | Runs only a statically closed candidate in an isolated headless Wine session. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure for phase-specific invalidation. |
+| `python-module-validation.nix` | Per-module content-addressed import validation; closures depend only on validators for their selected modules. |
 | `python-module-index.json` | Generated checked local-import graph consumed by phase-specific Python closures. |
 | `stage-b-linked-libraries.nix` | Library constellation and replacement-plan DAG. |
 | `stage-b-source-call-substitutions.nix` | Call-frontier through source-binding DAG. |

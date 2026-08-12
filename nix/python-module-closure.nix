@@ -63,6 +63,16 @@ let
   moduleFilesJson = builtins.toJSON moduleFiles;
   extraFilesJson = builtins.toJSON extraFiles;
   rootsJson = builtins.toJSON (builtins.sort builtins.lessThan modules);
+  moduleValidations = map
+    (module: {
+      inherit module;
+      path = toString (import ./python-module-validation.nix {
+        inherit pkgs module repositoryRoot;
+        moduleRecord = moduleRecords.${module};
+      });
+    })
+    selectedModules;
+  moduleValidationsJson = builtins.toJSON moduleValidations;
 in
 assert index.format == "spaghetti-extractor-python-module-index-v1";
 assert builtins.isList modules && modules != [ ];
@@ -79,7 +89,8 @@ pkgs.runCommand name {
   ${pkgs.python3}/bin/python3 - "$out" \
       ${lib.escapeShellArg rootsJson} \
       ${lib.escapeShellArg moduleFilesJson} \
-      ${lib.escapeShellArg extraFilesJson} <<'PY'
+      ${lib.escapeShellArg extraFilesJson} \
+      ${lib.escapeShellArg moduleValidationsJson} <<'PY'
   from __future__ import annotations
 
   import hashlib
@@ -92,9 +103,24 @@ pkgs.runCommand name {
   roots = json.loads(sys.argv[2])
   module_files = json.loads(sys.argv[3])
   extra_files = json.loads(sys.argv[4])
+  module_validations = json.loads(sys.argv[5])
   output_root = output / "src"
   rows = []
   copied = set()
+
+  validated_modules = set()
+  for row in module_validations:
+      validation_path = pathlib.Path(row["path"]) / "python-module-validation.json"
+      validation = json.loads(validation_path.read_text(encoding="utf-8"))
+      if (
+          validation.get("format")
+          != "spaghetti-extractor-python-module-validation-v1"
+          or validation.get("module") != row["module"]
+      ):
+          raise SystemExit(f"invalid module validation for {row['module']}")
+      validated_modules.add(row["module"])
+  if validated_modules != {row["module"] for row in module_files}:
+      raise SystemExit("module validation inventory does not match closure")
 
   def copy_file(source: pathlib.Path, relative: pathlib.PurePosixPath) -> None:
       if relative in copied:

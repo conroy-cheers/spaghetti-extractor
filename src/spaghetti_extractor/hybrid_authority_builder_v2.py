@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .analysis.scc_worklist import decompose_scc
 from .hybrid_authority_v2 import (
@@ -22,6 +22,7 @@ from .hybrid_authority_v2 import (
     GlobalSlotInvariant,
     ImageSpanBinding,
     IndirectExitCertificate,
+    MachineABIPremiseAuthority,
     UnitBinding,
     ValueFact,
     canonical_json_bytes,
@@ -69,6 +70,7 @@ from .indirect_target_dependency_v2 import (
     IndirectTargetDependencyV2Error,
     validate_profile_dispatch_dependency_v2,
 )
+from .machine_abi import parse_normal_call_abi_premise
 
 
 HybridAuthorityBuilderV2Error = MachineIRAuthorityV2Error
@@ -202,6 +204,10 @@ def build_hybrid_authority_v2(
     }
     recoveries = tuple(interprocedural.get("recovered_targets", ()))
     fixed = _mapping_or_empty(interprocedural.get("fixed_point"))
+    machine_abi_premises = _machine_abi_premise_authorities(
+        fixed=fixed,
+        binary=binary,
+    )
     replay_authoritative = (
         fixed.get("cold_replay_validated") is True
         and fixed.get("authority_replay_validated") is True
@@ -268,6 +274,12 @@ def build_hybrid_authority_v2(
             )
             if not external_only:
                 frame_summaries = [summaries.get(item.unit_id) for item in callees]
+                frame_premise_dependencies, frame_premise_issues = (
+                    _summary_machine_abi_premise_dependencies(
+                        frame_summaries,
+                        machine_abi_premises=machine_abi_premises,
+                    )
+                )
                 complete = (
                     replay_authoritative
                     and bool(frame_summaries)
@@ -277,6 +289,7 @@ def build_hybrid_authority_v2(
                         and _call_frame_families_complete(summary)
                         for summary in frame_summaries
                     )
+                    and not frame_premise_issues
                 )
                 call_issues: tuple[EvidenceIssue, ...] = ()
                 if not replay_authoritative:
@@ -285,6 +298,7 @@ def build_hybrid_authority_v2(
                     call_issues = (_missing("call_target_missing", "reachable call has no finite exact internal callee inventory"),)
                 elif not complete:
                     call_issues = (_missing("call_summary_missing", "at least one finite callee alternative has no complete frame summary"),)
+                call_issues = _issues((*call_issues, *frame_premise_issues))
                 frame = CallFrameSummary(
                     call_site=binding,
                     analysis_fact_id=(
@@ -310,9 +324,15 @@ def build_hybrid_authority_v2(
                         )
                         else None
                     ),
+                    dependencies=frame_premise_dependencies,
                     issues=_issues(call_issues),
                 )
                 add(frame)
+                _add_machine_abi_premise_dependencies(
+                    frame_premise_dependencies,
+                    machine_abi_premises=machine_abi_premises,
+                    add=add,
+                )
                 for target in callees:
                     call_frames_by_dependency[call_frame_dependency_id(
                         binding.unit.unit_id,
@@ -331,6 +351,13 @@ def build_hybrid_authority_v2(
                         requests,
                         key=lambda item: (item[0], item[1] or ""),
                     ):
+                        family_premise_dependencies, family_premise_issues = (
+                            _summary_machine_abi_premise_dependencies(
+                                (summary,),
+                                machine_abi_premises=machine_abi_premises,
+                                include=(family == "register"),
+                            )
+                        )
                         alternative = (
                             _call_frame_family_alternative(
                                 summary, target, family, subject
@@ -351,6 +378,10 @@ def build_hybrid_authority_v2(
                                 "call_summary_family_missing",
                                 f"callee has no complete {family} frame family",
                             ),)
+                        family_issues = _issues((
+                            *family_issues,
+                            *family_premise_issues,
+                        ))
                         family_frame = CallFrameSummary(
                             call_site=binding,
                             analysis_fact_id=call_summary_family_node_id(
@@ -363,12 +394,18 @@ def build_hybrid_authority_v2(
                                 if alternative is not None
                                 else None
                             ),
+                            dependencies=family_premise_dependencies,
                             issues=_issues(family_issues),
                         )
                         # Family projections are rooted only when an indirect
                         # certificate consumes them. The aggregate frame above
                         # remains the independent whole-call requirement.
                         add(family_frame, is_required=False)
+                        _add_machine_abi_premise_dependencies(
+                            family_premise_dependencies,
+                            machine_abi_premises=machine_abi_premises,
+                            add=add,
+                        )
                         dependency_id = call_frame_family_dependency_id(
                             binding.unit.unit_id,
                             binding.event_index,
@@ -435,6 +472,7 @@ def build_hybrid_authority_v2(
                 _checked_call_frame_dependencies(
                     recovery,
                     call_frames_by_dependency=call_frames_by_dependency,
+                    machine_abi_premises=machine_abi_premises,
                     non_call_dependency_ids=frozenset(
                         {
                             dependency.content_id
@@ -564,6 +602,17 @@ def build_hybrid_authority_v2(
                 if global_record is not None:
                     add(global_record, is_required=False)
             for dependency in call_dependencies:
+                premise_record = next(
+                    (
+                        record
+                        for record in machine_abi_premises.values()
+                        if record.content_id == dependency.content_id
+                    ),
+                    None,
+                )
+                if premise_record is not None:
+                    add(premise_record, is_required=False)
+                    continue
                 frame = next(
                     (
                         record
@@ -901,7 +950,7 @@ def _binding_issues(
 def _typed_records(values: Iterable[AuthorityRecord | Mapping[str, Any]]) -> tuple[AuthorityRecord, ...]:
     result: list[AuthorityRecord] = []
     for value in values:
-        if isinstance(value, (EntryStateContract, ValueFact, GlobalSlotInvariant, CallFrameSummary, IndirectExitCertificate, CheckedExternalSite)):
+        if isinstance(value, (EntryStateContract, ValueFact, MachineABIPremiseAuthority, GlobalSlotInvariant, CallFrameSummary, IndirectExitCertificate, CheckedExternalSite)):
             result.append(value)
         elif isinstance(value, Mapping) and value.get("schema_version") == 2:
             result.append(parse_authority_record(value))
@@ -922,6 +971,108 @@ def _interprocedural(value: Any) -> dict[str, Any]:
         "recovered_targets": getattr(value, "recovered_targets", ()),
         "fixed_point": getattr(value, "fixed_point", {}),
     }
+
+
+def _machine_abi_premise_authorities(
+    *,
+    fixed: Mapping[str, Any],
+    binary: BinaryBinding,
+) -> dict[str, MachineABIPremiseAuthority]:
+    raw = fixed.get("normal_call_abi_premise")
+    if raw is None:
+        return {}
+    try:
+        premise = parse_normal_call_abi_premise(raw)
+    except (TypeError, ValueError):
+        return {}
+
+    inventory = fixed.get("dependencies")
+    rows = inventory if isinstance(inventory, list) else []
+    matching = [
+        row
+        for row in rows
+        if isinstance(row, Mapping)
+        and (
+            row.get("kind") == "normal_call_abi_premise"
+            or str(row.get("id", "")).startswith("normal-call-abi-premise:")
+        )
+    ]
+    valid = (
+        len(matching) == 1
+        and matching[0].get("id") == premise.dependency_id
+        and matching[0].get("kind") == "normal_call_abi_premise"
+        and matching[0].get("status") == "complete"
+        and matching[0].get("lattice_complete") is True
+        and matching[0].get("dependencies") == []
+    )
+    issues = () if valid else _issues((
+        _contradiction(
+            "normal_call_abi_premise_dependency_mismatch",
+            "the reviewed machine ABI premise does not match its typed dependency node",
+        ),
+    ))
+    record = MachineABIPremiseAuthority(
+        binary=binary,
+        premise=premise,
+        issues=issues,
+    )
+    return {premise.dependency_id: record}
+
+
+def _summary_machine_abi_premise_dependencies(
+    summaries: Sequence[Any],
+    *,
+    machine_abi_premises: Mapping[str, MachineABIPremiseAuthority],
+    include: bool = True,
+) -> tuple[tuple[AuthorityDependency, ...], tuple[EvidenceIssue, ...]]:
+    if not include:
+        return (), ()
+    dependencies: set[AuthorityDependency] = set()
+    issues: list[EvidenceIssue] = []
+    for summary in summaries:
+        if not isinstance(summary, Mapping):
+            continue
+        raw_dependencies = summary.get("target_dependencies", ())
+        if not isinstance(raw_dependencies, Sequence) or isinstance(
+            raw_dependencies, (str, bytes)
+        ):
+            continue
+        for dependency_id in raw_dependencies:
+            if not isinstance(dependency_id, str) or not dependency_id.startswith(
+                "normal-call-abi-premise:"
+            ):
+                continue
+            premise = machine_abi_premises.get(dependency_id)
+            if premise is None:
+                issues.append(_contradiction(
+                    "normal_call_abi_premise_dependency_invalid",
+                    f"call summary requires invalid premise {dependency_id}",
+                ))
+                continue
+            dependencies.add(AuthorityDependency(
+                "machine_abi_premise", premise.content_id
+            ))
+            if premise.status is not AuthorityStatus.COMPLETE:
+                issues.append(_contradiction(
+                    "normal_call_abi_premise_dependency_invalid",
+                    f"call summary requires contradictory premise {dependency_id}",
+                ))
+    return tuple(sorted(dependencies)), _issues(issues)
+
+
+def _add_machine_abi_premise_dependencies(
+    dependencies: Sequence[AuthorityDependency],
+    *,
+    machine_abi_premises: Mapping[str, MachineABIPremiseAuthority],
+    add: Callable[..., None],
+) -> None:
+    by_content_id = {
+        record.content_id: record for record in machine_abi_premises.values()
+    }
+    for dependency in dependencies:
+        record = by_content_id.get(dependency.content_id)
+        if record is not None:
+            add(record, is_required=False)
 
 
 def _rows(value: Any, key: str) -> tuple[Mapping[str, Any], ...]:
@@ -1038,6 +1189,7 @@ def _checked_call_frame_dependencies(
     recovery: Mapping[str, Any] | None,
     *,
     call_frames_by_dependency: Mapping[str, CallFrameSummary],
+    machine_abi_premises: Mapping[str, MachineABIPremiseAuthority],
     non_call_dependency_ids: frozenset[str] = frozenset(),
 ) -> tuple[tuple[AuthorityDependency, ...], tuple[EvidenceIssue, ...]]:
     if recovery is None:
@@ -1065,6 +1217,23 @@ def _checked_call_frame_dependencies(
         if dependency_id in non_call_dependency_ids:
             continue
         if dependency_id.startswith("indirect-exit:"):
+            continue
+        if dependency_id.startswith("normal-call-abi-premise:"):
+            premise = machine_abi_premises.get(dependency_id)
+            if premise is None:
+                issues.append(_contradiction(
+                    "normal_call_abi_premise_dependency_invalid",
+                    f"target provenance requires invalid premise {dependency_id}",
+                ))
+                continue
+            dependencies.add(AuthorityDependency(
+                "machine_abi_premise", premise.content_id
+            ))
+            if premise.status is not AuthorityStatus.COMPLETE:
+                issues.append(_contradiction(
+                    "normal_call_abi_premise_dependency_invalid",
+                    f"target provenance requires contradictory premise {dependency_id}",
+                ))
             continue
         if (
             parse_call_frame_dependency(dependency_id) is None

@@ -31,24 +31,25 @@ def _candidate_paths(source_root: Path) -> dict[str, Path]:
     return result
 
 
-def _parent_modules(module: str, modules: dict[str, Path]) -> Iterable[str]:
+def _parent_modules(module: str) -> Iterable[str]:
     parts = module.split(".")
     for size in range(1, len(parts)):
-        parent = ".".join(parts[:size])
-        if parent in modules:
-            yield parent
+        yield ".".join(parts[:size])
 
 
 def _local_imports(
-    *, module: str, path: Path, modules: dict[str, Path]
+    *, module: str, path: Path
 ) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     current_package = module if path.name == "__init__.py" else module.rpartition(".")[0]
-    result = set(_parent_modules(module, modules))
+    result = set(_parent_modules(module))
     for node in ast.walk(tree):
-        candidates: list[str] = []
         if isinstance(node, ast.Import):
-            candidates.extend(alias.name for alias in node.names)
+            result.update(
+                alias.name
+                for alias in node.names
+                if alias.name == PACKAGE or alias.name.startswith(f"{PACKAGE}.")
+            )
         elif isinstance(node, ast.ImportFrom):
             if node.level:
                 base = current_package.split(".") if current_package else []
@@ -61,14 +62,18 @@ def _local_imports(
                 target = ".".join(base)
             else:
                 target = node.module or ""
-            if target:
-                candidates.append(target)
-            candidates.extend(
-                f"{target}.{alias.name}" if target else alias.name
-                for alias in node.names
-                if alias.name != "*"
-            )
-        result.update(candidate for candidate in candidates if candidate in modules)
+            if target == PACKAGE or target.startswith(f"{PACKAGE}."):
+                result.add(target)
+                # ``from . import module`` and ``from package import module``
+                # load a sibling module rather than a name from an already
+                # selected module.  Other from-imports depend on their base
+                # module; imported attributes do not create extra DAG nodes.
+                if node.module is None or target == PACKAGE:
+                    result.update(
+                        f"{target}.{alias.name}"
+                        for alias in node.names
+                        if alias.name != "*"
+                    )
     result.discard(module)
     return result
 
@@ -79,12 +84,18 @@ def build_index(repository: Path) -> dict[str, object]:
     rows = {
         module: {
             "path": path.relative_to(repository).as_posix(),
-            "dependencies": sorted(
-                _local_imports(module=module, path=path, modules=modules)
-            ),
+            "dependencies": sorted(_local_imports(module=module, path=path)),
         }
         for module, path in sorted(modules.items())
     }
+    missing = sorted({
+        dependency
+        for row in rows.values()
+        for dependency in row["dependencies"]
+        if dependency not in modules
+    })
+    if missing:
+        raise ValueError(f"local imports name missing modules: {missing!r}")
     return {"format": FORMAT, "modules": rows}
 
 

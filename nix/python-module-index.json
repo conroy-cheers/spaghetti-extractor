@@ -749,7 +749,10 @@
         "spaghetti_extractor.authority_dependencies_v2",
         "spaghetti_extractor.authority_record_core_v2",
         "spaghetti_extractor.hybrid_authority_v2",
+        "spaghetti_extractor.indirect_target_dependency_v2",
+        "spaghetti_extractor.internal_call_summaries",
         "spaghetti_extractor.isa_kernel_selection",
+        "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_ir_authority_v2",
         "spaghetti_extractor.machine_ir_isa_requirements_v2",
         "spaghetti_extractor.machine_ir_isa_selection_v2"
@@ -763,7 +766,8 @@
         "spaghetti_extractor.authority_dependencies_v2",
         "spaghetti_extractor.authority_record_core_v2",
         "spaghetti_extractor.entry_state_contract_v2",
-        "spaghetti_extractor.global_slot_contract_v2"
+        "spaghetti_extractor.global_slot_contract_v2",
+        "spaghetti_extractor.machine_abi"
       ],
       "path": "src/spaghetti_extractor/hybrid_authority_v2.py"
     },
@@ -806,6 +810,7 @@
         "spaghetti_extractor.external_interface_profiles",
         "spaghetti_extractor.external_operation_profiles",
         "spaghetti_extractor.import_abi",
+        "spaghetti_extractor.indirect_target_dependency_v2",
         "spaghetti_extractor.intrinsic_call_site_effects",
         "spaghetti_extractor.machine_abi",
         "spaghetti_extractor.machine_import_profiles",
@@ -1079,6 +1084,13 @@
         "spaghetti_extractor.mutable_slot_candidates_v2"
       ],
       "path": "src/spaghetti_extractor/joint_interprocedural_analysis_v2.py"
+    },
+    "spaghetti_extractor.launch_assumption_inputs_v2": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.authority_bindings_v2"
+      ],
+      "path": "src/spaghetti_extractor/launch_assumption_inputs_v2.py"
     },
     "spaghetti_extractor.launch_memory_ranges_v2": {
       "dependencies": [

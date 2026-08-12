@@ -30,11 +30,13 @@ from spaghetti_extractor.hybrid_authority_v2 import (
     GlobalSlotInvariant,
     IndirectExitBinding,
     IndirectExitCertificate,
+    MachineABIPremiseAuthority,
     ProfileBinding,
     ValueFact,
     EventBinding,
     canonical_json_bytes,
 )
+from spaghetti_extractor.machine_abi import build_pe32_normal_call_abi_premise
 
 from tests.test_isa_kernel_selection import BINARY_SHA, _authority
 
@@ -137,6 +139,20 @@ def _interprocedural(*, recoveries: list[dict] | None = None) -> dict:
     }
 
 
+def _with_normal_call_premise(interprocedural: dict) -> dict:
+    premise = build_pe32_normal_call_abi_premise()
+    result = copy.deepcopy(interprocedural)
+    result["fixed_point"]["normal_call_abi_premise"] = premise.as_json()
+    result["fixed_point"]["dependencies"] = [{
+        "id": premise.dependency_id,
+        "kind": "normal_call_abi_premise",
+        "status": "complete",
+        "lattice_complete": True,
+        "dependencies": [],
+    }]
+    return result
+
+
 def _recovery(rows: list[dict], **values: object) -> dict:
     bindings = build_machine_ir_authority_bindings(rows, pe_sha256=BINARY_SHA)
     exit_binding = IndirectExitBinding.parse(bindings["indirect_exits"][0])
@@ -199,6 +215,95 @@ def _recovery_for(
 
 
 class HybridAuthorityBuilderV2Tests(unittest.TestCase):
+    def test_normal_call_abi_premise_is_a_typed_authority_dependency(self) -> None:
+        rows = [_indirect_row("unit:entry", 0x1000, "eax")]
+        premise = build_pe32_normal_call_abi_premise()
+        recovery = _recovery_for(
+            rows,
+            "unit:entry",
+            target_unit_ids=["unit:entry"],
+            analysis_dependencies=[premise.dependency_id],
+        )
+        interprocedural = _with_normal_call_premise(
+            _interprocedural(recoveries=[recovery])
+        )
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=interprocedural,
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        premise_record = next(
+            record
+            for record in bundle.records
+            if isinstance(record, MachineABIPremiseAuthority)
+        )
+        certificate = next(
+            record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+        )
+        self.assertEqual(premise_record.status, AuthorityStatus.COMPLETE)
+        self.assertIn(
+            AuthorityDependency("machine_abi_premise", premise_record.content_id),
+            certificate.dependencies,
+        )
+        self.assertNotIn(
+            "analysis_dependency_kind_unsupported",
+            {issue.code for issue in certificate.issues},
+        )
+
+    def test_stale_normal_call_abi_dependency_node_is_violated(self) -> None:
+        rows = [_indirect_row("unit:entry", 0x1000, "eax")]
+        premise = build_pe32_normal_call_abi_premise()
+        recovery = _recovery_for(
+            rows,
+            "unit:entry",
+            target_unit_ids=["unit:entry"],
+            analysis_dependencies=[premise.dependency_id],
+        )
+        interprocedural = _with_normal_call_premise(
+            _interprocedural(recoveries=[recovery])
+        )
+        interprocedural["fixed_point"]["dependencies"][0][
+            "lattice_complete"
+        ] = False
+        _qualification, _selection, isa_authority = _authority()
+
+        bundle = build_hybrid_authority_v2(
+            machine_ir_rows=rows,
+            machine_ir_manifest=_manifest(rows),
+            pe_sha256=BINARY_SHA,
+            root_records=[{"kind": "pe_entry", "rva": 0x1000}],
+            interprocedural_result=interprocedural,
+            entry_records=[_entry(rows)],
+            validated_isa_authority=isa_authority,
+        )
+
+        premise_record = next(
+            record
+            for record in bundle.records
+            if isinstance(record, MachineABIPremiseAuthority)
+        )
+        certificate = next(
+            record
+            for record in bundle.records
+            if isinstance(record, IndirectExitCertificate)
+        )
+        self.assertEqual(premise_record.status, AuthorityStatus.VIOLATED)
+        self.assertEqual(certificate.status, AuthorityStatus.VIOLATED)
+        self.assertIn(
+            "normal_call_abi_premise_dependency_invalid",
+            {issue.code for issue in certificate.issues},
+        )
+        self.assertEqual(bundle.status, AuthorityStatus.VIOLATED)
+
     def test_indirect_provenance_binds_checked_provider_certificate(self) -> None:
         rows = [
             _indirect_row("unit:entry", 0x1000, "eax"),

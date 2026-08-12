@@ -59,6 +59,11 @@ let
   machineIrPythonSource = mkPythonClosure staticPythonSource "machine-ir" [
     "spaghetti_extractor.reconstruction_ir"
   ];
+  launchAssumptionProjectionPythonSource = mkPythonClosure staticPythonSource
+    "launch-assumption-projection" [
+      "spaghetti_extractor.launch_assumption_inputs_v2"
+      "spaghetti_extractor.stage_binary"
+    ];
   reconstructionPlanPythonSource = mkPythonClosure planningPythonSource "reconstruction-plan" [
     "spaghetti_extractor.component_backend"
   ];
@@ -88,6 +93,59 @@ let
     profiles = machineImportProfiles;
     name = "${namePrefix}-machine-import-control-dispositions-v1";
   };
+
+  # Structural analysis consumes only explicit machine-state assumptions.  A
+  # finalized launch profile also contains roots and callback contracts, which
+  # belong to later authority phases and must not invalidate the joint SCC
+  # fixed point.  CA realization preserves the same output path when only
+  # those ignored fields change.
+  launchAssumptionInput =
+    if launchProfile != null then launchProfile else launchProfileTemplate;
+  launchAnalysisAssumptions =
+    if launchAssumptionInput == null then null else
+    pkgs.runCommand
+      "${namePrefix}-launch-analysis-assumptions-v2"
+      commonAttrs
+      ''
+        set -euo pipefail
+        ${commonEnvironment launchAssumptionProjectionPythonSource}
+        mkdir -p "$out"
+        ${python} - \
+          ${lib.escapeShellArg (toString original)} \
+          ${lib.escapeShellArg (toString launchAssumptionInput)} \
+          "$out/launch-analysis-assumptions-v2.json" <<'PY'
+        import json
+        import pathlib
+        import sys
+
+        from spaghetti_extractor.launch_assumption_inputs_v2 import (
+            build_launch_analysis_assumptions_v2,
+        )
+        from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+
+        original, source, output = map(pathlib.Path, sys.argv[1:])
+        binary = _parse_stage_a_pe(original)
+        payload = build_launch_analysis_assumptions_v2(
+            json.loads(source.read_text(encoding="utf-8")),
+            pe_sha256=binary.sha256,
+            image_base=binary.image_base,
+            size_of_image=binary.size_of_image,
+        ).to_payload()
+        output.write_text(
+            json.dumps(payload, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        PY
+        jq -e '
+          .format == "spaghetti-extractor-launch-analysis-assumptions-v2" and
+          .schema_version == 2 and
+          (.proof_authority | not) and
+          .constraints.root_and_callback_fields_ignored and
+          .constraints.final_launch_profile_validation_required and
+          (.constraints.original_binary_executed | not) and
+          (.assumptions | keys | length) == 6
+        ' "$out/launch-analysis-assumptions-v2.json" >/dev/null
+      '';
 
   originalInventory = pkgs.runCommand
     "${namePrefix}-original-inventory-v1"
@@ -720,7 +778,7 @@ let
           "spaghetti_extractor.interprocedural_phase_v2"
           "spaghetti_extractor.joint_fixed_point_v2"
           "spaghetti_extractor.joint_interprocedural_analysis_v2"
-          "spaghetti_extractor.launch_profile_v2"
+          "spaghetti_extractor.launch_assumption_inputs_v2"
           "spaghetti_extractor.launch_memory_ranges_v2"
           "spaghetti_extractor.memory_range_invariants_v2"
           "spaghetti_extractor.mutable_slot_candidates_v2"
@@ -734,10 +792,9 @@ let
           selected_profiles = selectedProfileInventory;
         } // lib.optionalAttrs (normalCallAbiPremise != null) {
           normal_call_abi_premise = normalCallAbiPremise;
-        } // lib.optionalAttrs (launchProfile != null) {
-          launch_profile = launchProfile;
-        } // lib.optionalAttrs (launchProfileTemplate != null) {
-          launch_profile_template = launchProfileTemplate;
+        } // lib.optionalAttrs (launchAnalysisAssumptions != null) {
+          launch_analysis_assumptions =
+            "${launchAnalysisAssumptions}/launch-analysis-assumptions-v2.json";
         };
         program = ''
           import hashlib
@@ -776,9 +833,8 @@ let
               build_proposal_control_graph_v2,
               merge_recovery_proposals_v2,
           )
-          from spaghetti_extractor.launch_profile_v2 import (
-              parse_launch_assumption_template_v1,
-              parse_launch_profile_v2,
+          from spaghetti_extractor.launch_assumption_inputs_v2 import (
+              parse_launch_analysis_assumptions_v2,
           )
           from spaghetti_extractor.launch_memory_ranges_v2 import (
               derive_launch_memory_range_analysis_v2,
@@ -810,17 +866,20 @@ let
               inputs["memory_range_invariants"].read_text(encoding="utf-8")
           )
           binary = _parse_stage_a_pe(inputs["original_pe"])
-          if "launch_profile" in inputs:
-              launch = parse_launch_profile_v2(
-                  json.loads(inputs["launch_profile"].read_text(encoding="utf-8"))
+          if "launch_analysis_assumptions" in inputs:
+              launch = parse_launch_analysis_assumptions_v2(
+                  json.loads(
+                      inputs["launch_analysis_assumptions"].read_text(
+                          encoding="utf-8"
+                      )
+                  )
               )
-              if launch.binary.pe_sha256 != binary.sha256:
-                  raise ValueError("launch profile is bound to another PE")
-              assumptions = {item.kind: item.value.to_value() for item in launch.assumptions}
-          elif "launch_profile_template" in inputs:
-              launch = parse_launch_assumption_template_v1(
-                  json.loads(inputs["launch_profile_template"].read_text(encoding="utf-8"))
-              )
+              if (
+                  launch.binary.pe_sha256 != binary.sha256
+                  or launch.binary.image_base != binary.image_base
+                  or launch.binary.size_of_image != binary.size_of_image
+              ):
+                  raise ValueError("launch assumptions are bound to another PE")
               assumptions = launch.assumption_map
           else:
               assumptions = {}
@@ -2335,6 +2394,7 @@ in
     originalInventory
     staticExport
     machineImportControlProfile
+    launchAnalysisAssumptions
     directStateMachine
     directPreparedMachineIr
     provisionalMachineIr

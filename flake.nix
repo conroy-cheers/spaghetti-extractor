@@ -171,6 +171,8 @@
           dxball-interface-profile = dxball.interfaceProfile;
           dxball-static-inventory = dxball.inventory;
           dxball-static-export = dxball.analysis.staticExport;
+          dxball-launch-analysis-assumptions =
+            dxball.analysis.launchAnalysisAssumptions;
           dxball-state-machine = dxball.analysis.stateMachine;
           dxball-machine-ir = dxball.analysis.machineIr;
           dxball-static-hybrid-completeness =
@@ -287,6 +289,10 @@
           } ''
             export PYTHONPATH=${testSource}/src:${testSource}/tests
             cd ${testSource}
+            python tools/update-python-module-index.py \
+              --repository ${testSource} \
+              --out ${testSource}/nix/python-module-index.json \
+              --check
             python -m unittest discover -s tests -p 'test_*.py'
             touch "$out"
           '';

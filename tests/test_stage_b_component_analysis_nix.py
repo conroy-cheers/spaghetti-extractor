@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -119,6 +120,11 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             joint_phase,
         )
         self.assertNotIn("spaghetti_extractor.entry_state_analysis_v2", joint_phase)
+        self.assertIn(
+            "spaghetti_extractor.launch_assumption_inputs_v2", joint_phase
+        )
+        self.assertNotIn("spaghetti_extractor.launch_profile_v2", joint_phase)
+        self.assertIn("launch_analysis_assumptions", joint_phase)
         self.assertEqual(
             projection_phases.count(
                 'pythonModules = [ "spaghetti_extractor.artifact_projection_v2" ];'
@@ -140,6 +146,32 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             'get("proposal_slot_dependencies", [])',
             authority_phase,
         )
+
+    def test_joint_python_closure_excludes_root_entry_analysis(self) -> None:
+        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
+            encoding="utf-8"
+        )
+        joint_phase = module[
+            module.index("      jointInterproceduralV2 = {") :
+            module.index("      interproceduralV2 = {")
+        ]
+        roots = set(
+            re.findall(r'"(spaghetti_extractor\.[a-zA-Z0-9_\.]+)"', joint_phase)
+        )
+        index = json.loads(
+            (ROOT / "nix" / "python-module-index.json").read_text(encoding="utf-8")
+        )["modules"]
+        closure: set[str] = set()
+        pending = sorted(root for root in roots if root in index)
+        while pending:
+            current = pending.pop()
+            if current in closure:
+                continue
+            closure.add(current)
+            pending.extend(index[current]["dependencies"])
+
+        self.assertNotIn("spaghetti_extractor.entry_state_analysis_v2", closure)
+        self.assertNotIn("spaghetti_extractor.entry_state_contract_v2", closure)
 
     def test_stack_range_authority_is_replayed_inside_joint_phase(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
@@ -315,7 +347,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             "spaghetti_extractor.interprocedural_phase_v2",
             "spaghetti_extractor.joint_fixed_point_v2",
             "spaghetti_extractor.joint_interprocedural_analysis_v2",
-            "spaghetti_extractor.launch_profile_v2",
+            "spaghetti_extractor.launch_assumption_inputs_v2",
             "spaghetti_extractor.memory_range_invariants_v2",
             "spaghetti_extractor.stack_range_analysis_v2",
         ]
@@ -332,7 +364,8 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             "spaghetti_extractor.checked_memory_address_domain_v2", closure
         )
         self.assertIn("spaghetti_extractor.global_slot_contract_v2", closure)
-        self.assertIn("spaghetti_extractor.entry_state_contract_v2", closure)
+        self.assertNotIn("spaghetti_extractor.entry_state_analysis_v2", closure)
+        self.assertNotIn("spaghetti_extractor.entry_state_contract_v2", closure)
         self.assertNotIn("spaghetti_extractor.hybrid_authority_v2", closure)
         self.assertNotIn("spaghetti_extractor.external_site_proposals_v2", closure)
         self.assertNotIn("spaghetti_extractor.static_hybrid_authority_v2", closure)
@@ -395,8 +428,19 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("__contentAddressed = true;", closure)
         self.assertIn("python-module-index.json", closure)
         self.assertIn("checked-module-index-v1", closure)
+        self.assertIn("python-module-validation.nix", closure)
         self.assertNotIn("ast.parse", closure)
         self.assertIn("python-module-closure.json", closure)
+        validation = (
+            ROOT / "nix" / "python-module-validation.nix"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ast.parse", validation)
+        self.assertIn("moduleRecord", validation)
+        self.assertIn("sourceFile", validation)
+        self.assertIn("__contentAddressed = true;", validation)
+        self.assertNotIn("moduleNames", validation)
+        self.assertNotIn("moduleNamesJson", validation)
+        self.assertIn('package = module.split(".", 1)[0]', validation)
 
     def test_jq_component_intent_is_authored_data_not_tooling(self) -> None:
         path = ROOT / "targets" / "jq" / "intent" / "components.json"

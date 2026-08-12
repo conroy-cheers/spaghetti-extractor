@@ -73,6 +73,7 @@ from .global_slot_contract_v2 import (
     GLOBAL_SLOT_INVARIANT_FORMAT,
     GlobalSlotInvariant,
 )
+from .machine_abi import NormalCallABIPremise, parse_normal_call_abi_premise
 
 
 VALUE_FACT_FORMAT = "spaghetti-extractor-value-fact-v2"
@@ -81,6 +82,9 @@ INDIRECT_EXIT_CERTIFICATE_FORMAT = (
     "spaghetti-extractor-indirect-exit-certificate-v2"
 )
 CHECKED_EXTERNAL_SITE_FORMAT = "spaghetti-extractor-checked-external-site-v2"
+MACHINE_ABI_PREMISE_AUTHORITY_FORMAT = (
+    "spaghetti-extractor-machine-abi-premise-authority-v2"
+)
 AUTHORITY_BUNDLE_FORMAT = "spaghetti-extractor-hybrid-authority-bundle-v2"
 
 
@@ -166,6 +170,71 @@ class ValueFact(_AuthorityRecordMixin):
             location=_text(value["location"], "value location", maximum=256),
             width_bits=_uint(value["width_bits"], "value width", maximum=0x10000),
             alternatives=parts.alternatives,
+            dependencies=parts.dependencies,
+            issues=parts.issues,
+        )
+        _finish_record_parse(result, value)
+        return result
+
+
+@dataclass(frozen=True)
+class MachineABIPremiseAuthority(_AuthorityRecordMixin):
+    """Binary-bound authority for one reviewed machine-level ABI premise."""
+
+    binary: BinaryBinding
+    premise: NormalCallABIPremise
+    dependencies: tuple[AuthorityDependency, ...] = ()
+    issues: tuple[EvidenceIssue, ...] = ()
+
+    KIND: ClassVar[str] = "machine_abi_premise"
+    FORMAT: ClassVar[str] = MACHINE_ABI_PREMISE_AUTHORITY_FORMAT
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.binary, BinaryBinding):
+            raise AuthorityDataError(
+                "machine ABI premise requires an exact binary binding"
+            )
+        if not isinstance(self.premise, NormalCallABIPremise):
+            raise AuthorityDataError("machine ABI premise payload is malformed")
+        _check_dependencies(self.dependencies)
+        _check_issues(self.issues)
+
+    @property
+    def alternatives(self) -> None:
+        return None
+
+    @property
+    def status(self) -> AuthorityStatus:
+        return _derive_status(missing=False, violated=False, issues=self.issues)
+
+    def _core_payload(self) -> dict[str, Any]:
+        return _record_core(
+            format_name=self.FORMAT,
+            status=self.status,
+            binding={"binary": self.binary.to_payload()},
+            dependencies=self.dependencies,
+            alternatives=None,
+            issues=self.issues,
+            fields={"premise": self.premise.as_json()},
+        )
+
+    @classmethod
+    def parse(cls, value: Mapping[str, Any]) -> "MachineABIPremiseAuthority":
+        parts = _parse_record_parts(
+            value, format_name=cls.FORMAT, fields={"premise"}
+        )
+        binding = _object(parts.binding, {"binary"}, "machine ABI premise binding")
+        if parts.alternatives is not None:
+            raise AuthorityDataError(
+                "machine ABI premise authority cannot contain alternatives"
+            )
+        try:
+            premise = parse_normal_call_abi_premise(value["premise"])
+        except (TypeError, ValueError) as exc:
+            raise AuthorityDataError("machine ABI premise payload is invalid") from exc
+        result = cls(
+            binary=BinaryBinding.parse(binding["binary"]),
+            premise=premise,
             dependencies=parts.dependencies,
             issues=parts.issues,
         )
@@ -751,6 +820,7 @@ class CheckedExternalSite(_AuthorityRecordMixin):
 AuthorityRecord: TypeAlias = (
     EntryStateContract
     | ValueFact
+    | MachineABIPremiseAuthority
     | GlobalSlotInvariant
     | CallFrameSummary
     | IndirectExitCertificate
@@ -760,6 +830,7 @@ AuthorityRecord: TypeAlias = (
 _RECORD_PARSERS = {
     ENTRY_STATE_CONTRACT_FORMAT: EntryStateContract.parse,
     VALUE_FACT_FORMAT: ValueFact.parse,
+    MACHINE_ABI_PREMISE_AUTHORITY_FORMAT: MachineABIPremiseAuthority.parse,
     GLOBAL_SLOT_INVARIANT_FORMAT: GlobalSlotInvariant.parse,
     CALL_FRAME_SUMMARY_FORMAT: CallFrameSummary.parse,
     INDIRECT_EXIT_CERTIFICATE_FORMAT: IndirectExitCertificate.parse,
@@ -791,6 +862,8 @@ def _record_binary(record: AuthorityRecord) -> BinaryBinding:
         return record.entry.binary
     if isinstance(record, ValueFact):
         return _binding_unit(record.binding).binary
+    if isinstance(record, MachineABIPremiseAuthority):
+        return record.binary
     if isinstance(record, GlobalSlotInvariant):
         return (
             record.binding.binary
@@ -824,6 +897,12 @@ def _record_subject(record: AuthorityRecord) -> bytes:
             "binding": _scope_payload(record.binding),
             "location": record.location,
             "width_bits": record.width_bits,
+        }
+    elif isinstance(record, MachineABIPremiseAuthority):
+        value = {
+            "kind": record.KIND,
+            "binding": record.binary.to_payload(),
+            "premise_id": record.premise.premise_id,
         }
     elif isinstance(record, GlobalSlotInvariant):
         value = {
@@ -941,6 +1020,7 @@ class AuthorityBundle:
                 (
                     EntryStateContract,
                     ValueFact,
+                    MachineABIPremiseAuthority,
                     GlobalSlotInvariant,
                     CallFrameSummary,
                     IndirectExitCertificate,
@@ -1087,6 +1167,7 @@ __all__ = [
     "GLOBAL_SLOT_INVARIANT_FORMAT",
     "HYBRID_AUTHORITY_SCHEMA_VERSION",
     "INDIRECT_EXIT_CERTIFICATE_FORMAT",
+    "MACHINE_ABI_PREMISE_AUTHORITY_FORMAT",
     "MAX_FINITE_ALTERNATIVES",
     "VALUE_FACT_FORMAT",
     "AuthorityBundle",
@@ -1107,6 +1188,7 @@ __all__ = [
     "ImageSpanBinding",
     "IndirectExitBinding",
     "IndirectExitCertificate",
+    "MachineABIPremiseAuthority",
     "ProfileBinding",
     "ScopeBinding",
     "UnitBinding",

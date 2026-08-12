@@ -673,6 +673,9 @@ class EntryStateAnalysisV2Tests(unittest.TestCase):
         self.assertEqual(report["status"], "complete")
         self.assertEqual(facts["global_slot_invariants"], [])
         self.assertEqual(report["contracts"][0]["dependencies"], [])
+        self.assertEqual(report["global_slot_invariants"], [])
+        self.assertEqual(report["global_slot_invariant_ids"], [])
+        self.assertEqual(report["counts"]["global_slot_invariants"], 0)
 
     def test_unknown_and_aliasing_writes_taint_and_prevent_export(self) -> None:
         alternatives = [_origin(0x1234)]

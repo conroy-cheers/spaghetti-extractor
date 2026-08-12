@@ -24,6 +24,7 @@ from spaghetti_extractor.hybrid_authority_v2 import (
     FiniteAlternatives,
     GlobalSlotInvariant,
     IndirectExitCertificate,
+    MachineABIPremiseAuthority,
     ProfileBinding,
     UnitBinding,
     ValueFact,
@@ -33,6 +34,7 @@ from spaghetti_extractor.hybrid_authority_v2 import (
     parse_authority_record_json,
     parse_canonical_json,
 )
+from spaghetti_extractor.machine_abi import build_pe32_normal_call_abi_premise
 
 
 def _digest(label: str) -> str:
@@ -100,6 +102,7 @@ def _complete_records() -> tuple[
     tuple[
         EntryStateContract,
         ValueFact,
+        MachineABIPremiseAuthority,
         GlobalSlotInvariant,
         CallFrameSummary,
         IndirectExitCertificate,
@@ -113,6 +116,10 @@ def _complete_records() -> tuple[
         location="register:eax",
         width_bits=32,
         alternatives=_alternatives(0, 1),
+    )
+    premise = MachineABIPremiseAuthority(
+        binary=binary,
+        premise=build_pe32_normal_call_abi_premise(),
     )
     entry = EntryStateContract(
         entry=unit,
@@ -135,7 +142,10 @@ def _complete_records() -> tuple[
         callee=unit,
         abi="pe32-stdcall-v1",
         alternatives=_alternatives(_call_alternative(unit)),
-        dependencies=(AuthorityDependency("frame_value", value.content_id),),
+        dependencies=(
+            AuthorityDependency("frame_value", value.content_id),
+            AuthorityDependency("machine_abi_premise", premise.content_id),
+        ),
     )
     external = CheckedExternalSite(
         site=_event(unit, "external_call", 2),
@@ -169,7 +179,15 @@ def _complete_records() -> tuple[
             AuthorityDependency("external_target", external.content_id),
         ),
     )
-    return binary, (entry, value, global_slot, call, indirect, external)
+    return binary, (
+        entry,
+        value,
+        premise,
+        global_slot,
+        call,
+        indirect,
+        external,
+    )
 
 
 class HybridAuthorityV2SchemaTests(unittest.TestCase):
