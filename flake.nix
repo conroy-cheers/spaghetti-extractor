@@ -14,6 +14,8 @@
         mkMachineIRISAQualificationV2 =
           import ./nix/stage-a-machine-ir-isa-qualification-v2.nix;
         mkISASemanticKernel = import ./nix/stage-a-isa-semantic-kernel.nix;
+        mkISAConformanceKernel =
+          import ./nix/stage-a-isa-conformance-kernel.nix;
         mkInductiveCertificateKernel =
           import ./nix/stage-a-inductive-certificate-kernel.nix;
         mkRoundtripCorpus = import ./nix/stage-a-roundtrip-corpus.nix;
@@ -110,23 +112,10 @@
             pythonImportsCheck = [ "spaghetti_extractor.cli" ];
             doCheck = false;
           };
-          leanKernel = pkgs.runCommand "spaghetti-extractor-isa-kernel" {
-            nativeBuildInputs = [ pkgs.lean4 ];
-            __contentAddressed = true;
-          } ''
-            cp -r ${./src/spaghetti_extractor/lean}/StageA .
-            chmod -R u+w StageA
-            mkdir -p "$out/StageA"
-            export LEAN_PATH="$out:$PWD"
-            for module in X87 Formal ISAQualification ISAInventory ISAConformance ISAConformanceRunner; do
-              lean --trust=0 \
-                -o "$out/StageA/$module.olean" \
-                -c "$out/StageA/$module.c" \
-                StageA/$module.lean
-              leanc -c -o "$out/StageA/$module.o" \
-                "$out/StageA/$module.c"
-            done
-          '';
+          leanKernel = import ./nix/stage-a-isa-conformance-kernel.nix {
+            inherit pkgs;
+            leanSource = ./src/spaghetti_extractor/lean;
+          };
           isaSemanticKernel = import ./nix/stage-a-isa-semantic-kernel.nix {
             inherit pkgs;
             leanSource = ./src/spaghetti_extractor/lean;

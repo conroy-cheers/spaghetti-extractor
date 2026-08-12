@@ -461,20 +461,12 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("phasePythonSource", interpreter)
         self.assertIn("__contentAddressed = true;", closure)
         self.assertIn("python-module-index.json", closure)
-        self.assertIn("checked-module-index-v1", closure)
-        self.assertIn("python-module-validation.nix", closure)
-        self.assertNotIn("ast.parse", closure)
+        self.assertIn("inline-checked-module-index-v1", closure)
+        self.assertNotIn("python-module-validation.nix", closure)
+        self.assertIn("ast.parse", closure)
         self.assertIn("python-module-closure.json", closure)
-        validation = (
-            ROOT / "nix" / "python-module-validation.nix"
-        ).read_text(encoding="utf-8")
-        self.assertIn("ast.parse", validation)
-        self.assertIn("moduleRecord", validation)
-        self.assertIn("sourceFile", validation)
-        self.assertIn("__contentAddressed = true;", validation)
-        self.assertNotIn("moduleNames", validation)
-        self.assertNotIn("moduleNamesJson", validation)
-        self.assertIn('package = module.split(".", 1)[0]', validation)
+        self.assertIn('package = module.split(".", 1)[0]', closure)
+        self.assertIn("run `nix run .#dev -- refresh-index`", closure)
 
     def test_jq_component_intent_is_authored_data_not_tooling(self) -> None:
         path = ROOT / "targets" / "jq" / "intent" / "components.json"

@@ -45,6 +45,7 @@ from .isa_semantic_forms import lean_semantic_form_classifier_sha256
 
 LEAN_ISA_BACKEND_ID = "stage-a-lean-machine-semantics"
 LEAN_ISA_BACKEND_VERSION = "formal-default-v1"
+LEAN_KERNEL_CACHE_ENV = "SPAGHETTI_LEAN_KERNEL_CACHE"
 _ABSENT_LEAN_X87_FIELDS = (
     "tag_word",
     "last_opcode",
@@ -283,6 +284,41 @@ def _copy_lean_sources(
                     shutil.copyfile(cached, stage_a / f"{module}.{suffix}")
 
 
+def _required_kernel_cache(kernel_cache: Path | None) -> Path:
+    """Resolve the shared Nix kernel and reject accidental full recompilation."""
+
+    configured = kernel_cache
+    if configured is None:
+        environment = os.environ.get(LEAN_KERNEL_CACHE_ENV)
+        if environment:
+            configured = Path(environment)
+    if configured is None:
+        raise ISAConformanceError(
+            "Lean ISA conformance requires the shared Nix kernel fixture; "
+            "run `nix run .#test -- affected` or pass kernel_cache explicitly"
+        )
+    configured = Path(configured)
+    modules = (
+        "X87",
+        "Formal",
+        "ISAQualification",
+        "ISAConformance",
+        "ISAConformanceRunner",
+    )
+    missing = [
+        f"StageA/{module}.{suffix}"
+        for module in modules
+        for suffix in ("olean", "c", "o")
+        if not (configured / "StageA" / f"{module}.{suffix}").is_file()
+    ]
+    if missing:
+        raise ISAConformanceError(
+            f"shared Lean kernel fixture {configured} is incomplete: "
+            + ", ".join(missing)
+        )
+    return configured
+
+
 def _control_outcome(control: dict[str, Any], image_base: int) -> tuple[ControlClass, int]:
     def absolute_rva(field: str) -> int:
         return (image_base + int(control[field])) & 0xFFFFFFFF
@@ -441,6 +477,7 @@ def _run_lean_isa_conformance(
     """Evaluate supported cases using the authoritative Lean semantics."""
     if not isinstance(corpus, ISAConformanceCorpus):
         raise ISAConformanceError("corpus must be an ISAConformanceCorpus")
+    kernel_cache = _required_kernel_cache(kernel_cache)
     input_sha256 = isa_conformance_corpus_sha256(corpus)
     observations_by_id: dict[str, BackendObservation] = {}
     semantic_forms_by_id: dict[str, str] = {}
@@ -504,22 +541,16 @@ def _run_lean_isa_conformance(
                     if leanc is None:
                         raise ISAConformanceError("Lean native compiler is unavailable")
                     runner = lean_dir / "isa-conformance-runner"
-                    if kernel_cache is None:
-                        native_inputs = sorted(
-                            str(path.relative_to(lean_dir))
-                            for path in (lean_dir / "StageA").glob("*.c")
+                    native_inputs = [
+                        str(Path(kernel_cache) / "StageA" / f"{module}.o")
+                        for module in (
+                            "X87",
+                            "Formal",
+                            "ISAQualification",
+                            "ISAConformance",
+                            "ISAConformanceRunner",
                         )
-                    else:
-                        native_inputs = [
-                            str(Path(kernel_cache) / "StageA" / f"{module}.o")
-                            for module in (
-                                "X87",
-                                "Formal",
-                                "ISAQualification",
-                                "ISAConformance",
-                                "ISAConformanceRunner",
-                            )
-                        ] + ["StageA/GeneratedISAConformance.c"]
+                    ] + ["StageA/GeneratedISAConformance.c"]
                     linked = subprocess.run(
                         [leanc, "-O2", "-o", str(runner), *native_inputs],
                         cwd=lean_dir,
@@ -660,6 +691,7 @@ def run_lean_isa_conformance_with_forms(
 __all__ = [
     "LEAN_ISA_BACKEND_ID",
     "LEAN_ISA_BACKEND_VERSION",
+    "LEAN_KERNEL_CACHE_ENV",
     "lean_semantic_form_classifier_sha256",
     "run_lean_isa_conformance",
     "run_lean_isa_conformance_with_forms",

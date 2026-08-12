@@ -45,6 +45,8 @@ let
       in {
         inherit module;
         path = lib.removePrefix "src/" record.path;
+        recordPath = record.path;
+        dependencies = record.dependencies;
         source = toString (builtins.path {
           path = sourcePath;
           name = "spaghetti-python-${sanitize module}";
@@ -63,16 +65,6 @@ let
   moduleFilesJson = builtins.toJSON moduleFiles;
   extraFilesJson = builtins.toJSON extraFiles;
   rootsJson = builtins.toJSON (builtins.sort builtins.lessThan modules);
-  moduleValidations = map
-    (module: {
-      inherit module;
-      path = toString (import ./python-module-validation.nix {
-        inherit pkgs module repositoryRoot;
-        moduleRecord = moduleRecords.${module};
-      });
-    })
-    selectedModules;
-  moduleValidationsJson = builtins.toJSON moduleValidations;
 in
 assert index.format == "spaghetti-extractor-python-module-index-v1";
 assert builtins.isList modules && modules != [ ];
@@ -89,10 +81,10 @@ pkgs.runCommand name {
   ${pkgs.python3}/bin/python3 - "$out" \
       ${lib.escapeShellArg rootsJson} \
       ${lib.escapeShellArg moduleFilesJson} \
-      ${lib.escapeShellArg extraFilesJson} \
-      ${lib.escapeShellArg moduleValidationsJson} <<'PY'
+      ${lib.escapeShellArg extraFilesJson} <<'PY'
   from __future__ import annotations
 
+  import ast
   import hashlib
   import json
   import pathlib
@@ -103,24 +95,73 @@ pkgs.runCommand name {
   roots = json.loads(sys.argv[2])
   module_files = json.loads(sys.argv[3])
   extra_files = json.loads(sys.argv[4])
-  module_validations = json.loads(sys.argv[5])
   output_root = output / "src"
   rows = []
   copied = set()
 
-  validated_modules = set()
-  for row in module_validations:
-      validation_path = pathlib.Path(row["path"]) / "python-module-validation.json"
-      validation = json.loads(validation_path.read_text(encoding="utf-8"))
-      if (
-          validation.get("format")
-          != "spaghetti-extractor-python-module-validation-v1"
-          or validation.get("module") != row["module"]
-      ):
-          raise SystemExit(f"invalid module validation for {row['module']}")
-      validated_modules.add(row["module"])
-  if validated_modules != {row["module"] for row in module_files}:
-      raise SystemExit("module validation inventory does not match closure")
+  def observed_dependencies(row):
+      module = row["module"]
+      package = module.split(".", 1)[0]
+      source = pathlib.Path(row["source"])
+      record_path = row["recordPath"]
+      tree = ast.parse(source.read_text(encoding="utf-8"), filename=record_path)
+      current_package = (
+          module if pathlib.PurePosixPath(record_path).name == "__init__.py"
+          else module.rpartition(".")[0]
+      )
+      observed = {
+          ".".join(module.split(".")[:size])
+          for size in range(1, len(module.split(".")))
+      }
+      for node in ast.walk(tree):
+          if isinstance(node, ast.Import):
+              observed.update(
+                  alias.name
+                  for alias in node.names
+                  if alias.name == package
+                  or alias.name.startswith(f"{package}.")
+              )
+          elif isinstance(node, ast.ImportFrom):
+              if node.level:
+                  base = current_package.split(".") if current_package else []
+                  trim = node.level - 1
+                  if trim > len(base):
+                      raise SystemExit(
+                          f"relative import escapes package in {record_path}"
+                      )
+                  base = base[: len(base) - trim]
+                  if node.module:
+                      base.extend(node.module.split("."))
+                  target = ".".join(base)
+              else:
+                  target = node.module or ""
+              if target == package or target.startswith(f"{package}."):
+                  observed.add(target)
+                  if node.module is None or target == package:
+                      observed.update(
+                          f"{target}.{alias.name}"
+                          for alias in node.names
+                          if alias.name != "*"
+                      )
+      observed.discard(module)
+      return sorted(observed)
+
+  for row in module_files:
+      required_fields = {
+          "module", "path", "recordPath", "dependencies", "source"
+      }
+      if set(row) != required_fields:
+          raise SystemExit(
+              f"malformed checked module row for {row.get('module', '<unknown>')}"
+          )
+      expected = row["dependencies"]
+      observed = observed_dependencies(row)
+      if observed != expected:
+          raise SystemExit(
+              f"stale checked imports for {row['module']}: "
+              f"expected {expected!r}, observed {observed!r}; "
+              "run `nix run .#dev -- refresh-index`"
+          )
 
   def copy_file(source: pathlib.Path, relative: pathlib.PurePosixPath) -> None:
       if relative in copied:
@@ -149,7 +190,7 @@ pkgs.runCommand name {
   rows.sort(key=lambda row: row["path"])
   manifest = {
       "format": "spaghetti-extractor-python-module-closure-v1",
-      "dependency_source": "checked-module-index-v1",
+      "dependency_source": "inline-checked-module-index-v1",
       "root_modules": roots,
       "extra_paths": sorted(row["path"] for row in extra_files),
       "files": rows,
