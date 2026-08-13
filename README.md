@@ -57,17 +57,20 @@ The release gates are Nix-native and content-addressed:
 nix run .#test -- smoke
 nix run .#test -- affected
 nix run .#test -- full
-nix run .#test -- target dxball
 nix run .#test -- benchmark
+nix run ./targets#test -- dxball
 nix flake check
+nix flake check ./targets
 nix build .#roundtrip-qualification --no-link
 nix build .#isa-kernel --no-link
 ```
 
-`nix run .#test` is the only supported test execution path. It creates a
+`nix run .#test` is the supported generic-toolkit test path. It creates a
 filtered source snapshot, plans import/resource impact, and realizes stable CA
 shards. Unchanged shards substitute without executing a builder. Heavy tests
 consume shared compiler, Lean, Bochs, Nix, PE32, and headless-Wine fixtures.
+Validation targets are independent consumers and run through
+`nix run ./targets#test -- <id>`.
 
 Developer operations use the same conventions:
 
@@ -86,9 +89,9 @@ Portable-source iteration is also Nix-native. The GNU Hello validation target
 exposes the canonical workbench shape:
 
 ```console
-nix build .#gnu-hello-lift-workbench --no-link
-nix build .#gnu-hello-source-iteration-audit --no-link
-nix build .#gnu-hello-authority-diagnostics-v3 --no-link
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.completion.workbench' --no-link
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.source.iteration-audit' --no-link
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.authority.diagnostics' --no-link
 ```
 
 The workbench remains buildable while authority is incomplete. Executable and
@@ -98,14 +101,15 @@ runtime outputs stay behind the explicit final-authority gate.
 
 - `spaghetti-extractor`: inventory, contract, ISA, machine-IR, component,
   source-rendering, candidate assurance, and functional-test commands.
-- `nix run .#test`: cached smoke, affected, full, target, and benchmark gates.
+- `nix run .#test`: cached smoke, affected, full, and benchmark toolkit gates.
+- `nix run ./targets#test`: validation for one explicitly registered consumer.
 - `nix run .#dev`: scaffolding, fixture discovery, environment diagnosis, and
   rebuild explanations.
-- `flake.lib`: generic Nix constructors for ISA qualification, round trips,
-  typed v3 authority graphs, components, libraries, gated candidate builds,
-  headless diagnostics, source substitutions, and functional suites.
-- `targets/`: validation bundles containing authored intent and source, never
-  generic Python implementation code.
+- `flake.lib.mkTargetSdkV1`: the stable configured Nix interface for analysis,
+  authority, candidate, lifting, validation, and target-bundle construction.
+- `flake.lib.unstable`: low-level constructors for toolkit development only.
+- `targets/`: a separate in-tree consumer flake containing authored validation
+  intent and source, never generic Python implementation code.
 
 See [REPOSITORY_MAP.md](REPOSITORY_MAP.md) for every subsystem and dependency,
 and [docs/architecture.md](docs/architecture.md) for the assurance model.

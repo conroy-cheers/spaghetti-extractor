@@ -11,8 +11,8 @@ from typing import Any, Mapping, Sequence
 from .diagnostics import Diagnostic, TestkitError
 
 
-INDEX_FORMAT = "spaghetti-extractor-test-impact-index-v1"
-PLAN_FORMAT = "spaghetti-extractor-test-suite-plan-v2"
+INDEX_FORMAT = "spaghetti-extractor-test-impact-index-v2"
+PLAN_FORMAT = "spaghetti-extractor-test-suite-plan-v3"
 REBUILD_EXPLANATION_FORMAT = "spaghetti-extractor-rebuild-explanation-v1"
 
 
@@ -75,7 +75,6 @@ class TestRecord:
     tier: str
     subsystem: str
     capabilities: tuple[str, ...]
-    target: str | None
     dependencies: tuple[str, ...]
     dependency_paths: tuple[str, ...]
     fixtures: tuple[str, ...]
@@ -92,7 +91,6 @@ class TestRecord:
             "tier": self.tier,
             "subsystem": self.subsystem,
             "capabilities": list(self.capabilities),
-            "target": self.target,
             "dependencies": list(self.dependencies),
             "dependency_paths": list(self.dependency_paths),
             "fixtures": list(self.fixtures),
@@ -104,11 +102,6 @@ class TestRecord:
 
     @classmethod
     def from_dict(cls, value: Mapping[str, object]) -> "TestRecord":
-        target = value.get("target")
-        if target is not None and not isinstance(target, str):
-            raise TestkitError(
-                Diagnostic("error", "invalid_manifest_field", "test target must be a string or null")
-            )
         return cls(
             id=str(value["id"]),
             path=str(value["path"]),
@@ -116,7 +109,6 @@ class TestRecord:
             tier=str(value["tier"]),
             subsystem=str(value["subsystem"]),
             capabilities=_strings(value["capabilities"], field_name="capabilities"),
-            target=target,
             dependencies=_strings(value["dependencies"], field_name="dependencies"),
             dependency_paths=_strings(value["dependency_paths"], field_name="dependency_paths"),
             fixtures=_strings(value["fixtures"], field_name="fixtures"),
@@ -239,7 +231,6 @@ class PlannedShard:
 class SuitePlan:
     mode: str
     index_identity: str
-    target: str | None
     changed_paths: tuple[str, ...]
     selected_tests: tuple[str, ...]
     selection_reasons: tuple[tuple[str, tuple[str, ...]], ...]
@@ -252,7 +243,6 @@ class SuitePlan:
             "format": PLAN_FORMAT,
             "mode": self.mode,
             "index_identity": self.index_identity,
-            "target": self.target,
             "changed_paths": list(self.changed_paths),
             "selected_tests": list(self.selected_tests),
             "selection_reasons": {
@@ -283,7 +273,6 @@ class SuitePlan:
         parsed = cls(
             mode=str(value["mode"]),
             index_identity=str(value["index_identity"]),
-            target=None if value.get("target") is None else str(value["target"]),
             changed_paths=_strings(value.get("changed_paths", []), field_name="changed_paths"),
             selected_tests=_strings(value["selected_tests"], field_name="selected_tests"),
             selection_reasons=tuple(

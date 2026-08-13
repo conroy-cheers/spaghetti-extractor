@@ -3,6 +3,12 @@
 `targets/<id>/` contains validation data for one program. A target is a consumer
 of the generic toolkit, not a Python extension point.
 
+`targets/flake.nix` owns target composition and exports structured artifact
+families. `targets/registry.nix` is the explicit, reviewed registry. The root
+flake neither imports nor enumerates validation targets. In-tree target modules
+receive `{ pkgs, sdk }`; out-of-tree consumers construct the same SDK with
+`spaghetti-extractor.lib.mkTargetSdkV1 { inherit pkgs; }`.
+
 Required `target.json` fields identify the target, expected input hash, and
 relative paths consumed by the generic intent resolver. The supported path
 keys are `nix`, `components`, `linked_islands`, `source_projects`, and
@@ -12,7 +18,7 @@ keys are `nix`, `components`, `linked_islands`, `source_projects`, and
   and source-evidence intent;
 - `source/`: manually created or reviewed portable source;
 - `tests/`: curated candidate-only expectations;
-- `default.nix`: acquisition or build wiring;
+- `targets/<id>/default.nix`: acquisition or build wiring;
 - `tools/`: target-local input conversion helpers only when a generic command
   cannot express the operation; build and validation loops remain Nix-native.
 
@@ -36,7 +42,7 @@ depend on authority-gated candidate behavior evidence.
 For GNU Hello the entrypoint is:
 
 ```sh
-nix build .#gnu-hello-lift-workbench
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.completion.workbench'
 jq . result/source-iteration-audit/source-iteration-audit.json
 jq . result/authority-diagnostics-v3/authority-diagnostics-v3.json
 ```
@@ -44,7 +50,7 @@ jq . result/authority-diagnostics-v3/authority-diagnostics-v3.json
 After final authority passes, the release join is:
 
 ```sh
-nix build .#gnu-hello-lift-workflow
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.completion.workflow'
 jq . result/completion-receipt-v2/lift-completion-report-v2.json
 ```
 
@@ -56,15 +62,15 @@ Cheap source-repair artifacts are exposed separately so ordinary edits do not
 need to evaluate the full authority graph:
 
 ```sh
-nix build .#gnu-hello-source-iteration-audit --no-link
-nix build .#gnu-hello-source-call-report --no-link
-nix build .#gnu-hello-candidate-dependency-audit --no-link
-nix build .#gnu-hello-authority-diagnostics-v3 --no-link
-nix build .#gnu-hello-isa-requirements-v2 --no-link
-nix build .#gnu-hello-isa-frontiers --no-link
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.source.iteration-audit' --no-link
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.source.call-report' --no-link
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.source.dependency-audit' --no-link
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.authority.diagnostics' --no-link
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.authority.isa-requirements' --no-link
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.authority.isa-frontiers' --no-link
 ```
 
-`gnu-hello-isa-frontiers` is the normal ISA repair surface. It reports exact
+`authority.isa-frontiers` is the normal ISA repair surface. It reports exact
 forms, instruction RVAs, disputed observation fields, and concrete next
 actions. The report validates its binding to the already checked ISA-selection
 summary but does not replay the full oracle corpus. Oracle replay remains an
@@ -79,10 +85,15 @@ analysis iteration.
 Target regression tests and acceptance are deliberately separate commands:
 
 ```sh
-nix run .#test -- target gnu-hello
-nix build .#gnu-hello-final-authority-v3-gate --no-link
+nix run ./targets#test -- gnu-hello
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.authority.gate' --no-link
 ```
 
 The regression command must remain useful while authority is incomplete. The
 explicit gate is expected to fail closed until every authoritative family is
 complete; candidate runtime and release outputs depend on that gate.
+
+Adding a target requires one `targets/registry.nix` entry but no root-flake, generic
+Nix-module, Python, or Lean change. Target modules may contain acquisition and
+program-specific workflow composition, but must call the SDK and may not import
+private files under `nix/` directly.

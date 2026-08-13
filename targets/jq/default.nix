@@ -1,14 +1,4 @@
-{
-  pkgs,
-  pythonEnv,
-  pythonSource,
-  isaPythonSource ? null,
-  spaghettiExtractor ? null,
-  isaKernelCache ? null,
-  isaSemanticKernel ? null,
-  bochsRunner ? null,
-  componentProposals ? null,
-}:
+{ pkgs, sdk }:
 
 let
   target = builtins.fromJSON (builtins.readFile ./target.json);
@@ -60,28 +50,14 @@ let
       ${target.input.expected_sha256}
   '';
   originalPe = "${original}/bin/jq.exe";
-  profileSource = pkgs.lib.fileset.toSource {
-    root = ../../profiles;
-    fileset = ../../profiles;
-  };
-  analysis = import ../../nix/stage-b-component-analysis.nix {
-    inherit pkgs pythonEnv pythonSource;
+  profileSource = sdk.profiles;
+  analysis = sdk.analysis.component {
     original = originalPe;
     externalProfile =
       "${profileSource}/pe32-msvcrt-machine-runtime-v1.json";
     namePrefix = "spaghetti-extractor-jq-1.8.1";
   };
-  analysisV3 = import ../../nix/analysis-v3-authority.nix {
-    inherit
-      pkgs
-      pythonEnv
-      pythonSource
-      isaPythonSource
-      spaghettiExtractor
-      isaKernelCache
-      isaSemanticKernel
-      bochsRunner
-      ;
+  analysisV3 = sdk.analysis.authorityV3 {
     name = "spaghetti-extractor-jq-1.8.1-authority-v3";
     machineIr = "${analysis.machineIr}/machine-ir.jsonl";
     binary = originalPe;
@@ -90,14 +66,27 @@ let
       "${profileSource}/pe32-msvcrt-machine-runtime-v1.json"
     ];
     launchProfileTemplate =
-      "${profileSource}/pe32-win32-gui-launch-assumptions-v1.json";
+      "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
   };
-in
-{
-  inherit original analysis analysisV3;
-
-  intent = import ../../nix/stage-b-target-intent.nix {
-    inherit pkgs pythonEnv pythonSource componentProposals;
+  intent = sdk.analysis.targetIntent {
     target = ./.;
   };
+in
+sdk.target.bundle {
+  targetRoot = ./.;
+  artifacts = {
+    input.original = original;
+    intent = intent.validation;
+    analysis = {
+      machine-ir = analysis.machineIr;
+      component-proposals = analysis.componentProposals;
+    };
+    authority = {
+      final = analysisV3.finalAuthority;
+      gate = analysisV3.finalAuthorityGate;
+      graph-metadata = analysisV3.graph.metadata;
+      diagnostics = analysisV3.diagnostics;
+    };
+  };
+  checks.intent = intent.validation;
 }

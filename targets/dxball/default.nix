@@ -1,15 +1,4 @@
-{
-  pkgs,
-  pythonEnv,
-  pythonSource,
-  isaPythonSource ? null,
-  spaghettiExtractor ? null,
-  isaKernelCache ? null,
-  isaSemanticKernel ? null,
-  bochsRunner ? null,
-  profileSource,
-  candidatePythonSource,
-}:
+{ pkgs, sdk }:
 
 let
   archive = pkgs.fetchurl {
@@ -48,19 +37,17 @@ let
     test "$(sha256sum "$out/DXBall.exe" | cut -d ' ' -f 1)" = \
       191c113582e1f31016a158d40372fa21ea68d9348bf847bbfbc8e7c7bdfe195f
   '';
-  interfaceProfile = import ../../nix/stage-a-external-interface-profile.nix {
-    inherit pkgs pythonEnv pythonSource;
-    spec = ../../profiles/pe32-mingw-directx-interface-extraction-v1.json;
+  interfaceProfile = sdk.analysis.externalInterfaceProfile {
+    spec = "${sdk.profiles}/pe32-mingw-directx-interface-extraction-v1.json";
   };
   runtimeMachineImportProfiles = [
-    "${profileSource}/profiles/pe32-msvcrt-machine-runtime-v1.json"
-    "${profileSource}/profiles/pe32-kernel32-runtime-v1.json"
-    "${profileSource}/profiles/pe32-native-callthrough-runtime-v1.json"
-    "${profileSource}/profiles/pe32-win32-windowing-runtime-v1.json"
-    "${profileSource}/profiles/pe32-winmm-runtime-v1.json"
+    "${sdk.profiles}/pe32-msvcrt-machine-runtime-v1.json"
+    "${sdk.profiles}/pe32-kernel32-runtime-v1.json"
+    "${sdk.profiles}/pe32-native-callthrough-runtime-v1.json"
+    "${sdk.profiles}/pe32-win32-windowing-runtime-v1.json"
+    "${sdk.profiles}/pe32-winmm-runtime-v1.json"
   ];
-  analysis = import ../../nix/stage-b-component-analysis.nix {
-    inherit pkgs pythonEnv pythonSource;
+  analysis = sdk.analysis.component {
     original = "${original}/DXBall.exe";
     externalProfile = builtins.head runtimeMachineImportProfiles;
     additionalMachineImportProfiles = builtins.tail runtimeMachineImportProfiles;
@@ -68,33 +55,21 @@ let
       "${interfaceProfile}/interface-profile.json"
     ];
     launchProfileTemplate =
-      "${profileSource}/profiles/pe32-win32-gui-launch-assumptions-v1.json";
+      "${sdk.profiles}/pe32-win32-gui-launch-assumptions-v1.json";
     namePrefix = "spaghetti-extractor-dxball-1.09";
     maxUnits = 512;
     maxCandidatesPerSeed = 12;
   };
-  analysisV3 = import ../../nix/analysis-v3-authority.nix {
-    inherit
-      pkgs
-      pythonEnv
-      pythonSource
-      isaPythonSource
-      spaghettiExtractor
-      isaKernelCache
-      isaSemanticKernel
-      bochsRunner
-      ;
+  analysisV3 = sdk.analysis.authorityV3 {
     name = "spaghetti-extractor-dxball-1.09-authority-v3";
     machineIr = "${analysis.machineIr}/machine-ir.jsonl";
     binary = "${original}/DXBall.exe";
     binaryIdentity = "DXBall.exe";
     machineImportProfiles = runtimeMachineImportProfiles;
     launchProfileTemplate =
-      "${profileSource}/profiles/pe32-win32-gui-launch-assumptions-v1.json";
+      "${sdk.profiles}/pe32-win32-gui-launch-assumptions-v1.json";
   };
-  hybrid = import ../../nix/stage-b-hybrid-candidate.nix {
-    inherit pkgs pythonEnv;
-    pythonSource = candidatePythonSource;
+  hybrid = sdk.candidate.hybrid {
     machineIr = analysis.machineIr;
     staticExport = analysis.staticExport;
     staticAuthorityV3 = analysisV3;
@@ -104,9 +79,7 @@ let
     namePrefix = "spaghetti-extractor-dxball-1.09";
     allowDeferredPotentialTransfers = false;
   };
-  hybridDiagnostic = import ../../nix/stage-b-hybrid-candidate.nix {
-    inherit pkgs pythonEnv;
-    pythonSource = candidatePythonSource;
+  hybridDiagnostic = sdk.candidate.hybrid {
     machineIr = analysis.machineIr;
     staticExport = analysis.staticExport;
     machineImportProfiles = runtimeMachineImportProfiles ++ [
@@ -117,9 +90,7 @@ let
     allowDeferredPotentialTransfers = true;
     diagnosticFailureTrap = true;
   };
-  diagnosticRun = import ../../nix/stage-b-headless-diagnostic-run.nix {
-    inherit pkgs pythonEnv;
-    pythonSource = candidatePythonSource;
+  diagnosticRun = sdk.candidate.headlessDiagnostic {
     namePrefix = "spaghetti-extractor-dxball-1.09";
     candidateBinary = "${hybridDiagnostic.candidate}/candidate.exe";
     nativeEnginePlan =
@@ -130,23 +101,52 @@ let
     inputKeys = [ "Return" ];
     screenshotAfterSeconds = 15;
   };
-  inventory = analysis.originalInventory;
-in
-{
-  inherit
-    archive
-    installer
-    original
-    interfaceProfile
-    inventory
-    analysis
-    analysisV3
-    hybrid
-    hybridDiagnostic
-    diagnosticRun
-    ;
-  intent = import ../../nix/stage-b-target-intent.nix {
-    inherit pkgs pythonEnv pythonSource;
+  intent = sdk.analysis.targetIntent {
     target = ./.;
   };
+in
+sdk.target.bundle {
+  targetRoot = ./.;
+  artifacts = {
+    input = {
+      archive = archive;
+      installer = installer;
+      original = original;
+    };
+    intent = intent.validation;
+    profiles.interface = interfaceProfile;
+    analysis = {
+      inventory = analysis.originalInventory;
+      static-export = analysis.staticExport;
+      launch-assumptions = analysis.launchAnalysisAssumptions;
+      state-machine = analysis.stateMachine;
+      machine-ir = analysis.machineIr;
+      reconstruction-plan = analysis.reconstructionPlan;
+      component-proposals = analysis.componentProposals;
+    };
+    authority = {
+      final = analysisV3.finalAuthority;
+      gate = analysisV3.finalAuthorityGate;
+      transition-summaries =
+        analysisV3.graph.phases."transition-summaries-v3".derivation;
+      graph-metadata = analysisV3.graph.metadata;
+      diagnostics = analysisV3.diagnostics;
+    };
+    hybrid = {
+      interpreter = hybrid.interpreter;
+      fallback-coverage = hybrid.fallbackCoverageReceipt;
+      candidate-authority = hybrid.candidateAuthorityReport;
+      native-engine = hybrid.nativeEngine;
+      native-runtime = hybrid.nativeRuntime;
+      native-objects = hybrid.nativeObjects.package;
+      candidate = hybrid.candidate;
+    };
+    diagnostic = {
+      native-engine = hybridDiagnostic.nativeEngine;
+      native-runtime = hybridDiagnostic.nativeRuntime;
+      candidate = hybridDiagnostic.candidate;
+      run = diagnosticRun;
+    };
+  };
+  checks.intent = intent.validation;
 }

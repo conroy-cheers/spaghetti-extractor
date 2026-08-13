@@ -27,7 +27,6 @@ def _record(identity: str, input_hash: str) -> TestRecord:
         tier="unit",
         subsystem="testkit",
         capabilities=(),
-        target=None,
         dependencies=(),
         dependency_paths=(),
         fixtures=(),

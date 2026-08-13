@@ -28,28 +28,6 @@ class TestNixFirstRunner(unittest.TestCase):
         )
         self.assertIn('"private"', command[0][4])
 
-    def test_target_builds_explicit_target_aggregate(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "targets/jq").mkdir(parents=True)
-            (root / "targets/jq/target.json").write_text("{}\n")
-            (root / "nix").mkdir()
-            machines = root / "nix/stage-a-builders"
-            machines.write_text(
-                "ssh-ng://builder x86_64-linux - 1 1 ca-derivations -\n"
-            )
-            commands = build_commands(root, mode="target", target="jq")
-
-        self.assertIn(
-            'flake.legacyPackages.x86_64-linux."test-smoke"',
-            commands[0][4],
-        )
-        self.assertIn(
-            'flake.legacyPackages.x86_64-linux."test-target-jq"',
-            commands[1][4],
-        )
-        self.assertIn(f"@{machines.resolve()}", commands[1])
-
     def test_affected_builds_only_selected_stable_shards(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -81,14 +59,14 @@ class TestNixFirstRunner(unittest.TestCase):
             self.assertEqual(rendered[1][-1:], ("--no-link",))
             self.assertNotIn("--keep-going", rendered[1])
 
-    def test_public_shard_catalog_includes_target_tier(self) -> None:
-        flake = (Path(__file__).resolve().parents[3] / "flake.nix").read_text(
+    def test_public_shard_catalog_is_owned_by_checks_module(self) -> None:
+        module = (Path(__file__).resolve().parents[3] / "nix/flake-modules/checks.nix").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn('catalogSuite = mkTestSuite "catalog";', flake)
-        self.assertIn("test-shards = catalogSuite.shards;", flake)
-        self.assertNotIn("test-shards = fullSuite.shards;", flake)
+        self.assertIn('catalogSuite = mkTestSuite "catalog";', module)
+        self.assertIn("test-shards = catalogSuite.shards;", module)
+        self.assertNotIn("test-shards = fullSuite.shards;", module)
 
     def test_repository_builder_inventory_overrides_unrelated_host_builders(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

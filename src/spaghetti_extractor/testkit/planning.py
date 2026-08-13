@@ -1,4 +1,4 @@
-"""Deterministic smoke, affected, full, target, and benchmark planning."""
+"""Deterministic smoke, affected, full, and benchmark planning."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from .diagnostics import Diagnostic, TestkitError
 from .model import ImpactIndex, PlannedShard, SuitePlan, TestRecord, canonical_sha256, safe_relative_path
 
 
-MODES = frozenset({"smoke", "affected", "full", "target", "benchmark"})
+MODES = frozenset({"smoke", "affected", "full", "benchmark"})
 _INTERNAL_MODES = MODES | {"catalog"}
 RESOURCE_CLASS_ORDER = {"small": 0, "medium": 1, "large": 2, "oracle": 3}
 CAPABILITY_RESOURCE_CLASS = {
@@ -154,12 +154,9 @@ def _select_affected(
                     selected.add(test.id)
                     reasons[test.id].add(f"formal semantics input changed: {changed}")
             matched = True
-        elif len(parts) >= 2 and parts[0] == "targets":
-            target = parts[1]
-            for test in index.tests:
-                if test.target == target:
-                    selected.add(test.id)
-                    reasons[test.id].add(f"target input changed: {changed}")
+        elif parts and parts[0] == "targets":
+            # Validation consumers own their checks and are intentionally absent
+            # from the generic impact index.
             matched = True
         elif parts and parts[0] in {"docs", ".github"}:
             matched = True
@@ -177,7 +174,7 @@ def _select_affected(
             )
     if broad_change:
         for test in index.tests:
-            if test.tier not in {"target", "benchmark"}:
+            if test.tier != "benchmark":
                 selected.add(test.id)
                 reasons[test.id].add("conservative full-suite dependency")
     return selected, reasons, diagnostics
@@ -187,7 +184,6 @@ def build_suite_plan(
     index: ImpactIndex,
     *,
     mode: str,
-    target: str | None = None,
     changed_paths: Iterable[str] = (),
 ) -> SuitePlan:
     if mode not in _INTERNAL_MODES:
@@ -211,40 +207,13 @@ def build_suite_plan(
         for test_id in selected:
             reasons[test_id].add("smoke convention")
     elif mode == "full":
-        selected = {test.id for test in index.tests if test.tier not in {"target", "benchmark"}}
+        selected = {test.id for test in index.tests if test.tier != "benchmark"}
         for test_id in selected:
             reasons[test_id].add("complete generic gate")
     elif mode == "benchmark":
         selected = {test.id for test in index.tests if test.tier == "benchmark"}
         for test_id in selected:
             reasons[test_id].add("benchmark convention")
-    elif mode == "target":
-        if not target:
-            raise TestkitError(
-                Diagnostic(
-                    "error",
-                    "target_required",
-                    "target planning requires a target name",
-                    remediation="Pass `--target <name>`.",
-                    example="nix run .#dev -- plan target --target <id>",
-                )
-            )
-        available = sorted({test.target for test in index.tests if test.target})
-        if target not in available:
-            raise TestkitError(
-                Diagnostic(
-                    "error",
-                    "unknown_test_target",
-                    f"no convention-classified tests exist for target {target!r}",
-                    remediation=f"Create tests under tests/targets/{target}/; available targets: {', '.join(available) or 'none'}.",
-                )
-            )
-        selected = {
-            test.id for test in index.tests if test.target == target or test.tier == "smoke"
-        }
-        for test in index.tests:
-            if test.id in selected:
-                reasons[test.id].add("mandatory smoke gate" if test.tier == "smoke" else f"target qualification: {target}")
     else:
         if not changed:
             raise TestkitError(
@@ -307,7 +276,6 @@ def build_suite_plan(
     return SuitePlan(
         mode=mode,
         index_identity=index.identity,
-        target=target,
         changed_paths=changed,
         selected_tests=tuple(row.id for row in selected_rows),
         selection_reasons=tuple(

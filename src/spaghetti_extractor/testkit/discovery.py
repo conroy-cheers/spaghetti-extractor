@@ -197,11 +197,10 @@ def _directive(tree: ast.Module, *, path: str) -> _Directive:
     )
 
 
-def _classify(path: str, directive: _Directive) -> tuple[str, str, tuple[str, ...], str | None]:
+def _classify(path: str, directive: _Directive) -> tuple[str, str, tuple[str, ...]]:
     parts = PurePosixPath(path).parts
     tail = parts[1:]
     capabilities: set[str] = set(directive.capabilities)
-    target: str | None = None
     if len(tail) >= 2 and tail[0] == "smoke":
         tier, subsystem = "smoke", "smoke"
     elif len(tail) >= 3 and tail[0] == "unit":
@@ -209,9 +208,6 @@ def _classify(path: str, directive: _Directive) -> tuple[str, str, tuple[str, ..
     elif len(tail) >= 3 and tail[0] == "integration":
         tier, subsystem = "integration", tail[1]
         capabilities.add(tail[1])
-    elif len(tail) >= 3 and tail[0] == "targets":
-        tier, subsystem, target = "target", tail[1], tail[1]
-        capabilities.add(f"target:{target}")
     elif len(tail) >= 2 and tail[0] == "benchmark":
         tier, subsystem = "benchmark", "benchmark"
         capabilities.add("benchmark")
@@ -231,7 +227,7 @@ def _classify(path: str, directive: _Directive) -> tuple[str, str, tuple[str, ..
         )
     if directive.subsystem:
         subsystem = directive.subsystem
-    return tier, subsystem, tuple(sorted(capabilities)), target
+    return tier, subsystem, tuple(sorted(capabilities))
 
 
 def _constant_command(node: ast.Call) -> str | None:
@@ -579,7 +575,13 @@ def _resource_dependency_closure(
     return tuple(sorted(observed))
 
 
-def _stable_shard(test_id: str, *, tier: str, capabilities: tuple[str, ...], target: str | None, shard_count: int) -> str:
+def _stable_shard(
+    test_id: str,
+    *,
+    tier: str,
+    capabilities: tuple[str, ...],
+    shard_count: int,
+) -> str:
     digest = hashlib.sha256(test_id.encode("utf-8")).hexdigest()
     heavy = sorted(HEAVY_CAPABILITIES.intersection(capabilities))
     if tier == "smoke":
@@ -588,8 +590,6 @@ def _stable_shard(test_id: str, *, tier: str, capabilities: tuple[str, ...], tar
         return f"benchmark-{digest[:12]}"
     if heavy:
         return f"{heavy[0]}-{digest[:12]}"
-    if target:
-        return f"target-{target}-{digest[:12]}"
     return f"pure-{digest[:12]}"
 
 
@@ -635,7 +635,7 @@ def build_impact_index(
         if not path.startswith("tests/") or not PurePosixPath(path).name.startswith("test_"):
             continue
         directive = _directive(module.tree, path=path)
-        tier, subsystem, classified_capabilities, target = _classify(path, directive)
+        tier, subsystem, classified_capabilities = _classify(path, directive)
         heavy_diagnostics = _heavy_tool_diagnostics(module.tree, path=path)
         diagnostics.extend(heavy_diagnostics)
         dependencies = set(_transitive_paths(path, modules))
@@ -703,7 +703,6 @@ def build_impact_index(
             test_id,
             tier=tier,
             capabilities=capabilities_tuple,
-            target=target,
             shard_count=shard_count,
         )
         tests.append(
@@ -714,7 +713,6 @@ def build_impact_index(
                 tier=tier,
                 subsystem=subsystem,
                 capabilities=capabilities_tuple,
-                target=target,
                 dependencies=tuple(sorted(modules[dependency].name for dependency in dependencies)),
                 dependency_paths=tuple(sorted(dependencies)),
                 fixtures=fixture_ids,

@@ -33,7 +33,6 @@ class TestDiscoveryTests(unittest.TestCase):
                 "from spaghetti_extractor.feature import VALUE\n",
             )
             _write(root, "tests/integration/lean/test_semantics.py", "from spaghetti_extractor.feature import VALUE\n")
-            _write(root, "tests/targets/dxball/test_launch.py", "from spaghetti_extractor.feature import VALUE\n")
 
             index = build_impact_index(root, shard_count=8)
 
@@ -44,7 +43,6 @@ class TestDiscoveryTests(unittest.TestCase):
             lean = tests["tests/integration/lean/test_semantics.py"]
             self.assertEqual(lean.fixtures, ("lean-isa-runner",))
             self.assertEqual(lean.tier, "integration")
-            self.assertEqual(tests["tests/targets/dxball/test_launch.py"].target, "dxball")
 
     def test_sharding_does_not_move_existing_tests_when_an_unrelated_test_is_added(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -58,7 +58,6 @@ def _build_parser() -> argparse.ArgumentParser:
     plan.add_argument("mode", choices=sorted(MODES))
     plan.add_argument("--index", type=Path)
     plan.add_argument("--out", type=Path, default=Path("-"))
-    plan.add_argument("--target")
     plan.add_argument("--changed", action="append", default=[])
     plan.add_argument("--base", default="HEAD")
     plan.add_argument("--shards", type=int, default=32)
@@ -81,7 +80,6 @@ def _build_parser() -> argparse.ArgumentParser:
     scaffold.add_argument("second", help="new item name")
     scaffold.add_argument("--tier", default="unit")
     scaffold.add_argument("--capability")
-    scaffold.add_argument("--target")
     scaffold.add_argument("--json", action="store_true")
     scaffold.add_argument("--dry-run", action="store_true", help="render files without creating them")
     return parser
@@ -106,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
             changed = tuple(args.changed)
             if args.mode == "affected" and not changed:
                 changed = changed_paths_from_git(repository, base=args.base)
-            plan = build_suite_plan(index, mode=args.mode, target=args.target, changed_paths=changed)
+            plan = build_suite_plan(index, mode=args.mode, changed_paths=changed)
             write_manifest(args.out, plan)
             return 0
         if args.command == "fixtures":
@@ -143,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
             print(canonical_json(explanation), end="")
             return 0
         if args.kind == "test":
-            scaffold_plan = plan_test_scaffold(subsystem=args.first, name=args.second, tier=args.tier, capability=args.capability, target=args.target)
+            scaffold_plan = plan_test_scaffold(subsystem=args.first, name=args.second, tier=args.tier, capability=args.capability)
         elif args.kind == "phase":
             scaffold_plan = plan_phase_scaffold(phase_kind=args.first, name=args.second)
         else:

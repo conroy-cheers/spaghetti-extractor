@@ -8,14 +8,15 @@ experiments remain available in Git history and are not supported interfaces.
 
 | Path | Purpose |
 |---|---|
-| `flake.nix`, `flake.lock` | Pinned package, checks, apps, development shell, generic Nix constructors, and validation targets. |
+| `flake.nix`, `flake.lock` | Target-agnostic package, checks, apps, development shell, stable target SDK, and low-level generic constructors. |
 | `pyproject.toml` | Python package metadata, console scripts, runtime extras, Lean package data, and installed Nix evaluators. |
 | `src/spaghetti_extractor/` | Reusable implementation. It must not import target bundles. |
 | `nix/` | Generic content-addressed phase constructors and oracle harnesses. |
 | `profiles/` | Reviewed machine ABI, import, and external-operation profiles. |
 | `tools/` | Generic external tool adapters and helper assets. |
 | `tests/` | Generic unit, boundary, integration, and constructor tests. |
-| `targets/` | Authored validation bundles for GNU Hello, jq, and DX-Ball. |
+| `targets/flake.nix`, `targets/flake.lock` | Independent in-tree validation-consumer flake. |
+| `targets/registry.nix`, `targets/<id>/` | Explicit target registry and authored GNU Hello, jq, and DX-Ball bundles. |
 | `docs/` | Canonical architecture and workflow documentation. |
 | `private/` | Ignored operator inputs such as proprietary binaries. |
 | `build/`, `outputs/`, `result*` | Ignored generated workspaces or Nix links; never source inputs. |
@@ -39,7 +40,7 @@ PE bytes
 ```
 
 Imports flow downward through this sequence. Target bundles invoke the generic
-surface through Nix or CLI; generic modules never import `targets/`.
+SDK through Nix; the root flake and generic modules never import `targets/`.
 
 ## Public Entrypoints
 
@@ -294,6 +295,9 @@ enforce this with `xvfb-run` where Wine is used.
 
 | File | Output role |
 |---|---|
+| `toolkit-context.nix` | One reusable per-system source, package, kernel, oracle, and fixture context shared by the root flake and target SDK. |
+| `target-sdk-v1.nix` | Stable configured target interface grouped into analysis, authority, candidate, lifting, validation, and bundle operations. |
+| `flake-modules/toolkit.nix`, `flake-modules/checks.nix` | Focused `flake-parts` modules for generic packages/apps/shells and checks. |
 | `stage-a-external-interface-profile.nix` | Pinned SDK headers through a checked machine-level interface profile. |
 | `stage-a-isa-conformance.nix` | One cached Lean/Unicorn/Bochs corpus evaluation. |
 | `stage-a-isa-qualification-graph.nix` | Sharded ISA evidence and qualification DAG. |
@@ -348,8 +352,10 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-a-builders`, `stage-a-lightweight-ca-builders` | Optional remote builder inventories for full and lightweight jobs. |
 | `stage-a-builder-public-keys` | Trusted cache keys paired with the builder inventories. |
 
-All reusable constructors are exposed through `flake.lib`. CA derivations are
-first-class; dependency granularity, not CA mode alone, determines invalidation.
+The supported consumer interface is `flake.lib.mkTargetSdkV1`; low-level
+constructors are exposed under `flake.lib.unstable` for toolkit development.
+CA derivations are first-class; dependency granularity, not CA mode alone,
+determines invalidation.
 
 ## Profiles And Catalogs
 
@@ -398,9 +404,14 @@ history rather than competing with the current design.
 | `targets/jq/` | Larger CLI/library/component intent benchmark and functional expectations. |
 | `targets/dxball/` | Proprietary 3D-era application acquisition plus generic machine-IR and component-analysis benchmark. |
 
-Target `default.nix` files acquire/build inputs and invoke generic constructors.
+Target `targets/<id>/default.nix` modules acquire/build inputs and invoke generic constructors.
 Intent JSON and source are authored. Downloaded binaries and generated analyses
 must not be committed.
+
+The corpus flake exports
+`legacyPackages.x86_64-linux.targets.<id>.<family>.<artifact>` and
+`targetChecks.<id>`. Listing the registry or artifact families does not force
+the corresponding authority graph.
 
 ## Tests
 
@@ -410,6 +421,10 @@ diagnosis, and rebuild explanations. `nix run .#test -- affected` selects only
 impacted shard outputs; `nix run .#test -- full` and `nix flake check` are the
 complete generic gates. Direct heavyweight tool execution in new tests is a
 policy error with a fixture-based remediation.
+
+`nix run ./targets#test -- <id>` runs the generic smoke gate and then the
+consumer-owned target aggregate. `nix flake check ./targets` validates registry,
+bundle, intent, and SDK-boundary contracts independently of the generic suite.
 
 Tests are phase-oriented by filename:
 
@@ -432,12 +447,14 @@ during implementation, but Nix is the supported build and cache boundary.
 ## Adding A Target
 
 1. Add `targets/<id>/target.json` and authored intent/source/tests.
-2. Add a small `default.nix` that acquires/builds the target and calls generic
-   constructors.
-3. Add only top-level package/check exposure that is useful as a benchmark.
-4. Do not add target Python or Lean modules.
-5. If a reusable capability is missing, implement it under `src/`, validate it
-   with a generic fixture, and then consume it from the target.
+2. Add a small `targets/<id>/default.nix` accepting `{ pkgs, sdk }`, and return
+   `sdk.target.bundle { ... }`.
+3. Register the directory in `targets/registry.nix`; structured artifacts and
+   aggregate checks are exported automatically.
+4. Do not edit the root flake or add target Python, Lean, or private-constructor
+   imports.
+5. If a reusable capability is missing, implement it under `src/` or the SDK,
+   validate it with a generic fixture, and then consume it from the target.
 
 This rule keeps DX-Ball, jq, GNU Hello, and future programs as clients of one
 toolkit rather than alternate architectures embedded in the repository.

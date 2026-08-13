@@ -1,15 +1,10 @@
 from __future__ import annotations
 
 import ast
-import json
 import re
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.target_intent import (
-    load_target_bundle,
-    validate_authored_intent,
-)
 from spaghetti_extractor.python_module_index import production_unreachable_modules
 from spaghetti_extractor.analysis_v3.registry import AUTHORITY_PHASE_REGISTRY_V3
 
@@ -24,7 +19,6 @@ TESTKIT = {
         "nix",
         "profiles",
         "pyproject.toml",
-        "targets",
     )
 }
 
@@ -145,23 +139,11 @@ class RepositoryBoundaryTests(unittest.TestCase):
         self.assertNotIn("gnu-hello", manifest.lower())
         self.assertNotIn("dxball", manifest.lower())
 
-    def test_target_manifests_reference_existing_authored_inputs(self) -> None:
-        target_root = self.root / "targets"
-        bundles = [load_target_bundle(path) for path in sorted(target_root.iterdir())]
-        self.assertEqual(
-            [bundle.identity.target_id for bundle in bundles],
-            ["dxball", "gnu-hello", "jq"],
-        )
-
-    def test_target_intent_contains_no_generated_evidence(self) -> None:
-        for path in sorted((self.root / "targets").glob("*/intent/**/*.json")):
-            with self.subTest(path=path.relative_to(self.root)):
-                payload = json.loads(path.read_text(encoding="utf-8"))
-                validate_authored_intent(
-                    payload,
-                    expected_format=payload.get("format"),
-                    context=path.relative_to(self.root).as_posix(),
-                )
+    def test_root_flake_does_not_import_or_name_validation_targets(self) -> None:
+        flake = (self.root / "flake.nix").read_text(encoding="utf-8").lower()
+        self.assertNotIn("./targets", flake)
+        self.assertNotIn("gnu-hello", flake)
+        self.assertNotIn("dxball", flake)
 
     def test_machine_generated_reports_are_not_checked_in_as_documentation(self) -> None:
         reports = sorted((self.root / "docs").glob("*.json"))
@@ -225,16 +207,34 @@ class RepositoryBoundaryTests(unittest.TestCase):
             # The production/tooling inventory precedes the Tests section.
             repository_map.split("## Tests", maxsplit=1)[0],
         ]
-        available = {
+        available_names = {
             path.name
             for path in self.root.rglob("*")
             if path.is_file() and path.suffix in {".py", ".nix"}
         }
+        available_paths = {
+            path.relative_to(self.root).as_posix()
+            for path in self.root.rglob("*")
+            if path.is_file() and path.suffix in {".py", ".nix"}
+        }
         missing = []
-        pattern = re.compile(r"`([A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|nix))`")
+        pattern = re.compile(
+            r"`((?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|nix))`"
+        )
         for document_text in document_texts:
             for name in pattern.findall(document_text):
-                if name not in available:
+                if name.startswith("targets/") and not (self.root / "targets").exists():
+                    # Generic Nix shards deliberately exclude the validation corpus.
+                    # The target flake checks these paths against its explicit registry.
+                    continue
+                if "/" in name:
+                    exists = any(
+                        path == name or path.endswith(f"/{name}")
+                        for path in available_paths
+                    )
+                else:
+                    exists = name in available_names
+                if not exists:
                     missing.append(name)
         self.assertEqual(sorted(set(missing)), [])
 
@@ -263,10 +263,13 @@ class RepositoryBoundaryTests(unittest.TestCase):
 
     def test_installed_nix_data_covers_every_generic_nix_surface(self) -> None:
         manifest = (self.root / "pyproject.toml").read_text(encoding="utf-8")
+        flake_only = {"target-sdk-v1.nix", "toolkit-context.nix"}
         missing = sorted(
             path.name
             for path in (self.root / "nix").iterdir()
-            if path.is_file() and f'"nix/{path.name}"' not in manifest
+            if path.is_file()
+            and path.name not in flake_only
+            and f'"nix/{path.name}"' not in manifest
         )
         self.assertEqual(missing, [])
 

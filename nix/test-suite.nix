@@ -3,12 +3,11 @@
   pythonEnv,
   repositoryRoot ? ../.,
   mode ? "full",
-  target ? null,
   changedPaths ? [ ],
   shardCount ? 32,
   # This is the reviewed post-legacy-cleanup inventory baseline. Lower it only
   # when a change deliberately removes or consolidates tests.
-  minimumTests ? if mode == "full" then 1488 else if mode == "affected" then 0 else 1,
+  minimumTests ? if mode == "full" then 1483 else if mode == "affected" then 0 else 1,
   fixtures ? { },
   environment ? { },
 }:
@@ -24,7 +23,6 @@ let
       pythonEnv
       repositoryRoot
       mode
-      target
       changedPaths
       shardCount
       ;

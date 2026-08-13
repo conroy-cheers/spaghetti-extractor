@@ -1,13 +1,4 @@
-{
-  pkgs,
-  pythonEnv,
-  pythonSource,
-  isaPythonSource ? null,
-  spaghettiExtractor ? null,
-  isaKernelCache ? null,
-  isaSemanticKernel ? null,
-  bochsRunner ? null,
-}:
+{ pkgs, sdk }:
 
 let
   mingw = pkgs.pkgsCross.mingw32;
@@ -45,28 +36,14 @@ let
     };
   });
   originalPe = "${original}/bin/hello.exe";
-  profileSource = pkgs.lib.fileset.toSource {
-    root = ../../profiles;
-    fileset = ../../profiles;
-  };
-  analysis = import ../../nix/stage-b-component-analysis.nix {
-    inherit pkgs pythonEnv pythonSource;
+  profileSource = sdk.profiles;
+  analysis = sdk.analysis.component {
     original = originalPe;
     externalProfile =
       "${profileSource}/pe32-msvcrt-machine-runtime-v1.json";
     namePrefix = "spaghetti-extractor-gnu-hello-2.12.3";
   };
-  analysisV3 = import ../../nix/analysis-v3-authority.nix {
-    inherit
-      pkgs
-      pythonEnv
-      pythonSource
-      isaPythonSource
-      spaghettiExtractor
-      isaKernelCache
-      isaSemanticKernel
-      bochsRunner
-      ;
+  analysisV3 = sdk.analysis.authorityV3 {
     name = "spaghetti-extractor-gnu-hello-2.12.3-authority-v3";
     machineIr = "${analysis.machineIr}/machine-ir.jsonl";
     binary = originalPe;
@@ -77,21 +54,18 @@ let
     launchProfileTemplate =
       "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
   };
-  intent = import ../../nix/stage-b-target-intent.nix {
-    inherit pkgs pythonEnv pythonSource;
+  intent = sdk.analysis.targetIntent {
     target = ./.;
   };
   idiomaticSourceSpecification = builtins.elemAt intent.sourceProjects 0;
   idiomaticSourceEvidencePlan = builtins.elemAt intent.sourceEvidence 0;
-  linkedLibraries = import ../../nix/stage-b-linked-libraries.nix {
-    inherit pkgs pythonEnv pythonSource;
+  linkedLibraries = sdk.lifting.linkedLibraries {
     original = originalPe;
     machineIr = "${analysis.machineIr}/machine-ir.jsonl";
     namePrefix = "spaghetti-extractor-gnu-hello-2.12.3";
     review = "${intent.linkedIslandReview}/linked-island-review.json";
   };
-  runtimeLock = import ../../nix/stage-b-runtime-lock.nix {
-    inherit pkgs pythonEnv pythonSource;
+  runtimeLock = sdk.lifting.runtimeLock {
     namePrefix = "stage-b-gnu-hello-2.12.3";
     dependencies = [
       {
@@ -122,7 +96,7 @@ let
     ];
   };
   idiomatic = import ./idiomatic.nix {
-    inherit pkgs pythonEnv pythonSource;
+    inherit pkgs sdk;
     mingw32 = mingw;
     aarch64Stdenv = aarch64.stdenv;
     machineIr = analysis.machineIr;
@@ -132,28 +106,25 @@ let
     sourceRoot = ./source/idiomatic;
     linkedIslands = "${linkedLibraries.linkedIslands}/linked-islands.json";
   };
-  sourceIterationAudit = import ../../nix/stage-b-source-iteration-audit.nix {
-    inherit pkgs pythonEnv pythonSource;
+  sourceIterationAudit = sdk.lifting.sourceIterationAudit {
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
     machineIr = analysis.machineIr;
     sourceBinding = idiomatic.sourceBinding;
     sourceEvidencePlan = idiomaticSourceEvidencePlan;
     candidate = idiomatic.candidate;
   };
-  sourceLiftAudit = import ../../nix/stage-b-source-lift-audit.nix {
-    inherit pkgs pythonEnv pythonSource sourceIterationAudit;
+  sourceLiftAudit = sdk.lifting.sourceLiftAudit {
+    inherit sourceIterationAudit;
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
     authorityDiagnostics = analysisV3.diagnostics;
   };
-  sourceAst = import ../../nix/stage-b-clang-ast-bundle.nix {
-    inherit pkgs;
+  sourceAst = sdk.lifting.clangAstBundle {
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
     source = idiomatic.source;
     sourceFiles = [ "hello.c" "hello.h" ];
     compileSources = [ "hello.c" ];
   };
-  sourceCalls = import ../../nix/stage-b-source-call-substitutions.nix {
-    inherit pkgs pythonEnv pythonSource;
+  sourceCalls = sdk.lifting.sourceCallSubstitutions {
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
     sourceBinding =
       "${idiomatic.sourceBinding}/source-project-binding.json";
@@ -169,8 +140,7 @@ let
     allowedRuntimeImports = ./intent/runtime-imports.json;
     proposeSourceComponents = true;
   };
-  sourceComponentAssurance = import ../../nix/stage-b-source-component-assurance.nix {
-    inherit pkgs pythonEnv pythonSource;
+  sourceComponentAssurance = sdk.lifting.sourceComponentAssurance {
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
     binding = idiomatic.sourceBinding;
     sourceInventory = "${sourceCalls.sourceInventory}/source-call-inventory.json";
@@ -178,38 +148,34 @@ let
     functionalReport = "${idiomatic.functionalSuite}/functional-report.json";
     evidencePlan = "${idiomaticSourceEvidencePlan}/source-component-evidence.json";
   };
-  sourceQualification = import ../../nix/stage-b-source-qualification.nix {
-    inherit pkgs pythonEnv pythonSource;
+  sourceQualification = sdk.lifting.sourceQualification {
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
     sourceBinding = idiomatic.sourceBinding;
     componentAssurance = sourceComponentAssurance;
     sourceCallReport = sourceCalls.sourceBindingReport;
     candidateDependencyAudit = sourceCalls.candidateAudit;
   };
-  runtimeQualification = import ../../nix/stage-b-runtime-qualification.nix {
-    inherit pkgs pythonEnv pythonSource runtimeLock;
+  runtimeQualification = sdk.lifting.runtimeQualification {
+    inherit runtimeLock;
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
     linkedIslands = linkedLibraries.linkedIslands;
     candidateDependencyAudit = sourceCalls.candidateAudit;
     componentAssurance = sourceComponentAssurance;
     substitutionPlan = ./intent/runtime-substitution.json;
   };
-  candidateValidation = import ../../nix/stage-b-candidate-validation.nix {
-    inherit pkgs pythonEnv pythonSource;
+  candidateValidation = sdk.candidate.validation {
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
     pe32Report = idiomatic.functionalSuite;
     nonX86Report = idiomatic.nativeFunctionalSuite;
   };
-  staticImplementationLedger = import ../../nix/stage-b-implementation-ledger.nix {
-    inherit pkgs pythonEnv pythonSource;
+  staticImplementationLedger = sdk.lifting.implementationLedger {
     namePrefix = "stage-b-gnu-hello-2.12.3";
     machineIr = analysis.machineIr;
     profile = "static-baseline-v1";
     fallbackCoverage =
       analysisV3.graph.phases."fallback-coverage-v3".artifact;
   };
-  portableImplementationLedger = import ../../nix/stage-b-implementation-ledger.nix {
-    inherit pkgs pythonEnv pythonSource;
+  portableImplementationLedger = sdk.lifting.implementationLedger {
     namePrefix = "stage-b-gnu-hello-2.12.3";
     machineIr = analysis.machineIr;
     profile = "validation-qualified-v1";
@@ -218,8 +184,8 @@ let
     linkedIslands = linkedLibraries.linkedIslands;
     libraryQualifications = [ runtimeQualification ];
   };
-  staticCompletionReceipt = import ../../nix/stage-b-lift-completion-receipt.nix {
-    inherit pkgs pythonEnv pythonSource runtimeLock;
+  staticCompletionReceipt = sdk.lifting.completionReceipt {
+    inherit runtimeLock;
     namePrefix = "stage-b-gnu-hello-2.12.3";
     profile = "static-baseline-v1";
     finalAuthority = analysisV3.finalAuthority;
@@ -228,8 +194,8 @@ let
     implementationLedger = staticImplementationLedger;
     authorityDiagnostics = analysisV3.diagnostics;
   };
-  portableCompletionReceipt = import ../../nix/stage-b-lift-completion-receipt.nix {
-    inherit pkgs pythonEnv pythonSource runtimeLock;
+  portableCompletionReceipt = sdk.lifting.completionReceipt {
+    inherit runtimeLock;
     namePrefix = "stage-b-gnu-hello-2.12.3";
     profile = "validation-qualified-v1";
     finalAuthority = analysisV3.finalAuthority;
@@ -328,32 +294,69 @@ let
       EOF
     '';
 in
-{
-  inherit original analysis analysisV3 linkedLibraries runtimeLock;
-  inherit intent;
-
-  idiomaticSourceProject = idiomatic // {
-    specification = idiomaticSourceSpecification;
-    evidencePlan = idiomaticSourceEvidencePlan;
+sdk.target.bundle {
+  targetRoot = ./.;
+  artifacts = {
+    input.original = original;
+    intent = intent.validation;
+    analysis = {
+      machine-ir = analysis.machineIr;
+      component-proposals = analysis.componentProposals;
+    };
+    authority = {
+      final = analysisV3.finalAuthority;
+      gate = analysisV3.finalAuthorityGate;
+      graph-metadata = analysisV3.graph.metadata;
+      diagnostics = analysisV3.diagnostics;
+      external-site-evidence = analysisV3.generatedExternalSiteEvidence;
+      indexed-target-evidence = analysisV3.generatedIndexedTargetEvidence;
+      isa-evidence = analysisV3.generatedISAEvidence.projection;
+      isa-requirements = analysisV3.generatedISAEvidence.requirements;
+      isa-selection =
+        analysisV3.generatedISAEvidence.qualification.selectionAuthority.derivation;
+      isa-frontiers = analysisV3.generatedISAEvidence.frontiers;
+      fallback-interpreter = analysisV3.fallbackInterpreter;
+      fallback-coverage = analysisV3.fallbackCoverageReceipt;
+      implementation-capabilities = analysisV3.generatedImplementationCapabilities;
+    };
+    source = {
+      specification = idiomaticSourceSpecification;
+      evidence-plan = idiomaticSourceEvidencePlan;
+      binding = idiomatic.sourceBinding;
+      ast = sourceAst;
+      call-inventory = sourceCalls.sourceInventory;
+      call-frontier = sourceCalls.callFrontier;
+      call-substitution-plan = sourceCalls.callPlan;
+      static-indirect-targets = sourceCalls.generatedIndirectTargets;
+      call-report = sourceCalls.sourceBindingReport;
+      dependency-audit = sourceCalls.candidateAudit;
+      component-assurance = sourceComponentAssurance;
+      iteration-audit = sourceIterationAudit;
+      lift-audit = sourceLiftAudit;
+      qualification = sourceQualification;
+    };
+    runtime = {
+      lock = runtimeLock;
+      linked-islands = linkedLibraries.linkedIslands;
+      qualification = runtimeQualification;
+    };
+    candidate = {
+      pe32 = idiomatic.candidate;
+      native = idiomatic.nativeCandidate;
+      runner = idiomatic.runner;
+      functional-suite-spec = idiomatic.functionalSuiteSpec;
+      functional-suite = idiomatic.functionalSuite;
+      native-functional-suite = idiomatic.nativeFunctionalSuite;
+      validation = candidateValidation;
+    };
+    completion = {
+      static-ledger = staticImplementationLedger;
+      portable-ledger = portableImplementationLedger;
+      static-receipt = staticCompletionReceipt;
+      portable-receipt = portableCompletionReceipt;
+      workbench = liftWorkbench;
+      workflow = liftWorkflow;
+    };
   };
-  inherit idiomaticSourceSpecification idiomaticSourceEvidencePlan;
-  idiomaticSourceBinding = idiomatic.sourceBinding;
-  idiomaticCandidate = idiomatic.candidate;
-  idiomaticRunner = idiomatic.runner;
-  idiomaticFunctionalSuiteSpec = idiomatic.functionalSuiteSpec;
-  idiomaticFunctionalSuiteDag = idiomatic.functionalSuiteDag;
-  idiomaticFunctionalSuite = idiomatic.functionalSuite;
-  idiomaticSourceLiftAudit = sourceLiftAudit;
-  inherit sourceIterationAudit;
-  inherit sourceQualification;
-  inherit sourceAst sourceCalls sourceComponentAssurance runtimeQualification;
-  inherit candidateValidation;
-  inherit
-    staticImplementationLedger
-    portableImplementationLedger
-    staticCompletionReceipt
-    portableCompletionReceipt
-    liftWorkbench
-    liftWorkflow
-    ;
+  checks.intent = intent.validation;
 }

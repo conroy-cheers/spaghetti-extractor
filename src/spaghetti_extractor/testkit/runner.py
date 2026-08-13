@@ -24,7 +24,7 @@ from .planning import build_suite_plan, changed_paths_from_git
 Run = Callable[[Sequence[str], Path], int]
 
 _SOURCE_EXCLUDED_NAMES = frozenset(
-    {".git", ".mypy_cache", ".pytest_cache", "__pycache__", "build", "private", "result"}
+    {".git", ".mypy_cache", ".pytest_cache", "__pycache__", "build", "private", "result", "targets"}
 )
 _DERIVATION_PATH = re.compile(r"/nix/store/[0-9a-z]{32}-[^\x00\n]+[.]drv")
 _EVALUATION_RECEIPT_FORMAT = "spaghetti-extractor-nix-evaluation-receipt-v1"
@@ -350,32 +350,16 @@ def build_commands(
     repository: Path,
     *,
     mode: str,
-    target: str | None = None,
     changed: tuple[str, ...] = (),
 ) -> tuple[tuple[str, ...], ...]:
     source_expression = _source_expression(repository)
-    if mode == "target":
-        available = tuple(
-            path.parent.name
-            for path in sorted((repository / "targets").glob("*/target.json"))
-        )
-        if not target or target not in available:
-            raise TestkitError(
-                Diagnostic(
-                    "error",
-                    "unknown_test_target",
-                    f"unknown validation target {target!r}",
-                    remediation=f"Choose one of: {', '.join(available) or 'none'}.",
-                )
-            )
-    if mode in {"full", "smoke", "benchmark", "target"}:
-        suffix = mode if mode != "target" else f"target-{target or ''}"
+    if mode in {"full", "smoke", "benchmark"}:
         expression = _flake_selection(
             source_expression,
-            f'legacyPackages.x86_64-linux."test-{suffix}"',
+            f'legacyPackages.x86_64-linux."test-{mode}"',
         )
         builder_arguments = _builder_arguments(
-            repository, remote=mode in {"full", "target"}
+            repository, remote=mode == "full"
         )
         command = (
             "nix",
@@ -412,7 +396,7 @@ def build_commands(
                 "error",
                 "unknown_test_mode",
                 f"unsupported test mode {mode!r}",
-                remediation="Choose smoke, affected, full, target, or benchmark.",
+                remediation="Choose smoke, affected, full, or benchmark.",
             )
         )
     selected_shards = tuple(
@@ -472,7 +456,7 @@ def _source_expression(repository: Path) -> str:
       name = "spaghetti-extractor-worktree";
       filter = path: type:
         let name = builtins.baseNameOf path;
-        in !(builtins.elem name [ ".git" ".mypy_cache" ".pytest_cache" "__pycache__" "build" "private" "result" ])
+        in !(builtins.elem name [ ".git" ".mypy_cache" ".pytest_cache" "__pycache__" "build" "private" "result" "targets" ])
            && !(builtins.match ".*\\\\.py[co]" name != null);
     }}'''
 
@@ -493,8 +477,7 @@ def _parser() -> argparse.ArgumentParser:
         prog="spaghetti-extractor-test",
         description="Run cached Spaghetti Extractor validation through Nix.",
     )
-    parser.add_argument("mode", choices=("affected", "benchmark", "full", "smoke", "target"))
-    parser.add_argument("target", nargs="?")
+    parser.add_argument("mode", choices=("affected", "benchmark", "full", "smoke"))
     parser.add_argument("--repository", type=Path, default=Path.cwd())
     parser.add_argument("--changed", action="append", default=[])
     parser.add_argument("--dry-run", action="store_true")
@@ -505,19 +488,9 @@ def main(argv: list[str] | None = None, *, run: Run = _run) -> int:
     args = _parser().parse_args(argv)
     repository = args.repository.resolve()
     try:
-        if args.mode == "target" and not args.target:
-            raise TestkitError(
-                Diagnostic(
-                    "error",
-                    "target_required",
-                    "target mode requires an ID",
-                    remediation="Pass an ID declared by targets/*/target.json.",
-                )
-            )
         commands = build_commands(
             repository,
             mode=args.mode,
-            target=args.target,
             changed=tuple(args.changed),
         )
         for command in commands:

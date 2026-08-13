@@ -1,9 +1,8 @@
 {
   pkgs,
+  sdk,
   mingw32,
   aarch64Stdenv,
-  pythonEnv,
-  pythonSource,
   machineIr,
   authorityGate,
   specification,
@@ -20,13 +19,13 @@ let
       (sourceRoot + "/hello.h")
     ];
   };
-  sourceBinding = import ../../nix/stage-b-source-project.nix {
-    inherit pkgs pythonEnv pythonSource machineIr specification linkedIslands;
+  sourceBinding = sdk.lifting.sourceProject {
+    inherit machineIr specification linkedIslands;
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
     sourceRoot = source;
   };
-  portableBuild = import ../../nix/stage-b-portable-c-project.nix {
-    inherit pkgs mingw32 specification runtimeLock source sourceBinding;
+  portableBuild = sdk.lifting.portableCProject {
+    inherit mingw32 specification runtimeLock source sourceBinding;
     namePrefix = "spaghetti-extractor-gnu-hello-idiomatic";
     version = "2.12.3";
     sourceFiles = [ "hello.c" "hello.h" ];
@@ -73,9 +72,7 @@ let
   functionalSuiteSpec = pkgs.writeText
     "gnu-hello-2.12.3-functional-suite.json"
     (builtins.toJSON functionalSuiteDefinition);
-  functionalSuiteDag = import ../../nix/stage-b-functional-suite.nix {
-    inherit pkgs pythonEnv;
-    pythonSource = pythonSource;
+  functionalSuiteDag = sdk.lifting.functionalSuite {
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic-functional";
     suite = functionalSuiteSpec;
     caseIds = map (case: case.id) functionalSuiteDefinition.cases;
@@ -100,9 +97,7 @@ let
   nativeFunctionalSuiteSpec = pkgs.writeText
     "gnu-hello-2.12.3-native-functional-suite.json"
     (builtins.toJSON nativeFunctionalSuiteDefinition);
-  nativeFunctionalSuiteDag = import ../../nix/stage-b-functional-suite.nix {
-    inherit pkgs pythonEnv;
-    pythonSource = pythonSource;
+  nativeFunctionalSuiteDag = sdk.lifting.functionalSuite {
     namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic-native-functional";
     suite = nativeFunctionalSuiteSpec;
     caseIds = map (case: case.id) nativeFunctionalSuiteDefinition.cases;

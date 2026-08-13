@@ -1,1 +1,0 @@
-"""DX-Ball target qualification."""

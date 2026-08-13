@@ -11,7 +11,6 @@ def _test(
     index: int,
     *,
     tier: str = "unit",
-    target: str | None = None,
     dependencies: tuple[str, ...] = (),
     shard: str | None = None,
 ) -> TestRecord:
@@ -21,9 +20,8 @@ def _test(
         path=path,
         module=f"tests.{tier}.test_{index:04d}",
         tier=tier,
-        subsystem=target or tier,
-        capabilities=() if target is None else (f"target:{target}",),
-        target=target,
+        subsystem=tier,
+        capabilities=(),
         dependencies=(),
         dependency_paths=dependencies,
         fixtures=(),
@@ -51,20 +49,16 @@ class TestPlanningTests(unittest.TestCase):
         self.assertEqual(plan.selected_tests, (index.tests[0].id, index.tests[1].id))
         self.assertNotIn(index.tests[2].id, plan.selected_tests)
 
-    def test_full_excludes_target_and_benchmark_while_target_includes_smoke(self) -> None:
+    def test_full_excludes_benchmarks(self) -> None:
         rows = (
             _test(0, tier="smoke", shard="smoke"),
             _test(1),
-            _test(2, tier="target", target="dxball", shard="target-dxball-00"),
-            _test(3, tier="benchmark", shard="benchmark-a"),
+            _test(2, tier="benchmark", shard="benchmark-a"),
         )
         index = ImpactIndex(repository=".", modules=(), tests=rows)
 
         full = build_suite_plan(index, mode="full")
-        target = build_suite_plan(index, mode="target", target="dxball")
-
         self.assertEqual(full.selected_tests, (rows[0].id, rows[1].id))
-        self.assertEqual(target.selected_tests, (rows[0].id, rows[2].id))
 
         catalog = build_suite_plan(index, mode="catalog")
         self.assertEqual(catalog.selected_tests, tuple(row.id for row in rows))
@@ -96,6 +90,22 @@ class TestPlanningTests(unittest.TestCase):
         )
 
         self.assertEqual(set(plan.selected_tests), {row.id for row in rows})
+
+    def test_target_consumer_change_does_not_expand_generic_gate(self) -> None:
+        rows = (
+            _test(0, tier="smoke", shard="smoke"),
+            _test(1),
+        )
+        index = ImpactIndex(repository=".", modules=(), tests=rows)
+
+        plan = build_suite_plan(
+            index,
+            mode="affected",
+            changed_paths=("targets/example/default.nix",),
+        )
+
+        self.assertEqual(plan.selected_tests, (rows[0].id,))
+        self.assertFalse(plan.diagnostics)
 
     def test_nix_test_change_selects_only_its_owned_check(self) -> None:
         rows = (

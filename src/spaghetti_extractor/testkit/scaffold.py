@@ -12,7 +12,7 @@ from .model import canonical_sha256
 
 
 PHASE_KINDS = frozenset({"map-units", "map-sccs", "reduce"})
-TEST_TIERS = frozenset({"benchmark", "integration", "smoke", "target", "unit"})
+TEST_TIERS = frozenset({"benchmark", "integration", "smoke", "unit"})
 NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 
 
@@ -121,7 +121,6 @@ def plan_test_scaffold(
     name: str,
     tier: str = "unit",
     capability: str | None = None,
-    target: str | None = None,
 ) -> ScaffoldPlan:
     subsystem = _name(subsystem, field="subsystem")
     name = _name(name.removeprefix("test_"), field="test name")
@@ -130,9 +129,6 @@ def plan_test_scaffold(
     if tier == "integration":
         capability = _name(capability or subsystem, field="integration capability")
         directory = f"tests/integration/{capability}"
-    elif tier == "target":
-        target = _name(target or subsystem, field="target")
-        directory = f"tests/targets/{target}"
     elif tier == "smoke":
         directory = "tests/smoke"
     elif tier == "benchmark":

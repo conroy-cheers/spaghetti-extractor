@@ -5,9 +5,6 @@ import re
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.target_intent import validate_authored_intent
-
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -297,43 +294,6 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn('package = module.split(".", 1)[0]', closure)
         self.assertIn("run `nix run .#dev -- refresh-index`", closure)
 
-    def test_jq_component_intent_is_authored_data_not_tooling(self) -> None:
-        path = ROOT / "targets" / "jq" / "intent" / "components.json"
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        validate_authored_intent(
-            payload,
-            expected_format="stage-b-component-intent-v1",
-            context=path.relative_to(ROOT).as_posix(),
-        )
-        self.assertTrue(payload["components"])
-
-    def test_dxball_consumes_the_generic_component_analysis_constructor(self) -> None:
-        target = (ROOT / "targets" / "dxball" / "default.nix").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("../../nix/stage-b-component-analysis.nix", target)
-        for exported in (
-            "inventory",
-            "analysis",
-            "hybrid",
-            "hybridDiagnostic",
-            "diagnosticRun",
-        ):
-            self.assertRegex(target, rf"(?m)^\s+{exported}$")
-        self.assertIn("externalInterfaceProfiles", target)
-        self.assertIn("staticAuthorityV3 = analysisV3", target)
-        self.assertNotIn("staticAuthorityV2", target)
-        self.assertNotIn("staticCompletenessReport", target)
-        self.assertNotIn("staticCompletenessGate", target)
-        self.assertIn("allowDeferredPotentialTransfers = false", target)
-        self.assertIn('candidateMode = "structural-diagnostic"', target)
-        self.assertIn("allowDeferredPotentialTransfers = true", target)
-        self.assertIn("diagnosticFailureTrap = true", target)
-        self.assertNotIn("diagnosticExternalSiteProposals", target)
-        self.assertNotIn("diagnosticCallableExternalRuntime", target)
-        self.assertIn("nativeEnginePlan", target)
-        self.assertIn("nativeRuntimePackage", target)
-
     def test_headless_diagnostic_run_decodes_candidate_failure_evidence(self) -> None:
         module = (
             ROOT / "nix" / "stage-b-headless-diagnostic-run.nix"
@@ -440,22 +400,21 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("dxball", module.lower())
 
     def test_analysis_source_excludes_nix_orchestration_files(self) -> None:
-        flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
-        analysis_start = flake.index("analysisSource =")
-        analysis_end = flake.index("pythonEnv =", analysis_start)
-        analysis_source = flake[analysis_start:analysis_end]
+        context = (ROOT / "nix" / "toolkit-context.nix").read_text(
+            encoding="utf-8"
+        )
+        analysis_start = context.index("analysisPythonFiles =")
+        analysis_end = context.index("analysisSource =", analysis_start)
+        analysis_source = context[analysis_start:analysis_end]
 
-        self.assertIn("./src", analysis_source)
-        self.assertIn("./profiles", analysis_source)
-        self.assertNotIn("./nix", analysis_source)
-        self.assertIn("pythonSource = analysisSource", flake)
+        self.assertIn("../src", analysis_source)
+        self.assertNotIn("../nix", analysis_source)
 
-    def test_flake_exposes_only_v3_static_authority(self) -> None:
+    def test_flake_exposes_only_generic_v3_static_authority_constructor(self) -> None:
         flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
         self.assertIn("mkAnalysisAuthorityV3", flake)
-        self.assertIn("dxball-final-authority-v3", flake)
+        self.assertNotIn("dxball-final-authority-v3", flake)
         self.assertNotIn("mkStaticHybridAuthorityV2Graph", flake)
-        self.assertNotIn("dxball-static-hybrid-authority-v2", flake)
 
     def test_v3_nix_fixture_covers_structural_and_dependency_mutations(self) -> None:
         fixture = (ROOT / "tests" / "unit" / "nix_v3" / "evaluation.nix").read_text(

@@ -13,8 +13,8 @@ Use only the Nix-first entrypoints:
 nix run .#test -- smoke
 nix run .#test -- affected
 nix run .#test -- full
-nix run .#test -- target <target-id>
 nix run .#test -- benchmark
+nix run ./targets#test -- <target-id>
 nix run .#dev -- doctor
 nix run .#dev -- fixtures
 nix run .#dev -- scaffold test <subsystem> <name>
@@ -121,8 +121,8 @@ those blockers.
   dependency identities, and corruption tests.
 - `incomplete` means required evidence is absent; `violated` identifies a
   contradictory location. Neither can authorize candidate generation.
-- Target names and policy stay under `targets/`; generic code consumes target
-  manifests without naming validation binaries.
+- Target names and policy stay in the independent `targets/` consumer flake;
+  generic evaluation and cache fingerprints exclude that corpus entirely.
 - Test-only changes retain stable shard assignment. New tests use convention
   directories, so no central shard list needs editing.
 - Diagnostic formatting cannot be an authority dependency.

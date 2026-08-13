@@ -3,7 +3,6 @@
   pythonEnv ? pkgs.python3,
   repositoryRoot ? ../.,
   mode ? "full",
-  target ? null,
   changedPaths ? [ ],
   shardCount ? 32,
 }:
@@ -26,7 +25,6 @@ let
       (repositoryRoot + "/isa-catalogs")
       (repositoryRoot + "/nix")
       (repositoryRoot + "/profiles")
-      (repositoryRoot + "/targets")
       (repositoryRoot + "/flake.nix")
       (repositoryRoot + "/flake.lock")
       (repositoryRoot + "/pyproject.toml")
@@ -36,15 +34,16 @@ let
   changedArguments = lib.concatMapStringsSep " "
     (path: "--changed ${lib.escapeShellArg path}")
     changedPaths;
-  targetArgument = lib.optionalString (target != null) "--target ${lib.escapeShellArg target}";
 in
-assert builtins.elem mode [ "affected" "benchmark" "catalog" "full" "smoke" "target" ];
+assert builtins.elem mode [ "affected" "benchmark" "catalog" "full" "smoke" ];
 assert builtins.isInt shardCount && shardCount >= 1 && shardCount <= 256;
 pkgs.runCommand "spaghetti-extractor-test-suite-plan-${mode}" {
   nativeBuildInputs = [ pythonEnv ];
   preferLocalBuild = false;
   allowSubstitutes = true;
-  __contentAddressed = true;
+  # This is the IFD bootstrap node: test-suite.nix reads suite-plan.json while
+  # instantiating the shard DAG. Its output path must therefore be known before
+  # realization. The generated shards and aggregate remain CA derivations.
 } ''
   set -euo pipefail
   export PYTHONHASHSEED=0
@@ -70,7 +69,7 @@ pkgs.runCommand "spaghetti-extractor-test-suite-plan-${mode}" {
     python -m spaghetti_extractor.testkit \
       --repository ${planningSource} \
       plan ${mode} --index "$out/impact-index.json" \
-      ${targetArgument} ${changedArguments} \
+      ${changedArguments} \
       --out "$out/suite-plan.json"
   ''}
 ''
