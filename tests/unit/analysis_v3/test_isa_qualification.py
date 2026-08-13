@@ -183,7 +183,7 @@ class ISAQualificationV3Tests(unittest.TestCase):
         root: Path,
         evidence_records: tuple[ArtifactRecordV3, ...],
     ):
-        _exact_path, semantic_path, closure_path, _exact = _base_inputs(root)
+        _exact_path, semantic_path, _closure_path, _exact = _base_inputs(root)
         evidence_path = _write(
             root / "isa-evidence",
             ISA_QUALIFICATION_EVIDENCE_ARTIFACT_KIND_V3,
@@ -193,7 +193,6 @@ class ISAQualificationV3Tests(unittest.TestCase):
             output_directory=root / "isa",
             inputs={
                 "isa_evidence": evidence_path,
-                "root_closure": closure_path,
                 "semantic_index": semantic_path,
             },
             bindings=(BINDING,),

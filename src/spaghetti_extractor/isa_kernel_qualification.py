@@ -26,6 +26,7 @@ from .isa_conformance import (
     ISAConformanceError,
     ISAConformanceReport,
     InstructionTestCase,
+    X87Mask,
     ObservationStatus,
     BackendObservation,
     isa_conformance_corpus_sha256,
@@ -2934,8 +2935,37 @@ def _masked_bytes(value: bytes, mask: bytes) -> list[int]:
     ]
 
 
-def _has_defined_machine_output(case: InstructionTestCase) -> bool:
+def _effective_x87_mask(
+    requested: X87Mask,
+    architectural: X87Mask | None,
+) -> X87Mask:
+    if architectural is None:
+        return requested
+    return X87Mask(
+        control_word=requested.control_word & architectural.control_word,
+        status_word=requested.status_word & architectural.status_word,
+        tag_word=requested.tag_word & architectural.tag_word,
+        last_opcode=requested.last_opcode & architectural.last_opcode,
+        instruction_pointer=(
+            requested.instruction_pointer & architectural.instruction_pointer
+        ),
+        data_pointer=requested.data_pointer & architectural.data_pointer,
+        registers=tuple(
+            bytes(left & right for left, right in zip(a, b, strict=True))
+            for a, b in zip(
+                requested.registers, architectural.registers, strict=True
+            )
+        ),
+    )
+
+
+def _has_defined_machine_output(
+    case: InstructionTestCase,
+    *,
+    x87_mask: X87Mask | None = None,
+) -> bool:
     masks = case.defined_outputs
+    effective_x87 = masks.x87 if x87_mask is None else x87_mask
     return any(
         (
             *(getattr(masks.gprs, register) for register in GPR_NAMES),
@@ -2943,20 +2973,23 @@ def _has_defined_machine_output(case: InstructionTestCase) -> bool:
             masks.eflags,
             masks.fs.selector,
             masks.fs.base,
-            masks.x87.control_word,
-            masks.x87.status_word,
-            masks.x87.tag_word,
-            masks.x87.last_opcode,
-            masks.x87.instruction_pointer,
-            masks.x87.data_pointer,
-            *(byte for register in masks.x87.registers for byte in register),
+            effective_x87.control_word,
+            effective_x87.status_word,
+            effective_x87.tag_word,
+            effective_x87.last_opcode,
+            effective_x87.instruction_pointer,
+            effective_x87.data_pointer,
+            *(byte for register in effective_x87.registers for byte in register),
             *(byte for region in masks.memory for byte in region.mask),
         )
     )
 
 
 def _normalized_complete_result(
-    case: InstructionTestCase, observation: BackendObservation
+    case: InstructionTestCase,
+    observation: BackendObservation,
+    *,
+    x87_definedness: X87Mask | None = None,
 ) -> dict[str, Any]:
     if observation.actual is None:
         raise ISAKernelQualificationError(
@@ -2968,7 +3001,10 @@ def _normalized_complete_result(
         "final_state": None,
         "memory": None,
     }
-    if not _has_defined_machine_output(case):
+    effective_x87 = _effective_x87_mask(
+        case.defined_outputs.x87, x87_definedness
+    )
+    if not _has_defined_machine_output(case, x87_mask=effective_x87):
         return result
     if observation.final_state is None:
         if observation.memory is not None:
@@ -2997,20 +3033,20 @@ def _normalized_complete_result(
             "base": state.fs.base & masks.fs.base,
         },
         "x87": {
-            "control_word": state.x87.control_word & masks.x87.control_word,
-            "status_word": state.x87.status_word & masks.x87.status_word,
-            "tag_word": state.x87.tag_word & masks.x87.tag_word,
-            "last_opcode": state.x87.last_opcode & masks.x87.last_opcode,
+            "control_word": state.x87.control_word & effective_x87.control_word,
+            "status_word": state.x87.status_word & effective_x87.status_word,
+            "tag_word": state.x87.tag_word & effective_x87.tag_word,
+            "last_opcode": state.x87.last_opcode & effective_x87.last_opcode,
             "instruction_pointer": (
                 state.x87.instruction_pointer
-                & masks.x87.instruction_pointer
+                & effective_x87.instruction_pointer
             ),
-            "data_pointer": state.x87.data_pointer & masks.x87.data_pointer,
+            "data_pointer": state.x87.data_pointer & effective_x87.data_pointer,
             "registers": [
                 _masked_bytes(register, mask)
                 for register, mask in zip(
                     state.x87.registers,
-                    masks.x87.registers,
+                    effective_x87.registers,
                     strict=True,
                 )
             ],
@@ -3054,6 +3090,7 @@ def observations_from_conformance_report(
     semantic_kernel: SemanticKernelBinding,
     generator: GeneratorBinding,
     oracle_suite: OracleSuiteBinding,
+    x87_definedness_by_case: Mapping[str, X87Mask] | None = None,
 ) -> tuple[ISAOracleObservation, ...]:
     """Normalize an existing report into strict consensus observations.
 
@@ -3079,6 +3116,13 @@ def observations_from_conformance_report(
             f"invalid ISA conformance input: {exc}"
         ) from exc
     case_ids = tuple(case.id for case in typed_corpus.cases)
+    definedness = (
+        {} if x87_definedness_by_case is None else x87_definedness_by_case
+    )
+    if not set(definedness).issubset(set(case_ids)):
+        raise ISAKernelQualificationError(
+            "x87 definedness names a case outside the qualification corpus"
+        )
     if set(form_ids_by_case) != set(case_ids):
         raise ISAKernelQualificationError(
             "semantic-form mapping must contain exactly every corpus case"
@@ -3132,7 +3176,9 @@ def observations_from_conformance_report(
         }:
             availability = ObservationAvailability.COMPLETE
             result = _normalized_complete_result(
-                cases_by_id[observation.case_id], observation
+                cases_by_id[observation.case_id],
+                observation,
+                x87_definedness=definedness.get(observation.case_id),
             )
             detail = observation.detail
         elif observation.status is ObservationStatus.UNSUPPORTED:
@@ -3169,6 +3215,7 @@ def consensuses_from_conformance_reports(
     semantic_kernel: SemanticKernelBinding,
     generator: GeneratorBinding,
     oracle_suite: OracleSuiteBinding,
+    x87_definedness_by_case: Mapping[str, X87Mask] | None = None,
 ) -> tuple[ISAOracleConsensus, ...]:
     """Join up to three backend reports into one consensus per corpus case."""
     typed_corpus = (
@@ -3187,6 +3234,7 @@ def consensuses_from_conformance_reports(
                 semantic_kernel=semantic_kernel,
                 generator=generator,
                 oracle_suite=oracle_suite,
+                x87_definedness_by_case=x87_definedness_by_case,
             )
         )
     by_case: dict[str, list[ISAOracleObservation]] = {
@@ -3228,6 +3276,7 @@ def build_isa_kernel_qualification_from_reports(
     generator: GeneratorBinding,
     oracle_suite: OracleSuiteBinding,
     required_form_ids: Iterable[str] | None = None,
+    x87_definedness_by_case: Mapping[str, X87Mask] | None = None,
 ) -> ISAKernelQualification:
     """Build kernel qualification directly from a backend report triplet.
 
@@ -3247,6 +3296,7 @@ def build_isa_kernel_qualification_from_reports(
         semantic_kernel=semantic_kernel,
         generator=generator,
         oracle_suite=oracle_suite,
+        x87_definedness_by_case=x87_definedness_by_case,
     )
     required = tuple(
         sorted(

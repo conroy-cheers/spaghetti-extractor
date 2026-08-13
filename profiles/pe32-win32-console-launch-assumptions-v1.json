@@ -1,0 +1,43 @@
+{
+  "assumptions": {
+    "argv": {
+      "contract": "windows-process-command-line-v1",
+      "encoding": "ansi-and-unicode-loader-views"
+    },
+    "environment": {
+      "contract": "windows-process-environment-v1",
+      "ownership": "external-world"
+    },
+    "fs": {
+      "contract": "pe32-user-thread-fs-v1",
+      "mapped_separately_from_image": true,
+      "minimum_accessible_bytes": 4096,
+      "range_contract": "private-non-image-thread-environment-range-v1",
+      "teb_fields": "profiled-accesses-only"
+    },
+    "iat": {
+      "contract": "exact-pe-import-loader-binding-v1",
+      "resolution": "pinned-runtime-profile"
+    },
+    "initial_stack": {
+      "alignment_bytes": 4,
+      "contract": "private-non-image-stack-range-v2",
+      "mapped_separately_from_image": true,
+      "minimum_accessible_bytes_above": 65536,
+      "minimum_accessible_bytes_below": 8388608
+    },
+    "relocations": {
+      "contract": "exact-pe32-base-relocation-v1",
+      "policy": "apply-if-relocated"
+    }
+  },
+  "feature_inventory": {
+    "direct_syscalls": [],
+    "executable_writes": [],
+    "threads": [],
+    "unknown_async_callbacks": [],
+    "unmodelled_seh": []
+  },
+  "format": "spaghetti-extractor-pe32-launch-assumption-template-v1",
+  "schema_version": 1
+}

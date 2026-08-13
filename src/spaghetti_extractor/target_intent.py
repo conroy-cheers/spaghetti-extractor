@@ -268,12 +268,26 @@ def resolve_linked_island_intent(
         expected_format=LINKED_ISLAND_INTENT_FORMAT,
         context="linked-island intent",
     )
-    _require_exact_keys(payload, {"format", "islands"}, "linked-island intent")
+    intent_fields = {"format", "islands"}
+    if "unclaimed_exact_units" in payload:
+        intent_fields.add("unclaimed_exact_units")
+    _require_exact_keys(payload, intent_fields, "linked-island intent")
+    if "unclaimed_exact_units" in payload:
+        _validate_unclaimed_exact_units_intent(payload["unclaimed_exact_units"])
     generated = bind_linked_island_review(
         {
             "format": LINKED_ISLAND_REVIEW_FORMAT,
             "original_binary_sha256": _sha256(original_sha256, "original SHA-256"),
             "islands": copy.deepcopy(payload["islands"]),
+            **(
+                {
+                    "unclaimed_exact_units": copy.deepcopy(
+                        payload["unclaimed_exact_units"]
+                    )
+                }
+                if "unclaimed_exact_units" in payload
+                else {}
+            ),
         }
     )
     output = Path(out)
@@ -286,6 +300,52 @@ def resolve_linked_island_intent(
         identities={"original_binary_sha256": original_sha256},
     )
     return generated
+
+
+def _validate_unclaimed_exact_units_intent(value: object) -> None:
+    policy = _object(value, "unclaimed exact-unit policy")
+    fields = {
+        "authority",
+        "id",
+        "kind",
+        "operator_reviewed",
+        "replacement_authorized",
+        "review_rationale",
+        "scope",
+    }
+    _require_exact_keys(policy, fields, "unclaimed exact-unit policy")
+    _string(policy.get("id"), "unclaimed exact-unit policy id")
+    if policy.get("kind") not in {
+        "linked_dependency",
+        "compiler_linker_support",
+    }:
+        raise TargetIntentError(
+            "unclaimed exact-unit policy kind must be linked_dependency or "
+            "compiler_linker_support"
+        )
+    if policy.get("authority") != "operator_reviewed_exact_complement":
+        raise TargetIntentError(
+            "unclaimed exact-unit policy must use operator-reviewed "
+            "exact-complement authority"
+        )
+    if policy.get("scope") != "otherwise_unclaimed_exact_machine_units":
+        raise TargetIntentError("unclaimed exact-unit policy has an unsupported scope")
+    if policy.get("operator_reviewed") is not True:
+        raise TargetIntentError(
+            "unclaimed exact-unit policy must be visibly operator-reviewed"
+        )
+    rationale = _string(
+        policy.get("review_rationale"),
+        "unclaimed exact-unit policy review rationale",
+    )
+    if not rationale.strip():
+        raise TargetIntentError(
+            "unclaimed exact-unit policy review rationale must not be blank"
+        )
+    if policy.get("replacement_authorized") is not False:
+        raise TargetIntentError(
+            "unclaimed exact-unit policy may not authorize semantic replacement"
+        )
 
 
 def resolve_source_project_intent(

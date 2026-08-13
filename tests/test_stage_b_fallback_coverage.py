@@ -344,16 +344,23 @@ class StageBFallbackCoverageTests(unittest.TestCase):
         module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
             encoding="utf-8"
         )
+        coverage_module = (
+            ROOT / "nix" / "stage-b-fallback-coverage-receipt.nix"
+        ).read_text(encoding="utf-8")
         self.assertNotIn("dxball", module.lower())
         for name in (
             "fallbackCoverageReceipt",
             "candidateAuthorityReport",
             "candidateAuthorityGate",
-            "write_stage_b_fallback_coverage_receipt",
             "build_stage_b_candidate_authority_v3",
             "require_stage_b_candidate_authority_v3",
         ):
             self.assertIn(name, module)
+        self.assertIn(
+            "import ./stage-b-fallback-coverage-receipt.nix", module
+        )
+        self.assertNotIn("write_stage_b_fallback_coverage_receipt", module)
+        self.assertIn("write_stage_b_fallback_coverage_receipt", coverage_module)
         authorization_reference = (
             "${candidateAuthorityGate}/candidate-authority.json"
         )

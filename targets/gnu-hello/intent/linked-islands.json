@@ -19,5 +19,14 @@
         }
       ]
     }
-  ]
+  ],
+  "unclaimed_exact_units": {
+    "authority": "operator_reviewed_exact_complement",
+    "id": "compiler-linker-support:mingw-runtime-complement",
+    "kind": "compiler_linker_support",
+    "operator_reviewed": true,
+    "replacement_authorized": false,
+    "review_rationale": "The remaining exact units in this pinned GNU Hello PE are reviewed as MinGW compiler and linker runtime ownership; this classification does not qualify a semantic replacement.",
+    "scope": "otherwise_unclaimed_exact_machine_units"
+  }
 }

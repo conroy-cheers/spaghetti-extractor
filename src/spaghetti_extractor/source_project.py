@@ -522,7 +522,7 @@ def assess_source_components(
     source_inventory: Path | str,
     source_call_report: Path | str,
     functional_report: Path | str,
-    upstream_report: Path | str,
+    upstream_report: Path | str | None,
     evidence_plan: Path | str | Mapping[str, Any],
     out: Path | str,
 ) -> dict[str, Any]:
@@ -572,10 +572,20 @@ def assess_source_components(
     functional_path = Path(functional_report)
     functional = _validate_functional_report(functional_path, None)
     candidate_sha256 = functional["candidate_sha256"]
-    upstream_path = Path(upstream_report)
-    upstream = _validate_upstream_report(upstream_path, candidate_sha256)
+    upstream_path = None if upstream_report is None else Path(upstream_report)
+    upstream = (
+        None
+        if upstream_path is None
+        else _validate_upstream_report(upstream_path, candidate_sha256)
+    )
     functional_cases = functional["cases"]
-    upstream_cases = upstream["cases"]
+    # A target may identify source-derived reference cases inside the curated
+    # suite while explicitly accepting that integration coverage is not
+    # exhaustive.  A separate full upstream report, when supplied, remains
+    # stronger and is checked independently.
+    upstream_cases = (
+        functional_cases if upstream is None else upstream["cases"]
+    )
 
     project_islands = {str(row["id"]): row for row in project["islands"]}
     planned = {str(row["island_id"]): row for row in plan["components"]}
@@ -712,7 +722,9 @@ def assess_source_components(
             "source_inventory_sha256": inventory["inventory_sha256"],
             "source_call_report_sha256": call_report["report_sha256"],
             "functional_report_sha256": sha256_file(functional_path),
-            "upstream_report_sha256": sha256_file(upstream_path),
+            "upstream_report_sha256": (
+                None if upstream_path is None else sha256_file(upstream_path)
+            ),
             "candidate_binary_sha256": candidate_sha256,
             "evidence_plan_sha256": plan["plan_sha256"],
         },
@@ -727,7 +739,8 @@ def assess_source_components(
             "source_calls": len(calls),
             "covered_source_calls": len(covered_call_ids),
             "functional_cases": len(functional_cases),
-            "upstream_cases": len(upstream_cases),
+            "source_reference_cases": len(upstream_cases),
+            "full_upstream_suite_supplied": upstream is not None,
         },
         "authority": {
             "class": "candidate_only_component_behavior_evidence",
@@ -1030,7 +1043,11 @@ def _island_boundaries(
 
 
 def _machine_manifest_path(path: Path) -> Path:
-    return path / "machine-ir-manifest.json" if path.is_dir() else path
+    if path.is_dir():
+        return path / "machine-ir-manifest.json"
+    if path.name == "machine-ir.jsonl":
+        return path.with_name("machine-ir-manifest.json")
+    return path
 
 
 def _checked_scope_ranges(

@@ -11,13 +11,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Sequence
 
+from .analysis_v3.external_abi import CONTROL_DISPOSITION_PROFILE_ID
 from .machine_import_profiles import load_machine_import_profile_set
 
 
 CONTROL_DISPOSITION_PROFILE_FORMAT = "stage-a-static-machine-import-profile-v1"
-CONTROL_DISPOSITION_PROFILE_ID = "pe32-control-dispositions-v1"
-
-
 def build_control_disposition_profile(
     profile_paths: Sequence[Path | str],
 ) -> dict[str, Any]:

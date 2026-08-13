@@ -37,9 +37,10 @@ from .inductive_records import (
 )
 from .memory_records import MEMORY_VERSION_CODEC_V3, MemoryVersionRecordV3
 from .semantic_index import SEMANTIC_INDEX_CODEC_V3, SemanticIndexRecordV3
-from .structural_targets import (
-    StructuralTargetProposalV3,
-    flatten_structural_target_proposals_v3,
+from .target_certificates import (
+    INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
+    IndirectTargetCertificateV3,
+    flatten_indirect_target_certificates_v3,
 )
 from .transition_records import (
     TRANSITION_SUMMARY_CODEC_V3,
@@ -52,7 +53,7 @@ class _Inputs:
     semantic_units: tuple[SemanticIndexRecordV3, ...]
     summaries: tuple[TransitionSummaryRecordV3, ...]
     memory: MemoryVersionRecordV3
-    targets: tuple[StructuralTargetProposalV3, ...]
+    target_certificates: tuple[IndirectTargetCertificateV3, ...]
     config: InductiveConfigV3
     cutpoints: tuple[InductiveCutpointV3, ...]
 
@@ -76,8 +77,8 @@ def _read_scc_inputs(
         context.record("transition_summaries", unit_id) for unit_id in unit_ids
     )
     memory_record = context.record("memory_versions", scc_id)
-    target_records = tuple(
-        context.record("structural_targets", unit_id) for unit_id in unit_ids
+    target_certificate_records = tuple(
+        context.record("target_certificates", unit_id) for unit_id in unit_ids
     )
     config_record = context.record("inductive_inputs", "inductive-config")
     config_value = context.typed_record(
@@ -146,7 +147,9 @@ def _read_scc_inputs(
         semantic_units=semantic_units,
         summaries=summaries,
         memory=memory,
-        targets=flatten_structural_target_proposals_v3(target_records),
+        target_certificates=flatten_indirect_target_certificates_v3(
+            target_certificate_records
+        ),
         config=config,
         cutpoints=tuple(sorted(cutpoints, key=lambda row: row.record_id)),
     )
@@ -484,7 +487,17 @@ def _check_input_bindings(inputs: _Inputs) -> list[InductiveIssueV3]:
             )
         )
     if inputs.memory.status != "complete":
+        complete_target_sources = {
+            row.source_unit_id
+            for row in inputs.target_certificates
+            if row.status == "complete" and row.authorizing
+        }
         for row in inputs.memory.issues:
+            if (
+                row.code == "indirect_control_requires_target_certificate"
+                and row.subject_id in complete_target_sources
+            ):
+                continue
             issues.append(
                 _issue(
                     row.status,
@@ -523,7 +536,7 @@ def _check_targets(
         for semantic in inputs.semantic_units
         for occurrence in semantic.indirect_exits
     }
-    observed = {row.record_id: row for row in inputs.targets}
+    observed = {row.exit_id: row for row in inputs.target_certificates}
     if set(expected) != set(observed):
         issues.append(
             _issue(
@@ -540,11 +553,24 @@ def _check_targets(
     targets_by_source: dict[str, set[str]] = {}
     for exit_id in sorted(set(expected).intersection(observed)):
         source_unit_id, occurrence = expected[exit_id]
-        proposal = observed[exit_id]
+        certificate = observed[exit_id]
         if (
-            proposal.source_unit_id != source_unit_id
-            or proposal.source_event_index != occurrence.event_index
-            or proposal.transfer_kind != occurrence.transfer_kind
+            certificate.source_unit_id != source_unit_id
+            or certificate.source_unit_sha256
+            != next(
+                row.unit_sha256
+                for row in inputs.semantic_units
+                if row.record_id == source_unit_id
+            )
+            or certificate.source_rva
+            != next(
+                row.rva_start
+                for row in inputs.semantic_units
+                if row.record_id == source_unit_id
+            )
+            or certificate.source_event_index != occurrence.event_index
+            or certificate.transfer_kind != occurrence.transfer_kind
+            or certificate.target_expression != occurrence.target_expression
         ):
             issues.append(
                 _issue(
@@ -554,32 +580,26 @@ def _check_targets(
                 )
             )
             continue
-        if proposal.status != "recovered":
+        if certificate.status != "complete" or not certificate.authorizing:
             issues.append(
                 _issue(
-                    "violated" if proposal.status == "violated" else "incomplete",
+                    "violated"
+                    if certificate.status == "violated"
+                    else "incomplete",
                     (
-                        proposal.issue_codes[0]
-                        if proposal.issue_codes
-                        else "indirect_target_not_recovered"
+                        certificate.primary_blocker.code
+                        if certificate.primary_blocker is not None
+                        else "indirect_target_certificate_not_complete"
                     ),
                     exit_id,
                 )
             )
             continue
-        # Structural target records deliberately remain non-authorizing.  A
-        # later provenance certificate must prove evaluation of the exact
-        # expression into this finite set before induction can consume it.
-        issues.append(
-            _issue(
-                "incomplete",
-                "indirect_target_evaluation_certificate_missing",
-                exit_id,
-                dependencies=(proposal.proposal_sha256 or proposal.record_id,),
-            )
+        target_witnesses.append(
+            certificate.certificate_sha256
         )
         targets_by_source.setdefault(source_unit_id, set()).update(
-            proposal.target_unit_ids
+            certificate.target_unit_ids
         )
     return (
         issues,
@@ -900,12 +920,12 @@ def check_inductive_scc_authority_completeness_v3(
 
 INDUCTIVE_AUTHORITY_PHASE_V3 = map_sccs(
     name="inductive-authority-v3",
-    version="4",
+    version="5",
     input_artifact_kinds={
         "inductive_inputs": "inductive-inputs-v3",
         "memory_versions": "memory-versions-v3",
         "semantic_index": "semantic-index-v3",
-        "structural_targets": "structural-target-proposals-v3",
+        "target_certificates": INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
         "transition_summaries": "transition-summaries-v3",
     },
     output_artifact_kind=INDUCTIVE_AUTHORITY_ARTIFACT_KIND_V3,
@@ -914,7 +934,7 @@ INDUCTIVE_AUTHORITY_PHASE_V3 = map_sccs(
     completeness=check_inductive_scc_authority_completeness_v3,
     unit_aligned_inputs=(
         "semantic_index",
-        "structural_targets",
+        "target_certificates",
         "transition_summaries",
     ),
     scc_aligned_inputs=("memory_versions",),

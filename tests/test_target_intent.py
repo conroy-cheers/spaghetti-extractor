@@ -208,6 +208,64 @@ class TargetIntentTests(unittest.TestCase):
 
             self.assertEqual(review["original_binary_sha256"], "c" * 64)
             self.assertRegex(review["review_sha256"], r"^[0-9a-f]{64}$")
+            self.assertNotIn("unclaimed_exact_units", review)
+
+    def test_linked_island_intent_preserves_reviewed_exact_complement(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            policy = {
+                "authority": "operator_reviewed_exact_complement",
+                "id": "compiler-linker-support:runtime",
+                "kind": "compiler_linker_support",
+                "operator_reviewed": True,
+                "replacement_authorized": False,
+                "review_rationale": "Reviewed as pinned compiler runtime ownership.",
+                "scope": "otherwise_unclaimed_exact_machine_units",
+            }
+            write_json(
+                root / "intent.json",
+                {
+                    "format": LINKED_ISLAND_INTENT_FORMAT,
+                    "islands": [],
+                    "unclaimed_exact_units": policy,
+                },
+            )
+
+            review = resolve_linked_island_intent(
+                intent=root / "intent.json",
+                original_sha256="e" * 64,
+                out=root / "review.json",
+            )
+
+            self.assertEqual(review["unclaimed_exact_units"], policy)
+            self.assertEqual(review["original_binary_sha256"], "e" * 64)
+
+    def test_linked_island_complement_schema_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            write_json(
+                root / "intent.json",
+                {
+                    "format": LINKED_ISLAND_INTENT_FORMAT,
+                    "islands": [],
+                    "unclaimed_exact_units": {
+                        "authority": "operator_reviewed_exact_complement",
+                        "id": "compiler-linker-support:runtime",
+                        "kind": "compiler_linker_support",
+                        "operator_reviewed": False,
+                        "replacement_authorized": False,
+                        "review_rationale": "Not actually reviewed.",
+                        "scope": "otherwise_unclaimed_exact_machine_units",
+                    },
+                },
+            )
+
+            with self.assertRaisesRegex(TargetIntentError, "operator-reviewed"):
+                resolve_linked_island_intent(
+                    intent=root / "intent.json",
+                    original_sha256="e" * 64,
+                    out=root / "review.json",
+                )
 
     def test_source_project_intent_derives_binary_binding_and_self_hash(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

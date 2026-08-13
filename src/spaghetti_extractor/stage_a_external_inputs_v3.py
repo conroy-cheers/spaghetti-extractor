@@ -18,7 +18,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from .artifact_set_v3 import (
     ArtifactBindingV3,
@@ -90,7 +90,7 @@ class _DuplicateKeyError(ValueError):
 
 @dataclass(frozen=True, order=True)
 class AdapterIssueV3:
-    status: str
+    status: Literal["incomplete", "violated"]
     code: str
     subject: str
     detail: str
@@ -276,8 +276,10 @@ def _adapt_profile_contract(
     callback_effect = contract.get("callback_effect")
     if callback_effect is None and world_effect == "callbackRegistration":
         callback_effect = "explicit"
-    mapped_callback = {"none": "none", "explicit": "registers"}.get(
-        callback_effect
+    mapped_callback = (
+        {"none": "none", "explicit": "registers"}.get(callback_effect)
+        if isinstance(callback_effect, str)
+        else None
     )
     if (
         not isinstance(contract.get("abi_template"), str)
@@ -291,6 +293,30 @@ def _adapt_profile_contract(
             subject,
             "profile entry lacks an exact ABI, memory, world, or callback effect",
         )
+    machine_contract = {
+        key: value
+        for key, value in contract.items()
+        if key not in {"id", "import"}
+    }
+    machine_contract.update(
+        {
+            "argument_words": selected.argument_words,
+            "disposition": dispositions[str(disposition)],
+            "memory_effect": memory_effect,
+            "world_effect": world_effect,
+            "callback_effect": mapped_callback,
+            "memory_footprints": list(contract.get("memory_footprints", ())),
+            "result_register_relations": list(
+                contract.get("result_register_relations", ())
+            ),
+            "out_pointer_relations": list(
+                contract.get("out_pointer_relations", ())
+            ),
+            "out_interface_relations": list(
+                contract.get("out_interface_relations", ())
+            ),
+        }
+    )
     return ExternalProfileV3.create(
         profile_id=selected.profile_id,
         profile_sha256=selected.profile_sha256,
@@ -301,6 +327,7 @@ def _adapt_profile_contract(
         memory_effect=memory_effect,
         world_effect=world_effect,
         callback_effect=mapped_callback,
+        machine_contract=machine_contract,
     )
 
 
@@ -603,22 +630,22 @@ def _adapt_launch_roots(
                 )
                 issues.append(unit_issue)
             blocker_issue = unit_issue or template_issue
-            status = "complete" if blocker_issue is None else blocker_issue.status
-            entry_state = (
-                _root_entry_state(
+            if blocker_issue is None:
+                assert template is not None
+                status = "complete"
+                entry_state = _root_entry_state(
                     behavioral_roots=roots,
                     root=root,
                     template=template,
                     template_sha256=str(template_sha256),
                 )
-                if status == "complete"
-                else None
-            )
-            blocker = (
-                None
-                if blocker_issue is None
-                else PrimaryBlockerV3(blocker_issue.status, blocker_issue.code)
-            )
+                blocker = None
+            else:
+                status = blocker_issue.status
+                entry_state = None
+                blocker = PrimaryBlockerV3(
+                    blocker_issue.status, blocker_issue.code
+                )
             evidence = LaunchRootEvidenceV3(
                 record_id=launch_root_id_v3(root_kind, identity, unit.unit_id),
                 root_kind=root_kind,

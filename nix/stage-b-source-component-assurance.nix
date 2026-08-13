@@ -7,7 +7,7 @@
   sourceInventory,
   sourceCallReport,
   functionalReport,
-  upstreamReport,
+  upstreamReport ? null,
   evidencePlan,
 }:
 
@@ -39,7 +39,7 @@ pkgs.runCommand "${namePrefix}-source-component-assurance-v1"
       ${pkgs.lib.escapeShellArg sourceInventory} \
       ${pkgs.lib.escapeShellArg sourceCallReport} \
       ${pkgs.lib.escapeShellArg functionalReport} \
-      ${pkgs.lib.escapeShellArg upstreamReport} \
+      ${if upstreamReport == null then "-" else pkgs.lib.escapeShellArg upstreamReport} \
       ${evidencePlan} \
       "$out/source-component-assurance.json" <<'PY'
     import pathlib
@@ -52,7 +52,9 @@ pkgs.runCommand "${namePrefix}-source-component-assurance-v1"
         source_inventory=pathlib.Path(sys.argv[2]),
         source_call_report=pathlib.Path(sys.argv[3]),
         functional_report=pathlib.Path(sys.argv[4]),
-        upstream_report=pathlib.Path(sys.argv[5]),
+        upstream_report=(
+            None if sys.argv[5] == "-" else pathlib.Path(sys.argv[5])
+        ),
         evidence_plan=pathlib.Path(sys.argv[6]),
         out=pathlib.Path(sys.argv[7]),
     )

@@ -260,7 +260,11 @@ def _realise_derivations(
     realise = (
         "nix",
         "build",
-        *(f"{path}^*" for path in derivations),
+        # Test derivations have one canonical ``out`` output.  With Nix 2.35
+        # and CA derivations, ``^*`` can stop after reporting the build plan
+        # without realizing the dynamic output.  Naming ``out`` keeps cached
+        # evaluation and makes successful execution observable in the store.
+        *(f"{path}^out" for path in derivations),
         *retained,
     )
     return subprocess.run(

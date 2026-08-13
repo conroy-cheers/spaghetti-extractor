@@ -792,9 +792,9 @@ def inventory_clang_source_calls(
     project_symbols: Iterable[str] = (),
     out: Path | str,
 ) -> dict[str, Any]:
-    """Extract direct and indirect C calls from a Clang JSON AST."""
+    """Extract direct and indirect C calls from one or more Clang JSON ASTs."""
 
-    ast = _read_object(Path(ast_json), "Clang AST")
+    ast_payload = _read_object(Path(ast_json), "Clang AST")
     root = Path(source_root).resolve()
     expected = {
         str(item["path"]): str(item["sha256"]) for item in source_hashes
@@ -812,25 +812,37 @@ def inventory_clang_source_calls(
         for relative in expected
         if Path(relative).suffix.lower() in {".c", ".cc", ".cpp", ".cxx"}
     )
-    fallback_source = translation_units[0] if len(translation_units) == 1 else None
-    definitions = _clang_source_definitions(
-        ast, root, expected, fallback_source=fallback_source
+    asts = _clang_ast_translation_units(
+        ast_payload,
+        expected=expected,
+        translation_units=translation_units,
     )
+    definitions: dict[str, Mapping[str, Any]] = {}
+    for relative, ast in asts:
+        for symbol, source in _clang_source_definitions(
+            ast, root, expected, fallback_source=relative
+        ).items():
+            if symbol in definitions:
+                raise SourceCallSubstitutionError(
+                    f"duplicate source function definition: {symbol}"
+                )
+            definitions[symbol] = source
     project_symbol_set = {str(value) for value in project_symbols}
     calls: list[dict[str, Any]] = []
     function_references: list[dict[str, Any]] = []
-    _walk_clang_ast(
-        ast,
-        calls,
-        function_references,
-        root,
-        expected,
-        ast_path=(),
-        current_function=None,
-        fallback_source=fallback_source,
-        definitions=definitions,
-        project_symbols=project_symbol_set,
-    )
+    for translation_unit_index, (relative, ast) in enumerate(asts):
+        _walk_clang_ast(
+            ast,
+            calls,
+            function_references,
+            root,
+            expected,
+            ast_path=(translation_unit_index,),
+            current_function=None,
+            fallback_source=relative,
+            definitions=definitions,
+            project_symbols=project_symbol_set,
+        )
     _disambiguate_source_artifact_ids(calls, prefix="source-call:")
     _disambiguate_source_artifact_ids(
         function_references, prefix="source-function-reference:"
@@ -864,6 +876,42 @@ def inventory_clang_source_calls(
     payload = {**core, "inventory_sha256": _canonical_sha256(core)}
     write_json(Path(out), payload)
     return payload
+
+
+def _clang_ast_translation_units(
+    payload: Mapping[str, Any],
+    *,
+    expected: Mapping[str, str],
+    translation_units: list[str],
+) -> tuple[tuple[str, Mapping[str, Any]], ...]:
+    if payload.get("format") != "spaghetti-extractor-clang-ast-bundle-v1":
+        if len(translation_units) != 1:
+            raise SourceCallSubstitutionError(
+                "multiple source translation units require a Clang AST bundle"
+            )
+        return ((translation_units[0], payload),)
+    rows = _array(payload.get("translation_units"), "Clang AST translation units")
+    result: list[tuple[str, Mapping[str, Any]]] = []
+    seen: set[str] = set()
+    for raw in rows:
+        row = _object(raw, "Clang AST translation unit")
+        relative = _nonempty(row.get("path"), "Clang AST source path")
+        if relative in seen or relative not in translation_units:
+            raise SourceCallSubstitutionError(
+                "Clang AST bundle has duplicate or unknown translation units"
+            )
+        if row.get("source_sha256") != expected.get(relative):
+            raise SourceCallSubstitutionError(
+                f"Clang AST bundle is stale for {relative}"
+            )
+        ast = _object(row.get("ast"), "Clang AST translation-unit root")
+        seen.add(relative)
+        result.append((relative, ast))
+    if seen != set(translation_units):
+        raise SourceCallSubstitutionError(
+            "Clang AST bundle does not cover every source translation unit"
+        )
+    return tuple(sorted(result, key=lambda row: row[0]))
 
 
 def bind_source_call_bindings(payload: Mapping[str, Any]) -> dict[str, Any]:

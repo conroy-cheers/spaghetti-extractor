@@ -35,21 +35,41 @@ let
       )
     );
   graphId = graph.graph_id or "";
+  artifactSetPythonSource = import ./python-module-closure.nix {
+    inherit
+      pkgs
+      moduleIndexFile
+      repositoryRoot
+      ;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.artifact_set_v3" ];
+    name = "authority-graph-v3-artifact-set-python-closure";
+  };
+  planningPythonSource = import ./python-module-closure.nix {
+    inherit
+      pkgs
+      moduleIndexFile
+      repositoryRoot
+      ;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.analysis_v3.planning" ];
+    name = "authority-graph-v3-planning-python-closure";
+  };
   boundaries = import ./authority-graph-v3-boundaries.nix {
     inherit
       pkgs
       pythonEnv
-      pythonSource
       contentAddressed
       ;
+    pythonSource = planningPythonSource;
   };
   packHelpers = import ./authority-graph-v3-packs.nix {
     inherit
       pkgs
       pythonEnv
-      pythonSource
       contentAddressed
       ;
+    pythonSource = artifactSetPythonSource;
   };
   caAttrs = lib.optionalAttrs contentAddressed { __contentAddressed = true; };
 
@@ -429,10 +449,10 @@ let
         inherit
           pkgs
           pythonEnv
-          pythonSource
           contentAddressed
           expectedKind
           ;
+        pythonSource = artifactSetPythonSource;
         name = "authority-graph-v3-input-${sanitize artifactName}-${sanitize shardKey}";
         artifact = shardSpec.artifact;
         allowedStatuses = shardSpec.allowedStatuses or allowedStatuses;

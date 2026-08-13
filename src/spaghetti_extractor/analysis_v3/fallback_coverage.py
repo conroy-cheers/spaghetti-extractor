@@ -419,21 +419,10 @@ def _derive_fallback_record(
     capability_source = _record_or_none(
         context, capability_dependency.input_name, capability_dependency.record_id
     )
-    for input_name, dependency, code in (
-        (
-            "isa_qualification",
-            isa_dependency,
-            "isa_qualification_artifact_not_complete",
-        ),
-        (
-            "implementation_capabilities",
-            capability_dependency,
-            "implementation_capabilities_artifact_not_complete",
-        ),
-    ):
-        blocker = manifest_blocker_v3(context, input_name, code, dependency)
-        if blocker is not None:
-            blockers.append(blocker)
+    # ISA qualification is a total unit-aligned authority artifact.  Concrete
+    # implementation capabilities are deliberately sparse evidence: a missing
+    # record becomes this unit's local incomplete result instead of making the
+    # Nix graph or every unrelated unit fail.
     if isa_source is None:
         blockers.append(
             PrimaryBlockerV3(

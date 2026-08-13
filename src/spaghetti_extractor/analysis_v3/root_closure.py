@@ -47,9 +47,10 @@ from .semantic_index import (
     SEMANTIC_INDEX_CODEC_V3,
     SemanticIndexRecordV3,
 )
-from .structural_targets import (
-    StructuralTargetProposalV3,
-    flatten_structural_target_proposals_v3,
+from .target_certificates import (
+    INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
+    IndirectTargetCertificateV3,
+    flatten_indirect_target_certificates_v3,
 )
 
 
@@ -587,7 +588,7 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
     exact_records = sorted_records(context.records("semantic_index"))
     callback_records = sorted_records(context.records("callbacks"))
     root_records = sorted_records(context.records("launch_roots"))
-    target_records = sorted_records(context.records("structural_targets"))
+    target_records = sorted_records(context.records("target_certificates"))
     if not exact_records:
         fail(
             "empty_structural_universe",
@@ -598,13 +599,13 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
     exact_by_id = {row.record_id: row for row in exact_units}
     callbacks = _callback_index(callback_records)
     roots = tuple(LAUNCH_ROOT_EVIDENCE_CODEC_V3.read(row).value for row in root_records)
-    targets = flatten_structural_target_proposals_v3(target_records)
+    targets = flatten_indirect_target_certificates_v3(target_records)
     dependencies = [
         *(RecordDependencyV3("semantic_index", row.record_id) for row in exact_records),
         *(RecordDependencyV3("callbacks", row.record_id) for row in callback_records),
         *(RecordDependencyV3("launch_roots", row.record_id) for row in root_records),
         *(
-            RecordDependencyV3("structural_targets", row.record_id)
+            RecordDependencyV3("target_certificates", row.record_id)
             for row in target_records
         ),
     ]
@@ -614,7 +615,10 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
         ("callbacks", "callback_authority_artifact_not_complete"),
         ("semantic_index", "semantic_index_artifact_not_complete"),
         ("launch_roots", "launch_root_artifact_not_complete"),
-        ("structural_targets", "structural_target_artifact_not_complete"),
+        (
+            "target_certificates",
+            "indirect_target_certificate_artifact_not_complete",
+        ),
     ):
         dependency = next(
             (row for row in dependencies if row.input_name == input_name), None
@@ -629,25 +633,25 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
     elif not admitted and not blockers:
         blockers.append(PrimaryBlockerV3("incomplete", "no_launch_root_admitted"))
     successors, exact_blockers, expected_exits = _exact_edges(exact_units)
-    target_by_id: dict[str, StructuralTargetProposalV3] = {}
+    target_by_id: dict[str, IndirectTargetCertificateV3] = {}
     expected_exit_ids = {
         exit_id for exit_ids in expected_exits.values() for exit_id in exit_ids
     }
     for target in targets:
         if (
             target.source_unit_id not in exact_by_id
-            or target.record_id not in expected_exit_ids
+            or target.exit_id not in expected_exit_ids
         ):
             blockers.append(
                 PrimaryBlockerV3(
                     "violated",
-                    "structural_target_not_exact",
-                    "structural_targets",
-                    target.record_id,
+                    "indirect_target_certificate_not_exact",
+                    "target_certificates",
+                    target.source_unit_id,
                 )
             )
             continue
-        target_by_id[target.record_id] = target
+        target_by_id[target.exit_id] = target
 
     reachable: set[str] = set()
     edges: set[RootedControlEdgeV3] = set()
@@ -661,7 +665,7 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
         blockers.extend(exact_blockers[unit_id])
         local_edges = set(successors[unit_id])
         for exit_id in expected_exits[unit_id]:
-            dependency = RecordDependencyV3("structural_targets", unit_id)
+            dependency = RecordDependencyV3("target_certificates", unit_id)
             target = target_by_id.get(exit_id)
             if target is None:
                 dependencies.append(dependency)
@@ -669,18 +673,22 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
                 blockers.append(
                     PrimaryBlockerV3(
                         "incomplete",
-                        "structural_target_missing",
+                        "indirect_target_certificate_missing",
                         dependency.input_name,
                         dependency.record_id,
                     )
                 )
                 continue
-            if target.status != "recovered":
-                frontiers.add(target.record_id)
+            if target.status != "complete" or not target.authorizing:
+                frontiers.add(target.exit_id)
                 blockers.append(
                     PrimaryBlockerV3(
                         "violated" if target.status == "violated" else "incomplete",
-                        "reachable_structural_frontier",
+                        (
+                            target.primary_blocker.code
+                            if target.primary_blocker is not None
+                            else "reachable_indirect_target_frontier"
+                        ),
                         dependency.input_name,
                         dependency.record_id,
                     )
@@ -688,11 +696,11 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
                 continue
             for target_unit_id in target.target_unit_ids:
                 if target_unit_id not in exact_by_id:
-                    frontiers.add(target.record_id)
+                    frontiers.add(target.exit_id)
                     blockers.append(
                         PrimaryBlockerV3(
                             "violated",
-                            "recovered_target_unit_unknown",
+                            "certified_target_unit_unknown",
                             dependency.input_name,
                             dependency.record_id,
                         )
@@ -703,7 +711,7 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
                         unit_id,
                         target_unit_id,
                         "recovered_indirect",
-                        target.record_id,
+                        target.certificate_id,
                     )
                 )
         edges.update(local_edges)
@@ -768,12 +776,12 @@ def check_launch_root_closure_completeness_v3(
 
 LAUNCH_ROOT_CLOSURE_PHASE_V3 = reduce(
     name="launch-root-closure-v3",
-    version="1",
+    version="2",
     input_artifact_kinds={
         "callbacks": CALLBACK_AUTHORITY_ARTIFACT_KIND_V3,
         "launch_roots": LAUNCH_ROOT_EVIDENCE_ARTIFACT_KIND_V3,
         "semantic_index": SEMANTIC_INDEX_ARTIFACT_KIND_V3,
-        "structural_targets": "structural-target-proposals-v3",
+        "target_certificates": INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
     },
     output_artifact_kind=LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3,
     transform=_transform_root_closure,

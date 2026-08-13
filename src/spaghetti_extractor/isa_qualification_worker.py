@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .isa_conformance import (
+    X87Mask,
     parse_isa_conformance_corpus,
     parse_isa_conformance_report,
 )
@@ -62,7 +63,12 @@ def _lean_form_crosswalk(
     corpus: Mapping[str, Any],
     lean_forms: Mapping[str, Any],
     generated_corpus: Mapping[str, Any] | None,
-) -> tuple[dict[str, str], dict[str, str], dict[str, Any]]:
+) -> tuple[
+    dict[str, str],
+    dict[str, str],
+    dict[str, X87Mask],
+    dict[str, Any],
+]:
     typed_corpus = parse_isa_conformance_corpus(corpus)
     if lean_forms.get("format") != "stage-a-lean-isa-semantic-forms-v1":
         raise StageAInputError("unsupported Lean semantic-form artifact")
@@ -85,6 +91,7 @@ def _lean_form_crosswalk(
         )
     forms_by_case: dict[str, str] = {}
     semantic_forms_by_id: dict[str, str] = {}
+    x87_definedness_by_case: dict[str, X87Mask] = {}
     crosswalk_rows: list[dict[str, Any]] = []
     catalog_forms_by_case: dict[str, str] = {}
     if generated_corpus is not None:
@@ -109,6 +116,57 @@ def _lean_form_crosswalk(
         if previous != semantic_form:
             raise StageAInputError("Lean semantic-form identity collision")
         forms_by_case[case_id] = form_id
+        x87_defined = row.get("x87_defined_outputs")
+        if x87_defined is not None:
+            if not isinstance(x87_defined, Mapping):
+                raise StageAInputError("Lean x87 definedness must be an object")
+            expected_fields = {
+                "control_word",
+                "status_word",
+                "tag_word",
+                "last_opcode",
+                "instruction_pointer",
+                "data_pointer",
+                "registers",
+            }
+            if set(x87_defined) != expected_fields:
+                raise StageAInputError("Lean x87 definedness has invalid fields")
+            registers = x87_defined.get("registers")
+            if (
+                not isinstance(registers, list)
+                or len(registers) != 8
+                or any(
+                    not isinstance(value, str)
+                    or len(value) != 20
+                    or any(ch not in "0123456789abcdef" for ch in value)
+                    for value in registers
+                )
+            ):
+                raise StageAInputError("Lean x87 register definedness is malformed")
+            widths = {
+                "control_word": 16,
+                "status_word": 16,
+                "tag_word": 16,
+                "last_opcode": 11,
+                "instruction_pointer": 32,
+                "data_pointer": 32,
+            }
+            scalar: dict[str, int] = {}
+            for name, width in widths.items():
+                value = x87_defined.get(name)
+                if (
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or not 0 <= value < 1 << width
+                ):
+                    raise StageAInputError(
+                        f"Lean x87 definedness field {name!r} is malformed"
+                    )
+                scalar[name] = value
+            x87_definedness_by_case[case_id] = X87Mask(
+                **scalar,
+                registers=tuple(bytes.fromhex(value) for value in registers),
+            )
         crosswalk_rows.append(
             {
                 "case_id": case_id,
@@ -128,7 +186,12 @@ def _lean_form_crosswalk(
             "closes_stage_a_proof": False,
         },
     }
-    return forms_by_case, semantic_forms_by_id, crosswalk
+    return (
+        forms_by_case,
+        semantic_forms_by_id,
+        x87_definedness_by_case,
+        crosswalk,
+    )
 
 
 def build_isa_kernel_qualification(
@@ -155,7 +218,7 @@ def build_isa_kernel_qualification(
             ("Lean", lean_report),
         )
     ]
-    form_ids, semantic_forms, crosswalk = _lean_form_crosswalk(
+    form_ids, semantic_forms, x87_definedness, crosswalk = _lean_form_crosswalk(
         corpus=corpus_payload,
         lean_forms=_read_json(lean_forms, "Lean semantic forms"),
         generated_corpus=(
@@ -190,6 +253,7 @@ def build_isa_kernel_qualification(
         reports=reports,
         form_ids_by_case=form_ids,
         semantic_forms_by_id=semantic_forms,
+        x87_definedness_by_case=x87_definedness,
         profile=profile,
         semantic_kernel=load_isa_semantic_kernel_binding(semantic_kernel),
         generator=GeneratorBinding(

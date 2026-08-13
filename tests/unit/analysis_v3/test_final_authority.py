@@ -82,7 +82,6 @@ class FinalAuthorityV3Tests(unittest.TestCase):
             output_directory=root / "isa",
             inputs={
                 "isa_evidence": evidence_path,
-                "root_closure": closure_path,
                 "semantic_index": semantic_path,
             },
             bindings=(BINDING,),
@@ -140,7 +139,6 @@ class FinalAuthorityV3Tests(unittest.TestCase):
             unit_sha256=exact.unit_sha256,
             status="complete",
             authorizing=True,
-            reachable=True,
             transitions=(),
             primary_blocker=None,
             dependencies=(),

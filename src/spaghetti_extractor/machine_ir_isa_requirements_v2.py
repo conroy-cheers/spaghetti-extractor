@@ -54,6 +54,7 @@ def build_machine_ir_isa_extraction_request_v2(
     *,
     units: Sequence[Mapping[str, Any]],
     binary_sha256: str,
+    include_structural_universe: bool = False,
 ) -> dict[str, Any]:
     """Return one canonical exact span per conservatively reachable instruction."""
 
@@ -61,7 +62,11 @@ def build_machine_ir_isa_extraction_request_v2(
     regions: list[dict[str, Any]] = []
     locations: dict[tuple[int, int], dict[str, Any]] = {}
     selected = sorted(
-        (row for row in units if row.get("reachable") is True),
+        (
+            row
+            for row in units
+            if include_structural_universe or row.get("reachable") is True
+        ),
         key=lambda row: (
             int(row.get("source", {}).get("original", {}).get("rva_start", -1)),
             str(row.get("id", "")),
@@ -159,10 +164,14 @@ def build_machine_ir_isa_requirements_v2(
     lean_rows: Mapping[tuple[str, int], Sequence[Mapping[str, Any]]],
     lean_evidence: Mapping[str, Any],
     lean_gaps: Sequence[Mapping[str, Any]] = (),
+    fallback_capability_id: str = MACHINE_IR_FALLBACK_CAPABILITY_V2,
 ) -> dict[str, Any]:
     """Bind exact Lean-decoded forms to all requested instruction locations."""
 
     machine_ir_sha256 = _digest(machine_ir_sha256, "machine-IR SHA-256")
+    fallback_capability_id = _string(
+        fallback_capability_id, "fallback capability ID"
+    )
     binary_sha256 = _digest(request.get("binary_sha256"), "binary SHA-256")
     request_sha256 = _digest(request.get("request_sha256"), "request SHA-256")
     request_body = dict(request)
@@ -270,7 +279,7 @@ def build_machine_ir_isa_requirements_v2(
             "id": form_id,
             "semantic_form": semantic_form,
             "source_locations": [],
-            "fallback_capability_id": MACHINE_IR_FALLBACK_CAPABILITY_V2,
+            "fallback_capability_id": fallback_capability_id,
         })
         if form["semantic_form"] != semantic_form:
             raise MachineIRISARequirementsV2Error(

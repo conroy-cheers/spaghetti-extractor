@@ -79,10 +79,13 @@ _ISLAND_KINDS = {
 _MATCH_AUTHORITIES = {
     "exact_artifact",
     "exact_normalized_object",
+    "operator_reviewed_exact_complement",
     "operator_reviewed_exact_range",
     "proposal_only",
     "none",
 }
+_REVIEWED_COMPLEMENT_AUTHORITY = "operator_reviewed_exact_complement"
+_REVIEWED_COMPLEMENT_SCOPE = "otherwise_unclaimed_exact_machine_units"
 _REPLACEMENT_KINDS = {
     "replace_by_canonical_interface",
     "replace_with_pinned_source_dependency",
@@ -347,6 +350,12 @@ def bind_linked_island_review(payload: Mapping[str, Any]) -> dict[str, Any]:
             )
         if not _array(island.get("ranges"), "reviewed linked island ranges"):
             raise LinkedLibraryError(f"reviewed island {identity} has no ranges")
+    if "unclaimed_exact_units" in core:
+        complement = _reviewed_complement_policy(core.get("unclaimed_exact_units"))
+        if complement.get("id") in seen:
+            raise LinkedLibraryError(
+                "reviewed unclaimed-unit policy duplicates a reviewed island ID"
+            )
     return {**core, "review_sha256": _canonical_sha256(core)}
 
 
@@ -369,6 +378,7 @@ def match_linked_islands(
     claimed: dict[str, str] = {}
     islands: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
+    complement_policy: Mapping[str, Any] | None = None
 
     if review is not None:
         reviewed = (
@@ -382,6 +392,7 @@ def match_linked_islands(
             raise LinkedLibraryError("linked-island review self-hash is stale")
         if reviewed.get("original_binary_sha256") != binary.sha256:
             raise LinkedLibraryError("linked-island review/original binary is stale")
+        complement_policy = _optional_reviewed_complement_policy(reviewed)
         for raw in _array(reviewed.get("islands", []), "reviewed linked islands"):
             row = _reviewed_island(raw, machine, claimed)
             islands.append(row)
@@ -461,6 +472,18 @@ def match_linked_islands(
         accepted.append(row)
         islands.append(row)
 
+    reviewed_complement = None
+    if complement_policy is not None:
+        complement, reviewed_complement = _materialize_reviewed_complement(
+            policy=complement_policy,
+            machine=machine,
+            claimed=claimed,
+            original_binary_sha256=binary.sha256,
+            review_sha256=str(expected),
+        )
+        if complement is not None:
+            islands.append(complement)
+
     remaining = [unit for unit in machine.units if unit.identity not in claimed]
     if remaining:
         unknown = _island_from_units(
@@ -522,6 +545,9 @@ def match_linked_islands(
             "semantic_qualification_required": True,
         },
     }
+    if reviewed_complement is not None:
+        core["reviewed_unclaimed_exact_units"] = reviewed_complement
+        core["authority"]["reviewed_complement_binds_ownership_only"] = True
     payload = {**core, "manifest_sha256": _canonical_sha256(core)}
     write_json(Path(out), payload)
     return payload
@@ -1242,6 +1268,7 @@ def refine_linked_islands(
     islands: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
     review_sha256 = None
+    complement_policy: Mapping[str, Any] | None = None
     if review is not None:
         reviewed = (
             _copy_object(review, "linked-island review")
@@ -1253,6 +1280,7 @@ def refine_linked_islands(
             raise LinkedLibraryError("linked-island review self-hash is stale")
         if reviewed.get("original_binary_sha256") != binary.sha256:
             raise LinkedLibraryError("linked-island review/original binary is stale")
+        complement_policy = _optional_reviewed_complement_policy(reviewed)
         for raw in _array(reviewed.get("islands", []), "reviewed linked islands"):
             islands.append(_reviewed_island(raw, machine, claimed))
 
@@ -1335,6 +1363,18 @@ def refine_linked_islands(
         _claim_units(row, claimed)
         islands.append(row)
 
+    reviewed_complement = None
+    if complement_policy is not None:
+        complement, reviewed_complement = _materialize_reviewed_complement(
+            policy=complement_policy,
+            machine=machine,
+            claimed=claimed,
+            original_binary_sha256=binary.sha256,
+            review_sha256=str(review_sha256),
+        )
+        if complement is not None:
+            islands.append(complement)
+
     remaining = [unit for unit in machine.units if unit.identity not in claimed]
     for position, units in enumerate(_unknown_unit_components(remaining)):
         row = _island_from_units(
@@ -1400,6 +1440,9 @@ def refine_linked_islands(
             "abi_identity_implies_behavior": False,
         },
     }
+    if reviewed_complement is not None:
+        core["reviewed_unclaimed_exact_units"] = reviewed_complement
+        core["authority"]["reviewed_complement_binds_ownership_only"] = True
     payload = {**core, "manifest_sha256": _canonical_sha256(core)}
     write_json(Path(out), payload)
     return payload
@@ -2649,7 +2692,7 @@ def _decorate_v2_artifact_index(
 
 
 def _load_machine_package(path: Path) -> _MachinePackage:
-    manifest_path = path / "machine-ir-manifest.json" if path.is_dir() else path
+    manifest_path = _machine_manifest_path(path)
     manifest = _read_object(manifest_path, "machine IR manifest")
     if manifest.get("format") != MACHINE_IR_FORMAT:
         raise LinkedLibraryError("unsupported machine IR format")
@@ -2694,6 +2737,14 @@ def _load_machine_package(path: Path) -> _MachinePackage:
     )
 
 
+def _machine_manifest_path(path: Path) -> Path:
+    if path.is_dir():
+        return path / "machine-ir-manifest.json"
+    if path.name == "machine-ir.jsonl":
+        return path.with_name("machine-ir-manifest.json")
+    return path
+
+
 def _reviewed_island(
     raw: Any,
     machine: _MachinePackage,
@@ -2736,6 +2787,128 @@ def _reviewed_island(
     _claim_units(row, claimed)
     row["reviewed_ranges"] = ranges
     return row
+
+
+def _optional_reviewed_complement_policy(
+    review: Mapping[str, Any],
+) -> Mapping[str, Any] | None:
+    if "unclaimed_exact_units" not in review:
+        return None
+    return _reviewed_complement_policy(review.get("unclaimed_exact_units"))
+
+
+def _reviewed_complement_policy(raw: Any) -> Mapping[str, Any]:
+    policy = _object(raw, "reviewed unclaimed-unit policy")
+    expected_fields = {
+        "authority",
+        "id",
+        "kind",
+        "operator_reviewed",
+        "replacement_authorized",
+        "review_rationale",
+        "scope",
+    }
+    unknown = sorted(set(policy) - expected_fields)
+    missing = sorted(expected_fields - set(policy))
+    if unknown or missing:
+        details = []
+        if missing:
+            details.append(f"missing {missing}")
+        if unknown:
+            details.append(f"unsupported {unknown}")
+        raise LinkedLibraryError(
+            "reviewed unclaimed-unit policy fields are invalid: " + ", ".join(details)
+        )
+    _nonempty(policy.get("id"), "reviewed unclaimed-unit policy ID")
+    if policy.get("kind") not in {
+        "linked_dependency",
+        "compiler_linker_support",
+    }:
+        raise LinkedLibraryError(
+            "reviewed unclaimed-unit policy kind must be linked_dependency "
+            "or compiler_linker_support"
+        )
+    if policy.get("authority") != _REVIEWED_COMPLEMENT_AUTHORITY:
+        raise LinkedLibraryError(
+            "reviewed unclaimed-unit policy lacks exact-complement authority"
+        )
+    if policy.get("scope") != _REVIEWED_COMPLEMENT_SCOPE:
+        raise LinkedLibraryError(
+            "reviewed unclaimed-unit policy has an unsupported scope"
+        )
+    if policy.get("operator_reviewed") is not True:
+        raise LinkedLibraryError(
+            "reviewed unclaimed-unit policy must be visibly operator-reviewed"
+        )
+    rationale = _nonempty(
+        policy.get("review_rationale"),
+        "reviewed unclaimed-unit policy rationale",
+    )
+    if not rationale.strip():
+        raise LinkedLibraryError(
+            "reviewed unclaimed-unit policy rationale must not be blank"
+        )
+    if policy.get("replacement_authorized") is not False:
+        raise LinkedLibraryError(
+            "reviewed unclaimed-unit policy may not authorize replacement"
+        )
+    return policy
+
+
+def _materialize_reviewed_complement(
+    *,
+    policy: Mapping[str, Any],
+    machine: _MachinePackage,
+    claimed: dict[str, str],
+    original_binary_sha256: str,
+    review_sha256: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    checked = _reviewed_complement_policy(policy)
+    preserved_claims = sorted(set(claimed.values()))
+    if checked.get("id") in preserved_claims:
+        raise LinkedLibraryError(
+            "reviewed unclaimed-unit policy duplicates an existing island ID"
+        )
+    units = [unit for unit in machine.units if unit.identity not in claimed]
+    unit_ids = sorted(unit.identity for unit in units)
+    exact_bindings = {
+        "machine_ir_manifest_sha256": machine.manifest_sha256,
+        "machine_ir_sha256": machine.ir_sha256,
+        "original_binary_sha256": original_binary_sha256,
+        "review_sha256": review_sha256,
+        "unit_ids_sha256": _canonical_sha256(unit_ids),
+    }
+    summary: dict[str, Any] = {
+        "authority": _REVIEWED_COMPLEMENT_AUTHORITY,
+        "exact_bindings": exact_bindings,
+        "id": str(checked["id"]),
+        "kind": str(checked["kind"]),
+        "operator_reviewed": True,
+        "preserved_claimed_island_ids": preserved_claims,
+        "replacement_authorized": False,
+        "review_rationale": str(checked["review_rationale"]),
+        "scope": _REVIEWED_COMPLEMENT_SCOPE,
+        "unit_count": len(units),
+    }
+    if not units:
+        return None, summary
+    row = _island_from_units(
+        identity=str(checked["id"]),
+        kind=str(checked["kind"]),
+        units=units,
+        match={
+            "authority": _REVIEWED_COMPLEMENT_AUTHORITY,
+            "exact_bindings": exact_bindings,
+            "identity_status": "reviewed_complement_ownership",
+            "operator_reviewed": True,
+            "preserved_claimed_island_ids": preserved_claims,
+            "review_rationale": str(checked["review_rationale"]),
+            "scope": _REVIEWED_COMPLEMENT_SCOPE,
+        },
+    )
+    _claim_units(row, claimed)
+    summary["unit_contract_sha256"] = row["unit_contract_sha256"]
+    return row, summary
 
 
 def _island_from_units(*, identity: str, kind: str, units: Sequence[_Unit], match: Mapping[str, Any]) -> dict[str, Any]:

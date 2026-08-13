@@ -26,7 +26,9 @@ class GnuHelloBundleTests(unittest.TestCase):
             metadata["input"]["expected_sha256"],
             "71b228f2babc9d3b4095ecf355db676c8ed8b45a7c8a7d350f47e962b4bf554c",
         )
-        self.assertIn("inherit original analysis analysisV3;", nix)
+        self.assertIn(
+            "inherit original analysis analysisV3 linkedLibraries runtimeLock;", nix
+        )
         self.assertIn('machineIr = "${analysis.machineIr}/machine-ir.jsonl";', nix)
         self.assertIn("binary = originalPe;", nix)
         self.assertIn('binaryIdentity = "hello.exe";', nix)
@@ -40,11 +42,30 @@ class GnuHelloBundleTests(unittest.TestCase):
             "gnu-hello-final-authority-v3 = gnuHello.analysisV3.finalAuthority;",
             flake,
         )
-        self.assertIn("test-target-gnu-hello = gnuHelloTargetGate;", flake)
         self.assertIn(
-            "final-authority-v3\"; path = gnuHello.analysisV3.finalAuthority;",
+            "test-target-gnu-hello = targetSuites.gnu-hello.aggregate;", flake
+        )
+        self.assertIn(
+            "gnu-hello-final-authority-v3-gate =",
             flake,
         )
+        self.assertIn(
+            "gnu-hello-linked-islands = gnuHello.linkedLibraries.linkedIslands;",
+            flake,
+        )
+        self.assertIn(
+            "gnu-hello-lift-workbench = gnuHello.liftWorkbench;",
+            flake,
+        )
+        self.assertIn(
+            "gnu-hello-lift-workflow = gnuHello.liftWorkflow;",
+            flake,
+        )
+        self.assertIn("nixpkgs-aarch64-multiplatform-stdenv", nix)
+        self.assertIn("portableCompletionReceipt", nix)
+        self.assertIn("liftWorkbench", nix)
+        self.assertIn("source-iteration-audit", nix)
+        self.assertIn("completion-receipt-v2", nix)
 
 if __name__ == "__main__":
     unittest.main()

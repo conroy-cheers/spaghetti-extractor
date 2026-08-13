@@ -1,4 +1,4 @@
-"""Per-unit checked exceptional transitions over launch/root closure."""
+"""Root-independent checked exceptional transitions for exact structural units."""
 
 from __future__ import annotations
 
@@ -38,11 +38,6 @@ from .authority_common import (
     manifest_blocker_v3,
     validate_authority_decision_v3,
 )
-from .root_closure import (
-    LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3,
-    LAUNCH_ROOT_CLOSURE_CODEC_V3,
-    LaunchRootClosureV3,
-)
 from .semantic_index import (
     SEMANTIC_INDEX_ARTIFACT_KIND_V3,
     SEMANTIC_INDEX_CODEC_V3,
@@ -59,6 +54,24 @@ EXCEPTIONAL_TRANSITION_RECORD_V3_SCHEMA = (
     "spaghetti-extractor-exceptional-transition-record-v3"
 )
 EXCEPTIONAL_TRANSITIONS_ARTIFACT_KIND_V3 = "exceptional-transitions-v3"
+EXCEPTION_CLOSURE_CERTIFICATE_V3 = (
+    "spaghetti-extractor-exception-closure-certificate-v3"
+)
+LAUNCH_ASSUMPTION_TEMPLATE_FORMAT_V1 = (
+    "spaghetti-extractor-pe32-launch-assumption-template-v1"
+)
+TERMINAL_SYNCHRONOUS_FAULT_MODEL_V1 = (
+    "pe32-win32-console-unhandled-synchronous-fault-v1"
+)
+
+_TERMINAL_SYNCHRONOUS_FAULT_KINDS = frozenset({"divide_error"})
+_EMPTY_UNSUPPORTED_FEATURES = {
+    "direct_syscalls": [],
+    "executable_writes": [],
+    "threads": [],
+    "unknown_async_callbacks": [],
+    "unmodelled_seh": [],
+}
 
 
 def exceptional_transition_id_v3(
@@ -74,6 +87,277 @@ def exceptional_transition_id_v3(
     )
 
 
+def _static_bv_v3(value: Any) -> tuple[int, int] | None:
+    """Evaluate only a small, total, constant bit-vector expression fragment."""
+
+    if not isinstance(value, Mapping):
+        return None
+    op = value.get("op")
+    if op == "const":
+        raw = value.get("value")
+        width = value.get("width")
+        if (
+            not isinstance(raw, int)
+            or isinstance(raw, bool)
+            or not isinstance(width, int)
+            or isinstance(width, bool)
+            or not 1 <= width <= 64
+        ):
+            return None
+        return raw & ((1 << width) - 1), width
+    args = value.get("args")
+    if not isinstance(args, list):
+        return None
+    if op == "ite" and len(args) == 3:
+        condition = checked_static_boolean_v3(args[0])
+        return None if condition is None else _static_bv_v3(args[1 if condition else 2])
+    unary_width = {
+        "not32": 32,
+    }.get(str(op))
+    if unary_width is not None and len(args) == 1:
+        operand = _static_bv_v3(args[0])
+        if operand is None or operand[1] != unary_width:
+            return None
+        return (~operand[0]) & ((1 << unary_width) - 1), unary_width
+    binary_width = {
+        "add32": 32,
+        "and32": 32,
+        "or32": 32,
+        "sub32": 32,
+        "xor32": 32,
+    }.get(str(op))
+    if binary_width is not None and len(args) == 2:
+        left = _static_bv_v3(args[0])
+        right = _static_bv_v3(args[1])
+        if left is None or right is None or left[1] != binary_width or right[1] != binary_width:
+            return None
+        mask = (1 << binary_width) - 1
+        operation = {
+            "add32": lambda: left[0] + right[0],
+            "and32": lambda: left[0] & right[0],
+            "or32": lambda: left[0] | right[0],
+            "sub32": lambda: left[0] - right[0],
+            "xor32": lambda: left[0] ^ right[0],
+        }[str(op)]
+        return operation() & mask, binary_width
+    if op in {"udiv_quot32", "udiv_rem32"} and len(args) == 3:
+        operands = tuple(_static_bv_v3(item) for item in args)
+        if any(item is None or item[1] != 32 for item in operands):
+            return None
+        high, low, divisor = (item[0] for item in operands if item is not None)
+        if divisor == 0 or high >= divisor:
+            return None
+        dividend = (high << 32) | low
+        result = dividend // divisor if op == "udiv_quot32" else dividend % divisor
+        return result, 32
+    return None
+
+
+def checked_static_boolean_v3(value: Any) -> bool | None:
+    """Replay a deliberately small exact Boolean/bit-vector fragment.
+
+    Returning ``None`` is not an approximation: callers must remain incomplete.
+    The checker never reasons about registers, memory, undefined values, or an
+    operator not listed here.
+    """
+
+    if not isinstance(value, Mapping):
+        return None
+    op = value.get("op")
+    if op == "true":
+        return True
+    if op == "false":
+        return False
+    args = value.get("args")
+    if not isinstance(args, list):
+        return None
+    if op == "not" and len(args) == 1:
+        operand = checked_static_boolean_v3(args[0])
+        return None if operand is None else not operand
+    if op in {"and_bool", "or_bool", "xor_bool"} and len(args) == 2:
+        left = checked_static_boolean_v3(args[0])
+        right = checked_static_boolean_v3(args[1])
+        if left is None or right is None:
+            return None
+        if op == "and_bool":
+            return left and right
+        if op == "or_bool":
+            return left or right
+        return left != right
+    if op in {"eq", "eq_bool"} and len(args) == 2:
+        left_bv = _static_bv_v3(args[0])
+        right_bv = _static_bv_v3(args[1])
+        if left_bv is not None and right_bv is not None:
+            return left_bv == right_bv
+        left_bool = checked_static_boolean_v3(args[0])
+        right_bool = checked_static_boolean_v3(args[1])
+        return (
+            None
+            if left_bool is None or right_bool is None
+            else left_bool == right_bool
+        )
+    if op in {"ult32", "ule32"} and len(args) == 2:
+        left = _static_bv_v3(args[0])
+        right = _static_bv_v3(args[1])
+        if left is None or right is None or left[1] != 32 or right[1] != 32:
+            return None
+        return left[0] < right[0] if op == "ult32" else left[0] <= right[0]
+    if op == "msb" and len(args) == 2:
+        width = args[0]
+        operand = _static_bv_v3(args[1])
+        if (
+            not isinstance(width, int)
+            or isinstance(width, bool)
+            or operand is None
+            or operand[1] != width
+        ):
+            return None
+        return bool(operand[0] & (1 << (width - 1)))
+    if op == "udiv_valid32" and len(args) == 3:
+        operands = tuple(_static_bv_v3(item) for item in args)
+        if any(item is None or item[1] != 32 for item in operands):
+            return None
+        high, _low, divisor = (item[0] for item in operands if item is not None)
+        return divisor != 0 and high < divisor
+    return None
+
+
+def _validate_complete_exception_evidence_v3(
+    evidence: "ExceptionEvidenceV3",
+) -> None:
+    assert evidence.fault is not None
+    assert evidence.guard is not None
+    assert evidence.certificate is not None
+    fault = mapping(evidence.fault.to_value(), "exception evidence exact fault")
+    if canonical_sha256_v3(fault) != evidence.fault_sha256:
+        fail(
+            "exception_fault_binding_contradiction",
+            "exception evidence fault payload does not match its exact fault digest",
+            "copy the complete exact semantic fault without rewriting it",
+        )
+    if not {"condition", "instruction_rva", "kind"}.issubset(fault):
+        fail(
+            "exception_fault_schema_unsupported",
+            "exception evidence fault lacks condition, instruction RVA, or kind",
+            "emit the exact normalized semantic fault object",
+        )
+    condition = mapping(fault["condition"], "exception fault condition")
+    uint(fault["instruction_rva"], "exception fault instruction RVA")
+    fault_kind = text(fault["kind"], "exception fault kind")
+    if evidence.guard != CanonicalValueV3.of(condition):
+        fail(
+            "exception_guard_binding_contradiction",
+            "exception evidence guard is not the exact semantic fault condition",
+            "bind the unmodified condition from the exact fault payload",
+        )
+    certificate = strict_object(
+        evidence.certificate.to_value(),
+        (
+            {
+                "condition_sha256",
+                "fault_sha256",
+                "format",
+                "method",
+                "result",
+            }
+            if evidence.disposition == "infeasible"
+            else {
+                "environment_model",
+                "fault_kind",
+                "fault_sha256",
+                "feature_inventory",
+                "format",
+                "launch_profile_format",
+                "launch_profile_sha256",
+                "method",
+            }
+            if evidence.disposition == "terminates"
+            else {
+                "fault_sha256",
+                "format",
+                "handler_unit_id",
+                "handler_unit_sha256",
+                "method",
+            }
+        ),
+        "exception closure certificate",
+    )
+    if (
+        certificate["format"] != EXCEPTION_CLOSURE_CERTIFICATE_V3
+        or certificate["fault_sha256"] != evidence.fault_sha256
+    ):
+        fail(
+            "exception_certificate_binding_contradiction",
+            "exception certificate format or fault digest is stale",
+            "regenerate the certificate from the exact semantic fault",
+        )
+    if evidence.disposition == "infeasible":
+        if (
+            certificate["method"] != "static-condition-replay-v1"
+            or certificate["result"] is not False
+            or certificate["condition_sha256"]
+            != canonical_sha256_v3(condition)
+            or checked_static_boolean_v3(condition) is not False
+        ):
+            fail(
+                "exception_infeasibility_certificate_invalid",
+                "static replay does not prove the exact fault condition false",
+                "remain incomplete or provide a checked inductive invariant",
+            )
+    elif evidence.disposition == "terminates":
+        feature_inventory = strict_object(
+            certificate["feature_inventory"],
+            set(_EMPTY_UNSUPPORTED_FEATURES),
+            "terminal exception feature inventory",
+        )
+        if (
+            certificate["method"]
+            != "conditional-unhandled-synchronous-fault-v1"
+            or certificate["environment_model"]
+            != TERMINAL_SYNCHRONOUS_FAULT_MODEL_V1
+            or certificate["launch_profile_format"]
+            != LAUNCH_ASSUMPTION_TEMPLATE_FORMAT_V1
+            or certificate["fault_kind"] != fault_kind
+            or fault_kind not in _TERMINAL_SYNCHRONOUS_FAULT_KINDS
+            or dict(feature_inventory) != _EMPTY_UNSUPPORTED_FEATURES
+        ):
+            fail(
+                "exception_terminal_certificate_invalid",
+                "terminal exception certificate does not establish the bounded launch profile",
+                "remain incomplete unless the fault escapes all supported handlers",
+            )
+        digest(
+            certificate["launch_profile_sha256"],
+            "terminal exception launch-profile SHA-256",
+        )
+    else:
+        if (
+            certificate["method"] != "checked-handler-binding-v1"
+            or certificate["handler_unit_id"] != evidence.handler_unit_id
+            or certificate["handler_unit_sha256"] != evidence.handler_unit_sha256
+        ):
+            fail(
+                "exception_handler_certificate_invalid",
+                "handled exception certificate does not bind the exact handler",
+                "bind the checked handler unit and its exact digest",
+            )
+
+
+def exception_terminal_profile_sha256_v3(
+    evidence: "ExceptionEvidenceV3",
+) -> str | None:
+    if evidence.status != "complete" or evidence.disposition != "terminates":
+        return None
+    assert evidence.certificate is not None
+    certificate = mapping(
+        evidence.certificate.to_value(), "terminal exception certificate"
+    )
+    return digest(
+        certificate.get("launch_profile_sha256"),
+        "terminal exception launch-profile SHA-256",
+    )
+
+
 @dataclass(frozen=True)
 class ExceptionEvidenceV3:
     record_id: str
@@ -85,7 +369,9 @@ class ExceptionEvidenceV3:
     disposition: str | None
     handler_unit_id: str | None
     handler_unit_sha256: str | None
+    fault: CanonicalValueV3 | None
     guard: CanonicalValueV3 | None
+    certificate: CanonicalValueV3 | None
     primary_blocker: PrimaryBlockerV3 | None
 
     def __post_init__(self) -> None:
@@ -111,16 +397,18 @@ class ExceptionEvidenceV3:
             )
         if self.status == "complete":
             if (
-                self.disposition not in {"handled", "terminates"}
+                self.disposition not in {"handled", "infeasible", "terminates"}
+                or self.fault is None
                 or self.guard is None
+                or self.certificate is None
                 or self.primary_blocker is not None
             ):
                 fail(
                     "fail_open_exception_evidence",
-                    "complete exception evidence lacks disposition/guard or has a blocker",
-                    "bind a handled or terminating transition and clear the blocker",
+                    "complete exception evidence lacks exact checked closure data or has a blocker",
+                    "bind the exact fault, guard, closure certificate, and disposition",
                 )
-            mapping(self.guard.to_value(), "exception transition guard")
+            _validate_complete_exception_evidence_v3(self)
             if self.disposition == "handled":
                 if self.handler_unit_id is None or self.handler_unit_sha256 is None:
                     fail(
@@ -140,7 +428,9 @@ class ExceptionEvidenceV3:
                 self.disposition,
                 self.handler_unit_id,
                 self.handler_unit_sha256,
+                self.fault,
                 self.guard,
+                self.certificate,
             )
         ) or self.primary_blocker is None:
             fail(
@@ -170,7 +460,11 @@ def _encode_exception_evidence(value: ExceptionEvidenceV3) -> dict[str, Any]:
         "disposition": value.disposition,
         "handler_unit_id": value.handler_unit_id,
         "handler_unit_sha256": value.handler_unit_sha256,
+        "fault": None if value.fault is None else value.fault.to_value(),
         "guard": None if value.guard is None else value.guard.to_value(),
+        "certificate": (
+            None if value.certificate is None else value.certificate.to_value()
+        ),
         "primary_blocker": blocker_payload_v3(value.primary_blocker),
     }
 
@@ -189,7 +483,9 @@ def _decode_exception_evidence(value: Any) -> ExceptionEvidenceV3:
             "disposition",
             "handler_unit_id",
             "handler_unit_sha256",
+            "fault",
             "guard",
+            "certificate",
             "primary_blocker",
         },
         "exception evidence",
@@ -224,8 +520,16 @@ def _decode_exception_evidence(value: Any) -> ExceptionEvidenceV3:
                 row["handler_unit_sha256"], "exception handler unit SHA-256"
             )
         ),
+        fault=(
+            None if row["fault"] is None else CanonicalValueV3.of(row["fault"])
+        ),
         guard=(
             None if row["guard"] is None else CanonicalValueV3.of(row["guard"])
+        ),
+        certificate=(
+            None
+            if row["certificate"] is None
+            else CanonicalValueV3.of(row["certificate"])
         ),
         primary_blocker=(
             None
@@ -278,7 +582,10 @@ class ExceptionalTransitionV3:
             context=f"exceptional transition {self.transition_id!r}",
         )
         if self.status == "complete":
-            if self.disposition not in {"handled", "terminates"} or self.guard is None:
+            if (
+                self.disposition not in {"handled", "infeasible", "terminates"}
+                or self.guard is None
+            ):
                 fail(
                     "fail_open_exception_transition",
                     "complete exceptional transition lacks checked semantics",
@@ -307,7 +614,6 @@ class ExceptionalTransitionRecordV3:
     unit_sha256: str
     status: str
     authorizing: bool
-    reachable: bool
     transitions: tuple[ExceptionalTransitionV3, ...]
     primary_blocker: PrimaryBlockerV3 | None
     dependencies: tuple[RecordDependencyV3, ...]
@@ -328,12 +634,6 @@ class ExceptionalTransitionRecordV3:
                 "exception_unit_contradiction",
                 "exceptional-transition inventory mixes source units",
                 "place each transition under its exact source unit record",
-            )
-        if not self.reachable and self.transitions:
-            fail(
-                "fail_open_exception_reachability",
-                "unreachable unit retains exceptional transitions",
-                "emit transitions only for units in checked root closure",
             )
         validate_authority_decision_v3(
             status=self.status,
@@ -416,7 +716,6 @@ def _encode_exception_record(value: ExceptionalTransitionRecordV3) -> dict[str, 
         "unit_sha256": value.unit_sha256,
         "status": value.status,
         "authorizing": value.authorizing,
-        "reachable": value.reachable,
         "transitions": [_transition_payload(row) for row in value.transitions],
         "primary_blocker": blocker_payload_v3(value.primary_blocker),
         "dependencies": encode_dependencies_v3(value.dependencies),
@@ -432,7 +731,6 @@ def _decode_exception_record(value: Any) -> ExceptionalTransitionRecordV3:
             "unit_sha256",
             "status",
             "authorizing",
-            "reachable",
             "transitions",
             "primary_blocker",
             "dependencies",
@@ -446,12 +744,11 @@ def _decode_exception_record(value: Any) -> ExceptionalTransitionRecordV3:
             "use EXCEPTIONAL_TRANSITION_CODEC_V3 with matching artifacts",
         )
     authorizing = row["authorizing"]
-    reachable = row["reachable"]
-    if not isinstance(authorizing, bool) or not isinstance(reachable, bool):
+    if not isinstance(authorizing, bool):
         fail(
             "record_schema_mismatch",
-            "exceptional-transition Boolean fields are malformed",
-            "emit exact authorizing and reachable Booleans",
+            "exceptional-transition authorizing field is malformed",
+            "emit an exact authorizing Boolean",
         )
     return ExceptionalTransitionRecordV3(
         record_id=text(row["id"], "exceptional-transition source unit ID"),
@@ -460,7 +757,6 @@ def _decode_exception_record(value: Any) -> ExceptionalTransitionRecordV3:
         ),
         status=text(row["status"], "exceptional-transition inventory status"),
         authorizing=authorizing,
-        reachable=reachable,
         transitions=tuple(
             _parse_transition(item)
             for item in sequence(row["transitions"], "exceptional transitions")
@@ -480,24 +776,6 @@ EXCEPTIONAL_TRANSITION_CODEC_V3 = RecordCodecV3[ExceptionalTransitionRecordV3](
 )
 
 
-def _root_closure(context: PhaseContextV3) -> tuple[ArtifactRecordV3, LaunchRootClosureV3]:
-    records = tuple(
-        context.typed_records("root_closure", LAUNCH_ROOT_CLOSURE_CODEC_V3)
-    )
-    require_record_ids(
-        (row.source for row in records),
-        (records[0].record_id,) if len(records) == 1 else (),
-        "exception root closure",
-    )
-    if len(records) != 1:
-        fail(
-            "incomplete_root_closure",
-            f"exception analysis requires one root closure, observed {len(records)}",
-            "rerun LAUNCH_ROOT_CLOSURE_PHASE_V3",
-        )
-    return records[0].source, records[0].value
-
-
 def _record_or_none(
     context: PhaseContextV3, input_name: str, record_id: str
 ) -> ArtifactRecordV3 | None:
@@ -508,8 +786,6 @@ def _checked_transition(
     context: PhaseContextV3,
     *,
     semantic_index: SemanticIndexRecordV3,
-    closure_record_id: str,
-    closure: LaunchRootClosureV3,
     fault: FaultOccurrenceV3,
 ) -> tuple[ExceptionalTransitionV3, tuple[RecordDependencyV3, ...]]:
     fault_index = fault.index
@@ -522,15 +798,8 @@ def _checked_transition(
     evidence_source = _record_or_none(
         context, evidence_dependency.input_name, evidence_dependency.record_id
     )
-    if closure.status != "complete":
+    if evidence_source is None:
         blocker: PrimaryBlockerV3 | None = PrimaryBlockerV3(
-            "violated" if closure.status == "violated" else "incomplete",
-            "root_closure_not_complete",
-            "root_closure",
-            closure_record_id,
-        )
-    elif evidence_source is None:
-        blocker = PrimaryBlockerV3(
             "incomplete",
             "exception_evidence_missing",
             evidence_dependency.input_name,
@@ -570,6 +839,26 @@ def _checked_transition(
                 ),
                 evidence_dependency.input_name,
                 evidence_dependency.record_id,
+            )
+        elif evidence.disposition == "terminates":
+            profile_sha256 = exception_terminal_profile_sha256_v3(evidence)
+            profile_bindings = tuple(
+                binding
+                for binding in context.manifest("exception_evidence").bindings
+                if binding.name == "launch-profile-source"
+                and binding.kind == "launch-assumption-template"
+                and binding.identity == LAUNCH_ASSUMPTION_TEMPLATE_FORMAT_V1
+            )
+            blocker = (
+                None
+                if len(profile_bindings) == 1
+                and profile_bindings[0].sha256 == profile_sha256
+                else PrimaryBlockerV3(
+                    "violated",
+                    "exception_terminal_profile_binding_contradiction",
+                    evidence_dependency.input_name,
+                    evidence_dependency.record_id,
+                )
             )
         elif evidence.disposition == "handled":
             assert evidence.handler_unit_id is not None
@@ -634,12 +923,7 @@ def _derive_exception_record(
     semantic_index = context.typed_record(
         "semantic_index", source.record_id, SEMANTIC_INDEX_CODEC_V3
     ).value
-    closure_source, closure = _root_closure(context)
-    dependencies = [
-        RecordDependencyV3("semantic_index", semantic_index.record_id),
-        RecordDependencyV3("root_closure", closure_source.record_id),
-    ]
-    reachable = closure.contains_reachable_unit(semantic_index.record_id)
+    dependencies = [RecordDependencyV3("semantic_index", semantic_index.record_id)]
     blockers: list[PrimaryBlockerV3] = []
     for input_name, dependency, code in (
         (
@@ -647,40 +931,23 @@ def _derive_exception_record(
             dependencies[0],
             "semantic_index_artifact_not_complete",
         ),
-        (
-            "root_closure",
-            dependencies[1],
-            "root_closure_artifact_not_complete",
-        ),
     ):
         manifest_blocker = manifest_blocker_v3(
             context, input_name, code, dependency
         )
         if manifest_blocker is not None:
             blockers.append(manifest_blocker)
-    if closure.status != "complete":
-        blockers.append(
-            PrimaryBlockerV3(
-                "violated" if closure.status == "violated" else "incomplete",
-                "root_closure_not_complete",
-                "root_closure",
-                closure_source.record_id,
-            )
-        )
     transitions: list[ExceptionalTransitionV3] = []
-    if reachable:
-        for fault in semantic_index.faults:
-            transition, exact_dependencies = _checked_transition(
-                context,
-                semantic_index=semantic_index,
-                closure_record_id=closure_source.record_id,
-                closure=closure,
-                fault=fault,
-            )
-            transitions.append(transition)
-            dependencies.extend(exact_dependencies)
-            if transition.primary_blocker is not None:
-                blockers.append(transition.primary_blocker)
+    for fault in semantic_index.faults:
+        transition, exact_dependencies = _checked_transition(
+            context,
+            semantic_index=semantic_index,
+            fault=fault,
+        )
+        transitions.append(transition)
+        dependencies.extend(exact_dependencies)
+        if transition.primary_blocker is not None:
+            blockers.append(transition.primary_blocker)
     primary = aggregate_blockers_v3(blockers)
     status = "complete" if primary is None else primary.status
     return ExceptionalTransitionRecordV3(
@@ -688,7 +955,6 @@ def _derive_exception_record(
         unit_sha256=semantic_index.unit_sha256,
         status=status,
         authorizing=status == "complete",
-        reachable=reachable,
         transitions=tuple(sorted(transitions, key=lambda row: row.transition_id)),
         primary_blocker=primary,
         dependencies=canonical_dependencies_v3(dependencies),
@@ -766,7 +1032,6 @@ EXCEPTIONAL_TRANSITIONS_PHASE_V3 = map_units(
     source_input="semantic_index",
     input_artifact_kinds={
         "exception_evidence": EXCEPTION_EVIDENCE_ARTIFACT_KIND_V3,
-        "root_closure": LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3,
         "semantic_index": SEMANTIC_INDEX_ARTIFACT_KIND_V3,
     },
     output_artifact_kind=EXCEPTIONAL_TRANSITIONS_ARTIFACT_KIND_V3,
@@ -783,9 +1048,14 @@ __all__ = [
     "EXCEPTION_EVIDENCE_ARTIFACT_KIND_V3",
     "EXCEPTION_EVIDENCE_CODEC_V3",
     "EXCEPTION_EVIDENCE_RECORD_V3_SCHEMA",
+    "EXCEPTION_CLOSURE_CERTIFICATE_V3",
+    "LAUNCH_ASSUMPTION_TEMPLATE_FORMAT_V1",
+    "TERMINAL_SYNCHRONOUS_FAULT_MODEL_V1",
     "ExceptionEvidenceV3",
     "ExceptionalTransitionRecordV3",
     "ExceptionalTransitionV3",
     "check_exceptional_transitions_completeness_v3",
+    "checked_static_boolean_v3",
+    "exception_terminal_profile_sha256_v3",
     "exceptional_transition_id_v3",
 ]

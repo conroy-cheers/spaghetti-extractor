@@ -39,7 +39,12 @@ from spaghetti_extractor.stage_binary import _parse_stage_a_pe
 from spaghetti_extractor.util import sha256_bytes
 from spaghetti_extractor.util import sha256_file
 
-from tests.pe_fixtures import pe32_image, pe32_import_image, pe32_tls_image
+from tests.pe_fixtures import (
+    pe32_image,
+    pe32_image_with_pointer_slot,
+    pe32_import_image,
+    pe32_tls_image,
+)
 
 
 _REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
@@ -1426,6 +1431,149 @@ class ReconstructionIRTests(unittest.TestCase):
             self.assertEqual(
                 unit["semantics"]["external_events"][0]["instruction_rva"],
                 0x1000,
+            )
+
+    def test_immutable_pointer_slot_refines_indirect_decode_to_internal_call(self) -> None:
+        call = b"\xff\x15\x40\x20\x40\x00"
+        event = {
+            "kind": "internal_call",
+            "return_rva": 0x1006,
+            "target_rva": 0x1010,
+        }
+        rows = [
+            _row(
+                "semantic-transfer:call",
+                0x1000,
+                call,
+                outcome={"kind": "fallthrough", "target_rva": 0x1006},
+                external_events=[event],
+                ordered_events=[{
+                    "family": "external",
+                    "instruction_rva": 0x1000,
+                    **event,
+                }],
+            ),
+            _row(
+                "semantic-transfer:return",
+                0x1010,
+                b"\xc3",
+                outcome={"kind": "return"},
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(
+                pe32_image_with_pointer_slot(
+                    call.ljust(0x10, b"\x90") + b"\xc3",
+                    target_rva=0x1010,
+                )
+            )
+            _write_machine(machine, rows)
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            unit = _read_jsonl(package.machine_ir)[0]
+            reconciliation = unit["control"]["decoded_reconciliation"]
+
+            self.assertEqual(package.status, "qualified")
+            self.assertEqual(reconciliation["status"], "complete")
+            witness = reconciliation["decoded_call_sites"][0][
+                "immutable_internal_target"
+            ]
+            self.assertEqual(witness["slot_rva"], 0x2040)
+            self.assertEqual(witness["target_rva"], 0x1010)
+            self.assertEqual(
+                witness["authority"],
+                "exact_initialized_nonwritable_pe_slot_v1",
+            )
+
+    def test_writable_pointer_slot_cannot_refine_indirect_decode(self) -> None:
+        call = b"\xff\x15\x40\x20\x40\x00"
+        event = {
+            "kind": "internal_call",
+            "instruction_rva": 0x1000,
+            "return_rva": 0x1006,
+            "target_rva": 0x1010,
+        }
+        row = _row(
+            "semantic-transfer:call",
+            0x1000,
+            call,
+            outcome={"kind": "fallthrough", "target_rva": 0x1006},
+            external_events=[event],
+            ordered_events=[{"family": "external", **event}],
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(
+                pe32_image_with_pointer_slot(
+                    call.ljust(0x10, b"\x90") + b"\xc3",
+                    target_rva=0x1010,
+                    writable=True,
+                )
+            )
+            _write_machine(machine, [row])
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            reconciliation = _read_jsonl(package.machine_ir)[0]["control"][
+                "decoded_reconciliation"
+            ]
+
+            self.assertEqual(package.status, "violated")
+            self.assertIn(
+                "call_event_0_kind_mismatch",
+                {check["code"] for check in reconciliation["checks"]},
+            )
+
+    def test_immutable_pointer_slot_rejects_wrong_internal_target(self) -> None:
+        call = b"\xff\x15\x40\x20\x40\x00"
+        event = {
+            "kind": "internal_call",
+            "instruction_rva": 0x1000,
+            "return_rva": 0x1006,
+            "target_rva": 0x1011,
+        }
+        row = _row(
+            "semantic-transfer:call",
+            0x1000,
+            call,
+            outcome={"kind": "fallthrough", "target_rva": 0x1006},
+            external_events=[event],
+            ordered_events=[{"family": "external", **event}],
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            original = root / "original.exe"
+            machine = root / "state-machine.jsonl"
+            original.write_bytes(
+                pe32_image_with_pointer_slot(
+                    call.ljust(0x10, b"\x90") + b"\xc3",
+                    target_rva=0x1010,
+                )
+            )
+            _write_machine(machine, [row])
+
+            package = export_machine_ir_package(
+                state_machine=machine, original_pe=original, out=root / "out"
+            )
+            reconciliation = _read_jsonl(package.machine_ir)[0]["control"][
+                "decoded_reconciliation"
+            ]
+
+            self.assertEqual(package.status, "violated")
+            self.assertIn(
+                "call_event_0_immutable_target_mismatch",
+                {check["code"] for check in reconciliation["checks"]},
             )
 
     def test_exports_deterministic_full_span_ir_with_exact_effects_and_control(self) -> None:

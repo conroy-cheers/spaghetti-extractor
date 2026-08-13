@@ -26,6 +26,13 @@
         mkComponentSelection = import ./nix/stage-b-component-selection.nix;
         mkLinkedLibraryAnalysis = import ./nix/stage-b-linked-libraries.nix;
         mkSourceCallSubstitutions = import ./nix/stage-b-source-call-substitutions.nix;
+        mkSourceProject = import ./nix/stage-b-source-project.nix;
+        mkSourceIterationAudit =
+          import ./nix/stage-b-source-iteration-audit.nix;
+        mkSourceLiftAudit = import ./nix/stage-b-source-lift-audit.nix;
+        mkSourceQualification = import ./nix/stage-b-source-qualification.nix;
+        mkLiftCompletionReceipt =
+          import ./nix/stage-b-lift-completion-receipt.nix;
         mkSourceComponentAssurance = import ./nix/stage-b-source-component-assurance.nix;
         mkFunctionalSuite = import ./nix/stage-b-functional-suite.nix;
         mkUpstreamShellSuite = import ./nix/stage-b-upstream-shell-suite.nix;
@@ -36,10 +43,23 @@
         mkAnalysisSourcePlanV3 = import ./nix/analysis-v3-source-plan.nix;
         mkAnalysisMachineIRInputV3 = import ./nix/analysis-v3-machine-ir-input.nix;
         mkAnalysisAuthorityV3 = import ./nix/analysis-v3-authority.nix;
+        mkAnalysisAuthorityDiagnosticsV3 =
+          import ./nix/analysis-v3-diagnostics.nix;
+        mkExternalSiteEvidenceV3 =
+          import ./nix/analysis-v3-external-site-evidence.nix;
+        mkImplementationCapabilitiesV3 =
+          import ./nix/analysis-v3-implementation-capabilities.nix;
+        mkISAFrontiersV3 = import ./nix/analysis-v3-isa-frontiers.nix;
+        mkIndexedTargetEvidenceV3 =
+          import ./nix/analysis-v3-indexed-target-evidence.nix;
+        mkFinalAuthorityGateV3 =
+          import ./nix/analysis-v3-final-authority-gate.nix;
         mkAnalysisGraphManifestV3 = import ./nix/analysis-v3-graph-manifest.nix;
         mkAuthorityGraphV3 = import ./nix/authority-graph-v3.nix;
         mkTestSuite = import ./nix/test-suite.nix;
         mkHybridCandidate = import ./nix/stage-b-hybrid-candidate.nix;
+        mkFallbackCoverageReceipt =
+          import ./nix/stage-b-fallback-coverage-receipt.nix;
         mkHeadlessDiagnosticRun = import ./nix/stage-b-headless-diagnostic-run.nix;
       };
 
@@ -223,6 +243,7 @@
           };
           smokeSuite = mkTestSuite "smoke";
           fullSuite = mkTestSuite "full";
+          catalogSuite = mkTestSuite "catalog";
           benchmarkSuite = mkTestSuite "benchmark";
           targetSuites = pkgs.lib.genAttrs [ "gnu-hello" "jq" "dxball" ]
             (target: import ./nix/test-suite.nix {
@@ -232,7 +253,7 @@
               fixtures = testFixtures;
             });
           roundtrip = import ./nix/stage-a-roundtrip-corpus.nix {
-            inherit pkgs pythonEnv;
+            inherit pkgs pythonEnv isaSemanticKernel;
             source = analysisSource;
             count = 6;
           };
@@ -253,33 +274,34 @@
             { name = "roundtrip-qualification"; path = roundtrip.qualification; }
           ];
           gnuHello = import ./targets/gnu-hello {
-            inherit pkgs pythonEnv;
+            inherit pkgs pythonEnv isaSemanticKernel;
             pythonSource = analysisSource;
+            isaPythonSource = isaAnalysisSource;
+            spaghettiExtractor = package;
+            isaKernelCache = leanKernel;
+            bochsRunner =
+              "${bochsConformance}/bin/spaghetti-bochs-conformance-runner";
           };
           jqTarget = import ./targets/jq {
-            inherit pkgs pythonEnv;
+            inherit pkgs pythonEnv isaSemanticKernel;
             pythonSource = analysisSource;
+            isaPythonSource = isaAnalysisSource;
+            spaghettiExtractor = package;
+            isaKernelCache = leanKernel;
+            bochsRunner =
+              "${bochsConformance}/bin/spaghetti-bochs-conformance-runner";
           };
           dxball = import ./targets/dxball {
-            inherit pkgs pythonEnv;
+            inherit pkgs pythonEnv isaSemanticKernel;
             pythonSource = analysisSource;
+            isaPythonSource = isaAnalysisSource;
+            spaghettiExtractor = package;
+            isaKernelCache = leanKernel;
+            bochsRunner =
+              "${bochsConformance}/bin/spaghetti-bochs-conformance-runner";
             inherit profileSource;
             candidatePythonSource = candidateSource;
           };
-          gnuHelloTargetGate = pkgs.linkFarm
-            "spaghetti-extractor-test-target-gnu-hello" [
-              { name = "tests"; path = targetSuites.gnu-hello.aggregate; }
-              { name = "final-authority-v3"; path = gnuHello.analysisV3.finalAuthority; }
-            ];
-          jqTargetGate = pkgs.linkFarm "spaghetti-extractor-test-target-jq" [
-            { name = "tests"; path = targetSuites.jq.aggregate; }
-            { name = "final-authority-v3"; path = jqTarget.analysisV3.finalAuthority; }
-          ];
-          dxballTargetGate = pkgs.linkFarm
-            "spaghetti-extractor-test-target-dxball" [
-              { name = "tests"; path = targetSuites.dxball.aggregate; }
-              { name = "final-authority-v3"; path = dxball.analysisV3.finalAuthority; }
-            ];
         in {
           default = package;
           spaghetti-extractor = package;
@@ -292,9 +314,9 @@
           test-smoke = smokeSuite.aggregate;
           test-full = fullGate;
           test-benchmark = benchmarkSuite.aggregate;
-          test-target-gnu-hello = gnuHelloTargetGate;
-          test-target-jq = jqTargetGate;
-          test-target-dxball = dxballTargetGate;
+          test-target-gnu-hello = targetSuites.gnu-hello.aggregate;
+          test-target-jq = targetSuites.jq.aggregate;
+          test-target-dxball = targetSuites.dxball.aggregate;
           test-fixture-bochs-conformance = bochsConformance;
           test-fixture-compiler = pkgs.pkgsCross.mingw32.stdenv.cc;
           test-fixture-headless-wine = headlessWineFixture;
@@ -307,13 +329,83 @@
           roundtrip-corpus = roundtrip.corpus;
           roundtrip-qualification = roundtrip.qualification;
           gnu-hello-candidate = gnuHello.idiomaticCandidate;
+          gnu-hello-native-candidate =
+            gnuHello.idiomaticSourceProject.nativeCandidate;
+          gnu-hello-source-project-specification =
+            gnuHello.idiomaticSourceSpecification;
+          gnu-hello-source-project-evidence-plan =
+            gnuHello.idiomaticSourceEvidencePlan;
+          gnu-hello-source-project-binding = gnuHello.idiomaticSourceBinding;
+          gnu-hello-source-iteration-audit =
+            gnuHello.sourceIterationAudit;
+          gnu-hello-source-ast = gnuHello.sourceAst;
+          gnu-hello-source-call-inventory =
+            gnuHello.sourceCalls.sourceInventory;
+          gnu-hello-call-frontier = gnuHello.sourceCalls.callFrontier;
+          gnu-hello-call-substitution-plan = gnuHello.sourceCalls.callPlan;
+          gnu-hello-static-indirect-call-targets =
+            gnuHello.sourceCalls.generatedIndirectTargets;
+          gnu-hello-source-call-report =
+            gnuHello.sourceCalls.sourceBindingReport;
+          gnu-hello-candidate-dependency-audit =
+            gnuHello.sourceCalls.candidateAudit;
+          gnu-hello-source-component-assurance =
+            gnuHello.sourceComponentAssurance;
+          gnu-hello-source-lift-audit = gnuHello.idiomaticSourceLiftAudit;
+          gnu-hello-source-qualification = gnuHello.sourceQualification;
+          gnu-hello-runtime-qualification = gnuHello.runtimeQualification;
+          gnu-hello-candidate-validation = gnuHello.candidateValidation;
+          gnu-hello-native-functional-suite =
+            gnuHello.idiomaticSourceProject.nativeFunctionalSuite;
+          gnu-hello-static-implementation-ledger =
+            gnuHello.staticImplementationLedger;
+          gnu-hello-portable-implementation-ledger =
+            gnuHello.portableImplementationLedger;
+          gnu-hello-runtime-lock = gnuHello.runtimeLock;
+          gnu-hello-static-completion-receipt =
+            gnuHello.staticCompletionReceipt;
+          gnu-hello-portable-completion-receipt =
+            gnuHello.portableCompletionReceipt;
+          gnu-hello-lift-workbench = gnuHello.liftWorkbench;
+          gnu-hello-lift-workflow = gnuHello.liftWorkflow;
+          gnu-hello-linked-islands = gnuHello.linkedLibraries.linkedIslands;
+          gnu-hello-functional-suite-spec =
+            gnuHello.idiomaticFunctionalSuiteSpec;
+          gnu-hello-original = gnuHello.original;
+          gnu-hello-machine-ir = gnuHello.analysis.machineIr;
+          gnu-hello-component-proposals =
+            gnuHello.analysis.componentProposals;
           gnu-hello-intent = gnuHello.intent.validation;
           gnu-hello-final-authority-v3 = gnuHello.analysisV3.finalAuthority;
+          gnu-hello-final-authority-v3-gate =
+            gnuHello.analysisV3.finalAuthorityGate;
           gnu-hello-authority-graph-v3-metadata =
             gnuHello.analysisV3.graph.metadata;
+          gnu-hello-authority-diagnostics-v3 =
+            gnuHello.analysisV3.diagnostics;
+          gnu-hello-external-site-evidence-v3 =
+            gnuHello.analysisV3.generatedExternalSiteEvidence;
+          gnu-hello-isa-evidence-v3 =
+            gnuHello.analysisV3.generatedISAEvidence.projection;
+          gnu-hello-isa-requirements-v2 =
+            gnuHello.analysisV3.generatedISAEvidence.requirements;
+          gnu-hello-isa-selection-authority =
+            gnuHello.analysisV3.generatedISAEvidence.qualification.selectionAuthority.derivation;
+          gnu-hello-isa-frontiers =
+            gnuHello.analysisV3.generatedISAEvidence.frontiers;
+          gnu-hello-indexed-target-evidence-v3 =
+            gnuHello.analysisV3.generatedIndexedTargetEvidence;
+          gnu-hello-fallback-interpreter-v3 =
+            gnuHello.analysisV3.fallbackInterpreter;
+          gnu-hello-fallback-coverage-receipt-v3 =
+            gnuHello.analysisV3.fallbackCoverageReceipt;
+          gnu-hello-implementation-capabilities-v3 =
+            gnuHello.analysisV3.generatedImplementationCapabilities;
           jq-intent = jqTarget.intent.validation;
           jq-final-authority-v3 = jqTarget.analysisV3.finalAuthority;
+          jq-final-authority-v3-gate = jqTarget.analysisV3.finalAuthorityGate;
           jq-authority-graph-v3-metadata = jqTarget.analysisV3.graph.metadata;
+          jq-authority-diagnostics-v3 = jqTarget.analysisV3.diagnostics;
           dxball-original = dxball.original;
           dxball-interface-profile = dxball.interfaceProfile;
           dxball-static-inventory = dxball.inventory;
@@ -323,9 +415,11 @@
           dxball-state-machine = dxball.analysis.stateMachine;
           dxball-machine-ir = dxball.analysis.machineIr;
           dxball-final-authority-v3 = dxball.analysisV3.finalAuthority;
+          dxball-final-authority-v3-gate = dxball.analysisV3.finalAuthorityGate;
           dxball-transition-summaries-v3 =
             dxball.analysisV3.graph.phases."transition-summaries-v3".derivation;
           dxball-authority-graph-v3-metadata = dxball.analysisV3.graph.metadata;
+          dxball-authority-diagnostics-v3 = dxball.analysisV3.diagnostics;
           dxball-reconstruction-plan = dxball.analysis.reconstructionPlan;
           dxball-component-proposals = dxball.analysis.componentProposals;
           dxball-interpreter = dxball.hybrid.interpreter;
@@ -341,7 +435,7 @@
           dxball-diagnostic-native-runtime = dxball.hybridDiagnostic.nativeRuntime;
           dxball-hybrid-diagnostic-candidate = dxball.hybridDiagnostic.candidate;
           dxball-headless-diagnostic-run = dxball.diagnosticRun;
-          test-shards = fullSuite.shards;
+          test-shards = catalogSuite.shards;
         });
 
       packages = forAllSystems (system: {

@@ -126,6 +126,8 @@ class ComponentDiscoveryTests(unittest.TestCase):
         self.assertEqual(first["format"], PROPOSAL_SET_FORMAT)
         self.assertFalse(first["executes_original_binary"])
         self.assertFalse(first["authority"]["can_authorize_replacement"])
+        issue_ids = [item["id"] for item in first["issues"]]
+        self.assertEqual(len(issue_ids), len(set(issue_ids)))
         core = {key: value for key, value in first.items() if key != "proposal_set_sha256"}
         self.assertEqual(first["proposal_set_sha256"], _canonical_sha256(core))
 

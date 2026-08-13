@@ -6,6 +6,7 @@ import unittest
 
 from spaghetti_extractor.isa_conformance import (
     ISA_CONFORMANCE_REPORT_FORMAT,
+    X87Mask,
     isa_conformance_corpus_sha256,
     parse_isa_conformance_corpus,
 )
@@ -217,7 +218,11 @@ def _x87(*, mask: bool = False):
     }
 
 
-def _machine_state(*, eax: int = 2, ecx: int = 3):
+def _machine_state(
+    *, eax: int = 2, ecx: int = 3, x87_status_word: int = 0
+):
+    x87 = _x87()
+    x87["status_word"] = x87_status_word
     return {
         "gprs": {
             "eax": eax,
@@ -232,7 +237,7 @@ def _machine_state(*, eax: int = 2, ecx: int = 3):
         "eip": 0x00401001,
         "eflags": 0x202,
         "fs": {"selector": 0x3B, "base": 0x7FFDF000},
-        "x87": _x87(),
+        "x87": x87,
     }
 
 
@@ -290,9 +295,19 @@ def _legacy_corpus():
     }
 
 
-def _legacy_report(backend, *, eax: int = 2, ecx: int = 3):
+def _legacy_report(
+    backend,
+    *,
+    eax: int = 2,
+    ecx: int = 3,
+    x87_status_word: int = 0,
+):
     corpus = parse_isa_conformance_corpus(_legacy_corpus())
-    status = "match" if eax == 2 else "mismatch"
+    status = (
+        "match"
+        if eax == 2 and x87_status_word == 0
+        else "mismatch"
+    )
     return {
         "format": ISA_CONFORMANCE_REPORT_FORMAT,
         "corpus_id": corpus.id,
@@ -303,7 +318,11 @@ def _legacy_report(backend, *, eax: int = 2, ecx: int = 3):
             {
                 "case_id": "case:add-eax",
                 "status": status,
-                "final_state": _machine_state(eax=eax, ecx=ecx),
+                "final_state": _machine_state(
+                    eax=eax,
+                    ecx=ecx,
+                    x87_status_word=x87_status_word,
+                ),
                 "memory": [{"address": 0x1000, "bytes": [0x10]}],
                 "actual": {"control": "fallthrough", "fault": "none"},
                 "detail": "",
@@ -797,6 +816,77 @@ class StageAISAKernelQualificationTests(unittest.TestCase):
         )
         self.assertEqual(
             consensuses[0].status, QualificationStatus.QUALIFIED
+        )
+
+    def test_report_adapter_applies_lean_x87_definedness_to_every_oracle(self):
+        corpus = parse_isa_conformance_corpus(_legacy_corpus())
+        reports = (
+            _legacy_report(
+                {
+                    "id": "bochs-x86-32-batch-v1",
+                    "kind": "emulator",
+                    "version": "3.0",
+                },
+                x87_status_word=0x4000,
+            ),
+            _legacy_report(
+                {
+                    "id": "unicorn-x86-32-batch-v2",
+                    "kind": "emulator",
+                    "version": "2.2.0-i686",
+                },
+                x87_status_word=0x0000,
+            ),
+            _legacy_report(
+                {
+                    "id": "stage-a-lean-machine-semantics",
+                    "kind": "semantic_model",
+                    "version": "formal-default-v1",
+                },
+                x87_status_word=0x0000,
+            ),
+        )
+        undefined_status = X87Mask(
+            control_word=0xFFFF,
+            status_word=0,
+            tag_word=0xFFFF,
+            last_opcode=0x7FF,
+            instruction_pointer=0xFFFFFFFF,
+            data_pointer=0xFFFFFFFF,
+            registers=tuple(bytes([0xFF] * 10) for _ in range(8)),
+        )
+        defined_status = replace(undefined_status, status_word=0xFFFF)
+
+        ignored = consensuses_from_conformance_reports(
+            corpus=corpus,
+            reports=reports,
+            form_ids_by_case={"case:add-eax": FORM_ID},
+            profile=_profile(),
+            semantic_kernel=_kernel(),
+            generator=_generator(),
+            oracle_suite=_suite(),
+            x87_definedness_by_case={
+                "case:add-eax": undefined_status,
+            },
+        )
+        compared = consensuses_from_conformance_reports(
+            corpus=corpus,
+            reports=reports,
+            form_ids_by_case={"case:add-eax": FORM_ID},
+            profile=_profile(),
+            semantic_kernel=_kernel(),
+            generator=_generator(),
+            oracle_suite=_suite(),
+            x87_definedness_by_case={
+                "case:add-eax": defined_status,
+            },
+        )
+
+        self.assertEqual(ignored[0].status, QualificationStatus.QUALIFIED)
+        self.assertEqual(compared[0].status, QualificationStatus.DISPUTED)
+        self.assertEqual(
+            compared[0].diagnostics[0].json_path,
+            "$.final_state.x87.status_word",
         )
 
     def test_report_triplet_qualifies_matching_raw_mismatch_observations(self):

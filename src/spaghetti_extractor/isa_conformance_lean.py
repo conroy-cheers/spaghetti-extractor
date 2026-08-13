@@ -12,7 +12,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +34,7 @@ from .isa_conformance import (
     ReportCounts,
     ReportQualification,
     ReportTrust,
+    X87Mask,
     X87State,
     isa_conformance_corpus_sha256,
     parse_isa_conformance_report,
@@ -44,27 +45,88 @@ from .isa_semantic_forms import lean_semantic_form_classifier_sha256
 
 
 LEAN_ISA_BACKEND_ID = "stage-a-lean-machine-semantics"
-LEAN_ISA_BACKEND_VERSION = "formal-default-v1"
+LEAN_ISA_BACKEND_VERSION = "formal-default-v3-x87-definedness-v1"
 LEAN_KERNEL_CACHE_ENV = "SPAGHETTI_LEAN_KERNEL_CACHE"
-_ABSENT_LEAN_X87_FIELDS = (
-    "tag_word",
-    "last_opcode",
-    "instruction_pointer",
-    "data_pointer",
-)
-_PREFIXES = {
-    0x26,
-    0x2E,
-    0x36,
-    0x3E,
-    0x64,
-    0x65,
-    0x66,
-    0x67,
-    0xF0,
-    0xF2,
-    0xF3,
-}
+
+
+@dataclass(frozen=True)
+class X87DefinednessEvidence:
+    """Lean-checked architectural output masks for one decoded instruction."""
+
+    control_word: int
+    status_word: int
+    tag_word: int
+    last_opcode: int
+    instruction_pointer: int
+    data_pointer: int
+    registers: tuple[bytes, ...]
+
+
+def mask_x87_outputs(
+    requested: X87Mask, architectural: X87DefinednessEvidence
+) -> X87Mask:
+    """Intersect corpus intent with checked architectural definedness.
+
+    This helper does not suppress a disagreement by itself. The qualification
+    comparator must use the returned mask for every backend observation.
+    """
+
+    return X87Mask(
+        control_word=requested.control_word & architectural.control_word,
+        status_word=requested.status_word & architectural.status_word,
+        tag_word=requested.tag_word & architectural.tag_word,
+        last_opcode=requested.last_opcode & architectural.last_opcode,
+        instruction_pointer=(
+            requested.instruction_pointer
+            & architectural.instruction_pointer
+        ),
+        data_pointer=requested.data_pointer & architectural.data_pointer,
+        registers=tuple(
+            bytes(
+                left & right
+                for left, right in zip(
+                    requested_register, mask, strict=True
+                )
+            )
+            for requested_register, mask in zip(
+                requested.registers, architectural.registers, strict=True
+            )
+        ),
+    )
+
+
+def _x87_definedness_evidence(
+    observed: dict[str, Any],
+) -> X87DefinednessEvidence:
+    scalar_fields = {
+        "control_word": ("x87_defined_control", 16),
+        "status_word": ("x87_defined_status", 16),
+        "tag_word": ("x87_defined_tag", 16),
+        "last_opcode": ("x87_defined_last_opcode", 11),
+        "instruction_pointer": ("x87_defined_instruction_pointer", 32),
+        "data_pointer": ("x87_defined_data_pointer", 32),
+    }
+    scalars: dict[str, int] = {}
+    for field, (key, width) in scalar_fields.items():
+        value = observed.get(key)
+        if not isinstance(value, int) or not 0 <= value < 2**width:
+            raise ISAConformanceError(
+                f"Lean observation has invalid x87 definedness field {key!r}"
+            )
+        scalars[field] = value
+    stack = observed.get("x87_defined_stack")
+    if (
+        not isinstance(stack, list)
+        or len(stack) != 8
+        or any(not isinstance(value, int) or not 0 <= value < 2**80 for value in stack)
+    ):
+        raise ISAConformanceError(
+            "Lean observation has invalid x87 register-definedness masks"
+        )
+    return X87DefinednessEvidence(
+        **scalars,
+        registers=tuple(value.to_bytes(10, "little") for value in stack),
+    )
 
 
 def _lean_nat(value: int) -> str:
@@ -79,28 +141,16 @@ def _lean_list(values: list[str]) -> str:
     return "[" + ", ".join(values) + "]"
 
 
-def _instruction_opcode(instruction: bytes) -> int:
-    index = 0
-    while index < len(instruction) and instruction[index] in _PREFIXES:
-        index += 1
-    return instruction[index] if index < len(instruction) else -1
-
-
 def _unsupported_reason(case: Any) -> str | None:
     if case.profile.cpu not in {"i386", "i486", "i686", "haswell"}:
         return f"unsupported Lean CPU profile {case.profile.cpu!r}"
     if case.defined_outputs.fs.selector != 0:
         return "Lean MachineState does not represent the FS selector"
-    opcode = _instruction_opcode(case.instruction_bytes)
-    if opcode == 0x9B or 0xD8 <= opcode <= 0xDF:
-        return (
-            "x87 execution is relationally parametric and is not yet "
-            "concretely hardware-qualified"
-        )
-    for field in _ABSENT_LEAN_X87_FIELDS:
-        if getattr(case.defined_outputs.x87, field) != 0:
-            return f"Lean MachineState does not represent x87 {field}"
-    if case.expected.fault not in {FaultClass.NONE, FaultClass.DIVIDE_ERROR}:
+    if case.expected.fault not in {
+        FaultClass.NONE,
+        FaultClass.DIVIDE_ERROR,
+        FaultClass.X87_FLOATING_POINT,
+    }:
         return f"Lean semantics do not model fault {case.expected.fault.value!r}"
     return None
 
@@ -179,7 +229,11 @@ def _lean_input(case: Any) -> str:
   x87Stack := %s
   x87Control := %s
   x87Status := %s
-  x87Profile := .formalDefaultV1
+  x87Tag := %s
+  x87LastOpcode := %s
+  x87InstructionPointer := %s
+  x87DataPointer := %s
+  x87Profile := .concreteBinaryRationalV1
   observeMemory := %s
 }""" % (
         _lean_instruction_bytes(case),
@@ -200,6 +254,10 @@ def _lean_input(case: Any) -> str:
         x87_stack,
         _lean_nat(case.initial_state.x87.control_word),
         _lean_nat(case.initial_state.x87.status_word),
+        _lean_nat(case.initial_state.x87.tag_word),
+        _lean_nat(case.initial_state.x87.last_opcode),
+        _lean_nat(case.initial_state.x87.instruction_pointer),
+        _lean_nat(case.initial_state.x87.data_pointer),
         observed,
     )
 
@@ -374,7 +432,6 @@ def _memory_regions(case: Any, values: list[dict[str, Any]]) -> tuple[ObservedMe
 
 def _machine_state(case: Any, observed: dict[str, Any], eip: int) -> MachineState:
     registers = observed["registers"]
-    initial_x87 = case.initial_state.x87
     return MachineState(
         gprs=GPRState(**{name: int(registers[name]) for name in GPRState.__annotations__}),
         eip=eip,
@@ -386,10 +443,10 @@ def _machine_state(case: Any, observed: dict[str, Any], eip: int) -> MachineStat
         x87=X87State(
             control_word=int(observed["x87_control"]),
             status_word=int(observed["x87_status"]),
-            tag_word=initial_x87.tag_word,
-            last_opcode=initial_x87.last_opcode,
-            instruction_pointer=initial_x87.instruction_pointer,
-            data_pointer=initial_x87.data_pointer,
+            tag_word=int(observed["x87_tag"]),
+            last_opcode=int(observed["x87_last_opcode"]),
+            instruction_pointer=int(observed["x87_instruction_pointer"]),
+            data_pointer=int(observed["x87_data_pointer"]),
             registers=tuple(
                 int(value).to_bytes(10, "little")
                 for value in observed["x87_stack"]
@@ -477,7 +534,11 @@ def _run_lean_isa_conformance(
     *,
     timeout_seconds: int = 1800,
     kernel_cache: Path | None = None,
-) -> tuple[ISAConformanceReport, dict[str, str]]:
+) -> tuple[
+    ISAConformanceReport,
+    dict[str, str],
+    dict[str, X87DefinednessEvidence],
+]:
     """Evaluate supported cases using the authoritative Lean semantics."""
     if not isinstance(corpus, ISAConformanceCorpus):
         raise ISAConformanceError("corpus must be an ISAConformanceCorpus")
@@ -485,6 +546,7 @@ def _run_lean_isa_conformance(
     input_sha256 = isa_conformance_corpus_sha256(corpus)
     observations_by_id: dict[str, BackendObservation] = {}
     semantic_forms_by_id: dict[str, str] = {}
+    x87_definedness_by_id: dict[str, X87DefinednessEvidence] = {}
     runnable: list[Any] = []
     for case in corpus.cases:
         reason = _unsupported_reason(case)
@@ -631,6 +693,15 @@ def _run_lean_isa_conformance(
                                     )
                                 continue
                             if result.get("status") in {"observed", "modeled_fault"}:
+                                if result.get("status") == "observed":
+                                    observed = result.get("observation")
+                                    if not isinstance(observed, dict):
+                                        raise ISAConformanceError(
+                                            "Lean observation must be an object"
+                                        )
+                                    x87_definedness_by_id[case_id] = (
+                                        _x87_definedness_evidence(observed)
+                                    )
                                 observation = _complete_observation(
                                     cases_by_id[case_id], result
                                 )
@@ -660,6 +731,7 @@ def _run_lean_isa_conformance(
     return (
         _report(corpus, ordered, input_sha256=input_sha256),
         semantic_forms_by_id,
+        x87_definedness_by_id,
     )
 
 
@@ -670,7 +742,7 @@ def run_lean_isa_conformance(
     kernel_cache: Path | None = None,
 ) -> ISAConformanceReport:
     """Evaluate supported cases using the authoritative Lean semantics."""
-    report, _ = _run_lean_isa_conformance(
+    report, _, _ = _run_lean_isa_conformance(
         corpus,
         timeout_seconds=timeout_seconds,
         kernel_cache=kernel_cache,
@@ -685,6 +757,26 @@ def run_lean_isa_conformance_with_forms(
     kernel_cache: Path | None = None,
 ) -> tuple[ISAConformanceReport, dict[str, str]]:
     """Return concrete observations plus Lean-owned semantic-form identities."""
+    report, forms, _ = _run_lean_isa_conformance(
+        corpus,
+        timeout_seconds=timeout_seconds,
+        kernel_cache=kernel_cache,
+    )
+    return report, forms
+
+
+def run_lean_isa_conformance_with_definedness(
+    corpus: ISAConformanceCorpus,
+    *,
+    timeout_seconds: int = 1800,
+    kernel_cache: Path | None = None,
+) -> tuple[
+    ISAConformanceReport,
+    dict[str, str],
+    dict[str, X87DefinednessEvidence],
+]:
+    """Return observations, semantic forms, and checked output masks."""
+
     return _run_lean_isa_conformance(
         corpus,
         timeout_seconds=timeout_seconds,
@@ -696,7 +788,10 @@ __all__ = [
     "LEAN_ISA_BACKEND_ID",
     "LEAN_ISA_BACKEND_VERSION",
     "LEAN_KERNEL_CACHE_ENV",
+    "X87DefinednessEvidence",
     "lean_semantic_form_classifier_sha256",
+    "mask_x87_outputs",
     "run_lean_isa_conformance",
+    "run_lean_isa_conformance_with_definedness",
     "run_lean_isa_conformance_with_forms",
 ]

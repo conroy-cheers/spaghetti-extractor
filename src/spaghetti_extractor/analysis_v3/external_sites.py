@@ -39,10 +39,16 @@ from .authority_common import (
     manifest_blocker_v3,
     validate_authority_decision_v3,
 )
+from .external_abi import (
+    CONTROL_DISPOSITION_PROFILE_ID,
+    ExternalArgumentRecoveryV3Error,
+    recover_external_arguments_v3,
+)
 from .identities import indirect_exit_id_v3
 from .semantic_index import SEMANTIC_INDEX_CODEC_V3, SemanticIndexRecordV3
-from .structural_targets import (
-    STRUCTURAL_TARGET_UNIT_CODEC_V3,
+from .target_certificates import (
+    INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3,
+    INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
 )
 from .transition_records import (
     TRANSITION_SUMMARY_CODEC_V3,
@@ -76,6 +82,7 @@ class ExternalProfileV3:
     memory_effect: str
     world_effect: str
     callback_effect: str
+    machine_contract: CanonicalValueV3
 
     def __post_init__(self) -> None:
         text(self.profile_id, "external profile ID")
@@ -112,6 +119,7 @@ class ExternalProfileV3:
                 f"external profile callback effect is {self.callback_effect!r}",
                 "use none or registers",
             )
+        mapping(self.machine_contract.to_value(), "external profile machine contract")
         require_stable_id(
             self.record_id,
             "external-profile-v3",
@@ -139,6 +147,7 @@ class ExternalProfileV3:
             "memory_effect": self.memory_effect,
             "world_effect": self.world_effect,
             "callback_effect": self.callback_effect,
+            "machine_contract": self.machine_contract.to_value(),
         }
 
     @classmethod
@@ -154,10 +163,24 @@ class ExternalProfileV3:
         memory_effect: str,
         world_effect: str,
         callback_effect: str,
+        machine_contract: Mapping[str, Any] | None = None,
     ) -> "ExternalProfileV3":
         canonical_identity = CanonicalValueV3.of(identity)
         transfers = tuple(sorted(set(allowed_transfers)))
         dispositions = tuple(sorted(set(allowed_dispositions)))
+        canonical_machine_contract = CanonicalValueV3.of(
+            machine_contract
+            if machine_contract is not None
+            else {
+                "argument_words": argument_words,
+                "disposition": (
+                    dispositions[0] if len(dispositions) == 1 else list(dispositions)
+                ),
+                "memory_effect": memory_effect,
+                "world_effect": world_effect,
+                "callback_effect": callback_effect,
+            }
+        )
         return cls(
             stable_id(
                 "external-profile-v3",
@@ -176,6 +199,7 @@ class ExternalProfileV3:
             memory_effect,
             world_effect,
             callback_effect,
+            canonical_machine_contract,
         )
 
 
@@ -202,6 +226,7 @@ def _decode_external_profile(value: Any) -> ExternalProfileV3:
             "memory_effect",
             "world_effect",
             "callback_effect",
+            "machine_contract",
         },
         "external profile",
     )
@@ -232,6 +257,7 @@ def _decode_external_profile(value: Any) -> ExternalProfileV3:
         callback_effect=text(
             row["callback_effect"], "external profile callback effect"
         ),
+        machine_contract=CanonicalValueV3.of(row["machine_contract"]),
     )
 
 
@@ -344,9 +370,11 @@ class ExternalContractV3:
     profile_id: str
     profile_sha256: str
     argument_words: int
+    arguments: tuple[CanonicalValueV3, ...]
     memory_effect: str
     world_effect: str
     callback_effect: str
+    machine_contract: CanonicalValueV3
     callbacks: tuple[CallbackRequirementV3, ...]
 
     def __post_init__(self) -> None:
@@ -367,6 +395,12 @@ class ExternalContractV3:
         text(self.profile_id, "external profile ID")
         digest(self.profile_sha256, "external profile SHA-256")
         uint(self.argument_words, "external argument word count", maximum=256)
+        if len(self.arguments) != self.argument_words:
+            fail(
+                "external_argument_inventory_contradiction",
+                "external argument expressions disagree with the ABI word count",
+                "emit one exact expression per machine argument word",
+            )
         text(self.memory_effect, "external memory effect")
         text(self.world_effect, "external world effect")
         if self.callback_effect not in {"none", "registers"}:
@@ -375,6 +409,7 @@ class ExternalContractV3:
                 f"external callback effect is {self.callback_effect!r}",
                 "use none or registers",
             )
+        mapping(self.machine_contract.to_value(), "external machine contract")
         if self.callbacks != tuple(sorted(set(self.callbacks))):
             fail(
                 "noncanonical_record_order",
@@ -403,9 +438,11 @@ class ExternalContractV3:
             "profile_id": self.profile_id,
             "profile_sha256": self.profile_sha256,
             "argument_words": self.argument_words,
+            "arguments": [row.to_value() for row in self.arguments],
             "memory_effect": self.memory_effect,
             "world_effect": self.world_effect,
             "callback_effect": self.callback_effect,
+            "machine_contract": self.machine_contract.to_value(),
             "callbacks": [row.to_payload() for row in self.callbacks],
         }
 
@@ -419,13 +456,27 @@ class ExternalContractV3:
         profile_id: str,
         profile_sha256: str,
         argument_words: int,
+        arguments: Sequence[Mapping[str, Any]],
         memory_effect: str,
         world_effect: str,
         callback_effect: str,
+        machine_contract: Mapping[str, Any] | None = None,
         callbacks: Sequence[CallbackRequirementV3] = (),
     ) -> "ExternalContractV3":
         canonical_identity = CanonicalValueV3.of(identity)
         ordered_callbacks = tuple(sorted(set(callbacks)))
+        canonical_machine_contract = CanonicalValueV3.of(
+            machine_contract
+            if machine_contract is not None
+            else {
+                "argument_words": argument_words,
+                "disposition": disposition,
+                "memory_effect": memory_effect,
+                "world_effect": world_effect,
+                "callback_effect": callback_effect,
+            }
+        )
+        canonical_arguments = tuple(CanonicalValueV3.of(row) for row in arguments)
         payload = {
             "identity": canonical_identity.to_value(),
             "transfer_kind": transfer_kind,
@@ -433,9 +484,11 @@ class ExternalContractV3:
             "profile_id": profile_id,
             "profile_sha256": profile_sha256,
             "argument_words": argument_words,
+            "arguments": [row.to_value() for row in canonical_arguments],
             "memory_effect": memory_effect,
             "world_effect": world_effect,
             "callback_effect": callback_effect,
+            "machine_contract": canonical_machine_contract.to_value(),
             "callbacks": [row.to_payload() for row in ordered_callbacks],
         }
         return cls(
@@ -446,9 +499,11 @@ class ExternalContractV3:
             profile_id,
             profile_sha256,
             argument_words,
+            canonical_arguments,
             memory_effect,
             world_effect,
             callback_effect,
+            canonical_machine_contract,
             ordered_callbacks,
         )
 
@@ -467,9 +522,11 @@ class ExternalContractV3:
                 "profile_id",
                 "profile_sha256",
                 "argument_words",
+                "arguments",
                 "memory_effect",
                 "world_effect",
                 "callback_effect",
+                "machine_contract",
                 "callbacks",
             },
             "external contract",
@@ -488,9 +545,14 @@ class ExternalContractV3:
             argument_words=uint(
                 row["argument_words"], "external argument words", maximum=256
             ),
+            arguments=tuple(
+                CanonicalValueV3.of(item)
+                for item in sequence(row["arguments"], "external arguments")
+            ),
             memory_effect=text(row["memory_effect"], "external memory effect"),
             world_effect=text(row["world_effect"], "external world effect"),
             callback_effect=text(row["callback_effect"], "external callback effect"),
+            machine_contract=CanonicalValueV3.of(row["machine_contract"]),
             callbacks=callbacks,
         )
 
@@ -1050,36 +1112,37 @@ def _expected_sites(
             )
         elif kind in {"indirect_call", "indirect_jump"}:
             exit_id = _indirect_exit_id(exact, event, event_index)
-            dependency = RecordDependencyV3("structural_targets", exact.record_id)
+            dependency = RecordDependencyV3("target_certificates", exact.record_id)
             dependencies.append(dependency)
-            manifest_blocker = manifest_blocker_v3(
-                context,
-                dependency.input_name,
-                "structural_target_artifact_not_complete",
-                dependency,
-            )
-            if manifest_blocker is not None:
-                blockers.append(manifest_blocker)
-                continue
-            source = _record_or_none(
-                context, "structural_targets", exact.record_id
-            )
-            if source is None:
+            if context.manifest(dependency.input_name).status == "violated":
                 blockers.append(
                     PrimaryBlockerV3(
-                        "incomplete",
-                        "structural_target_missing",
+                        "violated",
+                        "indirect_target_certificate_artifact_not_complete",
                         dependency.input_name,
                         dependency.record_id,
                     )
                 )
                 continue
-            target_set = STRUCTURAL_TARGET_UNIT_CODEC_V3.read(source).value
+            source = _record_or_none(
+                context, "target_certificates", exact.record_id
+            )
+            if source is None:
+                blockers.append(
+                    PrimaryBlockerV3(
+                        "incomplete",
+                        "indirect_target_certificate_missing",
+                        dependency.input_name,
+                        dependency.record_id,
+                    )
+                )
+                continue
+            target_set = INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.read(source).value
             target = next(
                 (
-                    proposal
-                    for proposal in target_set.proposals
-                    if proposal.record_id == exit_id
+                    certificate
+                    for certificate in target_set.certificates
+                    if certificate.exit_id == exit_id
                 ),
                 None,
             )
@@ -1087,7 +1150,7 @@ def _expected_sites(
                 blockers.append(
                     PrimaryBlockerV3(
                         "incomplete",
-                        "structural_target_missing",
+                        "indirect_target_certificate_missing",
                         dependency.input_name,
                         dependency.record_id,
                     )
@@ -1095,23 +1158,35 @@ def _expected_sites(
                 continue
             if (
                 target.source_unit_id != exact.record_id
+                or target.source_unit_sha256 != exact.unit_sha256
+                or target.source_rva != exact.rva_start
                 or target.source_event_index != event_index
                 or target.transfer_kind != kind
+                or target.target_expression
+                != next(
+                    row.target_expression
+                    for row in exact.indirect_exits
+                    if row.exit_id == exit_id
+                )
             ):
                 blockers.append(
                     PrimaryBlockerV3(
                         "violated",
-                        "structural_target_binding_contradiction",
+                        "indirect_target_certificate_binding_contradiction",
                         dependency.input_name,
                         dependency.record_id,
                     )
                 )
                 continue
-            if target.status != "recovered":
+            if target.status != "complete" or not target.authorizing:
                 blockers.append(
                     PrimaryBlockerV3(
                         "violated" if target.status == "violated" else "incomplete",
-                        "structural_target_not_recovered",
+                        (
+                            target.primary_blocker.code
+                            if target.primary_blocker is not None
+                            else "indirect_target_certificate_not_complete"
+                        ),
                         dependency.input_name,
                         dependency.record_id,
                     )
@@ -1150,9 +1225,13 @@ def _contract_blocker(
             if contract.argument_words != words:
                 return PrimaryBlockerV3("violated", "external_contract_abi_contradiction")
         binding = abi.get("profile_binding")
-        if isinstance(binding, Mapping) and (
-            contract.profile_id != binding.get("profile_id")
-            or contract.profile_sha256 != binding.get("profile_sha256")
+        if (
+            isinstance(binding, Mapping)
+            and binding.get("profile_id") != CONTROL_DISPOSITION_PROFILE_ID
+            and (
+                contract.profile_id != binding.get("profile_id")
+                or contract.profile_sha256 != binding.get("profile_sha256")
+            )
         ):
             return PrimaryBlockerV3(
                 "violated", "external_contract_profile_contradiction"
@@ -1166,6 +1245,30 @@ def _contract_blocker(
             return PrimaryBlockerV3(
                 "violated", "external_contract_callback_contradiction"
             )
+    machine_contract = mapping(
+        contract.machine_contract.to_value(), "external machine contract"
+    )
+    abi_template = machine_contract.get("abi_template")
+    if not isinstance(abi_template, str):
+        return PrimaryBlockerV3(
+            "violated", "external_contract_abi_contradiction"
+        )
+    try:
+        expected_arguments = tuple(
+            CanonicalValueV3.of(row)
+            for row in recover_external_arguments_v3(
+                expected.event,
+                transfer_kind=expected.transfer_kind,
+                abi_template=abi_template,
+                argument_words=contract.argument_words,
+            )
+        )
+    except ExternalArgumentRecoveryV3Error as exc:
+        return PrimaryBlockerV3(exc.status, exc.code)
+    if contract.arguments != expected_arguments:
+        return PrimaryBlockerV3(
+            "violated", "external_contract_argument_contradiction"
+        )
     if contract.callbacks != expected.callbacks:
         return PrimaryBlockerV3(
             "violated", "external_contract_callback_requirement_contradiction"
@@ -1200,6 +1303,7 @@ def _profile_blocker(
         or profile.memory_effect != contract.memory_effect
         or profile.world_effect != contract.world_effect
         or profile.callback_effect != contract.callback_effect
+        or profile.machine_contract != contract.machine_contract
     ):
         return PrimaryBlockerV3(
             "violated", "external_profile_contract_contradiction"
@@ -1499,19 +1603,19 @@ def check_canonical_external_sites_completeness_v3(
 
 CANONICAL_EXTERNAL_SITES_PHASE_V3 = map_units(
     name="canonical-external-sites-v3",
-    version="2",
+    version="3",
     source_input="semantic_index",
     input_artifact_kinds={
         "external_profiles": EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
         "external_site_evidence": EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3,
         "semantic_index": "semantic-index-v3",
-        "structural_targets": "structural-target-proposals-v3",
+        "target_certificates": INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
         "transition_summaries": "transition-summaries-v3",
     },
     output_artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
     transform=_transform_external_sites,
     completeness=check_canonical_external_sites_completeness_v3,
-    unit_aligned_inputs=("structural_targets", "transition_summaries"),
+    unit_aligned_inputs=("target_certificates", "transition_summaries"),
 )
 
 

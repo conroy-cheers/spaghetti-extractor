@@ -37,11 +37,6 @@ from .authority_common import (
     manifest_blocker_v3,
     validate_authority_decision_v3,
 )
-from .root_closure import (
-    LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3,
-    LAUNCH_ROOT_CLOSURE_CODEC_V3,
-    LaunchRootClosureV3,
-)
 from .semantic_index import (
     SEMANTIC_INDEX_ARTIFACT_KIND_V3,
     SEMANTIC_INDEX_CODEC_V3,
@@ -447,7 +442,6 @@ class ISAQualificationRecordV3:
     unit_sha256: str
     pe_sha256: str
     unit_ir_sha256: str
-    reachable: bool | None
     status: str
     authorizing: bool
     selections: tuple[ISAFormSelectionV3, ...]
@@ -459,12 +453,6 @@ class ISAQualificationRecordV3:
         digest(self.unit_sha256, "ISA qualification unit SHA-256")
         digest(self.pe_sha256, "ISA qualification PE SHA-256")
         digest(self.unit_ir_sha256, "ISA qualification unit-IR SHA-256")
-        if self.reachable is not None and not isinstance(self.reachable, bool):
-            fail(
-                "record_schema_mismatch",
-                "ISA qualification reachability is not Boolean or null",
-                "emit checked reachability or null when root closure is unavailable",
-            )
         if self.selections != tuple(
             sorted(set(self.selections), key=lambda row: row.instruction_index)
         ):
@@ -494,12 +482,6 @@ class ISAQualificationRecordV3:
                 "non-complete ISA qualification retains selected forms",
                 "clear all selected forms until every exact occurrence qualifies",
             )
-        if self.status == "complete" and self.reachable is None:
-            fail(
-                "fail_open_isa_qualification",
-                "complete ISA qualification lacks checked reachability",
-                "bind the complete launch/root closure",
-            )
 
 
 def _encode_isa_record(value: ISAQualificationRecordV3) -> dict[str, Any]:
@@ -509,7 +491,6 @@ def _encode_isa_record(value: ISAQualificationRecordV3) -> dict[str, Any]:
         "unit_sha256": value.unit_sha256,
         "pe_sha256": value.pe_sha256,
         "unit_ir_sha256": value.unit_ir_sha256,
-        "reachable": value.reachable,
         "status": value.status,
         "authorizing": value.authorizing,
         "selections": [_selection_payload(row) for row in value.selections],
@@ -527,7 +508,6 @@ def _decode_isa_record(value: Any) -> ISAQualificationRecordV3:
             "unit_sha256",
             "pe_sha256",
             "unit_ir_sha256",
-            "reachable",
             "status",
             "authorizing",
             "selections",
@@ -543,14 +523,11 @@ def _decode_isa_record(value: Any) -> ISAQualificationRecordV3:
             "use ISA_QUALIFICATION_CODEC_V3 with matching artifacts",
         )
     authorizing = row["authorizing"]
-    reachable = row["reachable"]
-    if not isinstance(authorizing, bool) or (
-        reachable is not None and not isinstance(reachable, bool)
-    ):
+    if not isinstance(authorizing, bool):
         fail(
             "record_schema_mismatch",
-            "ISA qualification Boolean fields are malformed",
-            "emit exact authorizing and reachable values",
+            "ISA qualification authorizing field is malformed",
+            "emit an exact authorizing Boolean",
         )
     return ISAQualificationRecordV3(
         record_id=text(row["id"], "ISA qualification unit ID"),
@@ -561,7 +538,6 @@ def _decode_isa_record(value: Any) -> ISAQualificationRecordV3:
         unit_ir_sha256=digest(
             row["unit_ir_sha256"], "ISA qualification unit-IR SHA-256"
         ),
-        reachable=reachable,
         status=text(row["status"], "ISA qualification status"),
         authorizing=authorizing,
         selections=tuple(
@@ -587,44 +563,6 @@ def _record_or_none(
     context: PhaseContextV3, input_name: str, record_id: str
 ) -> ArtifactRecordV3 | None:
     return context.optional_record(input_name, record_id)
-
-
-def _root_closure(
-    context: PhaseContextV3,
-) -> tuple[
-    ArtifactRecordV3 | None,
-    LaunchRootClosureV3 | None,
-    PrimaryBlockerV3 | None,
-]:
-    records = tuple(
-        context.typed_records("root_closure", LAUNCH_ROOT_CLOSURE_CODEC_V3)
-    )
-    if not records:
-        return None, None, PrimaryBlockerV3("incomplete", "root_closure_missing")
-    if len(records) != 1:
-        return None, None, PrimaryBlockerV3("violated", "root_closure_ambiguous")
-    source = records[0].source
-    closure = records[0].value
-    manifest_blocker = manifest_blocker_v3(
-        context,
-        "root_closure",
-        "root_closure_artifact_not_complete",
-        RecordDependencyV3("root_closure", source.record_id),
-    )
-    if manifest_blocker is not None:
-        return source, closure, manifest_blocker
-    if closure.status != "complete" or not closure.authorizing:
-        return (
-            source,
-            closure,
-            PrimaryBlockerV3(
-                "violated" if closure.status == "violated" else "incomplete",
-                "root_closure_not_complete",
-                "root_closure",
-                source.record_id,
-            ),
-        )
-    return source, closure, None
 
 
 def _checked_selection(
@@ -778,56 +716,42 @@ def _derive_isa_record(
     )
     if exact_manifest_blocker is not None:
         blockers.append(exact_manifest_blocker)
-    closure_source, closure, closure_blocker = _root_closure(context)
-    if closure_source is not None:
-        dependencies.append(
-            RecordDependencyV3("root_closure", closure_source.record_id)
-        )
-    if closure_blocker is not None:
-        blockers.append(closure_blocker)
-    evidence_manifest_blocker = manifest_blocker_v3(
-        context, "isa_evidence", "isa_evidence_artifact_not_complete"
-    )
-    if evidence_manifest_blocker is not None:
-        blockers.append(evidence_manifest_blocker)
-    reachable = (
-        None
-        if closure is None or closure.status != "complete"
-        else closure.contains_reachable_unit(semantic_index.record_id)
-    )
+    # ISA evidence is occurrence-aligned.  A missing form elsewhere must not
+    # make a fully evidenced unit incomplete; the exact per-instruction lookup
+    # below supplies local authority and the final inventory audit still
+    # requires every semantic unit to qualify.
     selections: list[ISAFormSelectionV3] = []
-    if reachable is True:
-        instructions = semantic_index.instructions
-        if not instructions:
-            blockers.append(
-                PrimaryBlockerV3("violated", "reachable_unit_has_no_instructions")
-            )
-        cursor = semantic_index.rva_start
-        for instruction in instructions:
-            if instruction.rva_start != cursor:
-                blockers.append(
-                    PrimaryBlockerV3(
-                        "violated", "exact_instruction_inventory_contradiction"
-                    )
-                )
-                continue
-            cursor = instruction.rva_end
-            selection, blocker, dependency = _checked_selection(
-                context,
-                semantic_index=semantic_index,
-                instruction=instruction,
-            )
-            dependencies.append(dependency)
-            if blocker is not None:
-                blockers.append(blocker)
-            elif selection is not None:
-                selections.append(selection)
-        if cursor != semantic_index.rva_end:
+    instructions = semantic_index.instructions
+    if not instructions:
+        blockers.append(
+            PrimaryBlockerV3("violated", "exact_unit_has_no_instructions")
+        )
+    cursor = semantic_index.rva_start
+    for instruction in instructions:
+        if instruction.rva_start != cursor:
             blockers.append(
                 PrimaryBlockerV3(
                     "violated", "exact_instruction_inventory_contradiction"
                 )
             )
+            continue
+        cursor = instruction.rva_end
+        selection, blocker, dependency = _checked_selection(
+            context,
+            semantic_index=semantic_index,
+            instruction=instruction,
+        )
+        dependencies.append(dependency)
+        if blocker is not None:
+            blockers.append(blocker)
+        elif selection is not None:
+            selections.append(selection)
+    if cursor != semantic_index.rva_end:
+        blockers.append(
+            PrimaryBlockerV3(
+                "violated", "exact_instruction_inventory_contradiction"
+            )
+        )
     primary = aggregate_blockers_v3(blockers)
     status = "complete" if primary is None else primary.status
     return ISAQualificationRecordV3(
@@ -835,7 +759,6 @@ def _derive_isa_record(
         unit_sha256=semantic_index.unit_sha256,
         pe_sha256=semantic_index.pe_sha256,
         unit_ir_sha256=semantic_index.unit_ir_sha256,
-        reachable=reachable,
         status=status,
         authorizing=status == "complete",
         selections=(
@@ -923,7 +846,6 @@ ISA_QUALIFICATION_PHASE_V3 = map_units(
     source_input="semantic_index",
     input_artifact_kinds={
         "isa_evidence": ISA_QUALIFICATION_EVIDENCE_ARTIFACT_KIND_V3,
-        "root_closure": LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3,
         "semantic_index": SEMANTIC_INDEX_ARTIFACT_KIND_V3,
     },
     output_artifact_kind=ISA_QUALIFICATION_ARTIFACT_KIND_V3,

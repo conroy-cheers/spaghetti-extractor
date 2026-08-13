@@ -27,6 +27,9 @@ from spaghetti_extractor.analysis_v3.semantic_index import SEMANTIC_INDEX_PHASE_
 from spaghetti_extractor.analysis_v3.structural_targets import (
     STRUCTURAL_TARGETS_PHASE_V3,
 )
+from spaghetti_extractor.analysis_v3.target_certificates import (
+    INDIRECT_TARGET_CERTIFICATES_PHASE_V3,
+)
 from spaghetti_extractor.analysis_v3.transition_records import (
     TRANSITION_SUMMARY_CODEC_V3,
     TransitionBinaryBindingV3,
@@ -234,12 +237,30 @@ class NativeInductiveAuthorityTests(unittest.TestCase):
                 ),
             ),
         )
+        target_evidence = _write_artifact(
+            root / "target-evidence",
+            "indirect-target-evaluation-evidence-v3",
+            (),
+        )
+        target_certificates = INDIRECT_TARGET_CERTIFICATES_PHASE_V3.run(
+            output_directory=root / "target-certificates",
+            inputs={
+                "inductive_inputs": inductive_inputs,
+                "memory_versions": memory,
+                "semantic_index": semantic,
+                "semantic_index_global": semantic,
+                "structural_targets": targets,
+                "target_evidence": target_evidence,
+                "transition_summaries": transitions,
+            },
+            bindings=(BINDING,),
+        ).output_directory
         return (
             {
                 "inductive_inputs": inductive_inputs,
                 "memory_versions": memory,
                 "semantic_index": semantic,
-                "structural_targets": targets,
+                "target_certificates": target_certificates,
                 "transition_summaries": transitions,
             },
             schedule,
@@ -273,7 +294,7 @@ class NativeInductiveAuthorityTests(unittest.TestCase):
                     "inductive_inputs",
                     "memory_versions",
                     "semantic_index",
-                    "structural_targets",
+                    "target_certificates",
                     "transition_summaries",
                 },
             )

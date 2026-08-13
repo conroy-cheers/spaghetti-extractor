@@ -1356,6 +1356,7 @@ def _decoded_control_reconciliation(
 
     _reconcile_decoded_call_events(
         decoded_call_sites,
+        binary=binary,
         external_events=external_events,
         ordered_events=ordered_events,
         record=record,
@@ -1599,9 +1600,67 @@ def _semantic_call_events(value: Any) -> list[Mapping[str, Any]]:
     ]
 
 
+def _decoded_immutable_internal_target(
+    binary: StageABinary, decoded: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Resolve one absolute, initialized, non-writable PE pointer slot.
+
+    The instruction remains an indirect call at the ISA layer.  This witness
+    only refines its target when the exact image supplies a four-byte pointer
+    in a mapped read-only section and that pointer names executable image code.
+    Loader relocation preserves the resulting RVA.
+    """
+
+    target = decoded.get("target")
+    if not isinstance(target, Mapping):
+        return None
+    slot_rva = _decoded_absolute_memory_rva(binary, target)
+    if slot_rva is None:
+        return None
+    section = next(
+        (
+            row
+            for row in binary.sections
+            if row.rva_start <= slot_rva
+            and slot_rva + 4 <= row.rva_end
+            and row.readable
+            and not row.writable
+            and slot_rva - row.rva_start + 4 <= row.raw_size
+        ),
+        None,
+    )
+    if section is None:
+        return None
+    encoded = bytes(binary.pe.get_data(slot_rva, 4))
+    if len(encoded) != 4:
+        return None
+    raw_target = int.from_bytes(encoded, "little")
+    if binary.image_base <= raw_target < binary.image_base + binary.size_of_image:
+        target_rva = raw_target - binary.image_base
+    elif 0 <= raw_target < binary.size_of_image:
+        target_rva = raw_target
+    else:
+        return None
+    if not any(
+        candidate.executable
+        and candidate.rva_start <= target_rva < candidate.rva_end
+        for candidate in binary.sections
+    ):
+        return None
+    return {
+        "slot_rva": slot_rva,
+        "slot_section": section.name,
+        "raw_target": raw_target,
+        "target_rva": target_rva,
+        "slot_bytes_sha256": sha256_bytes(encoded),
+        "authority": "exact_initialized_nonwritable_pe_slot_v1",
+    }
+
+
 def _reconcile_decoded_call_events(
     decoded_sites: Sequence[Mapping[str, Any]],
     *,
+    binary: StageABinary,
     external_events: Any,
     ordered_events: Any,
     record: Any,
@@ -1677,6 +1736,13 @@ def _reconcile_decoded_call_events(
             "external_call": "external_call",
             "external_jump": "external_call",
         }[str(decoded["class"])]
+        immutable_target = None
+        if decoded["class"] == "indirect_call":
+            immutable_target = _decoded_immutable_internal_target(binary, decoded)
+            if immutable_target is not None:
+                decoded["immutable_internal_target"] = immutable_target
+                if event.get("kind") == "internal_call":
+                    expected_kind = "internal_call"
         if event.get("kind") != expected_kind:
             record(
                 f"call_event_{index}_kind_mismatch",
@@ -1685,6 +1751,24 @@ def _reconcile_decoded_call_events(
                 expected=expected_kind,
                 actual=event.get("kind"),
             )
+        elif immutable_target is not None and expected_kind == "internal_call":
+            semantic_target = event.get("target_rva")
+            if semantic_target != immutable_target["target_rva"]:
+                record(
+                    f"call_event_{index}_immutable_target_mismatch",
+                    "violated",
+                    "the semantic internal-call target disagrees with the exact immutable pointer slot",
+                    expected=immutable_target["target_rva"],
+                    actual=semantic_target,
+                )
+            else:
+                record(
+                    f"call_event_{index}_immutable_target",
+                    "complete",
+                    "the semantic internal call is refined by an exact non-writable PE pointer slot",
+                    expected=immutable_target["target_rva"],
+                    actual=semantic_target,
+                )
 
         return_rva = event.get("return_rva")
         if return_rva is None:

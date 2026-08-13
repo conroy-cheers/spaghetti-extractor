@@ -66,9 +66,6 @@ let
   nativeBuildPythonSource = mkPythonClosure "native-build" [
     "spaghetti_extractor.stage_b_interpreter_native_build"
   ];
-  fallbackCoveragePythonSource = mkPythonClosure "fallback-coverage" [
-    "spaghetti_extractor.stage_b_fallback_coverage"
-  ];
   candidateAuthorityPythonSource = mkPythonClosure "candidate-authority-v3" [
     "spaghetti_extractor.stage_b_candidate_authority_v3"
   ];
@@ -144,54 +141,11 @@ let
     inherit allowDeferredPotentialTransfers;
   };
 
-  fallbackCoverageReceipt = pkgs.runCommand
-    "${namePrefix}-fallback-coverage-receipt-v3"
-    {
-      nativeBuildInputs = [ pythonEnv pkgs.jq ];
-      preferLocalBuild = false;
-      allowSubstitutes = true;
-      __contentAddressed = true;
-    }
-    ''
-      set -euo pipefail
-      export PYTHONHASHSEED=0
-      export LC_ALL=C.UTF-8
-      export SOURCE_DATE_EPOCH=1
-      export PYTHONPATH=${fallbackCoveragePythonSource}/src
-      mkdir -p "$out"
-      ${python} - \
-        ${machineIr}/machine-ir.jsonl \
-        ${machineIr}/machine-ir-manifest.json \
-        ${interpreter} \
-        ${portableReplacementArg} \
-        "$out/fallback-coverage-receipt.json" <<'PY'
-      import pathlib
-      import sys
-
-      from spaghetti_extractor.stage_b_fallback_coverage import (
-          write_stage_b_fallback_coverage_receipt,
-      )
-
-      machine_ir, manifest, interpreter, portable, output = sys.argv[1:]
-      write_stage_b_fallback_coverage_receipt(
-          machine_ir=pathlib.Path(machine_ir),
-          machine_ir_manifest=pathlib.Path(manifest),
-          interpreter_package=pathlib.Path(interpreter),
-          portable_replacements=(pathlib.Path(portable) if portable else None),
-          out=pathlib.Path(output),
-      )
-      PY
-      jq -e '
-        .format == "stage-b-fallback-coverage-receipt-v3" and
-        .status == "complete" and
-        (.authority | contains("implementation availability only")) and
-        .policy.structural_units_require_lowering and
-        .policy.one_implementation_kind_per_structural_unit and
-        (.policy.rooted_containment_authority | not) and
-        .counts.structural_units == .counts.implementation_entries and
-        .counts.blockers == 0
-      ' "$out/fallback-coverage-receipt.json" >/dev/null
-    '';
+  fallbackCoverageReceipt = import ./stage-b-fallback-coverage-receipt.nix {
+    inherit pkgs pythonEnv pythonSource machineIr namePrefix;
+    interpreterPackage = interpreter;
+    portableReplacements = portableReplacementSelection;
+  };
 
   candidateAuthorityReport = if !staticClosed then null else pkgs.runCommand
     "${namePrefix}-candidate-authority-v3"

@@ -793,25 +793,19 @@ def _derive_final_authority(context: PhaseContextV3) -> FinalAuthorityRecordV3:
             checked_closure = closure
 
     if checked_closure is not None:
-        reachable_ids = set(checked_closure.reachable_unit_ids)
         for unit_id in sorted(set(exact_by_id) & set(isa_by_id)):
             exact = exact_by_id[unit_id]
             isa = isa_by_id[unit_id]
             if isa.status != "complete" or not isa.authorizing:
                 continue
-            expected_reachable = unit_id in reachable_ids
-            expected_selections = (
-                tuple(
-                    (
-                        instruction.index,
-                        instruction.instruction_sha256,
-                        instruction.rva_start,
-                        instruction.rva_end,
-                    )
-                    for instruction in exact.instructions
+            expected_selections = tuple(
+                (
+                    instruction.index,
+                    instruction.instruction_sha256,
+                    instruction.rva_start,
+                    instruction.rva_end,
                 )
-                if expected_reachable
-                else ()
+                for instruction in exact.instructions
             )
             observed_selections = tuple(
                 (
@@ -822,10 +816,7 @@ def _derive_final_authority(context: PhaseContextV3) -> FinalAuthorityRecordV3:
                 )
                 for selection in isa.selections
             )
-            if (
-                isa.reachable is not expected_reachable
-                or observed_selections != expected_selections
-            ):
+            if observed_selections != expected_selections:
                 blockers.append(
                     PrimaryBlockerV3(
                         "violated",

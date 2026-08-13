@@ -106,6 +106,7 @@ pipeline being migrated onto the content-addressed graph:
 | `root_closure.py`, `exceptional_transitions.py` | Launch-root closure and checked fault/exception dispositions. |
 | `isa_qualification.py`, `fallback_coverage.py` | Exact reachable-form qualification and one fallback implementation disposition per structural unit. |
 | `final_authority.py` | Fail-closed reduction over all authority families; copied status fields cannot authorize it. |
+| `diagnostics.py` | Non-authorizing family and primary-frontier summaries over checked artifact sets and sharded bundles. |
 | `source_plan.py`, `planning.py`, `graph.py` | Bounded source preparation, framework-owned structural/dependency planning, and canonical graph metadata. |
 | `registry.py` | Unique, complete phase registry used to generate the v3 authority graph. |
 
@@ -183,6 +184,19 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_interpreter_backend.py` | Portable machine-IR interpreter generation. |
 | `stage_b_interpreter_native_build.py` | Freestanding PE32 build from interpreter, engine, and runtime packages. |
 | `stage_b_fallback_coverage.py` | Replays exact interpreter lowerings and portable selections and proves one implementation kind per unit in the complete structural universe; it has no rooted-reachability authority. |
+| `source_lift_audit.py` | Two-level source-lift diagnostics: a cheap source/interface iteration audit independent of v3 authority, plus a final non-authorizing join to authority diagnostics before release/runtime gates. |
+| `stage_a_standard_evidence_v3.py` | Emits exact launch-root, callback, target-hint, and inductive-input proposals for native v3 checking. |
+| `stage_a_exception_evidence_v3.py` | Generates instruction-bound exception classifications under a checked launch profile; terminal faults remain explicit observable outcomes. |
+| `stage_a_external_site_evidence_v3.py` | Generates exact-bound machine-level external-site evidence for downstream native-v3 checking. |
+| `stage_a_indexed_target_evidence_v3.py` | Checks immutable PE jump tables, finite selector guards, exact targets, and alias safety before emitting target evidence. |
+| `stage_a_isa_evidence_v3.py` | Projects binary-specific oracle and Lean qualification into exact native-v3 ISA evidence. |
+| `isa_frontier_report_v1.py` | Replays exact ISA requirements and selection authority into compact form-, field-, and RVA-level repair diagnostics without sharing an output identity with authority evidence. |
+| `stage_a_implementation_capabilities_v3.py` | Binds fallback implementation capability IDs to the exact selected ISA forms. |
+| `lift_qualification_v1.py`, `stage_b_source_qualification_v1.py`, `stage_b_runtime_qualification_v1.py` | Typed assurance-class-aware portable-lift qualification records, validation-backed source qualification, and pinned linked-runtime qualification. |
+| `candidate_validation_v1.py` | Joins exact candidate-only PE32 and non-x86 behavior reports without claiming equivalence. |
+| `implementation_ledger_v2.py`, `stage_b_ownership_ledger_v2.py` | Exact unit-ownership and implementation-kind ledgers for static fallback and portable replacements. |
+| `lift_completion_receipt_v2.py`, `stage_b_lift_completion_v2.py` | Final completion receipts joining authority, implementation coverage, source qualification, and candidate identities. |
+| `runtime_lock_v1.py` | Content-addressed toolchain, runtime, profile, and launch-assumption lock used by portable build receipts. |
 | `stage_b_machine_ir_scope.py` | Fail-closed partition of executable and deferred machine-IR transfers for candidate generation. |
 | `stage_b_engine_layout.py` | Structural engine layout tables. |
 | `stage_b_native_engine.py` | IA-32 ABI bridge and typed x87 native operations. |
@@ -337,15 +351,31 @@ enforce this with `xvfb-run` where Wine is used.
 | `artifact-seed-v3.nix`, `artifact-set-v3.nix`, `artifact-phase-v3.nix` | Strict source-byte-bound artifact ingestion, typed streaming validation, complete checker-source provenance, and framework-owned map/reduce/SCC phase execution over bounded CA packs. |
 | `analysis-v3-source-plan.nix`, `analysis-v3-machine-ir-input.nix` | One streaming dynamic-analysis preparation boundary followed by stable bucket re-interning, so one changed unit invalidates one bounded machine-IR shard without thousands of evaluator reads. |
 | `analysis-v3-graph-manifest.nix`, `analysis-v3-authority.nix` | Registry-derived graph-manifest realization and the reusable fail-closed target adapter that combines exact machine IR with typed external evidence artifacts. |
+| `analysis-v3-diagnostics.nix` | Non-authorizing checked-artifact summary for precise operator feedback across sharded authority families. |
+| `analysis-v3-exception-evidence.nix`, `analysis-v3-external-site-evidence.nix`, `analysis-v3-indexed-target-evidence.nix`, `analysis-v3-isa-evidence.nix`, `analysis-v3-standard-evidence.nix` | Content-addressed exact-evidence providers for exception, external-call, indirect-target, ISA, launch-root, callback, and invariant families. |
+| `analysis-v3-implementation-capabilities.nix` | Exact fallback-capability projection over the selected binary-specific ISA inventory. |
+| `analysis-v3-isa-frontiers.nix` | Separate content-addressed ISA repair report; diagnostic changes cannot invalidate the authoritative ISA artifact or its downstream closure. |
 | `analysis-v3-external-inputs.nix` | Content-addressed ingestion of exact machine-import profiles and PE/load-image roots into native-v3 input artifact sets. |
+| `analysis-v3-final-authority-gate.nix` | Strict final-authority record gate used by candidate generation, target validation, and runtime suites. |
 | `authority-graph-v3.nix`, `authority-graph-v3-boundaries.nix`, `authority-graph-v3-packs.nix`, `authority-resource-classes-v3.nix` | Manifest-driven v3 authority DAG, independently checked structural/dependency planning boundaries, stable schedule packs, and one shared resource policy used by dynamic preparation and standalone fixtures. |
 | `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix` | Convention-discovered stable test shards and shared heavy fixtures; the aggregate never reruns an unchanged shard. |
 | `stage-b-headless-diagnostic-run.nix` | Runs only a statically closed candidate in an isolated headless Wine session. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure for phase-specific invalidation. |
 | `python-module-index.json` | Generated checked local-import graph consumed by phase-specific Python closures. |
-| `stage-b-linked-libraries.nix` | Library constellation and replacement-plan DAG. |
+| `stage-b-linked-libraries.nix` | Library constellation and replacement-plan DAG. With no catalog it still classifies reviewed application ranges, import thunks, and unknown ownership without granting replacement authority. |
 | `stage-b-source-call-substitutions.nix` | Call-frontier through source-binding DAG. |
+| `stage-b-clang-ast-bundle.nix` | Deterministic per-translation-unit Clang AST bundle for complete source-call inventory. |
 | `stage-b-source-component-assurance.nix` | Source component evidence aggregation. |
+| `stage-b-source-project.nix` | Generic reviewed-source project, evidence-plan, and exact machine-unit binding constructor. |
+| `stage-b-source-iteration-audit.nix` | Cheap content-addressed source/interface audit over machine IR, source bindings, linked-island coverage, candidate identity, and static import-surface drift; deliberately excludes the full authority DAG. |
+| `stage-b-source-lift-audit.nix` | Final content-addressed diagnostic join between the cheap source-iteration audit and v3 authority diagnostics; remains non-authorizing and cannot replace the final authority gate. |
+| `stage-b-fallback-coverage-receipt.nix` | Checks one implementation kind for every structural machine-IR unit without claiming rooted reachability. |
+| `stage-b-implementation-ledger.nix`, `stage-b-lift-completion-receipt.nix` | Build exact implementation ownership ledgers and final lift-completion receipts. |
+| `stage-b-portable-c-project.nix` | Reproducible PE32 and cross-architecture builds of reviewed portable C source. |
+| `stage-b-runtime-lock.nix` | Materializes the exact toolchain, runtime, profile, and launch dependency lock. |
+| `stage-b-source-qualification.nix` | Builds an explicit validation-backed source qualification from exact source binding, component assurance, source-call coverage, and candidate dependency evidence; it never infers semantic proof from a diagnostic audit. |
+| `stage-b-runtime-qualification.nix` | Qualifies a validation-backed pinned-runtime substitution over the exact non-application unit universe. |
+| `stage-b-candidate-validation.nix` | Joins exact PE32 and non-x86 candidate-only reports for the validation-qualified completion profile. |
 | `stage-b-functional-suite.nix` | Candidate-only expected-output suite. |
 | `stage-b-upstream-shell-suite.nix` | Candidate-only upstream shell tests under headless Wine. |
 | `stage-b-target-intent.nix` | Validated authored target intent. |
@@ -377,6 +407,7 @@ reviewed profiles are:
 - `pe32-win32-windowing-runtime-v1.json`
 - `pe32-winmm-runtime-v1.json`
 - `pe32-win32-gui-launch-assumptions-v1.json`
+- `pe32-win32-console-launch-assumptions-v1.json`
 
 The launch-assumption template is deliberately non-authorizing. The Nix
 analysis phase binds it to the exact PE, checked static roots, and checked

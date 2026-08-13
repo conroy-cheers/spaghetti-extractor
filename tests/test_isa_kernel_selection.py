@@ -1,7 +1,25 @@
 from __future__ import annotations
 
 import copy
+import json
+import tempfile
 import unittest
+from pathlib import Path
+
+from spaghetti_extractor.analysis_v3.exact_units import ExactUnitV3
+from spaghetti_extractor.analysis_v3.isa_qualification import (
+    ISA_QUALIFICATION_EVIDENCE_CODEC_V3,
+)
+from spaghetti_extractor.analysis_v3.semantic_index import (
+    SEMANTIC_INDEX_ARTIFACT_KIND_V3,
+    SEMANTIC_INDEX_CODEC_V3,
+    derive_semantic_index_v3,
+)
+from spaghetti_extractor.artifact_set_v3 import (
+    ArtifactBindingV3,
+    ArtifactSetReaderV3,
+    ArtifactSetWriterV3,
+)
 
 from spaghetti_extractor.isa_kernel_qualification import (
     BackendBinding,
@@ -28,6 +46,10 @@ from spaghetti_extractor.isa_kernel_selection import (
     parse_isa_kernel_selection_authority,
     validate_isa_kernel_selection_authority,
 )
+from spaghetti_extractor.isa_frontier_report_v1 import (
+    ISA_FRONTIER_REPORT_V1_FORMAT,
+    build_isa_frontier_report_v1,
+)
 from spaghetti_extractor.isa_semantic_forms import lean_semantic_form_id
 from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
     MACHINE_IR_FALLBACK_CAPABILITY_V2,
@@ -37,6 +59,10 @@ from spaghetti_extractor.machine_ir_isa_selection_v2 import (
     build_machine_ir_isa_selection_certificate_v2,
     build_machine_ir_isa_selection_authority_v2,
     parse_machine_ir_isa_selection_certificate_v2,
+)
+from spaghetti_extractor.stage_a_isa_evidence_v3 import (
+    ISAEvidenceProjectionV3Error,
+    emit_isa_evidence_v3,
 )
 
 
@@ -197,6 +223,64 @@ def _authority(*, mode: str = "qualified"):
 
 
 class ISAKernelSelectionAuthorityTests(unittest.TestCase):
+    def _write_semantic_index(
+        self,
+        path: Path,
+        *,
+        pe_sha256: str = BINARY_SHA,
+    ) -> Path:
+        unit = ExactUnitV3.create(
+            {
+                "format": "stage-a-machine-ir-v2",
+                "record_kind": "unit",
+                "id": "unit-1000",
+                "status": "qualified",
+                "source": {
+                    "original": {
+                        "rva_start": 0x1000,
+                        "rva_end": 0x1001,
+                    },
+                    "instruction_bytes_sha256": SHA0,
+                },
+                "instructions": [
+                    {
+                        "rva_start": 0x1000,
+                        "rva_end": 0x1001,
+                        "bytes": "40",
+                        "mnemonic": "inc",
+                        "operands": [{"kind": "reg", "reg": "eax"}],
+                    }
+                ],
+                "semantics": {
+                    "faults": [],
+                    "external_events": [],
+                    "outcome": {"kind": "return"},
+                },
+                "control": {
+                    "kind": "return",
+                    "direct_targets": [],
+                    "has_indirect_target": False,
+                },
+            },
+            pe_sha256=pe_sha256,
+        )
+        binding = ArtifactBindingV3(
+            "binary", "pe32", "game.exe", pe_sha256
+        )
+        ArtifactSetWriterV3(
+            artifact_kind=SEMANTIC_INDEX_ARTIFACT_KIND_V3,
+            bindings=(binding,),
+        ).write(
+            path,
+            (
+                SEMANTIC_INDEX_CODEC_V3.write(
+                    unit.record_id,
+                    derive_semantic_index_v3(unit),
+                ),
+            ),
+        )
+        return path
+
     def test_machine_ir_bridge_localizes_generic_qualification(self) -> None:
         from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
             build_machine_ir_isa_extraction_request_v2,
@@ -267,12 +351,139 @@ class ISAKernelSelectionAuthorityTests(unittest.TestCase):
         self.assertEqual(parsed.forms[0]["form_id"], form_id)
         self.assertNotIn("evidence", certificate)
 
+        report = build_isa_frontier_report_v1(
+            requirements_payload=requirements,
+            selection_authority_payload=authority,
+        )
+        self.assertEqual(report["format"], ISA_FRONTIER_REPORT_V1_FORMAT)
+        self.assertEqual(report["status"], "qualified")
+        self.assertEqual(report["frontiers"], [])
+        self.assertFalse(report["trust"]["authorizes_candidate_generation"])
+
+        disputed_authority = build_machine_ir_isa_selection_authority_v2(
+            requirements=requirements,
+            qualification=_qualification(
+                mode="disputed",
+                form_id=form_id,
+                semantic_form=semantic_form,
+            ).to_payload(),
+            binary_id="game.exe",
+        )
+        disputed_report = build_isa_frontier_report_v1(
+            requirements_payload=requirements,
+            selection_authority_payload=disputed_authority,
+        )
+        self.assertEqual(disputed_report["status"], "violated")
+        self.assertEqual(disputed_report["counts"]["frontier_forms"], 1)
+        frontier = disputed_report["frontiers"][0]
+        self.assertEqual(frontier["form_id"], form_id)
+        self.assertEqual(frontier["status"], "disputed")
+        self.assertEqual(frontier["occurrences"], 1)
+        self.assertEqual(frontier["source_locations"][0]["rva"], 0x1000)
+        self.assertEqual(frontier["issue_codes"], ["oracle_dispute_veto"])
+        self.assertIn("independent pinned oracle", frontier["next_action"])
+
         corrupted = copy.deepcopy(certificate)
         corrupted["forms"][0]["semantic_form"] = "formal-default-v1.dec-reg"
         with self.assertRaisesRegex(
             MachineIRISASelectionV2Error, "self-hash is stale"
         ):
             parse_machine_ir_isa_selection_certificate_v2(corrupted)
+
+    def test_v3_projection_binds_checked_form_to_exact_occurrence(self) -> None:
+        from spaghetti_extractor.isa_semantic_forms import (
+            lean_semantic_form_classifier_sha256,
+        )
+        from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+            build_machine_ir_isa_extraction_request_v2,
+            build_machine_ir_isa_requirements_v2,
+        )
+
+        classifier = lean_semantic_form_classifier_sha256()
+        form_id = lean_semantic_form_id(
+            SEMANTIC_FORM, classifier_sha256=classifier
+        )
+        qualification = _qualification(
+            form_id=form_id,
+            semantic_form=SEMANTIC_FORM,
+        )
+        request = build_machine_ir_isa_extraction_request_v2(
+            units=[{
+                "id": "unit-1000",
+                "reachable": True,
+                "source": {
+                    "original": {"rva_start": 0x1000, "rva_end": 0x1001}
+                },
+                "instructions": [
+                    {"rva_start": 0x1000, "rva_end": 0x1001}
+                ],
+            }],
+            binary_sha256=BINARY_SHA,
+            include_structural_universe=True,
+        )
+        requirements = build_machine_ir_isa_requirements_v2(
+            request=request,
+            machine_ir_sha256=SHA2,
+            lean_rows={
+                ("original", 0): ({
+                    "rva": 0x1000,
+                    "size": 1,
+                    "bytes": "40",
+                    "form": SEMANTIC_FORM,
+                },),
+            },
+            lean_evidence={
+                "status": "lean_extracted_untrusted",
+                "classifier_sha256": classifier,
+                "extractor_sha256": SHA0,
+                "source_sha256": SHA1,
+            },
+        )
+        authority = build_machine_ir_isa_selection_authority_v2(
+            requirements=requirements,
+            qualification=qualification.to_payload(),
+            binary_id="game.exe",
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            requirements_path = root / "requirements.json"
+            authority_path = root / "authority.json"
+            requirements_path.write_text(
+                json.dumps(requirements), encoding="utf-8"
+            )
+            authority_path.write_text(json.dumps(authority), encoding="utf-8")
+            semantic_path = self._write_semantic_index(root / "semantic")
+            metadata = emit_isa_evidence_v3(
+                requirements_path=requirements_path,
+                selection_authority_path=authority_path,
+                semantic_index_path=semantic_path,
+                output_directory=root / "projection",
+            )
+
+            self.assertEqual(metadata["status"], "complete")
+            self.assertEqual(metadata["counts"]["semantic_occurrences"], 1)
+            reader = ArtifactSetReaderV3(root / "projection" / "artifact")
+            evidence = ISA_QUALIFICATION_EVIDENCE_CODEC_V3.read(
+                next(reader.iter_records())
+            ).value
+            self.assertEqual(evidence.selected_form_id, form_id)
+            self.assertEqual(evidence.rva_start, 0x1000)
+            self.assertEqual(evidence.rva_end, 0x1001)
+
+            stale_semantic = self._write_semantic_index(
+                root / "stale-semantic", pe_sha256=OTHER_BINARY_SHA
+            )
+            with self.assertRaisesRegex(
+                ISAEvidenceProjectionV3Error,
+                "different PE bytes",
+            ):
+                emit_isa_evidence_v3(
+                    requirements_path=requirements_path,
+                    selection_authority_path=authority_path,
+                    semantic_index_path=stale_semantic,
+                    output_directory=root / "stale-projection",
+                )
 
     def test_qualified_artifact_binds_exact_binary_forms_evidence_and_fallback(self):
         qualification, selection, authority = _authority()

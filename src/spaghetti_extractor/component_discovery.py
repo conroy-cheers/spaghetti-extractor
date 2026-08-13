@@ -282,7 +282,7 @@ def discover_component_proposals(
         for blocker in proposal["blockers"]
     ]
     issues = sorted(
-        generation_issues + blockers,
+        _unique_dicts(generation_issues + blockers),
         key=lambda item: (
             int(item.get("source_location", {}).get("rva_start", -1)),
             str(item.get("category", "")),

@@ -16,6 +16,7 @@ from spaghetti_extractor.artifact_formats import (
     SOURCE_SUBSTITUTION_CATALOG_FORMAT,
 )
 from spaghetti_extractor.source_call_substitution import (
+    SourceCallSubstitutionError,
     audit_candidate_dependencies,
     bind_allowed_runtime_imports,
     bind_call_substitution_assignments,
@@ -555,6 +556,91 @@ class SourceCallSubstitutionTests(unittest.TestCase):
             ),
             {"caller", "callback"},
         )
+
+    def test_source_inventory_requires_and_merges_exact_multi_tu_bundle(self) -> None:
+        first = self.root / "first.c"
+        second = self.root / "second.c"
+        first.write_text("int second(void); int first(void) { return second(); }\n")
+        second.write_text("int second(void) { return 2; }\n")
+
+        def function_ast(path: Path, symbol: str, callee: str | None) -> dict[str, object]:
+            body: list[dict[str, object]] = [{"kind": "CompoundStmt"}]
+            if callee is not None:
+                body[0]["inner"] = [
+                    {
+                        "kind": "CallExpr",
+                        "range": {"begin": {"file": str(path), "offset": 42}},
+                        "inner": [
+                            {
+                                "kind": "DeclRefExpr",
+                                "referencedDecl": {
+                                    "kind": "FunctionDecl",
+                                    "name": callee,
+                                },
+                            }
+                        ],
+                    }
+                ]
+            return {
+                "kind": "TranslationUnitDecl",
+                "inner": [
+                    {
+                        "kind": "FunctionDecl",
+                        "name": symbol,
+                        "range": {"begin": {"file": str(path), "offset": 0}},
+                        "inner": body,
+                    }
+                ],
+            }
+
+        bundle = {
+            "format": "spaghetti-extractor-clang-ast-bundle-v1",
+            "translation_units": [
+                {
+                    "path": "second.c",
+                    "source_sha256": sha256_file(second),
+                    "ast": function_ast(second, "second", None),
+                },
+                {
+                    "path": "first.c",
+                    "source_sha256": sha256_file(first),
+                    "ast": function_ast(first, "first", "second"),
+                },
+            ],
+        }
+        write_json(self.root / "ast-bundle.json", bundle)
+        inventory = inventory_clang_source_calls(
+            ast_json=self.root / "ast-bundle.json",
+            source_root=self.root,
+            source_hashes=[
+                {"path": "first.c", "sha256": sha256_file(first)},
+                {"path": "second.c", "sha256": sha256_file(second)},
+            ],
+            out=self.root / "multi-tu-inventory.json",
+        )
+
+        self.assertEqual(
+            [row["symbol"] for row in inventory["definitions"]],
+            ["first", "second"],
+        )
+        self.assertEqual(inventory["counts"]["calls"], 1)
+        self.assertEqual(inventory["calls"][0]["callee"], "second")
+
+        bundle["translation_units"].pop()
+        write_json(self.root / "incomplete-ast-bundle.json", bundle)
+        with self.assertRaisesRegex(
+            SourceCallSubstitutionError,
+            "does not cover every source translation unit",
+        ):
+            inventory_clang_source_calls(
+                ast_json=self.root / "incomplete-ast-bundle.json",
+                source_root=self.root,
+                source_hashes=[
+                    {"path": "first.c", "sha256": sha256_file(first)},
+                    {"path": "second.c", "sha256": sha256_file(second)},
+                ],
+                out=self.root / "should-not-exist.json",
+            )
 
     def test_source_inventory_disambiguates_macro_expansion_calls(self) -> None:
         source = self.root / "macro.c"

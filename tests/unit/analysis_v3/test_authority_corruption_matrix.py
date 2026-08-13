@@ -51,6 +51,9 @@ from spaghetti_extractor.analysis_v3.structural_targets import (
     STRUCTURAL_TARGET_UNIT_CODEC_V3,
     STRUCTURAL_TARGETS_PHASE_V3,
 )
+from spaghetti_extractor.analysis_v3.target_certificates import (
+    INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3,
+)
 from spaghetti_extractor.analysis_v3.transition_summaries import (
     TRANSITION_SUMMARY_CODEC_V3,
     TRANSITION_SUMMARIES_PHASE_V3,
@@ -65,6 +68,7 @@ from spaghetti_extractor.artifact_set_v3 import (
 )
 from tests.unit.analysis_v3 import test_final_authority as final_fixture
 from tests.unit.analysis_v3 import test_phase_chain as phase_fixture
+from tests.unit.analysis_v3 import test_target_certificates as target_fixture
 from tests.unit.analysis_v3.test_isa_qualification import BINDING
 
 
@@ -76,6 +80,7 @@ _CODECS = {
     "fallback_coverage": FALLBACK_COVERAGE_CODEC_V3,
     "final_authority": FINAL_AUTHORITY_CODEC_V3,
     "inductive_authority": INDUCTIVE_AUTHORITY_CODEC_V3,
+    "indirect_target_certificates": INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3,
     "isa_qualification": ISA_QUALIFICATION_CODEC_V3,
     "memory_versions": MEMORY_VERSION_CODEC_V3,
     "root_closure": LAUNCH_ROOT_CLOSURE_CODEC_V3,
@@ -156,10 +161,19 @@ class AuthorityCorruptionMatrixV3Tests(unittest.TestCase):
             },
             bindings=(BINDING,),
         ).output_directory
+        target_inputs, _target_schedule, _exit_id = (
+            target_fixture.IndirectTargetCertificatesV3Tests()._chain(
+                root / "target-certificate-chain",
+                include_evidence=True,
+            )
+        )
 
         paths = {
             **final_inputs,
             "final_authority": final_path,
+            "indirect_target_certificates": target_inputs[
+                "target_certificates"
+            ],
             "exact_units": exact_path,
             "memory_versions": memory_path,
             "structural_targets": targets_path,

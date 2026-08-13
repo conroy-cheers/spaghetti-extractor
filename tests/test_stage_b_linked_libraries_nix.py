@@ -24,6 +24,8 @@ class StageBLinkedLibrariesNixTests(unittest.TestCase):
         self.assertIn("__contentAddressed = true;", module)
         self.assertIn("index_library_artifacts", module)
         self.assertIn("propose_library_match_evidence", module)
+        self.assertIn('effectiveCatalogLock == null then "-"', module)
+        self.assertIn('None if catalog_lock == "-"', module)
         self.assertIn("infer_library_hypotheses", module)
         self.assertIn("qualify_linked_interfaces", module)
         self.assertNotIn("wine", module.lower())

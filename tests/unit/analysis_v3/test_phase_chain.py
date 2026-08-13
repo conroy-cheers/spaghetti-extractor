@@ -29,6 +29,9 @@ from spaghetti_extractor.analysis_v3.structural_targets import (
     STRUCTURAL_TARGET_UNIT_CODEC_V3,
     STRUCTURAL_TARGETS_PHASE_V3,
 )
+from spaghetti_extractor.analysis_v3.target_certificates import (
+    INDIRECT_TARGET_CERTIFICATES_PHASE_V3,
+)
 from spaghetti_extractor.analysis_v3.transition_summaries import (
     TRANSITION_SUMMARIES_PHASE_V3,
 )
@@ -238,11 +241,29 @@ class AnalysisV3PhaseChainTests(unittest.TestCase):
                     *(INDUCTIVE_INPUT_CODEC_V3.write(row.record_id, row) for row in cutpoints),
                 ),
             )
+            target_evidence = _write_artifact(
+                root_path / "target-evidence",
+                "indirect-target-evaluation-evidence-v3",
+                (),
+            )
+            target_certificates = INDIRECT_TARGET_CERTIFICATES_PHASE_V3.run(
+                output_directory=root_path / "target-certificates",
+                inputs={
+                    "inductive_inputs": inductive_inputs,
+                    "memory_versions": memory,
+                    "semantic_index": semantic_index,
+                    "semantic_index_global": semantic_index,
+                    "structural_targets": targets,
+                    "target_evidence": target_evidence,
+                    "transition_summaries": transitions,
+                },
+                bindings=(BINDING,),
+            ).output_directory
             shared = {
                 "inductive_inputs": inductive_inputs,
                 "memory_versions": memory,
                 "semantic_index": semantic_index,
-                "structural_targets": targets,
+                "target_certificates": target_certificates,
                 "transition_summaries": transitions,
             }
             authority = INDUCTIVE_AUTHORITY_PHASE_V3.run(
@@ -305,7 +326,7 @@ class AnalysisV3PhaseChainTests(unittest.TestCase):
                     "inductive_inputs",
                     "memory_versions",
                     "semantic_index",
-                    "structural_targets",
+                    "target_certificates",
                     "transition_summaries",
                 },
             )

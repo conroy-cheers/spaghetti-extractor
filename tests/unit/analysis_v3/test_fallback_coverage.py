@@ -48,7 +48,7 @@ def _capability(exact) -> ImplementationCapabilityV3:
 
 class FallbackCoverageV3Tests(unittest.TestCase):
     def _run(self, root: Path, capability: ImplementationCapabilityV3):
-        _exact_path, semantic_path, closure_path, exact = _base_inputs(root)
+        _exact_path, semantic_path, _closure_path, exact = _base_inputs(root)
         evidence = _evidence(exact)
         evidence_path = _write(
             root / "isa-evidence",
@@ -63,7 +63,6 @@ class FallbackCoverageV3Tests(unittest.TestCase):
             output_directory=root / "isa",
             inputs={
                 "isa_evidence": evidence_path,
-                "root_closure": closure_path,
                 "semantic_index": semantic_path,
             },
             bindings=(BINDING,),

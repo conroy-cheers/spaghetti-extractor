@@ -10,9 +10,9 @@ inductive ISAConformanceAuthority where
 deriving Repr, DecidableEq
 
 inductive ISAConformanceX87Profile where
-  /-- The current Lean-owned x87 semantics profile. This profile is deliberately
-  not described as hardware-conformant until its conformance corpus passes. -/
-  | formalDefaultV1
+  /-- Pure Lean concrete semantics over exact binary rationals. Qualification
+  still requires agreement with the independent external-oracle profile. -/
+  | concreteBinaryRationalV1
 deriving Repr, DecidableEq
 
 structure ISAConformanceMemoryByte where
@@ -40,7 +40,11 @@ structure ISAConformanceInput where
   x87Stack : List Nat := List.replicate 8 0
   x87Control : Nat := 0x037f
   x87Status : Nat := 0
-  x87Profile : ISAConformanceX87Profile := .formalDefaultV1
+  x87Tag : Nat := 0xffff
+  x87LastOpcode : Nat := 0
+  x87InstructionPointer : Nat := 0
+  x87DataPointer : Nat := 0
+  x87Profile : ISAConformanceX87Profile := .concreteBinaryRationalV1
   observeMemory : List Nat := []
 deriving Repr, DecidableEq
 
@@ -68,6 +72,7 @@ deriving Repr, DecidableEq
 inductive ISAConformanceFault where
   | none
   | divideError
+  | x87FloatingPoint
 deriving Repr, DecidableEq
 
 structure ISAConformanceObservation where
@@ -78,6 +83,17 @@ structure ISAConformanceObservation where
   x87Stack : List Nat
   x87Control : Nat
   x87Status : Nat
+  x87Tag : Nat
+  x87LastOpcode : Nat
+  x87InstructionPointer : Nat
+  x87DataPointer : Nat
+  x87DefinedControl : Nat
+  x87DefinedStatus : Nat
+  x87DefinedTag : Nat
+  x87DefinedLastOpcode : Nat
+  x87DefinedInstructionPointer : Nat
+  x87DefinedDataPointer : Nat
+  x87DefinedStack : List Nat
   memory : List ISAConformanceMemoryByte
   writes : List ISAConformanceWordWrite
   control : ISAConformanceControl
@@ -217,6 +233,8 @@ def ISAConformanceInput.checked (input : ISAConformanceInput) : Bool :=
     input.x87Stack.length == 8 &&
     input.x87Stack.all (fun value => value < 2 ^ 80) &&
     input.x87Control < 2 ^ 16 && input.x87Status < 2 ^ 16 &&
+    input.x87Tag < 2 ^ 16 && input.x87LastOpcode < 2 ^ 11 &&
+    input.x87InstructionPointer < 2 ^ 32 && input.x87DataPointer < 2 ^ 32 &&
     input.observeMemory.all (fun address => address < 2 ^ 32) &&
     decide input.observeMemory.Nodup
 
@@ -361,6 +379,220 @@ def ConcreteBehavior.materializedEflags
         direction count.toNat).eflags
   | _ => behavior.eflags
 
+private def x87LoadFormat : X87LoadFormat -> StageA.X87.LoadFormat
+  | .float32 => .float32
+  | .float64 => .float64
+  | .float80 => .float80
+  | .int32 => .int32
+
+private def x87StoreFormat : X87StoreFormat -> Option StageA.X87.StoreFormat
+  | .float32 => some .float32
+  | .float64 => some .float64
+  | .float80 => some .float80
+  | .int32 => some .int32
+  | .int64 => none
+
+private def x87UnaryOperation : X87UnaryOperation -> StageA.X87.UnaryOperation
+  | .negate => .negate
+  | .sine => .sine
+  | .cosine => .cosine
+
+private def x87BinaryOperation : X87BinaryOperation -> StageA.X87.BinaryOperation
+  | .add => .add
+  | .multiply => .multiply
+  | .subtract => .subtract
+  | .reverseSubtract => .reverseSubtract
+  | .divide => .divide
+  | .reverseDivide => .reverseDivide
+
+private def instructionX87Command : Instruction -> Option StageA.X87.Command
+  | .x87LoadStack index => some (.loadStack index)
+  | .x87LoadConstant value => some (.loadConstant (BitVec.ofNat 80 value))
+  | .x87Exchange index => some (.exchange index)
+  | .x87StoreStack index pop => some (.storeStack index pop)
+  | .x87Unary operation => some (.unary (x87UnaryOperation operation))
+  | .x87BinaryStack operation destination source pop =>
+      some (.binaryStack (x87BinaryOperation operation) destination source pop)
+  | .x87CompareStack mode destination index pop =>
+      some (.compareStack mode destination index pop)
+  | .x87CompareMemory mode format _ pop =>
+      some (.compareMemory mode (x87LoadFormat format) pop)
+  | .x87LoadMemory format _ => some (.loadMemory (x87LoadFormat format))
+  | .x87StoreMemory format _ pop => do
+      let format <- x87StoreFormat format
+      some (.storeMemory format .controlWord pop)
+  | .x87BinaryMemory operation format _ =>
+      some (.binaryMemory (x87BinaryOperation operation) (x87LoadFormat format))
+  | .x87LoadControl _ => some .loadControl
+  | .x87StoreControl _ => some .storeControl
+  | .x87SaveState _ | .x87RestoreState _ => none
+  | .x87Wait => some .wait
+  | .x87Initialize => some .initialize
+  | .x87StoreStatusAx => some .storeStatusAx
+  | .x87Examine => some .examine
+  | _ => none
+
+private def instructionX87Address : Instruction -> Option Addressing
+  | .x87CompareMemory _ _ address _ | .x87LoadMemory _ address |
+      .x87StoreMemory _ address _ | .x87BinaryMemory _ _ address |
+      .x87LoadControl address | .x87StoreControl address |
+      .x87SaveState address | .x87RestoreState address => some address
+  | _ => none
+
+private def Instruction.isX87 : Instruction -> Bool
+  | .x87LoadStack _ | .x87LoadConstant _ | .x87Exchange _ |
+      .x87StoreStack _ _ | .x87Unary _ | .x87BinaryStack _ _ _ _ |
+      .x87CompareStack _ _ _ _ | .x87CompareMemory _ _ _ _ |
+      .x87LoadMemory _ _ | .x87StoreMemory _ _ _ |
+      .x87BinaryMemory _ _ _ | .x87LoadControl _ | .x87StoreControl _ |
+      .x87SaveState _ | .x87RestoreState _ | .x87Wait | .x87Initialize |
+      .x87StoreStatusAx | .x87Examine => true
+  | _ => false
+
+private def ISAConformanceInput.x87PhysicalState
+    (input : ISAConformanceInput) : StageA.X87.PhysicalState :=
+  let top := (input.x87Status / (2 ^ 11)) % 8
+  let slots := Vector.ofFn fun physical =>
+    let logical := (physical.val + 8 - top) % 8
+    let value := BitVec.ofNat 80 (input.x87Stack.getD logical 0)
+    match (input.x87Tag / (2 ^ (2 * physical.val))) % 4 with
+    | 0 => StageA.X87.Slot.occupied .valid value
+    | 1 => StageA.X87.Slot.occupied .zero value
+    | 2 => StageA.X87.Slot.occupied .special value
+    | _ => StageA.X87.Slot.empty value
+  {
+    slots
+    control := BitVec.ofNat 16 input.x87Control
+    status := BitVec.ofNat 16 input.x87Status
+    pendingException := Nat.testBit input.x87Status 7
+    lastOpcode := BitVec.ofNat 11 input.x87LastOpcode
+    instructionPointer := BitVec.ofNat 32 input.x87InstructionPointer
+    codeSelector := BitVec.ofNat 16 0
+    dataPointer := BitVec.ofNat 32 input.x87DataPointer
+    dataSelector := BitVec.ofNat 16 0
+  }
+
+private def x87LogicalStack (state : StageA.X87.PhysicalState) : List Nat :=
+  (List.range 8).map fun index => state.logicalSlot index |>.value.toNat
+
+private def x87TagWord (state : StageA.X87.PhysicalState) : Nat :=
+  (List.range 8).foldl (fun result physical =>
+    let slot := state.slots.toList.getD physical
+      (.empty (BitVec.ofNat 80 0))
+    result ||| (slot.tagBits * 2 ^ (2 * physical))) 0
+
+private def x87Opcode (bytes : Bytes) : Nat :=
+  let bytes := bytes.dropWhile fun byte =>
+    [0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0xf0, 0xf2, 0xf3].contains byte
+  match bytes with
+  | opcode :: modrm :: _ => ((opcode % 8) * 256 + modrm) % 2048
+  | _ => 0
+
+private def writeStoreBytes (memory : Memory) (address : Word)
+    (store : StageA.X87.StoreResult) : Memory :=
+  (List.range store.kind.byteWidth).foldl (fun result index => fun current =>
+    if current == address + BitVec.ofNat 32 index then
+      store.bits.extractLsb' (8 * index) 8 else result current) memory
+
+private def x87Writes (address : Word)
+    (store : StageA.X87.StoreResult) : List ISAConformanceWordWrite :=
+  (List.range ((store.kind.byteWidth + 3) / 4)).map fun index => {
+    address := (address + BitVec.ofNat 32 (index * 4)).toNat
+    value := (store.bits.extractLsb' (index * 32)
+      (min 32 (store.kind.byteWidth * 8 - index * 32))).toNat
+  }
+
+private def applyX87Eflags (initial value mask : Word) : Word :=
+  (initial &&& ~~~mask) ||| (value &&& mask)
+
+private def x87MetadataProfile : X86CPUProfile -> StageA.X87.MetadataProfile
+  | .i686 => .legacy
+  | .haswell => .exceptionOnly
+
+private def ISAConformanceInput.runX87 (input : ISAConformanceInput)
+    (decoded : DecodedInstruction) : ISAConformanceRunResult :=
+  match instructionX87Command decoded.instruction with
+  | none => .unsupported "x87" "decoded x87 command has no concrete semantics"
+  | some command =>
+    let machine := input.machineState
+    let address := instructionX87Address decoded.instruction |>.map fun value =>
+      (value.expression initialSymbolic.registers).eval machine
+    let operandBytes := command.expectedOperandBytes.getD 0
+    let operandBits := address.map (fun value => machine.readX87Word value operandBytes)
+      |>.getD (BitVec.ofNat 80 0)
+    let stepInput : StageA.X87.StepInput := {
+      operandBits
+      operandBytes
+      opcode := BitVec.ofNat 11 (x87Opcode input.bytes)
+      instructionPointer := BitVec.ofNat 32 (input.imageBase + input.pc)
+      codeSelector := BitVec.ofNat 16 0
+      dataPointer := address.getD (BitVec.ofNat 32 0)
+      dataSelector := BitVec.ofNat 16 0
+    }
+    match StageA.X87.executeConcrete command command.expectedWaitMode
+        input.x87PhysicalState.core stepInput.operand with
+    | none => .unsupported "x87" "concrete x87 executor rejected the command state"
+    | some coreResponse =>
+      let metadataProfile := x87MetadataProfile input.cpuProfile
+      let incurredUnmaskedException :=
+        !input.x87PhysicalState.pendingException &&
+          coreResponse.nextState.pendingException
+      let response := coreResponse.toResponseFor input.x87PhysicalState command stepInput
+        metadataProfile
+      let definedness := command.observableDefinedness metadataProfile
+        incurredUnmaskedException response.nextState
+      match response.fault with
+      | some .floatingPoint => .modeledFault .x87FloatingPoint
+      | none =>
+        let memory := match response.store, address with
+          | some store, some address => writeStoreBytes machine.memory address store
+          | _, _ => machine.memory
+        let writes := match response.store, address with
+          | some store, some address => x87Writes address store
+          | _, _ => []
+        let registers := match response.register with
+          | some { target := .ax, value } =>
+              machine.registers.set .eax
+                ((machine.registers.eax &&& BitVec.ofNat 32 0xffff0000) |||
+                  (value &&& BitVec.ofNat 32 0xffff))
+          | none => machine.registers
+        .observed {
+          registers := {
+            eax := registers.eax.toNat
+            ebx := registers.ebx.toNat
+            ecx := registers.ecx.toNat
+            edx := registers.edx.toNat
+            esi := registers.esi.toNat
+            edi := registers.edi.toNat
+            ebp := registers.ebp.toNat
+            esp := registers.esp.toNat
+          }
+          eflags := (applyX87Eflags machine.eflags response.eflagsValue
+            response.eflagsWriteMask).toNat
+          fsBase := input.fsBase
+          x87Stack := x87LogicalStack response.nextState
+          x87Control := response.nextState.control.toNat
+          x87Status := response.nextState.status.toNat
+          x87Tag := x87TagWord response.nextState
+          x87LastOpcode := response.nextState.lastOpcode.toNat
+          x87InstructionPointer := response.nextState.instructionPointer.toNat
+          x87DataPointer := response.nextState.dataPointer.toNat
+          x87DefinedControl := definedness.controlMask.toNat
+          x87DefinedStatus := definedness.statusMask.toNat
+          x87DefinedTag := definedness.tagMask.toNat
+          x87DefinedLastOpcode := definedness.lastOpcodeMask.toNat
+          x87DefinedInstructionPointer := definedness.instructionPointerMask.toNat
+          x87DefinedDataPointer := definedness.dataPointerMask.toNat
+          x87DefinedStack := definedness.slotMasks.toList.map BitVec.toNat
+          memory := input.observeMemory.map fun observed => {
+            address := observed
+            value := (memory (BitVec.ofNat 32 observed)).toNat
+          }
+          writes
+          control := .next (input.pc + decoded.size)
+          fault := .none
+        }
+
 def ISAConformanceInput.run
     (input : ISAConformanceInput) : ISAConformanceRunResult :=
   if !input.checked then
@@ -368,6 +600,7 @@ def ISAConformanceInput.run
   else match decodeInstructionExactForProfile input.cpuProfile input.bytes with
   | none => .unsupported "decode" "decodeInstructionExact rejected the bytes"
   | some decoded =>
+    if decoded.instruction.isX87 then input.runX87 decoded else
     match executeInstruction input.syntheticPE [] input.pc
         input.undefinedStartSlot decoded initialSymbolic with
     | none => .unsupported "execute" "executeInstruction rejected the decoded form"
@@ -408,6 +641,17 @@ def ISAConformanceInput.run
           x87Stack := concrete.x87.stack.map BitVec.toNat
           x87Control := concrete.x87.control.toNat
           x87Status := concrete.x87.status.toNat
+          x87Tag := input.x87Tag
+          x87LastOpcode := input.x87LastOpcode
+          x87InstructionPointer := input.x87InstructionPointer
+          x87DataPointer := input.x87DataPointer
+          x87DefinedControl := 0xffff
+          x87DefinedStatus := 0xffff
+          x87DefinedTag := 0xffff
+          x87DefinedLastOpcode := 0x7ff
+          x87DefinedInstructionPointer := 0xffffffff
+          x87DefinedDataPointer := 0xffffffff
+          x87DefinedStack := List.replicate 8 (2 ^ 80 - 1)
           memory := input.observeMemory.map fun address => {
             address
             value := (concrete.materializedMemory

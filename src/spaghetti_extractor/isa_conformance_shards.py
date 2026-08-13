@@ -68,20 +68,32 @@ def partition_isa_conformance_corpus(
 def lean_semantic_forms_payload(
     corpus: ISAConformanceCorpus,
     semantic_forms_by_id: Mapping[str, str],
+    *,
+    x87_definedness_by_id: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Bind one Lean classifier result to every exact corpus case."""
+    """Bind Lean-owned form and definedness facts to every corpus case."""
 
     case_ids = [case.id for case in corpus.cases]
     if set(semantic_forms_by_id) != set(case_ids):
         raise ISAConformanceError(
             "Lean semantic forms must bind every corpus case exactly once"
         )
+    definedness = {} if x87_definedness_by_id is None else x87_definedness_by_id
+    if not set(definedness).issubset(set(case_ids)):
+        raise ISAConformanceError(
+            "Lean x87 definedness names a case outside the exact corpus"
+        )
     rows = []
     for case_id in case_ids:
         semantic_form = semantic_forms_by_id[case_id]
         if not isinstance(semantic_form, str) or not semantic_form:
             raise ISAConformanceError("Lean semantic form must be nonempty")
-        rows.append({"case_id": case_id, "semantic_form": semantic_form})
+        row = {
+            "case_id": case_id,
+            "semantic_form": semantic_form,
+            "x87_defined_outputs": definedness.get(case_id),
+        }
+        rows.append(row)
     return {
         "format": LEAN_SEMANTIC_FORMS_FORMAT,
         "corpus_id": corpus.id,
@@ -98,7 +110,7 @@ def lean_semantic_forms_payload(
 def _parse_lean_semantic_forms(
     corpus: ISAConformanceCorpus,
     value: Mapping[str, Any],
-) -> dict[str, str]:
+) -> tuple[dict[str, str], dict[str, Mapping[str, Any]]]:
     if set(value) != {
         "format",
         "corpus_id",
@@ -124,10 +136,13 @@ def _parse_lean_semantic_forms(
     if not isinstance(raw_rows, list):
         raise ISAConformanceError("Lean semantic-form cases must be a list")
     result: dict[str, str] = {}
+    definedness: dict[str, Mapping[str, Any]] = {}
     for row in raw_rows:
-        if not isinstance(row, Mapping) or set(row) != {
-            "case_id",
-            "semantic_form",
+        if not isinstance(row, Mapping) or frozenset(row) not in {
+            frozenset({"case_id", "semantic_form"}),
+            frozenset(
+                {"case_id", "semantic_form", "x87_defined_outputs"}
+            ),
         }:
             raise ISAConformanceError("Lean semantic-form row is malformed")
         case_id = row.get("case_id")
@@ -140,11 +155,18 @@ def _parse_lean_semantic_forms(
         ):
             raise ISAConformanceError("Lean semantic-form row is ambiguous")
         result[case_id] = semantic_form
+        x87_defined = row.get("x87_defined_outputs")
+        if x87_defined is not None:
+            if not isinstance(x87_defined, Mapping):
+                raise ISAConformanceError(
+                    "Lean x87 definedness must be an object or null"
+                )
+            definedness[case_id] = x87_defined
     if set(result) != {case.id for case in corpus.cases}:
         raise ISAConformanceError(
             "Lean semantic forms do not cover the exact shard corpus"
         )
-    return result
+    return result, definedness
 
 
 def merge_isa_conformance_shards(
@@ -218,14 +240,22 @@ def merge_lean_semantic_form_shards(
     if len(shard_corpora) != len(shard_payloads) or not shard_corpora:
         raise ISAConformanceError("Lean semantic-form shards must correspond")
     merged: dict[str, str] = {}
+    merged_definedness: dict[str, Mapping[str, Any]] = {}
     for shard, payload in zip(shard_corpora, shard_payloads, strict=True):
-        for case_id, semantic_form in _parse_lean_semantic_forms(
-            shard, payload
-        ).items():
+        shard_forms, shard_definedness = _parse_lean_semantic_forms(shard, payload)
+        for case_id, semantic_form in shard_forms.items():
             if case_id in merged:
                 raise ISAConformanceError("Lean semantic-form shards overlap")
             merged[case_id] = semantic_form
-    return lean_semantic_forms_payload(corpus, merged)
+        for case_id, evidence in shard_definedness.items():
+            if case_id in merged_definedness:
+                raise ISAConformanceError("Lean x87-definedness shards overlap")
+            merged_definedness[case_id] = evidence
+    return lean_semantic_forms_payload(
+        corpus,
+        merged,
+        x87_definedness_by_id=merged_definedness,
+    )
 
 
 __all__ = [

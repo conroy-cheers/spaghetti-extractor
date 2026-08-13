@@ -127,7 +127,7 @@ let
       ${python} - \
         ${lib.escapeShellArg original} \
         ${lib.escapeShellArg machineIr} \
-        ${lib.escapeShellArg effectiveCatalogLock} \
+        ${if effectiveCatalogLock == null then "-" else lib.escapeShellArg effectiveCatalogLock} \
         ${if reviewInput == null then "-" else lib.escapeShellArg reviewInput} \
         "$out/match-evidence.json" <<'PY'
       import pathlib
@@ -138,7 +138,9 @@ let
       propose_library_match_evidence(
           original=pathlib.Path(original),
           machine_ir=pathlib.Path(machine_ir),
-          catalog_lock=pathlib.Path(catalog_lock),
+          catalog_lock=(
+              None if catalog_lock == "-" else pathlib.Path(catalog_lock)
+          ),
           review=None if review == "-" else pathlib.Path(review),
           out=pathlib.Path(output),
       )

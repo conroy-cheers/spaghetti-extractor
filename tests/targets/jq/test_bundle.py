@@ -40,11 +40,8 @@ class JqBundleTests(unittest.TestCase):
             "jq-final-authority-v3 = jqTarget.analysisV3.finalAuthority;",
             flake,
         )
-        self.assertIn("test-target-jq = jqTargetGate;", flake)
-        self.assertIn(
-            "final-authority-v3\"; path = jqTarget.analysisV3.finalAuthority;",
-            flake,
-        )
+        self.assertIn("test-target-jq = targetSuites.jq.aggregate;", flake)
+        self.assertIn("jq-final-authority-v3-gate =", flake)
 
 if __name__ == "__main__":
     unittest.main()

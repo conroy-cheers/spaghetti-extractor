@@ -332,15 +332,25 @@ class ISARequirementInventory:
         if not isinstance(forms, list) or not isinstance(occurrences, list) or not isinstance(gaps, list):
             raise StageAInputError("ISA requirements forms, occurrences, and gaps must be lists")
         form_ids = [row.get("id") for row in forms if isinstance(row, Mapping)]
-        if len(form_ids) != len(forms) or form_ids != sorted(set(form_ids)):
+        if len(form_ids) != len(forms) or any(
+            not isinstance(value, str) for value in form_ids
+        ):
+            raise StageAInputError("ISA requirement form IDs must be unique and ordered")
+        typed_form_ids = [str(value) for value in form_ids]
+        if typed_form_ids != sorted(set(typed_form_ids)):
             raise StageAInputError("ISA requirement form IDs must be unique and ordered")
         occurrence_ids = [
             row.get("id") for row in occurrences if isinstance(row, Mapping)
         ]
-        if len(occurrence_ids) != len(occurrences) or occurrence_ids != sorted(set(occurrence_ids)):
+        if len(occurrence_ids) != len(occurrences) or any(
+            not isinstance(value, str) for value in occurrence_ids
+        ):
+            raise StageAInputError("ISA requirement occurrence IDs must be unique and ordered")
+        typed_occurrence_ids = [str(value) for value in occurrence_ids]
+        if typed_occurrence_ids != sorted(set(typed_occurrence_ids)):
             raise StageAInputError("ISA requirement occurrence IDs must be unique and ordered")
         if any(
-            row.get("form_id") not in set(form_ids)
+            row.get("form_id") not in set(typed_form_ids)
             or row.get("node_id") not in canonical_set
             for row in occurrences
             if isinstance(row, Mapping)
@@ -764,16 +774,19 @@ def _parse_lean_partial_form_rows(
             raise StageAInputError(f"Lean ISA form row {index} is malformed")
         row_side = row.get("side")
         node_id = row.get("node_id")
-        identity = (str(row_side), node_id)
         if (
             row_side != side
             or isinstance(node_id, bool)
             or not isinstance(node_id, int)
             or not 0 <= node_id < region_count
-            or identity in seen
         ):
             raise StageAInputError(
                 f"Lean ISA form row {index} has an invalid identity"
+            )
+        identity = (str(row_side), node_id)
+        if identity in seen:
+            raise StageAInputError(
+                f"Lean ISA form row {index} has a duplicate identity"
             )
         seen.add(identity)
         if "decode_error" not in row:
@@ -909,6 +922,13 @@ def extract_lean_instruction_forms_side(
                 _LEAN_SOURCE_ROOT / f"{module}.lean",
                 stage_a / f"{module}.lean",
             )
+        kernel_cache = os.environ.get("SPAGHETTI_LEAN_KERNEL_CACHE")
+        if kernel_cache:
+            cache_stage_a = Path(kernel_cache) / "StageA"
+            for module in ISA_KERNEL_MODULES:
+                cached = cache_stage_a / f"{module}.olean"
+                if cached.is_file():
+                    shutil.copyfile(cached, stage_a / cached.name)
         parsed_binary = _parse_stage_a_pe(binary)
         region_bytes = bytearray()
         for index, region in enumerate(regions):

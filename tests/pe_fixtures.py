@@ -100,6 +100,59 @@ def pe32_import_image(
     return headers + code.ljust(text_raw_size, b"\0") + bytes(idata)
 
 
+def pe32_image_with_pointer_slot(
+    code: bytes,
+    *,
+    target_rva: int,
+    slot_rva: int = 0x2040,
+    writable: bool = False,
+) -> bytes:
+    """Build a two-section PE with one initialized absolute code pointer."""
+
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    headers_size = 0x200
+    image_base = 0x400000
+    text_rva = 0x1000
+    data_rva = 0x2000
+    text_raw_size = align(len(code), file_alignment)
+    data_raw_size = 0x200
+    data_offset = slot_rva - data_rva
+    if not 0 <= data_offset <= data_raw_size - 4:
+        raise ValueError("pointer slot must fit in the synthetic data section")
+    data = bytearray(data_raw_size)
+    struct.pack_into("<I", data, data_offset, image_base + target_rva)
+    size_of_image = align(data_rva + data_raw_size, section_alignment)
+
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+    coff = struct.pack("<HHIIIHH", 0x014C, 2, 0, 0, 0, 224, 0x010F)
+    optional_prefix = struct.pack(
+        "<HBB" + "I" * 9 + "H" * 6 + "I" * 4 + "H" * 2 + "I" * 6,
+        0x10B, 0, 0, text_raw_size, data_raw_size, 0, text_rva,
+        text_rva, data_rva, image_base, section_alignment, file_alignment,
+        4, 0, 0, 0, 4, 0, 0, size_of_image, headers_size, 0, 3, 0,
+        0x100000, 0x1000, 0x100000, 0x1000, 0, 16,
+    )
+    optional = optional_prefix + (b"\0" * (16 * 8))
+    text_section = struct.pack(
+        "<8sIIIIIIHHI",
+        b".text\0\0\0", len(code), text_rva, text_raw_size, headers_size,
+        0, 0, 0, 0, 0x60000020,
+    )
+    data_characteristics = 0xC0000040 if writable else 0x40000040
+    data_section = struct.pack(
+        "<8sIIIIIIHHI",
+        b".data\0\0\0", data_raw_size, data_rva, data_raw_size,
+        headers_size + text_raw_size, 0, 0, 0, 0, data_characteristics,
+    )
+    headers = (
+        bytes(dos) + b"PE\0\0" + coff + optional + text_section + data_section
+    ).ljust(headers_size, b"\0")
+    return headers + code.ljust(text_raw_size, b"\0") + bytes(data)
+
+
 def pe32_tls_image(callback_rvas: tuple[int, ...]) -> bytes:
     file_alignment = 0x200
     section_alignment = 0x1000

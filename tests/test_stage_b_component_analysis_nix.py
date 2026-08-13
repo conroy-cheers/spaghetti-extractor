@@ -164,6 +164,36 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("AUTHORITY_PHASE_REGISTRY_V3", graph_module)
         self.assertNotIn("staticHybridAuthorityV2", graph)
 
+    def test_authority_graph_plumbing_uses_narrow_python_closures(self) -> None:
+        graph = (ROOT / "nix" / "authority-graph-v3.nix").read_text(
+            encoding="utf-8"
+        )
+        gate = (
+            ROOT / "nix" / "analysis-v3-final-authority-gate.nix"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "artifactSetPythonSource = import ./python-module-closure.nix",
+            graph,
+        )
+        self.assertIn(
+            'modules = [ "spaghetti_extractor.artifact_set_v3" ];', graph
+        )
+        self.assertIn(
+            "planningPythonSource = import ./python-module-closure.nix", graph
+        )
+        self.assertIn(
+            'modules = [ "spaghetti_extractor.analysis_v3.planning" ];',
+            graph,
+        )
+        self.assertIn("pythonSource = artifactSetPythonSource;", graph)
+        self.assertIn("pythonSource = planningPythonSource;", graph)
+        self.assertIn("pythonClosure = import ./python-module-closure.nix", gate)
+        self.assertIn(
+            'modules = [ "spaghetti_extractor.analysis_v3.final_authority" ];',
+            gate,
+        )
+
     def test_late_authority_families_have_independent_phase_boundaries(self) -> None:
         registry = (
             ROOT / "src" / "spaghetti_extractor" / "analysis_v3" / "registry.py"
@@ -361,10 +391,14 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         start = module.index("fallbackCoverageReceipt =")
         end = module.index("candidateAuthorityReport =", start)
         phase = module[start:end]
+        receipt = (
+            ROOT / "nix" / "stage-b-fallback-coverage-receipt.nix"
+        ).read_text(encoding="utf-8")
 
-        self.assertIn("stage-b-fallback-coverage-receipt-v3", phase)
-        self.assertIn("structural_units_require_lowering", phase)
-        self.assertIn("rooted_containment_authority", phase)
+        self.assertIn("stage-b-fallback-coverage-receipt.nix", phase)
+        self.assertIn("stage-b-fallback-coverage-receipt-v3", receipt)
+        self.assertIn("structural_units_require_lowering", receipt)
+        self.assertIn("rooted_containment_authority", receipt)
         self.assertNotIn("static_completeness_report", phase)
         self.assertNotIn("staticCompletenessReport", phase)
 

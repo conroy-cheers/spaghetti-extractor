@@ -10,6 +10,7 @@
   timeoutSeconds ? 30,
   stripStderrLineRegexes ? [ ],
   nativeBuildInputs ? [ ],
+  authorityGate ? null,
 }:
 
 let
@@ -43,6 +44,9 @@ let
         export LC_ALL=C.UTF-8
         export SOURCE_DATE_EPOCH=1
         export PYTHONPATH=${phasePythonSource}/src
+        ${lib.optionalString (authorityGate != null) ''
+          test -f ${authorityGate}/authority-gate.json
+        ''}
         mkdir -p "$out"
         ${pythonEnv}/bin/python3 - \
           ${suite} \
@@ -119,6 +123,7 @@ assert builtins.isString namePrefix && namePrefix != "";
 assert builtins.isList caseIds && builtins.length caseIds > 0;
 assert builtins.all (id: builtins.isString id && id != "") caseIds;
 assert builtins.isList candidateCommand && builtins.length candidateCommand > 0;
+assert authorityGate == null || lib.isDerivation authorityGate;
 assert builtins.all
   (case: builtins.isAttrs case && case ? id && builtins.isString case.id && case.id != "")
   cases;

@@ -64,6 +64,33 @@ def _rows() -> dict[tuple[str, int], tuple[dict[str, Any], ...]]:
 
 
 class MachineIRISARequirementsV2Tests(unittest.TestCase):
+    def test_structural_inventory_mode_includes_unreachable_units(self) -> None:
+        unreachable = _unit(reachable=False, identity="unit-2000")
+        unreachable["source"]["original"] = {
+            "rva_start": 0x2000,
+            "rva_end": 0x2003,
+        }
+        unreachable["instructions"] = [
+            {"rva_start": 0x2000, "rva_end": 0x2001},
+            {"rva_start": 0x2001, "rva_end": 0x2003},
+        ]
+
+        rooted = build_machine_ir_isa_extraction_request_v2(
+            units=[_unit(), unreachable], binary_sha256=PE_SHA
+        )
+        structural = build_machine_ir_isa_extraction_request_v2(
+            units=[_unit(), unreachable],
+            binary_sha256=PE_SHA,
+            include_structural_universe=True,
+        )
+
+        self.assertEqual(len(rooted["regions"]), 2)
+        self.assertEqual(len(structural["regions"]), 4)
+        self.assertEqual(
+            {row["unit_id"] for row in structural["regions"]},
+            {"unit-1000", "unit-2000"},
+        )
+
     def test_generated_lean_qualifies_ambiguous_inventory_types(self) -> None:
         source = _lean_side_form_extraction_source(
             "original",

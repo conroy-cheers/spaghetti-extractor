@@ -53,6 +53,7 @@ class AnalysisV3CodecAndRegistryTests(unittest.TestCase):
                 "exceptional-transitions-v3",
                 "fallback-coverage-v3",
                 "final-authority-v3",
+                "indirect-target-certificates-v3",
                 "inductive-authority-v3",
                 "isa-qualification-v3",
                 "launch-root-closure-v3",

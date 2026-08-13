@@ -139,6 +139,7 @@ private def controlJson : ISAConformanceControl -> Json
 private def faultJson : ISAConformanceFault -> Json
   | .none => toJson "none"
   | .divideError => toJson "divide_error"
+  | .x87FloatingPoint => toJson "x87_floating_point"
 
 private def observationJson (observation : ISAConformanceObservation) : Json :=
   Json.mkObj [
@@ -148,6 +149,18 @@ private def observationJson (observation : ISAConformanceObservation) : Json :=
     ("x87_stack", toJson observation.x87Stack),
     ("x87_control", toJson observation.x87Control),
     ("x87_status", toJson observation.x87Status),
+    ("x87_tag", toJson observation.x87Tag),
+    ("x87_last_opcode", toJson observation.x87LastOpcode),
+    ("x87_instruction_pointer", toJson observation.x87InstructionPointer),
+    ("x87_data_pointer", toJson observation.x87DataPointer),
+    ("x87_defined_control", toJson observation.x87DefinedControl),
+    ("x87_defined_status", toJson observation.x87DefinedStatus),
+    ("x87_defined_tag", toJson observation.x87DefinedTag),
+    ("x87_defined_last_opcode", toJson observation.x87DefinedLastOpcode),
+    ("x87_defined_instruction_pointer",
+      toJson observation.x87DefinedInstructionPointer),
+    ("x87_defined_data_pointer", toJson observation.x87DefinedDataPointer),
+    ("x87_defined_stack", toJson observation.x87DefinedStack),
     ("memory", jsonArray (observation.memory.map memoryByteJson)),
     ("writes", jsonArray (observation.writes.map wordWriteJson)),
     ("control", controlJson observation.control),

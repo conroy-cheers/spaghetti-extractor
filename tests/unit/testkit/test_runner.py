@@ -81,6 +81,15 @@ class TestNixFirstRunner(unittest.TestCase):
             self.assertEqual(rendered[1][-1:], ("--no-link",))
             self.assertNotIn("--keep-going", rendered[1])
 
+    def test_public_shard_catalog_includes_target_tier(self) -> None:
+        flake = (Path(__file__).resolve().parents[3] / "flake.nix").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('catalogSuite = mkTestSuite "catalog";', flake)
+        self.assertIn("test-shards = catalogSuite.shards;", flake)
+        self.assertNotIn("test-shards = fullSuite.shards;", flake)
+
     def test_repository_builder_inventory_overrides_unrelated_host_builders(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -159,7 +168,7 @@ class TestNixFirstRunner(unittest.TestCase):
         self.assertEqual(rendered[:3], (
             "nix",
             "build",
-            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv^*",
+            "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv^out",
         ))
         self.assertNotIn("--expr", rendered)
         self.assertNotIn("--impure", rendered)

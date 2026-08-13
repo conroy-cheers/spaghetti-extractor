@@ -30,7 +30,14 @@ from spaghetti_extractor.analysis_v3.external_sites import (
     ExternalSiteEvidenceV3,
     external_site_id_v3,
 )
-from spaghetti_extractor.analysis_v3.semantic_index import SEMANTIC_INDEX_PHASE_V3
+from spaghetti_extractor.analysis_v3.semantic_index import (
+    SEMANTIC_INDEX_CODEC_V3,
+    SEMANTIC_INDEX_PHASE_V3,
+)
+from spaghetti_extractor.analysis_v3.target_certificates import (
+    INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3,
+    IndirectTargetCertificateUnitV3,
+)
 from spaghetti_extractor.analysis_v3.transition_summaries import (
     TRANSITION_SUMMARIES_PHASE_V3,
 )
@@ -125,6 +132,28 @@ def _write(
     return path
 
 
+def _empty_target_certificates(path: Path, semantic: Path) -> Path:
+    records = []
+    for source in ArtifactSetReaderV3(semantic).iter_records():
+        unit = SEMANTIC_INDEX_CODEC_V3.read(source).value
+        checked = IndirectTargetCertificateUnitV3(
+            record_id=unit.record_id,
+            source_unit_id=unit.record_id,
+            unit_sha256=unit.unit_sha256,
+            status="complete",
+            authorizing=True,
+            certificates=(),
+            dependencies=(),
+            primary_blocker=None,
+        )
+        records.append(
+            INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.write(
+                checked.record_id, checked
+            )
+        )
+    return _write(path, "indirect-target-certificates-v3", tuple(records))
+
+
 class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
     def _inputs(self, root: Path, *, evidence_unit_sha256: str | None = None):
         callback_unit = _unit("callback:unit", 0x2000)
@@ -177,10 +206,8 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             inputs={"exact_units": exact},
             bindings=(BINDING,),
         ).output_directory
-        structural = _write(
-            root / "structural",
-            "structural-target-proposals-v3",
-            (),
+        target_certificates = _empty_target_certificates(
+            root / "target-certificates", semantic
         )
         identity = {
             "kind": "import",
@@ -204,9 +231,18 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             profile_id="fixture-profile",
             profile_sha256=PROFILE_SHA256,
             argument_words=0,
+            arguments=(),
             memory_effect="none",
             world_effect="registers-callback",
             callback_effect="registers",
+            machine_contract={
+                "abi_template": "pe32-cdecl-v1",
+                "argument_words": 0,
+                "disposition": "returns",
+                "memory_effect": "none",
+                "world_effect": "registers-callback",
+                "callback_effect": "registers",
+            },
             callbacks=(callback,),
         )
         profile = ExternalProfileV3.create(
@@ -219,6 +255,14 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             memory_effect="none",
             world_effect="registers-callback",
             callback_effect="registers",
+            machine_contract={
+                "abi_template": "pe32-cdecl-v1",
+                "argument_words": 0,
+                "disposition": "returns",
+                "memory_effect": "none",
+                "world_effect": "registers-callback",
+                "callback_effect": "registers",
+            },
         )
         profiles = _write(
             root / "external-profiles",
@@ -245,7 +289,7 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
         return (
             semantic,
             transitions,
-            structural,
+            target_certificates,
             profiles,
             source_exact,
             callback_exact,
@@ -259,7 +303,7 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             (
                 semantic,
                 transitions,
-                structural,
+                target_certificates,
                 profiles,
                 _source_exact,
                 callback_exact,
@@ -277,7 +321,7 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
                     "external_profiles": profiles,
                     "external_site_evidence": external_evidence,
                     "semantic_index": semantic,
-                    "structural_targets": structural,
+                    "target_certificates": target_certificates,
                     "transition_summaries": transitions,
                 },
                 bindings=(BINDING,),
@@ -339,7 +383,7 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             (
                 semantic,
                 transitions,
-                structural,
+                target_certificates,
                 profiles,
                 _source_exact,
                 _callback_exact,
@@ -363,7 +407,7 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
                     "external_profiles": incomplete_profiles,
                     "external_site_evidence": external_evidence,
                     "semantic_index": semantic,
-                    "structural_targets": structural,
+                    "target_certificates": target_certificates,
                     "transition_summaries": transitions,
                 },
                 bindings=(BINDING,),
@@ -382,7 +426,7 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
     def test_missing_evidence_is_incomplete_and_binding_contradiction_is_violated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            semantic, transitions, structural, profiles, *_rest = self._inputs(root)
+            semantic, transitions, target_certificates, profiles, *_rest = self._inputs(root)
             missing = _write(
                 root / "missing-evidence",
                 EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3,
@@ -394,7 +438,7 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
                     "external_profiles": profiles,
                     "external_site_evidence": missing,
                     "semantic_index": semantic,
-                    "structural_targets": structural,
+                    "target_certificates": target_certificates,
                     "transition_summaries": transitions,
                 },
                 bindings=(BINDING,),
@@ -415,7 +459,7 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             (
                 semantic,
                 transitions,
-                structural,
+                target_certificates,
                 profiles,
                 _source_exact,
                 _callback_exact,
@@ -433,7 +477,7 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
                     "external_profiles": profiles,
                     "external_site_evidence": evidence_artifact,
                     "semantic_index": semantic,
-                    "structural_targets": structural,
+                    "target_certificates": target_certificates,
                     "transition_summaries": transitions,
                 },
                 bindings=(BINDING,),

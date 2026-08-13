@@ -2,6 +2,11 @@
   pkgs,
   pythonEnv,
   pythonSource,
+  isaPythonSource ? null,
+  spaghettiExtractor ? null,
+  isaKernelCache ? null,
+  isaSemanticKernel ? null,
+  bochsRunner ? null,
   componentProposals ? null,
 }:
 
@@ -67,7 +72,16 @@ let
     namePrefix = "spaghetti-extractor-jq-1.8.1";
   };
   analysisV3 = import ../../nix/analysis-v3-authority.nix {
-    inherit pkgs pythonEnv pythonSource;
+    inherit
+      pkgs
+      pythonEnv
+      pythonSource
+      isaPythonSource
+      spaghettiExtractor
+      isaKernelCache
+      isaSemanticKernel
+      bochsRunner
+      ;
     name = "spaghetti-extractor-jq-1.8.1-authority-v3";
     machineIr = "${analysis.machineIr}/machine-ir.jsonl";
     binary = originalPe;

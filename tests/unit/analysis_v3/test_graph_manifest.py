@@ -25,6 +25,7 @@ class AuthorityGraphManifestV3Tests(unittest.TestCase):
                 "isa_evidence": "isa-qualification-evidence-v3",
                 "launch_roots": "launch-root-evidence-v3",
                 "machine_ir": "machine-ir-v3-input",
+                "target_evidence": "indirect-target-evaluation-evidence-v3",
                 "target_hints": "target-hints-v3",
             },
         )

@@ -50,6 +50,13 @@ they are not the expected mechanism for discovering omitted original regions.
   does not silently generalize them.
 - Source rendering and library substitutions require exact catalog/profile
   bindings and never qualify a candidate on their own.
+- Portable implementation ownership has three explicit assurance classes.
+  `checked_semantic_refinement` is the only class that proves replacement
+  semantics. `validation_backed_reconstruction` records exact source,
+  interface, dependency, assumption, and candidate-behavior evidence without
+  claiming a proof. `pinned_runtime_substitution` records the corresponding
+  evidence for the exact non-application unit universe and runtime lock; it is
+  likewise validation-backed rather than a semantic proof.
 - Operator-reviewed internal-function contracts may supply call-frame and value
   provenance for opaque linked runtimes. They must bind the exact PE, entry,
   and complete normal-control unit closure. They guide static analysis only:
@@ -215,6 +222,25 @@ facts while retaining fail-closed rooted reachability.
 
 ## Completion Criteria
 
+Completion profiles are intentionally distinct:
+
+- `static-baseline-v1` owns every structural unit with checked machine-IR
+  fallback and makes no portable-source claim.
+- `portable-application-v1` accepts portable source or library ownership only
+  with checked semantic-refinement qualifications.
+- `validation-qualified-v1` additionally permits validation-backed source and
+  pinned-runtime qualifications. It still requires final static authority,
+  complete ownership, exact dependency and candidate identities, explicit
+  assumptions, and matching candidate-only behavior on PE32 and another
+  architecture. Its completion receipt explicitly does not claim semantic
+  equivalence.
+
+A source-project binding, source-call report, linked-library classification,
+or behavior report cannot authorize ownership by itself. The ownership ledger
+consumes a qualification with the assurance class permitted by the selected
+profile, and the completion receipt independently rechecks the candidate,
+runtime-lock, qualification, validation, authority, and fallback bindings.
+
 A target is ready for release qualification when:
 
 1. Every executable byte has a static classification.
@@ -230,7 +256,11 @@ A target is ready for release qualification when:
    selected interpreter lowering.
 6. The v3 final authority is authorizing, the fallback receipt is complete,
    and their exact machine-IR and manifest bindings agree.
-7. Curated and upstream candidate-only suites pass under headless Wine.
+7. The candidate-only suites required by the selected profile pass. PE32 Wine
+   execution is headless and authority-gated. The validation-qualified profile
+   additionally requires the same curated case inventory and expected outputs
+   on a non-x86 build; a full upstream suite may strengthen this evidence but
+   is not silently inferred when absent.
 8. Generated artifacts are reproducible through the pinned Nix graph.
 
 This is an assurance claim, not a universal theorem over all executions. The
