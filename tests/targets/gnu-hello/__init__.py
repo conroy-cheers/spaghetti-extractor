@@ -1,0 +1,1 @@
+"""GNU Hello target qualification."""

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 from collections import deque
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from hashlib import sha256
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 
 FINITE_U32_DOMAIN_FORMAT = "stage-a-finite-u32-expression-domain-v1"
@@ -26,8 +28,36 @@ class _Edge:
     guard: Mapping[str, Any]
 
 
+def _recovered_edge_inventory(
+    recoveries: Sequence[Mapping[str, Any]],
+    units: Mapping[str, Mapping[str, Any]],
+) -> set[tuple[str, str]]:
+    result: set[tuple[str, str]] = set()
+    for recovery in recoveries:
+        if (
+            not isinstance(recovery, Mapping)
+            or recovery.get("status") != "recovered"
+        ):
+            continue
+        source_id = recovery.get("source_unit_id")
+        raw_targets = recovery.get("target_unit_ids")
+        if (
+            not isinstance(source_id, str)
+            or source_id not in units
+            or not isinstance(raw_targets, Sequence)
+            or isinstance(raw_targets, (str, bytes))
+        ):
+            continue
+        result.update(
+            (source_id, target_id)
+            for raw_target in raw_targets
+            if (target_id := str(raw_target)) in units
+        )
+    return result
+
+
 class FiniteU32Dataflow:
-    """One bounded abstract interpretation over a fixed machine-IR graph."""
+    """One bounded, monotonically extensible machine-IR interpretation."""
 
     def __init__(
         self,
@@ -41,6 +71,11 @@ class FiniteU32Dataflow:
         if max_values <= 0:
             raise ValueError("max_values must be positive")
         self.max_values = max_values
+        self._guard_constraints: dict[
+            int,
+            tuple[tuple[Mapping[str, Any], int, frozenset[int]], ...],
+        ] = {}
+        self._guard_domains: dict[tuple[int, int], _Domain] = {}
         self._units = {
             str(unit["id"]): unit
             for unit in units
@@ -64,27 +99,8 @@ class FiniteU32Dataflow:
                     self._outgoing[source_id].append(
                         _Edge(target_id, {"op": "true"})
                     )
-        for recovery in recovered_indirect_targets:
-            if (
-                not isinstance(recovery, Mapping)
-                or recovery.get("status") != "recovered"
-            ):
-                continue
-            source_id = recovery.get("source_unit_id")
-            raw_targets = recovery.get("target_unit_ids")
-            if (
-                not isinstance(source_id, str)
-                or source_id not in self._units
-                or not isinstance(raw_targets, Sequence)
-                or isinstance(raw_targets, (str, bytes))
-            ):
-                continue
-            for raw_target in raw_targets:
-                target_id = str(raw_target)
-                if target_id in self._units:
-                    self._outgoing[source_id].append(
-                        _Edge(target_id, {"op": "true"})
-                    )
+        self._recovered_edges: set[tuple[str, str]] = set()
+        self._add_recovered_edges(recovered_indirect_targets)
         for source_id, edges in self._outgoing.items():
             unique = {
                 (edge.target_id, _canonical_json(edge.guard)): edge for edge in edges
@@ -97,14 +113,81 @@ class FiniteU32Dataflow:
         for root in sorted(set(roots) & set(self._units)):
             self._states[root] = top
             work.append(root)
-        budget = step_budget or max(1024, len(self._units) * 64)
+        self._step_budget = step_budget or max(1024, len(self._units) * 64)
+        converged, steps = self._propagate(work)
+        self.converged = converged
+        self.steps = steps
+        self.reached_units = len(self._states)
+
+    def extend_recovered_indirect_targets(
+        self,
+        recoveries: Sequence[Mapping[str, Any]],
+    ) -> bool:
+        """Incrementally add a monotone checked finite-target inventory.
+
+        Returning ``False`` asks the caller to reconstruct from a cold graph;
+        no state is reused when a target disappears or a prior run exhausted
+        its budget.
+        """
+
+        desired = _recovered_edge_inventory(recoveries, self._units)
+        if not self.converged or not self._recovered_edges <= desired:
+            return False
+        additions = desired - self._recovered_edges
+        if not additions:
+            return True
+        affected: set[str] = set()
+        for source_id, target_id in sorted(additions):
+            edge = _Edge(target_id, {"op": "true"})
+            existing = {
+                (item.target_id, _canonical_json(item.guard))
+                for item in self._outgoing[source_id]
+            }
+            identity = (edge.target_id, _canonical_json(edge.guard))
+            if identity not in existing:
+                self._outgoing[source_id].append(edge)
+                self._outgoing[source_id].sort(
+                    key=lambda item: (
+                        item.target_id,
+                        _canonical_json(item.guard),
+                    )
+                )
+                affected.add(source_id)
+        self._recovered_edges = desired
+        work = deque(
+            source_id
+            for source_id in sorted(affected)
+            if source_id in self._states
+        )
+        converged, steps = self._propagate(work)
+        self.converged = converged
+        self.steps += steps
+        self.reached_units = len(self._states)
+        return converged
+
+    def _add_recovered_edges(
+        self,
+        recoveries: Sequence[Mapping[str, Any]],
+    ) -> None:
+        self._recovered_edges = _recovered_edge_inventory(
+            recoveries,
+            self._units,
+        )
+        for source_id, target_id in sorted(self._recovered_edges):
+            self._outgoing[source_id].append(
+                _Edge(target_id, {"op": "true"})
+            )
+
+    def _propagate(self, work: deque[str]) -> tuple[bool, int]:
+        queued = set(work)
         steps = 0
         converged = True
         while work:
-            if steps >= budget:
+            if steps >= self._step_budget:
                 converged = False
                 break
             source_id = work.popleft()
+            queued.remove(source_id)
             source_state = self._states[source_id]
             source_unit = self._units[source_id]
             for edge in self._outgoing[source_id]:
@@ -122,11 +205,11 @@ class FiniteU32Dataflow:
                 )
                 if joined != self._states.get(edge.target_id):
                     self._states[edge.target_id] = joined
-                    work.append(edge.target_id)
+                    if edge.target_id not in queued:
+                        work.append(edge.target_id)
+                        queued.add(edge.target_id)
             steps += 1
-        self.converged = converged
-        self.steps = steps
-        self.reached_units = len(self._states)
+        return converged, steps
 
     def expression_domain(
         self, unit_id: str, expression: Mapping[str, Any]
@@ -193,7 +276,18 @@ class FiniteU32Dataflow:
             )
         ):
             return tuple(_TOP_VALUE for _register in _REGISTERS)
-        refined_state = _refine_state_with_guard(state, guard, self.max_values)
+        guard_id = id(guard)
+        constraints = self._guard_constraints.get(guard_id)
+        if constraints is None:
+            constraints = tuple(
+                _masked_expression_constraints(guard, self.max_values)
+            )
+            self._guard_constraints[guard_id] = constraints
+        refined_state = _refine_state_with_constraints(
+            state,
+            constraints,
+            self.max_values,
+        )
         if refined_state is None:
             return None
         writes = {
@@ -220,7 +314,12 @@ class FiniteU32Dataflow:
                 inherited_residues,
             )
             result.append(
-                _refine_value_with_guard(expression, value, guard, self.max_values)
+                _refine_value_with_constraints(
+                    expression,
+                    value,
+                    constraints,
+                    self.max_values,
+                )
             )
         return tuple(result)
 
@@ -232,7 +331,12 @@ class FiniteU32Dataflow:
     ) -> _Domain:
         if not isinstance(expression, Mapping):
             return None
-        bounded = _guard_domain(expression, guard, self.max_values)
+        cache_key = (id(expression), id(guard))
+        if cache_key in self._guard_domains:
+            bounded = self._guard_domains[cache_key]
+        else:
+            bounded = _guard_domain(expression, guard, self.max_values)
+            self._guard_domains[cache_key] = bounded
         if bounded is not None:
             return bounded
         op = str(expression.get("op", "")).lower()
@@ -393,13 +497,16 @@ def _join_domains(first: _Domain, second: _Domain, limit: int) -> _Domain:
     return values if len(values) <= limit else None
 
 
-def _refine_state_with_guard(
+def _refine_state_with_constraints(
     state: _State,
-    guard: Mapping[str, Any],
+    constraints: Sequence[tuple[Mapping[str, Any], int, frozenset[int]]],
     limit: int,
 ) -> _State | None:
     result = list(state)
-    for register, mask, allowed in _masked_guard_constraints(guard, limit):
+    for expression, mask, allowed in constraints:
+        register = _register_name(expression)
+        if register is None:
+            continue
         index = _REGISTER_INDEX[register]
         domain, raw_residues = result[index]
         current = _value_mask_domain(result[index], mask)
@@ -420,17 +527,15 @@ def _refine_state_with_guard(
     return tuple(result)
 
 
-def _refine_value_with_guard(
+def _refine_value_with_constraints(
     expression: Mapping[str, Any],
     value: _Value,
-    guard: Mapping[str, Any],
+    constraints: Sequence[tuple[Mapping[str, Any], int, frozenset[int]]],
     limit: int,
 ) -> _Value:
     domain, raw_residues = value
     residues = dict(raw_residues)
-    for guarded_expression, mask, allowed in _masked_expression_constraints(
-        guard, limit
-    ):
+    for guarded_expression, mask, allowed in constraints:
         if not _same_expression(expression, guarded_expression):
             continue
         current = _value_mask_domain((domain, tuple(residues.items())), mask)
@@ -443,18 +548,6 @@ def _refine_value_with_guard(
             domain = frozenset(item for item in domain if item & mask in narrowed)
         residues[mask] = narrowed
     return domain, tuple(sorted(residues.items()))
-
-
-def _masked_guard_constraints(
-    guard: Mapping[str, Any],
-    limit: int,
-) -> list[tuple[str, int, frozenset[int]]]:
-    result = []
-    for expression, mask, allowed in _masked_expression_constraints(guard, limit):
-        register = _register_name(expression)
-        if register is not None:
-            result.append((register, mask, allowed))
-    return result
 
 
 def _masked_expression_constraints(
@@ -593,6 +686,7 @@ def _guard_domain(
     return None
 
 
+@lru_cache(maxsize=4096)
 def _submask_domain(mask: int, limit: int) -> _Domain:
     mask &= 0xFFFFFFFF
     bits = [index for index in range(32) if mask & (1 << index)]

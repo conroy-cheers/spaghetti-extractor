@@ -12,5 +12,8 @@
   generated PE regressions and localized negative cases.
 - [Target bundles](target-bundles.md): strict separation between reusable
   tooling, authored target intent, generated output, and private inputs.
+- [Performance and invalidation](performance-and-invalidation.md): Nix-first
+  workflow, v3 artifact DAG, cache boundaries, resource limits, and measured
+  acceptance gates.
 
 [REPOSITORY_MAP.md](../REPOSITORY_MAP.md) is the canonical file-by-file map.

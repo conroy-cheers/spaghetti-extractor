@@ -1,9 +1,10 @@
-"""Render convention-correct scaffolding without hidden repository mutation."""
+"""Plan and apply convention-correct developer scaffolds."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from pathlib import Path
 import re
 
 from .diagnostics import Diagnostic, TestkitError
@@ -50,6 +51,54 @@ class ScaffoldPlan:
         lines.append("")
         lines.extend(f"then: {command}" for command in self.next_commands)
         return "\n".join(lines) + "\n"
+
+
+def apply_scaffold_plan(repository: Path, plan: ScaffoldPlan) -> tuple[Path, ...]:
+    """Create every planned file atomically with fail-closed path checks."""
+
+    root = repository.resolve()
+    destinations: list[Path] = []
+    for row in plan.files:
+        destination = (root / row.path).resolve()
+        if destination == root or root not in destination.parents:
+            raise TestkitError(
+                Diagnostic(
+                    "error",
+                    "scaffold_path_escape",
+                    f"scaffold destination escapes the repository: {row.path!r}",
+                    remediation="Use a convention-derived relative destination inside the repository.",
+                )
+            )
+        if destination.exists():
+            raise TestkitError(
+                Diagnostic(
+                    "error",
+                    "scaffold_destination_exists",
+                    f"refusing to overwrite {row.path}",
+                    location=row.path,
+                    remediation="Choose a new name or edit the existing file explicitly.",
+                )
+            )
+        destinations.append(destination)
+
+    created: list[Path] = []
+    try:
+        for destination, row in zip(destinations, plan.files, strict=True):
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(row.content, encoding="ascii")
+            created.append(destination)
+    except OSError as exc:
+        for destination in reversed(created):
+            destination.unlink(missing_ok=True)
+        raise TestkitError(
+            Diagnostic(
+                "error",
+                "scaffold_write_failed",
+                f"could not create scaffold: {exc}",
+                remediation="Correct repository permissions and rerun the same scaffold command.",
+            )
+        ) from exc
+    return tuple(created)
 
 
 def _name(value: str, *, field: str) -> str:
@@ -106,8 +155,8 @@ def plan_test_scaffold(
         name=name,
         files=(ScaffoldFile(path, content, "convention-classified test module"),),
         next_commands=(
-            f"python -m unittest {path}",
-            "python -m spaghetti_extractor.testkit plan affected --changed " + path,
+            "nix run .#test -- affected --changed " + path,
+            "nix run .#dev -- doctor",
         ),
     )
 
@@ -116,47 +165,81 @@ def plan_phase_scaffold(*, phase_kind: str, name: str) -> ScaffoldPlan:
     if phase_kind not in PHASE_KINDS:
         raise TestkitError(Diagnostic("error", "invalid_phase_kind", f"unsupported phase kind {phase_kind!r}", remediation=f"Choose one of: {', '.join(sorted(PHASE_KINDS))}."))
     name = _name(name, field="phase name")
-    function = f"run_{name}"
+    constructor = phase_kind.replace("-", "_")
+    if phase_kind == "map-units":
+        transform_signature = "def transform(context: PhaseContextV3, source: ArtifactRecordV3) -> ArtifactRecordV3:\n"
+        transform_body = "    return ArtifactRecordV3.create(source.record_id, source.value.to_value())\n"
+        constructor_arguments = (
+            '    source_input="source",\n'
+            '    input_artifact_kinds={"source": "source-v3"},\n'
+            f'    output_artifact_kind={name!r} + "-v3",\n'
+            "    transform=transform,\n"
+        )
+    elif phase_kind == "map-sccs":
+        transform_signature = "def transform(context: PhaseContextV3, work_item: SccWorkItemV3) -> ArtifactRecordV3:\n"
+        transform_body = "    return ArtifactRecordV3.create(work_item.record_id, {\"members\": list(work_item.scc.members)})\n"
+        constructor_arguments = (
+            '    input_artifact_kinds={"source": "source-v3"},\n'
+            f'    output_artifact_kind={name!r} + "-v3",\n'
+            "    transform=transform,\n"
+        )
+    else:
+        transform_signature = "def transform(context: PhaseContextV3) -> ArtifactRecordV3:\n"
+        transform_body = "    return ArtifactRecordV3.create(\"summary\", {\"status\": \"incomplete\"})\n\n\ndef check_complete(output, context: PhaseContextV3) -> None:\n    output.validate_completeness((\"summary\",))\n"
+        constructor_arguments = (
+            '    input_artifact_kinds={"source": "source-v3"},\n'
+            f'    output_artifact_kind={name!r} + "-v3",\n'
+            "    transform=transform,\n"
+            "    completeness=check_complete,\n"
+        )
     source = (
-        f'"""{phase_kind} analysis phase."""\n\n'
+        f'"""{phase_kind} authority phase over typed v3 artifacts."""\n\n'
         "from __future__ import annotations\n\n"
-        "from collections.abc import Iterable\n"
-        "from typing import TypeVar\n\n"
-        "Input = TypeVar(\"Input\")\n"
-        "Output = TypeVar(\"Output\")\n\n"
-        f"PHASE_KIND = {phase_kind!r}\n\n\n"
-        f"def {function}(records: Iterable[Input]) -> tuple[Output, ...]:\n"
-        "    \"\"\"Transform declared inputs; artifact identity and packing are framework-owned.\"\"\"\n"
-        "    raise NotImplementedError\n"
+        "from spaghetti_extractor.artifact_set_v3 import ArtifactRecordV3\n"
+        "from spaghetti_extractor.phase_framework_v3 import (\n"
+        "    PhaseContextV3,\n"
+        "    SccWorkItemV3,\n"
+        f"    {constructor},\n"
+        ")\n\n\n"
+        + transform_signature
+        + transform_body
+        + "\n\nPHASE = "
+        + constructor
+        + "(\n"
+        + f"    name={name!r},\n"
+        + '    version="1",\n'
+        + constructor_arguments
+        + ")\n"
     )
     test = (
         "from __future__ import annotations\n\n"
         "import unittest\n\n"
-        f"from spaghetti_extractor.analysis.{name} import PHASE_KIND\n\n\n"
+        f"from spaghetti_extractor.analysis_v3.{name} import PHASE\n\n\n"
         f"class {''.join(part.title() for part in name.split('_'))}PhaseTests(unittest.TestCase):\n"
         "    def test_declares_expected_phase_kind(self) -> None:\n"
-        f"        self.assertEqual(PHASE_KIND, {phase_kind!r})\n"
+        f"        self.assertEqual(PHASE.form, {constructor!r})\n"
     )
     nix = (
-        "# Register this implementation through the shared phase framework.\n"
-        "{ mkAnalysisPhase }:\n"
-        "mkAnalysisPhase {\n"
-        f"  name = {json.dumps(name)};\n"
-        f"  kind = {json.dumps(phase_kind)};\n"
-        f"  pythonModule = {json.dumps(f'spaghetti_extractor.analysis.{name}')};\n"
+        "# Thin registration: execution, dependency tracking, and CA packing are shared.\n"
+        "{ mkArtifactPhaseV3, inputs, bindings, schedule ? null }:\n"
+        "mkArtifactPhaseV3 {\n"
+        f"  name = {json.dumps('spaghetti-' + name + '-v3')};\n"
+        f"  phaseReference = {json.dumps(f'spaghetti_extractor.analysis_v3.{name}:PHASE')};\n"
+        f"  expectedKind = {json.dumps(name + '-v3')};\n"
+        "  inherit inputs bindings schedule;\n"
         "}\n"
     )
     return ScaffoldPlan(
         kind="phase",
         name=name,
         files=(
-            ScaffoldFile(f"src/spaghetti_extractor/analysis/{name}.py", source, "typed phase implementation"),
-            ScaffoldFile(f"tests/unit/analysis/test_{name}.py", test, "focused phase unit test"),
-            ScaffoldFile(f"nix/phase-{name}.nix", nix, "thin phase registration"),
+            ScaffoldFile(f"src/spaghetti_extractor/analysis_v3/{name}.py", source, "typed v3 phase implementation"),
+            ScaffoldFile(f"tests/unit/analysis_v3/test_{name}.py", test, "focused phase unit test"),
+            ScaffoldFile(f"nix/phase-v3-{name}.nix", nix, "thin v3 phase registration"),
         ),
         next_commands=(
-            f"python -m unittest tests/unit/analysis/test_{name}.py",
-            f"python -m spaghetti_extractor.testkit plan affected --changed src/spaghetti_extractor/analysis/{name}.py",
+            f"nix run .#test -- affected --changed src/spaghetti_extractor/analysis_v3/{name}.py",
+            "nix run .#dev -- doctor",
         ),
     )
 
@@ -197,7 +280,7 @@ def plan_fixture_scaffold(*, fixture_kind: str, name: str) -> ScaffoldPlan:
         ),
         next_commands=(
             f"nix build .#test-fixture-{identifier} --no-link",
-            f"python -m spaghetti_extractor.testkit fixtures {identifier}",
+            f"nix run .#dev -- fixtures {identifier}",
         ),
     )
 
@@ -207,6 +290,7 @@ __all__ = [
     "TEST_TIERS",
     "ScaffoldFile",
     "ScaffoldPlan",
+    "apply_scaffold_plan",
     "plan_fixture_scaffold",
     "plan_phase_scaffold",
     "plan_test_scaffold",

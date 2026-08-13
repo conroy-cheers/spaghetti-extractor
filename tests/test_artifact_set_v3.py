@@ -10,6 +10,7 @@ from unittest import mock
 from spaghetti_extractor.artifact_set_v3 import (
     IDENTITY_BUCKETS,
     ArtifactBindingV3,
+    ArtifactBundleReaderV3,
     ArtifactDependencyV3,
     ArtifactRecordV3,
     ArtifactSetReaderV3,
@@ -23,6 +24,8 @@ from spaghetti_extractor.artifact_set_v3 import (
     StructuralUnitPlanV3,
     canonical_json_bytes_v3,
     identity_bucket_v3,
+    open_artifact_reader_v3,
+    write_artifact_bundle_v3,
 )
 
 
@@ -62,6 +65,56 @@ def _gzip_text(path: Path) -> str:
 
 
 class ArtifactSetV3Tests(unittest.TestCase):
+    def test_bundle_is_a_zero_copy_exact_record_selection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first = root / "first"
+            second = root / "second"
+            ArtifactSetWriterV3(
+                artifact_kind="facts", bindings=(BINDING,), dependencies=(UPSTREAM,)
+            ).write(first, (_record(1), _record(2)))
+            ArtifactSetWriterV3(
+                artifact_kind="facts", bindings=(BINDING,), dependencies=(UPSTREAM,)
+            ).write(second, (_record(3), _record(4)))
+            bundle = root / "bundle"
+            manifest = write_artifact_bundle_v3(
+                bundle,
+                (first, second),
+                ("unit:00002", "unit:00003"),
+                expected_kind="facts",
+            )
+
+            reader = open_artifact_reader_v3(bundle)
+            self.assertIsInstance(reader, ArtifactBundleReaderV3)
+            self.assertEqual(
+                sorted(record.record_id for record in reader.iter_records()),
+                ["unit:00002", "unit:00003"],
+            )
+            self.assertEqual(reader.manifest.artifact_id, manifest.artifact_id)
+            self.assertEqual(
+                reader.dependency_binding("facts").artifact_id,
+                manifest.artifact_id,
+            )
+            self.assertTrue((bundle / "members" / "0000").is_symlink())
+
+    def test_bundle_inventory_corruption_fails_before_records(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            ArtifactSetWriterV3(
+                artifact_kind="facts", bindings=(BINDING,), dependencies=(UPSTREAM,)
+            ).write(source, (_record(1),))
+            bundle = root / "bundle"
+            write_artifact_bundle_v3(
+                bundle, (source,), ("unit:00001",), expected_kind="facts"
+            )
+            inventory = bundle / "record-ids.json.gz"
+            inventory.write_bytes(inventory.read_bytes() + b"corrupt")
+            with self.assertRaisesRegex(
+                ArtifactV3Error, "corrupt_bundle_inventory"
+            ):
+                ArtifactBundleReaderV3(bundle)
+
     def test_round_trip_is_canonical_and_deterministic(self) -> None:
         records = [_record(index) for index in range(180)]
         shuffled = list(records)
@@ -179,6 +232,26 @@ class ArtifactSetV3Tests(unittest.TestCase):
             pack.write_bytes(pack.read_bytes() + b"corrupt")
             with self.assertRaisesRegex(ArtifactV3Error, "corrupt_pack"):
                 list(ArtifactSetReaderV3(output).iter_records())
+
+    def test_cached_pack_rejects_mutation_after_first_checked_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "artifact"
+            manifest = ArtifactSetWriterV3(
+                artifact_kind="facts",
+                bindings=(BINDING,),
+                dependencies=(UPSTREAM,),
+            ).write(output, (_record(1),))
+            reader = ArtifactSetReaderV3(output)
+            self.assertEqual(reader.get_record("unit:00001"), _record(1))
+
+            pack = output / manifest.packs[0].path
+            pack.write_bytes(pack.read_bytes() + b"corrupt")
+            with self.assertRaises(ArtifactV3Error) as raised:
+                reader.get_record("unit:00001")
+            self.assertEqual(
+                raised.exception.code, "artifact_changed_during_read"
+            )
+            self.assertIn("immutable", raised.exception.remediation)
 
     def test_oversized_single_record_has_actionable_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

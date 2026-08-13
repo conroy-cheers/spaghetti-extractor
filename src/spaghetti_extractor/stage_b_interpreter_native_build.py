@@ -39,11 +39,11 @@ from .stage_b_pe_composer import (
     compose_stage_b_pe,
 )
 from .recovered_executable_data import load_recovered_executable_data_contract
-from .stage_b_candidate_authority_v2 import (
-    STAGE_B_CANDIDATE_AUTHORITY_V2_FORMAT,
-    CandidateAuthorityV2Error,
-    CandidateAuthorityV2Receipt,
-    validate_stage_b_candidate_authority_v2,
+from .stage_b_candidate_authority_v3 import (
+    STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT,
+    CandidateAuthorityV3Error,
+    CandidateAuthorityV3Receipt,
+    validate_stage_b_candidate_authority_v3,
 )
 from .stage_b_candidate_modes import (
     STATIC_CLOSED_CANDIDATE_MODE,
@@ -372,8 +372,7 @@ def build_stage_b_interpreter_native_candidate(
     native_engine_package: Path | str,
     native_runtime_package: Path | str,
     candidate_authority: Path | str | None,
-    final_static_hybrid_audit: Path | str | None,
-    authority_bundle: Path | str | None,
+    final_authority: Path | str | None,
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
     fallback_coverage_receipt: Path | str | None,
@@ -411,29 +410,26 @@ def build_stage_b_interpreter_native_candidate(
             "payload entry symbol is not a C identifier"
         )
 
-    receipt: CandidateAuthorityV2Receipt | None = None
+    receipt: CandidateAuthorityV3Receipt | None = None
     if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
         if any(value is None for value in (
             candidate_authority,
-            final_static_hybrid_audit,
-            authority_bundle,
+            final_authority,
             fallback_coverage_receipt,
         )):
             raise StageBInterpreterNativeBuildError(
-                "static-closed candidates require complete v2 authority inputs"
+                "static-closed candidates require complete v3 authority inputs"
             )
-        receipt = _validate_candidate_authority_v2(
+        receipt = _validate_candidate_authority_v3(
             receipt=candidate_authority,
-            final_static_hybrid_audit=final_static_hybrid_audit,
-            authority_bundle=authority_bundle,
+            final_authority=final_authority,
             machine_ir=machine_ir,
             machine_ir_manifest=machine_ir_manifest,
             fallback_coverage_receipt=fallback_coverage_receipt,
         )
     elif any(value is not None for value in (
         candidate_authority,
-        final_static_hybrid_audit,
-        authority_bundle,
+        final_authority,
         fallback_coverage_receipt,
     )):
         raise StageBInterpreterNativeBuildError(
@@ -817,20 +813,18 @@ def build_stage_b_interpreter_native_candidate(
     if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
         assert receipt is not None
         assert candidate_authority is not None
-        assert final_static_hybrid_audit is not None
-        assert authority_bundle is not None
+        assert final_authority is not None
         assert fallback_coverage_receipt is not None
-        repeated_receipt = _validate_candidate_authority_v2(
+        repeated_receipt = _validate_candidate_authority_v3(
             receipt=candidate_authority,
-            final_static_hybrid_audit=final_static_hybrid_audit,
-            authority_bundle=authority_bundle,
+            final_authority=final_authority,
             machine_ir=machine_ir,
             machine_ir_manifest=machine_ir_manifest,
             fallback_coverage_receipt=fallback_coverage_receipt,
         )
         if repeated_receipt != receipt:
             raise StageBInterpreterNativeBuildError(
-                "v2 candidate-authority inputs changed during compilation"
+                "v3 candidate-authority inputs changed during compilation"
             )
     repeated_structural_binding = _validate_candidate_mode_package_bindings(
         candidate_mode=candidate_mode,
@@ -1004,31 +998,29 @@ def build_stage_b_interpreter_native_candidate(
     return manifest
 
 
-def _validate_candidate_authority_v2(
+def _validate_candidate_authority_v3(
     *,
     receipt: Path | str,
-    final_static_hybrid_audit: Path | str,
-    authority_bundle: Path | str,
+    final_authority: Path | str,
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
     fallback_coverage_receipt: Path | str,
-) -> CandidateAuthorityV2Receipt:
+) -> CandidateAuthorityV3Receipt:
     try:
-        return validate_stage_b_candidate_authority_v2(
+        return validate_stage_b_candidate_authority_v3(
             receipt=receipt,
-            final_static_hybrid_audit=final_static_hybrid_audit,
-            authority_bundle=authority_bundle,
+            final_authority=final_authority,
             machine_ir=machine_ir,
             machine_ir_manifest=machine_ir_manifest,
             fallback_coverage_receipt=fallback_coverage_receipt,
             require_authorized=True,
         )
-    except CandidateAuthorityV2Error as exc:
+    except CandidateAuthorityV3Error as exc:
         raise StageBInterpreterNativeBuildError(str(exc)) from exc
 
 
 def _validate_candidate_authority_package_bindings(
-    receipt: CandidateAuthorityV2Receipt,
+    receipt: CandidateAuthorityV3Receipt,
     interpreter: _Package,
     engine: _Package,
 ) -> None:
@@ -1048,7 +1040,7 @@ def _validate_candidate_authority_package_bindings(
         ):
             raise StageBInterpreterNativeBuildError(
                 f"{package.owner} package binds a different machine IR than "
-                "the v2 candidate-authority receipt"
+                "the v3 candidate-authority receipt"
             )
         if package.payload.get("execution_policy") != "complete_transfer_inventory_v1":
             raise StageBInterpreterNativeBuildError(
@@ -1075,7 +1067,7 @@ def _validate_candidate_authority_package_bindings(
     ):
         raise StageBInterpreterNativeBuildError(
             "native_engine package binds a different machine-IR manifest than "
-            "the v2 candidate-authority receipt"
+            "the v3 candidate-authority receipt"
         )
 
 
@@ -1220,13 +1212,17 @@ def _validate_candidate_mode_package_bindings(
 
 
 def _candidate_input_sha256(
-    receipt: CandidateAuthorityV2Receipt, name: str
+    receipt: CandidateAuthorityV3Receipt, name: str
 ) -> str:
     binding = receipt.inputs.get(name)
-    value = binding.get("artifact_sha256") if isinstance(binding, Mapping) else None
+    if name == "fallback_coverage_receipt":
+        field = "artifact_sha256"
+    else:
+        field = "sha256"
+    value = binding.get(field) if isinstance(binding, Mapping) else None
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
         raise StageBInterpreterNativeBuildError(
-            f"v2 candidate-authority receipt has no exact {name} binding"
+            f"v3 candidate-authority receipt has no exact {name} binding"
         )
     return value
 
@@ -1240,17 +1236,17 @@ def _candidate_manifest_pe_sha256(manifest_path: Path | str) -> str:
     value = binary.get("pe_sha256") if isinstance(binary, Mapping) else None
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
         raise StageBInterpreterNativeBuildError(
-            "machine-IR manifest has no exact v2 PE binding"
+            "machine-IR manifest has no exact PE binding"
         )
     return value
 
 
 def _candidate_authority_manifest_binding(
-    receipt_path: Path | str, receipt: CandidateAuthorityV2Receipt
+    receipt_path: Path | str, receipt: CandidateAuthorityV3Receipt
 ) -> dict[str, Any]:
-    path = _file(receipt_path, "v2 candidate-authority receipt")
+    path = _file(receipt_path, "v3 candidate-authority receipt")
     return {
-        "format": STAGE_B_CANDIDATE_AUTHORITY_V2_FORMAT,
+        "format": STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT,
         "artifact_sha256": sha256_file(path),
         "content_id": receipt.content_id,
         "status": receipt.status.value,

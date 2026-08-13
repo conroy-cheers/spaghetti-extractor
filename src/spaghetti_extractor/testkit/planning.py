@@ -12,6 +12,7 @@ from .model import ImpactIndex, PlannedShard, SuitePlan, TestRecord, canonical_s
 
 
 MODES = frozenset({"smoke", "affected", "full", "target", "benchmark"})
+_INTERNAL_MODES = MODES | {"catalog"}
 RESOURCE_CLASS_ORDER = {"small": 0, "medium": 1, "large": 2, "oracle": 3}
 CAPABILITY_RESOURCE_CLASS = {
     "benchmark": "large",
@@ -23,6 +24,26 @@ CAPABILITY_RESOURCE_CLASS = {
     "nix": "medium",
     "wine": "oracle",
 }
+NIX_TEST_CHECKS = {
+    "nix/tests/analysis-v3-machine-ir-input.nix": "analysis-v3-machine-ir-input",
+    "nix/tests/artifact-seed-v3.nix": "artifact-seed-v3",
+    "nix/tests/machine-import-control-profile.nix": "machine-import-control-profile",
+}
+NIX_TEST_DIRECTORY_CHECKS = {
+    "tests/unit/nix_v3/": "authority-graph-v3",
+}
+
+
+def _owned_nix_checks(changed_paths: tuple[str, ...]) -> tuple[str, ...]:
+    checks: set[str] = set()
+    for changed in changed_paths:
+        direct = NIX_TEST_CHECKS.get(changed)
+        if direct is not None:
+            checks.add(direct)
+        for prefix, check in NIX_TEST_DIRECTORY_CHECKS.items():
+            if changed.startswith(prefix):
+                checks.add(check)
+    return tuple(sorted(checks))
 
 
 def _resource_class(tests: Iterable[TestRecord]) -> str:
@@ -68,7 +89,7 @@ def changed_paths_from_git(repository: Path, *, base: str = "HEAD") -> tuple[str
                     "git_diff_failed",
                     completed.stderr.strip() or "git could not determine changed paths",
                     remediation="Pass explicit `--changed` paths or repair the Git worktree.",
-                    example="python -m spaghetti_extractor.testkit plan affected --changed src/spaghetti_extractor/control.py",
+                    example="nix run .#dev -- plan affected --changed src/spaghetti_extractor/control.py",
                 )
             )
         changed.update(line for line in completed.stdout.splitlines() if line)
@@ -90,6 +111,9 @@ def _select_affected(
     broad_change = False
     for changed in changed_paths:
         matched = False
+        owned_nix_checks = _owned_nix_checks((changed,))
+        if owned_nix_checks:
+            matched = True
         if changed.startswith("src/spaghetti_extractor/testkit/") or changed in {
             "nix/test-suite-fixtures.nix",
             "nix/test-suite-plan.nix",
@@ -118,7 +142,7 @@ def _select_affected(
         if changed in {"flake.nix", "flake.lock", "pyproject.toml"}:
             broad_change = True
             matched = True
-        elif parts and parts[0] == "nix":
+        elif parts and parts[0] == "nix" and not owned_nix_checks:
             for test in index.tests:
                 if "nix" in test.capabilities:
                     selected.add(test.id)
@@ -166,7 +190,7 @@ def build_suite_plan(
     target: str | None = None,
     changed_paths: Iterable[str] = (),
 ) -> SuitePlan:
-    if mode not in MODES:
+    if mode not in _INTERNAL_MODES:
         raise TestkitError(
             Diagnostic(
                 "error",
@@ -178,7 +202,11 @@ def build_suite_plan(
     changed = tuple(sorted(set(safe_relative_path(path, field_name="changed path") for path in changed_paths)))
     reasons: dict[str, set[str]] = defaultdict(set)
     diagnostics: list[Diagnostic] = list(index.diagnostics)
-    if mode == "smoke":
+    if mode == "catalog":
+        selected = {test.id for test in index.tests}
+        for test_id in selected:
+            reasons[test_id].add("complete internal shard catalog")
+    elif mode == "smoke":
         selected = {test.id for test in index.tests if test.tier == "smoke"}
         for test_id in selected:
             reasons[test_id].add("smoke convention")
@@ -198,7 +226,7 @@ def build_suite_plan(
                     "target_required",
                     "target planning requires a target name",
                     remediation="Pass `--target <name>`.",
-                    example="python -m spaghetti_extractor.testkit plan target --target <id>",
+                    example="nix run .#dev -- plan target --target <id>",
                 )
             )
         available = sorted({test.target for test in index.tests if test.target})
@@ -245,12 +273,19 @@ def build_suite_plan(
     shards: list[PlannedShard] = []
     for shard_id, rows in sorted(by_shard.items()):
         rows.sort(key=lambda row: row.id)
+        resource_roots = {resource.rstrip("/") for row in rows for resource in row.resources}
+        candidate_files = {
+            path
+            for row in rows
+            for path in (row.path, *row.dependency_paths, *row.resources)
+        }
         files = sorted(
-            {
-                path
-                for row in rows
-                for path in (row.path, *row.dependency_paths, *row.resources)
-            }
+            path
+            for path in candidate_files
+            if not any(
+                root != path and path.startswith(f"{root}/")
+                for root in resource_roots
+            )
         )
         fixtures = sorted({fixture for row in rows for fixture in row.fixtures})
         shards.append(
@@ -279,6 +314,9 @@ def build_suite_plan(
             (test_id, tuple(sorted(reasons[test_id]))) for test_id in sorted(selected)
         ),
         shards=tuple(shards),
+        nix_checks=(
+            _owned_nix_checks(changed) if mode == "affected" else ()
+        ),
         diagnostics=tuple(sorted(diagnostics)),
     )
 

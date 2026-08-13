@@ -29,19 +29,27 @@
         mkSourceComponentAssurance = import ./nix/stage-b-source-component-assurance.nix;
         mkFunctionalSuite = import ./nix/stage-b-functional-suite.nix;
         mkUpstreamShellSuite = import ./nix/stage-b-upstream-shell-suite.nix;
-        mkStaticHybridCompleteness =
-          import ./nix/stage-b-static-hybrid-completeness.nix;
         mkCAJsonPhase = import ./nix/ca-python-json-phase.nix;
         mkArtifactSetV3 = import ./nix/artifact-set-v3.nix;
+        mkArtifactSeedV3 = import ./nix/artifact-seed-v3.nix;
         mkArtifactPhaseV3 = import ./nix/artifact-phase-v3.nix;
+        mkAnalysisSourcePlanV3 = import ./nix/analysis-v3-source-plan.nix;
+        mkAnalysisMachineIRInputV3 = import ./nix/analysis-v3-machine-ir-input.nix;
+        mkAnalysisAuthorityV3 = import ./nix/analysis-v3-authority.nix;
+        mkAnalysisGraphManifestV3 = import ./nix/analysis-v3-graph-manifest.nix;
+        mkAuthorityGraphV3 = import ./nix/authority-graph-v3.nix;
         mkTestSuite = import ./nix/test-suite.nix;
-        mkStaticHybridAuthorityV2Graph =
-          import ./nix/stage-b-static-hybrid-authority-v2.nix;
         mkHybridCandidate = import ./nix/stage-b-hybrid-candidate.nix;
         mkHeadlessDiagnosticRun = import ./nix/stage-b-headless-diagnostic-run.nix;
       };
 
-      packages = forAllSystems (system:
+      # Heavy target artifacts and granular test shards remain directly
+      # buildable through Nix's legacyPackages fallback, but are deliberately
+      # kept out of `packages`.  `nix flake check` validates every package
+      # attribute eagerly; exposing the analysis universe there turned a warm
+      # check into tens of seconds of evaluator work without checking more
+      # semantics.
+      legacyPackages = forAllSystems (system:
         let
           pkgs = import nixpkgs { inherit system; };
           pythonPackages = pkgs.python3Packages;
@@ -115,6 +123,14 @@
             pythonImportsCheck = [ "spaghetti_extractor.cli" ];
             doCheck = false;
           };
+          testkitTestRunner = pkgs.writeShellScriptBin "spaghetti-extractor-test" ''
+            export PYTHONPATH=${candidateSource}/src
+            exec ${pythonEnv}/bin/python -m spaghetti_extractor.testkit.runner "$@"
+          '';
+          testkitDeveloper = pkgs.writeShellScriptBin "spaghetti-extractor-dev" ''
+            export PYTHONPATH=${candidateSource}/src
+            exec ${pythonEnv}/bin/python -m spaghetti_extractor.testkit "$@"
+          '';
           leanKernel = import ./nix/stage-a-isa-conformance-kernel.nix {
             inherit pkgs;
             leanSource = ./src/spaghetti_extractor/lean;
@@ -191,7 +207,7 @@
             nix = {
               path = pkgs.nix;
               nativeBuildInputs = [ pkgs.nix ];
-              description = "Pinned Nix evaluator and build client";
+              description = "Pinned Nix evaluator for pure fixture inspection";
               capabilities = [ "nix" ];
             };
             pe32-minimal-import-call = {
@@ -208,11 +224,34 @@
           smokeSuite = mkTestSuite "smoke";
           fullSuite = mkTestSuite "full";
           benchmarkSuite = mkTestSuite "benchmark";
+          targetSuites = pkgs.lib.genAttrs [ "gnu-hello" "jq" "dxball" ]
+            (target: import ./nix/test-suite.nix {
+              inherit pkgs pythonEnv target;
+              repositoryRoot = ./.;
+              mode = "target";
+              fixtures = testFixtures;
+            });
           roundtrip = import ./nix/stage-a-roundtrip-corpus.nix {
             inherit pkgs pythonEnv;
             source = analysisSource;
             count = 6;
           };
+          authorityGraphV3Check = import ./tests/unit/nix_v3/check.nix { inherit pkgs; };
+          artifactSeedV3Check = import ./nix/tests/artifact-seed-v3.nix {
+            inherit pkgs pythonEnv;
+            pythonSource = analysisSource;
+          };
+          analysisV3MachineIrInputCheck = import ./nix/tests/analysis-v3-machine-ir-input.nix {
+            inherit pkgs pythonEnv;
+            pythonSource = analysisSource;
+          };
+          fullGate = pkgs.linkFarm "spaghetti-extractor-test-full" [
+            { name = "python-suite"; path = fullSuite.aggregate; }
+            { name = "analysis-v3-machine-ir-input"; path = analysisV3MachineIrInputCheck; }
+            { name = "authority-graph-v3"; path = authorityGraphV3Check; }
+            { name = "artifact-seed-v3"; path = artifactSeedV3Check; }
+            { name = "roundtrip-qualification"; path = roundtrip.qualification; }
+          ];
           gnuHello = import ./targets/gnu-hello {
             inherit pkgs pythonEnv;
             pythonSource = analysisSource;
@@ -224,35 +263,57 @@
           dxball = import ./targets/dxball {
             inherit pkgs pythonEnv;
             pythonSource = analysisSource;
-            isaPythonSource = isaAnalysisSource;
             inherit profileSource;
             candidatePythonSource = candidateSource;
-            spaghettiExtractor = package;
-            kernelCache = leanKernel;
-            semanticKernel = "${isaSemanticKernel}/semantic-kernel.json";
-            bochsRunner = "${bochsConformance}/bin/spaghetti-bochs-conformance-runner";
           };
+          gnuHelloTargetGate = pkgs.linkFarm
+            "spaghetti-extractor-test-target-gnu-hello" [
+              { name = "tests"; path = targetSuites.gnu-hello.aggregate; }
+              { name = "final-authority-v3"; path = gnuHello.analysisV3.finalAuthority; }
+            ];
+          jqTargetGate = pkgs.linkFarm "spaghetti-extractor-test-target-jq" [
+            { name = "tests"; path = targetSuites.jq.aggregate; }
+            { name = "final-authority-v3"; path = jqTarget.analysisV3.finalAuthority; }
+          ];
+          dxballTargetGate = pkgs.linkFarm
+            "spaghetti-extractor-test-target-dxball" [
+              { name = "tests"; path = targetSuites.dxball.aggregate; }
+              { name = "final-authority-v3"; path = dxball.analysisV3.finalAuthority; }
+            ];
         in {
           default = package;
           spaghetti-extractor = package;
+          testkit-test-runner = testkitTestRunner;
+          testkit-developer = testkitDeveloper;
           isa-kernel = leanKernel;
           isa-semantic-kernel = isaSemanticKernel;
           inductive-certificate-kernel = inductiveCertificateKernel;
           bochs-conformance = bochsConformance;
           test-smoke = smokeSuite.aggregate;
-          test-full = fullSuite.aggregate;
+          test-full = fullGate;
           test-benchmark = benchmarkSuite.aggregate;
+          test-target-gnu-hello = gnuHelloTargetGate;
+          test-target-jq = jqTargetGate;
+          test-target-dxball = dxballTargetGate;
           test-fixture-bochs-conformance = bochsConformance;
           test-fixture-compiler = pkgs.pkgsCross.mingw32.stdenv.cc;
           test-fixture-headless-wine = headlessWineFixture;
           test-fixture-lean-isa-runner = leanKernel;
           test-fixture-nix = pkgs.nix;
           test-fixture-pe32-minimal-import-call = minimalImportCallFixture;
+          authority-graph-v3-check = authorityGraphV3Check;
+          artifact-seed-v3-check = artifactSeedV3Check;
+          analysis-v3-machine-ir-input-check = analysisV3MachineIrInputCheck;
           roundtrip-corpus = roundtrip.corpus;
           roundtrip-qualification = roundtrip.qualification;
           gnu-hello-candidate = gnuHello.idiomaticCandidate;
           gnu-hello-intent = gnuHello.intent.validation;
+          gnu-hello-final-authority-v3 = gnuHello.analysisV3.finalAuthority;
+          gnu-hello-authority-graph-v3-metadata =
+            gnuHello.analysisV3.graph.metadata;
           jq-intent = jqTarget.intent.validation;
+          jq-final-authority-v3 = jqTarget.analysisV3.finalAuthority;
+          jq-authority-graph-v3-metadata = jqTarget.analysisV3.graph.metadata;
           dxball-original = dxball.original;
           dxball-interface-profile = dxball.interfaceProfile;
           dxball-static-inventory = dxball.inventory;
@@ -261,65 +322,17 @@
             dxball.analysis.launchAnalysisAssumptions;
           dxball-state-machine = dxball.analysis.stateMachine;
           dxball-machine-ir = dxball.analysis.machineIr;
-          dxball-static-hybrid-completeness =
-            dxball.analysis.staticHybridCompleteness.report;
-          dxball-static-hybrid-authority-v2 =
-            dxball.analysis.staticHybridAuthorityV2.finalAudit.derivation;
-          dxball-transition-summaries-v2 =
-            dxball.analysis.staticHybridAuthorityV2.transitionSummaries.derivation;
-          dxball-memory-version-graph-v2 =
-            dxball.analysis.staticHybridAuthorityV2.memoryVersionGraph.derivation;
-          dxball-structural-target-proposals-v2 =
-            dxball.analysis.staticHybridAuthorityV2.structuralTargetProposals.derivation;
-          dxball-inductive-certificate-proposals-v2 =
-            dxball.analysis.staticHybridAuthorityV2.inductiveCertificateProposals.derivation;
-          dxball-local-inductive-authority-v2 =
-            dxball.analysis.staticHybridAuthorityV2.inductiveCertificateAuthority.derivation;
-          dxball-inductive-dependency-closure-v2 =
-            dxball.analysis.staticHybridAuthorityV2.inductiveDependencyClosure.derivation;
-          dxball-external-site-proposals-v2 =
-            dxball.analysis.staticHybridAuthorityV2.checkedExternalSites.derivation;
-          dxball-diagnostic-external-site-proposals-v2 =
-            dxball.analysis.diagnosticExternalSiteProposals.derivation;
-          dxball-diagnostic-rooted-closure-v2 =
-            dxball.analysis.diagnosticRootedClosure.derivation;
-          dxball-diagnostic-callable-external-runtime-v2 =
-            dxball.analysis.diagnosticCallableExternalRuntime.derivation;
-          dxball-control-invariants-v2 =
-            dxball.analysis.staticHybridAuthorityV2.controlInvariantCertificates.derivation;
-          dxball-memory-range-invariants-v2 =
-            dxball.analysis.staticHybridAuthorityV2.memoryRangeInvariants.derivation;
-          dxball-joint-interprocedural-v2 =
-            dxball.analysis.staticHybridAuthorityV2.jointInterproceduralV2.derivation;
-          dxball-interprocedural-seed-v2 =
-            dxball.analysis.staticHybridAuthorityV2.interproceduralSeed.derivation;
-          dxball-parametric-indirect-exit-summaries-v2 =
-            dxball.analysis.staticHybridAuthorityV2.parametricIndirectExitSummaries.derivation;
-          dxball-interprocedural-v2 =
-            dxball.analysis.staticHybridAuthorityV2.interproceduralV2.derivation;
-          dxball-global-slot-analysis-v2 =
-            dxball.analysis.staticHybridAuthorityV2.globalSlotAnalysis.derivation;
-          dxball-global-slot-authority-v2 =
-            dxball.analysis.staticHybridAuthorityV2.globalSlotAuthority.derivation;
-          dxball-isa-requirements-v2 =
-            dxball.analysis.staticHybridAuthorityV2.isaRequirements.derivation;
-          dxball-isa-qualification-v2 =
-            dxball.isaQualification.aggregate;
-          dxball-isa-catalog-proposal-v2 =
-            dxball.isaQualification.catalogProposal.derivation;
-          dxball-isa-catalog-enrichment-v2 =
-            dxball.isaQualification.catalogEnrichment.derivation;
-          dxball-isa-boundary-corpus-v2 =
-            dxball.isaQualification.corpus;
-          dxball-static-authority-report-v2 =
-            dxball.analysis.staticHybridAuthorityV2.staticAuthority.derivation;
-          dxball-static-hybrid-authority-bundle-v2 =
-            dxball.analysis.staticHybridAuthorityV2.authorityBundle.derivation;
+          dxball-final-authority-v3 = dxball.analysisV3.finalAuthority;
+          dxball-transition-summaries-v3 =
+            dxball.analysisV3.graph.phases."transition-summaries-v3".derivation;
+          dxball-authority-graph-v3-metadata = dxball.analysisV3.graph.metadata;
           dxball-reconstruction-plan = dxball.analysis.reconstructionPlan;
           dxball-component-proposals = dxball.analysis.componentProposals;
           dxball-interpreter = dxball.hybrid.interpreter;
           dxball-fallback-coverage-receipt =
             dxball.hybrid.fallbackCoverageReceipt;
+          dxball-candidate-authority-v3 =
+            dxball.hybrid.candidateAuthorityReport;
           dxball-native-engine = dxball.hybrid.nativeEngine;
           dxball-native-runtime = dxball.hybrid.nativeRuntime;
           dxball-native-objects = dxball.hybrid.nativeObjects.package;
@@ -328,7 +341,18 @@
           dxball-diagnostic-native-runtime = dxball.hybridDiagnostic.nativeRuntime;
           dxball-hybrid-diagnostic-candidate = dxball.hybridDiagnostic.candidate;
           dxball-headless-diagnostic-run = dxball.diagnosticRun;
+          test-shards = fullSuite.shards;
         });
+
+      packages = forAllSystems (system: {
+        default = self.legacyPackages.${system}.default;
+        spaghetti-extractor =
+          self.legacyPackages.${system}.spaghetti-extractor;
+        testkit-test-runner =
+          self.legacyPackages.${system}.testkit-test-runner;
+        testkit-developer =
+          self.legacyPackages.${system}.testkit-developer;
+      });
 
       checks = forAllSystems (system:
         let
@@ -363,73 +387,19 @@
             modules = [ "spaghetti_extractor.stage_b_interpreter_backend" ];
             name = "spaghetti-extractor-interpreter-python-closure-smoke";
           };
-          staticHybridV2GraphFixture =
-            import ./nix/tests/stage-b-static-hybrid-authority-v2.nix {
-              inherit pkgs;
-              pythonEnv = testPython;
-              pythonSource = testSource;
-            };
+          isaClassifierPythonClosure = import ./nix/python-module-closure.nix {
+            inherit pkgs;
+            source = testSource;
+            modules = [ "spaghetti_extractor.isa_semantic_forms" ];
+            name = "spaghetti-extractor-isa-classifier-python-closure-smoke";
+          };
           machineImportControlProfileFixture =
             import ./nix/tests/machine-import-control-profile.nix {
               inherit pkgs;
               pythonEnv = testPython;
               pythonSource = testSource;
             };
-          testFixtures = {
-            bochs-conformance = {
-              path = self.packages.${system}.test-fixture-bochs-conformance;
-              nativeBuildInputs = [ self.packages.${system}.test-fixture-bochs-conformance ];
-              environment.SPAGHETTI_BOCHS_INTEGRATION_RUNNER =
-                "${self.packages.${system}.test-fixture-bochs-conformance}/bin/spaghetti-bochs-conformance-runner";
-              description = "Batched pinned Bochs ISA executor";
-              capabilities = [ "bochs" "isa" ];
-            };
-            compiler = {
-              path = self.packages.${system}.test-fixture-compiler;
-              nativeBuildInputs = [
-                self.packages.${system}.test-fixture-compiler
-                pkgs.pkgsCross.mingw32.buildPackages.binutils
-              ];
-              description = "Pinned PE32 cross-compiler toolchain";
-              capabilities = [ "compiler" ];
-            };
-            headless-wine = {
-              path = self.packages.${system}.test-fixture-headless-wine;
-              nativeBuildInputs = [ self.packages.${system}.test-fixture-headless-wine ];
-              description = "Candidate-only Wine runner in a headless X session";
-              capabilities = [ "wine" ];
-            };
-            lean-isa-runner = {
-              path = self.packages.${system}.test-fixture-lean-isa-runner;
-              nativeBuildInputs = [ pkgs.lean4 ];
-              environment.SPAGHETTI_LEAN_KERNEL_CACHE =
-                self.packages.${system}.test-fixture-lean-isa-runner;
-              description = "Precompiled Lean ISA conformance runner";
-              capabilities = [ "isa" "lean" ];
-            };
-            nix = {
-              path = self.packages.${system}.test-fixture-nix;
-              nativeBuildInputs = [ self.packages.${system}.test-fixture-nix ];
-              description = "Pinned Nix evaluator and build client";
-              capabilities = [ "nix" ];
-            };
-            pe32-minimal-import-call = {
-              path = self.packages.${system}.test-fixture-pe32-minimal-import-call;
-              description = "Small deterministic PE32 import-call fixture";
-              capabilities = [ "native" ];
-            };
-          };
-          fullTestSuite = import ./nix/test-suite.nix {
-            inherit pkgs;
-            pythonEnv = testPython;
-            repositoryRoot = ./.;
-            mode = "full";
-            fixtures = testFixtures;
-          };
-          shardChecks = pkgs.lib.mapAttrs'
-            (id: derivation: pkgs.lib.nameValuePair "test-shard-${id}" derivation)
-            fullTestSuite.shards;
-        in ({
+        in {
           import-smoke = pkgs.runCommand "spaghetti-extractor-import-smoke" {
             nativeBuildInputs = [ package ];
           } ''
@@ -438,7 +408,7 @@
             spaghetti-extractor stage-b-create-component --help >/dev/null
             touch "$out"
           '';
-          test-suite = fullTestSuite.aggregate;
+          test-suite = self.legacyPackages.${system}.test-full;
           python-module-closure = pkgs.runCommand
             "spaghetti-extractor-python-module-closure-check"
             { nativeBuildInputs = [ testPython ]; }
@@ -446,6 +416,9 @@
               export PYTHONPATH=${interpreterPythonClosure}/src
               python -c 'import spaghetti_extractor.stage_b_interpreter_backend'
               test -s ${interpreterPythonClosure}/python-module-closure.json
+              export PYTHONPATH=${isaClassifierPythonClosure}/src
+              python -c 'from spaghetti_extractor.isa_semantic_forms import lean_semantic_form_classifier_sha256; assert len(lean_semantic_form_classifier_sha256()) == 64'
+              test -s ${isaClassifierPythonClosure}/python-module-closure.json
               touch "$out"
             '';
           python-module-index = pkgs.runCommand
@@ -458,13 +431,15 @@
                 --check
               touch "$out"
             '';
-          static-hybrid-v2-phase-graph = staticHybridV2GraphFixture.check;
+          authority-graph-v3 = self.legacyPackages.${system}.authority-graph-v3-check;
+          artifact-seed-v3 = self.legacyPackages.${system}.artifact-seed-v3-check;
+          analysis-v3-machine-ir-input = self.legacyPackages.${system}.analysis-v3-machine-ir-input-check;
           machine-import-control-profile = machineImportControlProfileFixture;
-          isa-kernel = self.packages.${system}.isa-kernel;
+          isa-kernel = self.legacyPackages.${system}.isa-kernel;
           inductive-certificate-kernel =
-            self.packages.${system}.inductive-certificate-kernel;
-          roundtrip = self.packages.${system}.roundtrip-qualification;
-        } // shardChecks));
+            self.legacyPackages.${system}.inductive-certificate-kernel;
+          roundtrip = self.legacyPackages.${system}.roundtrip-qualification;
+        });
 
       apps = forAllSystems (system: {
         default = {
@@ -479,12 +454,12 @@
         };
         test = {
           type = "app";
-          program = "${self.packages.${system}.spaghetti-extractor}/bin/spaghetti-extractor-test";
+          program = "${self.packages.${system}.testkit-test-runner}/bin/spaghetti-extractor-test";
           meta.description = "Nix-first cached smoke, affected, full, target, and benchmark validation";
         };
         dev = {
           type = "app";
-          program = "${self.packages.${system}.spaghetti-extractor}/bin/spaghetti-extractor-dev";
+          program = "${self.packages.${system}.testkit-developer}/bin/spaghetti-extractor-dev";
           meta.description = "Test scaffolding, fixture discovery, rebuild explanation, and environment diagnosis";
         };
       });

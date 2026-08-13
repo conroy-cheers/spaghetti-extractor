@@ -5,8 +5,11 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 import hashlib
+import json
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
+
+from ..python_module_index import declared_python_resources
 
 from .diagnostics import Diagnostic, TestkitError, fail_on_errors
 from .model import (
@@ -48,6 +51,7 @@ class _SourceModule:
     path: str
     aliases: tuple[str, ...]
     dependencies: tuple[str, ...]
+    resources: tuple[str, ...]
     sha256: str
     tree: ast.Module
 
@@ -193,12 +197,11 @@ def _directive(tree: ast.Module, *, path: str) -> _Directive:
     )
 
 
-def _classify(path: str, directive: _Directive) -> tuple[str, str, tuple[str, ...], str | None, bool]:
+def _classify(path: str, directive: _Directive) -> tuple[str, str, tuple[str, ...], str | None]:
     parts = PurePosixPath(path).parts
     tail = parts[1:]
     capabilities: set[str] = set(directive.capabilities)
     target: str | None = None
-    legacy = False
     if len(tail) >= 2 and tail[0] == "smoke":
         tier, subsystem = "smoke", "smoke"
     elif len(tail) >= 3 and tail[0] == "unit":
@@ -213,9 +216,8 @@ def _classify(path: str, directive: _Directive) -> tuple[str, str, tuple[str, ..
         tier, subsystem = "benchmark", "benchmark"
         capabilities.add("benchmark")
     elif len(tail) == 1:
-        legacy = True
         stem = PurePosixPath(path).stem.removeprefix("test_")
-        tier, subsystem = "unit", stem.split("_", 1)[0] or "legacy"
+        tier, subsystem = "unit", stem.split("_", 1)[0] or "core"
     else:
         raise TestkitError(
             Diagnostic(
@@ -223,13 +225,13 @@ def _classify(path: str, directive: _Directive) -> tuple[str, str, tuple[str, ..
                 "unclassified_test_path",
                 "test path does not match a supported convention",
                 location=path,
-                remediation="Move the test with the scaffolder: `python -m spaghetti_extractor.testkit scaffold test <subsystem> <name>`.",
+                remediation="Move the test with the scaffolder: `nix run .#dev -- scaffold test <subsystem> <name>`.",
                 example="tests/unit/control/test_branch_targets.py",
             )
         )
     if directive.subsystem:
         subsystem = directive.subsystem
-    return tier, subsystem, tuple(sorted(capabilities)), target, legacy
+    return tier, subsystem, tuple(sorted(capabilities)), target
 
 
 def _constant_command(node: ast.Call) -> str | None:
@@ -254,7 +256,7 @@ def _constant_command(node: ast.Call) -> str | None:
     return None
 
 
-def _heavy_tool_diagnostics(tree: ast.Module, *, path: str, legacy: bool) -> list[Diagnostic]:
+def _heavy_tool_diagnostics(tree: ast.Module, *, path: str) -> list[Diagnostic]:
     diagnostics: list[Diagnostic] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -268,15 +270,46 @@ def _heavy_tool_diagnostics(tree: ast.Module, *, path: str, legacy: bool) -> lis
             continue
         diagnostics.append(
             Diagnostic(
-                "warning" if legacy else "error",
+                "error",
                 "direct_heavy_tool_invocation",
                 f"test invokes {tool} directly, bypassing shared fixtures and execution policy",
                 location=f"{path}:{getattr(node, 'lineno', 1)}",
-                remediation=f'Use `fixture("{fixture_id}")`; inspect it with `python -m spaghetti_extractor.testkit fixtures {fixture_id}`.',
+                remediation=f'Use `fixture("{fixture_id}")`; inspect it with `nix run .#dev -- fixtures {fixture_id}`.',
                 example=f'from spaghetti_extractor.testkit import fixture\nrunner = fixture("{fixture_id}")',
             )
         )
     return diagnostics
+
+
+def _heavy_tool_capabilities(tree: ast.Module) -> set[str]:
+    by_fixture = {
+        "bochs-conformance": "bochs",
+        "compiler": "compiler",
+        "headless-wine": "wine",
+        "lean-isa-runner": "lean",
+        "nix": "nix",
+    }
+    result: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        command = _constant_command(node)
+        if command is None and (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "shutil"
+            and node.func.attr == "which"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, str)
+        ):
+            command = node.args[0].value
+        if command is None:
+            continue
+        fixture_id = HEAVY_COMMANDS.get(PurePosixPath(command).name)
+        if fixture_id in by_fixture:
+            result.add(by_fixture[fixture_id])
+    return result
 
 
 def _source_files(repository: Path) -> list[Path]:
@@ -332,6 +365,7 @@ def _scan_modules(repository: Path) -> tuple[dict[str, _SourceModule], dict[str,
             path=relative,
             aliases=aliases,
             dependencies=tuple(sorted(dependencies)),
+            resources=declared_python_resources(repository, path, tree=tree),
             sha256=_sha256(path),
             tree=tree,
         )
@@ -471,9 +505,6 @@ def _inferred_resources(repository: Path, module: _SourceModule) -> tuple[str, .
     for node in ast.walk(module.tree):
         if not isinstance(node, ast.Call):
             continue
-        call_path = _static_path(node, source_path=source_path, symbols=symbols)
-        if call_path is not None:
-            candidates.add(call_path)
         candidate: Path | None = None
         if isinstance(node.func, ast.Attribute) and node.func.attr in _RESOURCE_METHODS:
             candidate = _static_path(node.func.value, source_path=source_path, symbols=symbols)
@@ -483,12 +514,13 @@ def _inferred_resources(repository: Path, module: _SourceModule) -> tuple[str, .
             candidate = _static_path(node.args[0], source_path=source_path, symbols=symbols)
         if candidate is not None:
             candidates.add(candidate)
-        for argument in node.args:
+        arguments = [*node.args, *(keyword.value for keyword in node.keywords)]
+        for argument in arguments:
             for nested in ast.walk(argument):
                 nested_candidate = _static_path(
                     nested, source_path=source_path, symbols=symbols
                 )
-                if nested_candidate is not None:
+                if nested_candidate is not None and nested_candidate.is_file():
                     candidates.add(nested_candidate)
 
     resources: set[str] = set()
@@ -505,6 +537,48 @@ def _inferred_resources(repository: Path, module: _SourceModule) -> tuple[str, .
     return tuple(sorted(resources))
 
 
+def _resource_dependency_closure(
+    repository: Path, resources: Iterable[str]
+) -> tuple[str, ...]:
+    pending = list(resources)
+    observed: set[str] = set()
+    while pending:
+        relative = pending.pop()
+        if relative in observed:
+            continue
+        observed.add(relative)
+        path = repository / relative
+        if not path.is_file() or path.suffix.lower() != ".json":
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        strings: list[str] = []
+        stack = [payload]
+        while stack:
+            value = stack.pop()
+            if isinstance(value, str):
+                strings.append(value)
+            elif isinstance(value, list):
+                stack.extend(value)
+            elif isinstance(value, Mapping):
+                stack.extend(value.values())
+        for value in strings:
+            candidates = (path.parent / value, repository / value)
+            for candidate in candidates:
+                if not candidate.exists():
+                    continue
+                try:
+                    dependency = candidate.resolve().relative_to(repository.resolve()).as_posix()
+                except (OSError, ValueError):
+                    continue
+                if dependency not in observed:
+                    pending.append(dependency)
+                break
+    return tuple(sorted(observed))
+
+
 def _stable_shard(test_id: str, *, tier: str, capabilities: tuple[str, ...], target: str | None, shard_count: int) -> str:
     digest = hashlib.sha256(test_id.encode("utf-8")).hexdigest()
     heavy = sorted(HEAVY_CAPABILITIES.intersection(capabilities))
@@ -515,8 +589,8 @@ def _stable_shard(test_id: str, *, tier: str, capabilities: tuple[str, ...], tar
     if heavy:
         return f"{heavy[0]}-{digest[:12]}"
     if target:
-        return f"target-{target}-{int(digest[:16], 16) % shard_count:02d}"
-    return f"pure-{int(digest[:16], 16) % shard_count:02d}"
+        return f"target-{target}-{digest[:12]}"
+    return f"pure-{digest[:12]}"
 
 
 def build_impact_index(
@@ -539,14 +613,30 @@ def build_impact_index(
             )
         )
     modules, aliases = _scan_modules(repository)
+    inferred_resource_cache: dict[str, tuple[str, ...]] = {}
+    resource_hash_cache: dict[str, str] = {}
+
+    def inferred_for(path: str) -> tuple[str, ...]:
+        if path not in inferred_resource_cache:
+            inferred_resource_cache[path] = tuple(sorted({
+                *modules[path].resources,
+                *_inferred_resources(repository, modules[path]),
+            }))
+        return inferred_resource_cache[path]
+
+    def resource_sha256(path: str) -> str:
+        if path not in resource_hash_cache:
+            resource_hash_cache[path] = _sha256(repository / path)
+        return resource_hash_cache[path]
+
     diagnostics: list[Diagnostic] = []
     tests: list[TestRecord] = []
     for path, module in sorted(modules.items()):
         if not path.startswith("tests/") or not PurePosixPath(path).name.startswith("test_"):
             continue
         directive = _directive(module.tree, path=path)
-        tier, subsystem, classified_capabilities, target, legacy = _classify(path, directive)
-        heavy_diagnostics = _heavy_tool_diagnostics(module.tree, path=path, legacy=legacy)
+        tier, subsystem, classified_capabilities, target = _classify(path, directive)
+        heavy_diagnostics = _heavy_tool_diagnostics(module.tree, path=path)
         diagnostics.extend(heavy_diagnostics)
         dependencies = set(_transitive_paths(path, modules))
         for dependency in directive.dependencies:
@@ -566,6 +656,7 @@ def build_impact_index(
             dependencies.add(resolved)
             dependencies.update(_transitive_paths(resolved, modules))
         capabilities = set(classified_capabilities)
+        capabilities.update(_heavy_tool_capabilities(module.tree))
         direct_dependency_names = {
             modules[dependency].name for dependency in module.dependencies
         }
@@ -576,8 +667,11 @@ def build_impact_index(
         if any("native_build" in name or "pe_composer" in name for name in direct_dependency_names):
             capabilities.add("native")
         capabilities_tuple = tuple(sorted(capabilities))
-        resources = tuple(
-            sorted(set(directive.resources) | set(_inferred_resources(repository, module)))
+        inferred_resources = set(inferred_for(path))
+        for dependency in dependencies:
+            inferred_resources.update(inferred_for(dependency))
+        resources = _resource_dependency_closure(
+            repository, set(directive.resources) | inferred_resources
         )
         missing_resources = [resource for resource in resources if not (repository / resource).exists()]
         if missing_resources:
@@ -595,7 +689,7 @@ def build_impact_index(
             for dependency in sorted(dependencies)
         ]
         input_rows.extend(
-            {"path": resource, "sha256": _sha256(repository / resource)}
+            {"path": resource, "sha256": resource_sha256(resource)}
             for resource in resources
         )
         test_id = path.removesuffix(".py")
@@ -638,7 +732,7 @@ def build_impact_index(
                 "error",
                 "no_tests_discovered",
                 "no test_*.py files were found",
-                remediation="Create one with `python -m spaghetti_extractor.testkit scaffold test <subsystem> <name>`.",
+                remediation="Create one with `nix run .#dev -- scaffold test <subsystem> <name>`.",
             )
         )
     if strict_policy:
@@ -648,6 +742,7 @@ def build_impact_index(
             name=row.name,
             path=row.path,
             dependencies=tuple(modules[dependency].name for dependency in row.dependencies),
+            resources=row.resources,
             sha256=row.sha256,
         )
         for row in sorted(modules.values(), key=lambda item: item.path)

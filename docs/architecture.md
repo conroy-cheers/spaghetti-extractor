@@ -16,9 +16,9 @@ original PE32
   -> original-only reference contract
   -> canonical machine IR
   -> linked-library and interface recognition
-  -> v2 entry, provenance, call, external-site, exception, and ISA evidence
-  -> dependency-aware static authority bundle
-  -> recomputing v2 final audit
+  -> typed v3 transition, memory, target, induction, external, and ISA evidence
+  -> dependency-aware content-addressed authority graph
+  -> checked final-authority-v3 reduction
   -> independent fallback implementation-coverage receipt
   -> generated baseline/interpreter
   -> semantic components with explicit boundaries
@@ -75,31 +75,28 @@ artifact. Hashes bind artifacts but do not prove semantic correctness.
 
 ## Static Authority
 
-The active static gate is the v2 authority graph. Its immutable records bind an
-exact PE, machine-IR unit or event, finite alternatives, dependencies, and
-explicit missing or contradictory evidence. Rooted state propagation uses
-certificate-checked inductive abstract interpretation: proposal code may
-synthesize invariants, but a separate checker reconstructs the exact transition,
-memory-version, dependency, control-edge, root, and budget inventories before it
-checks initiation and preservation. The final audit rechecks the resulting
-bound receipts and is the only static input that may authorize candidate
-generation. This audit is deterministic certificate checking, not a fresh
-abstract interpretation of every execution path.
+The active static gate is the typed v3 artifact graph. Its immutable records bind
+an exact PE, machine-IR unit or event, finite alternatives, dependencies, and
+explicit missing or contradictory evidence. Registered phase definitions are
+the single source of graph topology; Nix realizes their map-unit, map-SCC, and
+checked-reduce dependencies as bounded content-addressed artifacts. Proposal
+code may synthesize facts, but each phase independently rechecks exact inputs,
+dependencies, and completeness before exporting authority.
 
-The older `stage-b-static-hybrid-completeness-v1` report remains useful for
-proposal generation and diagnostics. It cannot authorize a candidate. In
-particular, copied v1 completion fields, target inventories, ABI statuses, and
-profile hashes are not authority.
+Only `final-authority-v3` may authorize candidate generation. The candidate
+receipt independently joins that record with exact machine IR and complete
+fallback implementation coverage. Legacy completeness reports and copied
+status fields are neither active inputs nor candidate authority.
 
 Fallback coverage is deliberately separate. It checks that every unit in the
 complete structural machine-IR universe has exactly one portable or machine-IR
 implementation and that the selected fallback lowering exists. It has no
-rooted-reachability authority; the v2 final audit independently establishes
+rooted-reachability authority; v3 root, target, and final-authority phases independently establish
 that every transfer possible from the declared roots remains inside that
 structural universe. Candidate generation requires both receipts, bound to the
 same machine IR and manifest.
 
-The v2 evidence graph is fail-closed:
+The v3 evidence graph is fail-closed:
 
 1. PE entry, export, TLS, and registered callback roots receive explicit entry
    state contracts.
@@ -167,11 +164,10 @@ The v2 evidence graph is fail-closed:
    final static gate accepts only the latter, preventing a cached local report
    from being mistaken for environment-closed authority.
 
-   During migration, external-site and callback receipts still consume the
-   richer legacy interprocedural proposal in the late dependency-closure phase.
-   This dependency cannot invalidate local induction, and remains visible as a
-   separate expensive DAG branch until those owner analyses move to typed SCC
-   certificates.
+   External-site and callback receipts consume canonical v3 evidence bound to
+   exact transition/event identities. Older wire-format proposals may be
+   ingested as non-authorizing source evidence, but their copied status or
+   convergence fields cannot discharge a v3 certificate dependency.
 
    Invariant inputs may also request typed exports at named cutpoints. Export
    requests are non-authorizing and independently threaded through proposal,
@@ -180,12 +176,11 @@ The v2 evidence graph is fail-closed:
    authorities can therefore migrate to exact inductive exports without
    treating analyzer proposals as globally valid facts.
 
-   The older discovery/cold/inductive fixed-point loops temporarily remain as
-   non-authorizing proposal producers for call and target facts. Their copied
-   status, convergence, and replay fields cannot discharge a certificate
-   dependency. They are removed as each target, call, mutable-slot, callback,
-   and resource family moves to the typed checker path.
-   Caller evidence is projected onto independently checked summary families.
+   Candidate authority has no discovery/cold/promotion fixed-point loop.
+   Structural discovery, parametric summaries, SCC induction, and root-specific
+   closure are separate phases, and each dependency is explicit in the v3
+   record graph. Caller evidence is projected onto independently checked
+   summary families.
    A value retained in a preserved register depends on that register's summary
    fact, rather than an aggregate summary which may remain incomplete because
    of unrelated memory or result effects. Aggregate call-frame identities stay
@@ -230,11 +225,11 @@ A target is ready for release qualification when:
    import or interface call has an exact machine ABI plus memory, resource,
    lifetime, and callback effects.
 5. Every reachable region is implemented by portable C or the machine-IR
-   fallback, with `allowDeferredPotentialTransfers = false`. A hash-bound v2
+   fallback, with `allowDeferredPotentialTransfers = false`. A hash-bound
    dispatch receipt requires exactly one implementation kind and replays the
    selected interpreter lowering.
-6. The v2 final audit passes, the fallback receipt is complete, and their exact
-   machine-IR and manifest bindings agree.
+6. The v3 final authority is authorizing, the fallback receipt is complete,
+   and their exact machine-IR and manifest bindings agree.
 7. Curated and upstream candidate-only suites pass under headless Wine.
 8. Generated artifacts are reproducible through the pinned Nix graph.
 
@@ -257,23 +252,22 @@ sizes, and the checked Python-module-closure manifest digest. The derivation DAG
 retains the exact producing dependencies. The phase-graph fixture rejects any
 manifest that leaks a `store_path` field.
 
-The v2 static-authority graph has explicit CA phases for exact unit
-preparation, base control, point-sensitive mutable-slot replay, slot promotion,
-interprocedural SCC summaries, rooted closure, external-profile and site
-binding, callback and launch state, ISA selection, exceptional control, static
-authority, bundle closure, and final audit. Expensive mutable-slot replay is a
-dependency of the smaller promotion checker, not part of it. Consequently a
-promotion/checker policy change invalidates promotion and semantic descendants
-without rerunning exact extraction or global replay. The Nix fixture checks
-this derivation-path contract alongside profile-only and audit-only mutations.
+The v3 static-authority graph has explicit CA phases for exact units, compact
+semantic indexes, transitions, memory versions, structural targets, inductive
+SCC authority, external sites, callbacks, rooted closure, exceptional control,
+ISA qualification, fallback coverage, and final authority. The framework owns
+the structural and dependency schedules; phase implementations cannot submit a
+smaller universe. A changed unit invalidates its stable transition pack and
+only the dependency SCC and composition descendants which consume it. The Nix
+fixture compares derivation paths under unit, edge, phase-source, and external
+record mutations to enforce that contract.
 
 An unchanged CA build may still print the input-addressed derivations Nix would
 realize before resolving their content-addressed outputs. The operational cache
 criterion is that no builders execute and the same output path is returned;
-the warm DX-Ball final-audit build is the benchmark for this behavior. After
-the path-free manifest migration, the three-stage DX-Ball structural-target,
-induction-proposal, and local-authority chain reuses its output in roughly
-1.3 seconds instead of rerunning about 52 seconds of authority checking.
+the warm DX-Ball final-authority build is the benchmark for this behavior. The
+current unchanged authority graph realizes in about 0.10 seconds with no
+builders.
 
 Native candidate preparation emits a deterministic checked object graph, then
 compiles and assembles that graph in a content-addressed realization. It does

@@ -2,13 +2,8 @@
   pkgs,
   pythonEnv,
   pythonSource,
-  isaPythonSource,
   profileSource,
   candidatePythonSource,
-  spaghettiExtractor,
-  kernelCache,
-  semanticKernel,
-  bochsRunner,
 }:
 
 let
@@ -59,55 +54,36 @@ let
     "${profileSource}/profiles/pe32-win32-windowing-runtime-v1.json"
     "${profileSource}/profiles/pe32-winmm-runtime-v1.json"
   ];
-  internalFunctionProfile = pkgs.writeText
-    "dxball-1.09-internal-function-contracts-v1.json"
-    (builtins.readFile ./intent/internal-functions.json);
   analysis = import ../../nix/stage-b-component-analysis.nix {
     inherit pkgs pythonEnv pythonSource;
-    inherit isaPythonSource;
     original = "${original}/DXBall.exe";
     externalProfile = builtins.head runtimeMachineImportProfiles;
     additionalMachineImportProfiles = builtins.tail runtimeMachineImportProfiles;
     externalInterfaceProfiles = [
       "${interfaceProfile}/interface-profile.json"
     ];
-    callableExternalProfiles = [
-      "${profileSource}/profiles/pe32-kernel32-callable-resolvers-v1.json"
-    ];
-    internalFunctionContractProfiles = [
-      internalFunctionProfile
-    ];
-    normalCallAbiPremise =
-      "${profileSource}/profiles/pe32-normal-return-nonvolatile-v1.json";
     launchProfileTemplate =
       "${profileSource}/profiles/pe32-win32-gui-launch-assumptions-v1.json";
     namePrefix = "spaghetti-extractor-dxball-1.09";
     maxUnits = 512;
     maxCandidatesPerSeed = 12;
-    isaSelectionAuthority = isaQualification.selectionAuthority.artifact;
   };
-  isaQualification = import ../../nix/stage-a-machine-ir-isa-qualification-v2.nix {
-    inherit
-      pkgs
-      pythonEnv
-      pythonSource
-      isaPythonSource
-      spaghettiExtractor
-      kernelCache
-      semanticKernel
-      bochsRunner
-      ;
-    requirements =
-      analysis.staticHybridAuthorityV2.isaRequirements.artifact;
-    name = "spaghetti-extractor-dxball-1.09-isa-v2";
+  analysisV3 = import ../../nix/analysis-v3-authority.nix {
+    inherit pkgs pythonEnv pythonSource;
+    name = "spaghetti-extractor-dxball-1.09-authority-v3";
+    machineIr = "${analysis.machineIr}/machine-ir.jsonl";
+    binary = "${original}/DXBall.exe";
+    binaryIdentity = "DXBall.exe";
+    machineImportProfiles = runtimeMachineImportProfiles;
+    launchProfileTemplate =
+      "${profileSource}/profiles/pe32-win32-gui-launch-assumptions-v1.json";
   };
   hybrid = import ../../nix/stage-b-hybrid-candidate.nix {
     inherit pkgs pythonEnv;
     pythonSource = candidatePythonSource;
     machineIr = analysis.machineIr;
     staticExport = analysis.staticExport;
-    staticCompletenessReport = analysis.staticHybridCompleteness.report;
-    staticAuthorityV2 = analysis.staticHybridAuthorityV2;
+    staticAuthorityV3 = analysisV3;
     machineImportProfiles = runtimeMachineImportProfiles ++ [
       "${interfaceProfile}/interface-profile.json"
     ];
@@ -119,8 +95,6 @@ let
     pythonSource = candidatePythonSource;
     machineIr = analysis.machineIr;
     staticExport = analysis.staticExport;
-    staticCompletenessReport = analysis.staticHybridCompleteness.report;
-    staticAuthorityV2 = analysis.staticHybridAuthorityV2;
     machineImportProfiles = runtimeMachineImportProfiles ++ [
       "${interfaceProfile}/interface-profile.json"
     ];
@@ -128,10 +102,6 @@ let
     candidateMode = "structural-diagnostic";
     allowDeferredPotentialTransfers = true;
     diagnosticFailureTrap = true;
-    externalSiteProposals =
-      analysis.diagnosticExternalSiteProposals.artifact;
-    callableExternalRuntimeContract =
-      analysis.diagnosticCallableExternalRuntime.artifact;
   };
   diagnosticRun = import ../../nix/stage-b-headless-diagnostic-run.nix {
     inherit pkgs pythonEnv;
@@ -154,10 +124,9 @@ in
     installer
     original
     interfaceProfile
-    internalFunctionProfile
     inventory
     analysis
-    isaQualification
+    analysisV3
     hybrid
     hybridDiagnostic
     diagnosticRun

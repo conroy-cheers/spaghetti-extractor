@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 from spaghetti_extractor.testkit import TestkitError, build_impact_index
@@ -71,7 +72,7 @@ class TestDiscoveryTests(unittest.TestCase):
             self.assertIn("direct_heavy_tool_invocation", message)
             self.assertIn('fixture("lean-isa-runner")', message)
 
-    def test_nix_in_legacy_filename_does_not_realize_nix_without_execution(self) -> None:
+    def test_nix_in_flat_filename_does_not_realize_nix_without_execution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _repository(Path(temporary))
             _write(root, "tests/test_module_nix.py", "VALUE = 1\n")
@@ -80,6 +81,20 @@ class TestDiscoveryTests(unittest.TestCase):
 
             self.assertNotIn("nix", row.capabilities)
             self.assertNotIn("nix", row.fixtures)
+
+    def test_compiler_lookup_selects_shared_compiler_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            _write(
+                root,
+                "tests/test_compile.py",
+                'import shutil\nCOMPILER = shutil.which("i686-w64-mingw32-gcc")\n',
+            )
+
+            row = build_impact_index(root).tests[0]
+
+            self.assertIn("compiler", row.capabilities)
+            self.assertIn("compiler", row.fixtures)
 
     def test_unusual_resource_is_declared_once_in_testkit_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -129,6 +144,60 @@ list(PROFILES.glob(\"*.json\"))
             row = build_impact_index(root).tests[0]
 
             self.assertEqual(row.resources, ("profiles/runtime.json",))
+
+    def test_transitive_source_resource_and_json_include_are_discovered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            _write(root, "profiles/base.json", "{}\n")
+            _write(
+                root,
+                "profiles/selected.json",
+                json.dumps({"includes": ["base.json"]}),
+            )
+            _write(
+                root,
+                "src/spaghetti_extractor/profile.py",
+                'from pathlib import Path\nPROFILE = Path(__file__).parents[2] / "profiles" / "selected.json"\ndef load(): return PROFILE.read_text()\n',
+            )
+            _write(
+                root,
+                "tests/unit/config/test_profile.py",
+                "from spaghetti_extractor.profile import load\n",
+            )
+
+            row = build_impact_index(root).tests[0]
+
+            self.assertEqual(
+                row.resources,
+                ("profiles/base.json", "profiles/selected.json"),
+            )
+
+    def test_transitive_module_owned_resources_are_discovered_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            _write(root, "src/spaghetti_extractor/data/model.txt", "model\n")
+            _write(
+                root,
+                "src/spaghetti_extractor/model.py",
+                'PYTHON_RESOURCES = ("src/spaghetti_extractor/data/model.txt",)\n',
+            )
+            _write(
+                root,
+                "tests/unit/model/test_model.py",
+                "import spaghetti_extractor.model\n",
+            )
+
+            index = build_impact_index(root)
+
+            self.assertEqual(
+                index.tests[0].resources,
+                ("src/spaghetti_extractor/data/model.txt",),
+            )
+            modules = {row.name: row for row in index.modules}
+            self.assertEqual(
+                modules["spaghetti_extractor.model"].resources,
+                ("src/spaghetti_extractor/data/model.txt",),
+            )
 
 
 if __name__ == "__main__":

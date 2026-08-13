@@ -31,6 +31,20 @@ def _json_value(value: Any, *, context: str = "JSON value") -> Any:
         raise AuthorityDataError(
             f"{context} cannot contain floating-point values"
         )
+    # Artifact payloads overwhelmingly use the concrete JSON container types.
+    # Handle them before the comparatively expensive collections.abc checks;
+    # the generic Mapping fallback remains available for parser adapters.
+    if type(value) is dict:
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise AuthorityDataError(
+                    f"{context} has a non-string object key"
+                )
+            result[key] = _json_value(item, context=context)
+        return result
+    if type(value) is list or type(value) is tuple:
+        return [_json_value(item, context=context) for item in value]
     if isinstance(value, Mapping):
         result: dict[str, Any] = {}
         for key, item in value.items():
@@ -54,8 +68,12 @@ def _json_value(value: Any, *, context: str = "JSON value") -> Any:
 
 def canonical_json_bytes(value: Any) -> bytes:
     normalized = _json_value(value)
+    return _dump_canonical_json(normalized)
+
+
+def _dump_canonical_json(value: Any) -> bytes:
     return json.dumps(
-        normalized,
+        value,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,
@@ -123,7 +141,7 @@ def parse_canonical_json(data: str | bytes) -> Any:
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AuthorityDataError("authority data is not valid JSON") from exc
-    if canonical_json_bytes(value) != raw:
+    if _dump_canonical_json(value) != raw:
         raise AuthorityDataError("authority JSON is not canonical")
     return value
 
@@ -139,7 +157,10 @@ class CanonicalJson:
 
     @classmethod
     def of(cls, value: Any) -> "CanonicalJson":
-        return cls(canonical_json_bytes(value))
+        data = canonical_json_bytes(value)
+        result = object.__new__(cls)
+        object.__setattr__(result, "data", data)
+        return result
 
     def to_value(self) -> Any:
         return json.loads(self.data.decode("ascii"))

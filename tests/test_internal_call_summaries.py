@@ -10,6 +10,8 @@ from spaghetti_extractor.import_abi import SelectedImportABI
 from spaghetti_extractor.internal_call_summaries import (
     INTERNAL_CALL_SUMMARY_FORMAT,
     _force_incomplete,
+    _join_target_expression,
+    _target_binary,
     derive_internal_call_preservation_summaries,
 )
 from spaghetti_extractor.machine_abi import resolve_machine_call_abi
@@ -105,6 +107,22 @@ def internal_call(
 
 
 class InternalCallSummaryTests(unittest.TestCase):
+    def test_loop_carried_target_alternatives_remain_a_flat_bounded_lattice(
+        self,
+    ) -> None:
+        current = ("input_register", "eax")
+        exceeded = False
+        for _ in range(100):
+            successor = _target_binary("add32", current, ("constant", 32))
+            current, exceeded = _join_target_expression(
+                current, successor, maximum=32
+            )
+            if exceeded:
+                break
+
+        self.assertTrue(exceeded)
+        self.assertIsNone(current)
+
     def test_forced_incomplete_invalidates_parametric_exit_inventory(self) -> None:
         summary = {
             "status": "complete",

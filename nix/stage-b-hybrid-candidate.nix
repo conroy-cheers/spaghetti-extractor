@@ -4,8 +4,7 @@
   pythonSource,
   machineIr,
   staticExport,
-  staticCompletenessReport ? null,
-  staticAuthorityV2 ? null,
+  staticAuthorityV3 ? null,
   machineImportProfiles,
   namePrefix,
   compiler ? pkgs.pkgsCross.mingw32.stdenv.cc,
@@ -28,8 +27,8 @@ assert pkgs.lib.assertMsg
   "structural-diagnostic candidates require diagnosticFailureTrap = true";
 assert pkgs.lib.assertMsg
   (candidateMode != "static-closed" ||
-    (staticCompletenessReport != null && staticAuthorityV2 != null))
-  "static-closed candidates require v2 static authority inputs";
+    staticAuthorityV3 != null)
+  "static-closed candidates require v3 final authority";
 assert pkgs.lib.assertMsg
   (externalSiteProposals == null || candidateMode == "structural-diagnostic")
   "proposal-only external-site evidence is diagnostic-only";
@@ -42,11 +41,8 @@ let
       "${candidateAuthorityGate}/candidate-authority.json"
     else ""
   );
-  finalAuditArg = lib.escapeShellArg (
-    if staticClosed then toString staticAuthorityV2.finalAudit.artifact else ""
-  );
-  authorityBundleArg = lib.escapeShellArg (
-    if staticClosed then toString staticAuthorityV2.authorityBundle.artifact else ""
+  finalAuthorityArg = lib.escapeShellArg (
+    if staticClosed then toString staticAuthorityV3.finalAuthorityArtifact else ""
   );
   fallbackCoverageArg = lib.escapeShellArg (
     if staticClosed then
@@ -73,8 +69,8 @@ let
   fallbackCoveragePythonSource = mkPythonClosure "fallback-coverage" [
     "spaghetti_extractor.stage_b_fallback_coverage"
   ];
-  candidateAuthorityPythonSource = mkPythonClosure "candidate-authority-v2" [
-    "spaghetti_extractor.stage_b_candidate_authority_v2"
+  candidateAuthorityPythonSource = mkPythonClosure "candidate-authority-v3" [
+    "spaghetti_extractor.stage_b_candidate_authority_v3"
   ];
   profileArgs = lib.concatMapStringsSep " "
     (profile: lib.escapeShellArg (toString profile)) machineImportProfiles;
@@ -197,8 +193,8 @@ let
       ' "$out/fallback-coverage-receipt.json" >/dev/null
     '';
 
-  candidateAuthorityReport = pkgs.runCommand
-    "${namePrefix}-candidate-authority-v2"
+  candidateAuthorityReport = if !staticClosed then null else pkgs.runCommand
+    "${namePrefix}-candidate-authority-v3"
     {
       nativeBuildInputs = [ pythonEnv pkgs.jq ];
       preferLocalBuild = false;
@@ -213,50 +209,43 @@ let
       export PYTHONPATH=${candidateAuthorityPythonSource}/src
       mkdir -p "$out"
       ${python} - \
-        ${staticAuthorityV2.finalAudit.artifact} \
-        ${staticAuthorityV2.authorityBundle.artifact} \
+        ${staticAuthorityV3.finalAuthorityArtifact} \
         ${machineIr}/machine-ir.jsonl \
         ${machineIr}/machine-ir-manifest.json \
         ${fallbackCoverageReceipt}/fallback-coverage-receipt.json \
-        ${staticCompletenessReport}/static-hybrid-completeness.json \
         "$out/candidate-authority.json" <<'PY'
       import pathlib
       import sys
 
-      from spaghetti_extractor.stage_b_candidate_authority_v2 import (
-          build_stage_b_candidate_authority_v2,
+      from spaghetti_extractor.stage_b_candidate_authority_v3 import (
+          build_stage_b_candidate_authority_v3,
       )
 
       (
-          final_audit,
-          authority_bundle,
+          final_authority,
           machine_ir,
           manifest,
           fallback_receipt,
-          legacy_report,
           output,
       ) = sys.argv[1:]
-      receipt = build_stage_b_candidate_authority_v2(
-          final_static_hybrid_audit=pathlib.Path(final_audit),
-          authority_bundle=pathlib.Path(authority_bundle),
+      receipt = build_stage_b_candidate_authority_v3(
+          final_authority=pathlib.Path(final_authority),
           machine_ir=pathlib.Path(machine_ir),
           machine_ir_manifest=pathlib.Path(manifest),
           fallback_coverage_receipt=pathlib.Path(fallback_receipt),
-          legacy_diagnostic_artifacts=(pathlib.Path(legacy_report),),
       )
       pathlib.Path(output).write_text(receipt.to_json(), encoding="ascii")
       PY
       jq -e '
-        .format == "spaghetti-extractor-stage-b-candidate-authority-v2" and
+        .format == "spaghetti-extractor-stage-b-candidate-authority-receipt-v3" and
         (.status == "authorized" or .status == "incomplete" or .status == "violated") and
-        (.policy.v1_authority_accepted | not) and
-        .policy.v2_static_audit_required and
+        .policy.final_authority_v3_required and
         .policy.candidate_generation_fails_closed
       ' "$out/candidate-authority.json" >/dev/null
     '';
 
-  candidateAuthorityGate = pkgs.runCommand
-    "${namePrefix}-candidate-authority-gate-v2"
+  candidateAuthorityGate = if !staticClosed then null else pkgs.runCommand
+    "${namePrefix}-candidate-authority-gate-v3"
     {
       nativeBuildInputs = [ pythonEnv pkgs.jq ];
       preferLocalBuild = false;
@@ -272,14 +261,14 @@ let
         "$out/candidate-authority.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.stage_b_candidate_authority_v2 import (
-          parse_stage_b_candidate_authority_v2,
-          require_stage_b_candidate_authority_v2,
+      from spaghetti_extractor.stage_b_candidate_authority_v3 import (
+          parse_stage_b_candidate_authority_v3,
+          require_stage_b_candidate_authority_v3,
       )
 
       source, output = map(pathlib.Path, sys.argv[1:])
-      receipt = require_stage_b_candidate_authority_v2(
-          parse_stage_b_candidate_authority_v2(source.read_bytes())
+      receipt = require_stage_b_candidate_authority_v3(
+          parse_stage_b_candidate_authority_v3(source.read_bytes())
       )
       output.write_text(receipt.to_json(), encoding="ascii")
       PY
@@ -298,7 +287,7 @@ let
     export PYTHONPATH=${nativeEnginePythonSource}/src
     ${lib.optionalString staticClosed ''
       jq -e '
-        .format == "spaghetti-extractor-stage-b-candidate-authority-v2" and
+        .format == "spaghetti-extractor-stage-b-candidate-authority-receipt-v3" and
         .status == "authorized"
       ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
     ''}
@@ -465,15 +454,14 @@ let
     export PYTHONPATH=${nativeBuildPythonSource}/src
     ${lib.optionalString staticClosed ''
       jq -e '
-        .format == "spaghetti-extractor-stage-b-candidate-authority-v2" and
+        .format == "spaghetti-extractor-stage-b-candidate-authority-receipt-v3" and
         .status == "authorized"
       ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
     ''}
     ${python} - \
       ${interpreter} ${nativeEngine} ${nativeRuntime} \
       ${candidateAuthorityArg} \
-      ${finalAuditArg} \
-      ${authorityBundleArg} \
+      ${finalAuthorityArg} \
       ${machineIr}/machine-ir.jsonl \
       ${machineIr}/machine-ir-manifest.json \
       ${fallbackCoverageArg} \
@@ -495,18 +483,17 @@ let
         native_engine_package=pathlib.Path(sys.argv[2]),
         native_runtime_package=pathlib.Path(sys.argv[3]),
         candidate_authority=optional_path(sys.argv[4]),
-        final_static_hybrid_audit=optional_path(sys.argv[5]),
-        authority_bundle=optional_path(sys.argv[6]),
-        machine_ir=pathlib.Path(sys.argv[7]),
-        machine_ir_manifest=pathlib.Path(sys.argv[8]),
-        fallback_coverage_receipt=optional_path(sys.argv[9]),
-        load_image_contract=pathlib.Path(sys.argv[10]),
-        recovered_executable_data=pathlib.Path(sys.argv[11]),
-        precompiled_objects=pathlib.Path(sys.argv[12]),
-        compiler=pathlib.Path(sys.argv[13]),
+        final_authority=optional_path(sys.argv[5]),
+        machine_ir=pathlib.Path(sys.argv[6]),
+        machine_ir_manifest=pathlib.Path(sys.argv[7]),
+        fallback_coverage_receipt=optional_path(sys.argv[8]),
+        load_image_contract=pathlib.Path(sys.argv[9]),
+        recovered_executable_data=pathlib.Path(sys.argv[10]),
+        precompiled_objects=pathlib.Path(sys.argv[11]),
+        compiler=pathlib.Path(sys.argv[12]),
         diagnostic_failure_trap=${if diagnosticFailureTrap then "True" else "False"},
         candidate_mode=${builtins.toJSON candidateMode},
-        out_dir=pathlib.Path(sys.argv[14]),
+        out_dir=pathlib.Path(sys.argv[13]),
       )
     PY
     jq -e '

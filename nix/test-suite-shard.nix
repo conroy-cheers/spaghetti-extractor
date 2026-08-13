@@ -29,6 +29,10 @@ let
     shard.files;
   fileRowsJson = builtins.toJSON fileRows;
   testPathsJson = builtins.toJSON shard.test_paths;
+  memoryMiB =
+    if shard.resource_class == "oracle" then 8192
+    else if shard.resource_class == "large" then 3968
+    else 1920;
 in
 assert invalidEnvironmentKeys == [ ];
 pkgs.runCommand "spaghetti-extractor-test-${sanitize shard.id}" {
@@ -41,7 +45,9 @@ pkgs.runCommand "spaghetti-extractor-test-${sanitize shard.id}" {
   export PYTHONHASHSEED=0
   export LC_ALL=C.UTF-8
   export SOURCE_DATE_EPOCH=1
+  export SPAGHETTI_ORIGINAL_EXECUTION_FORBIDDEN=1
   export SPAGHETTI_TEST_FIXTURES=${fixtureInputs.manifest}
+  export SPAGHETTI_TEST_MEMORY_LIMIT_MIB=${toString memoryMiB}
   ${environmentExports}
   work="$TMPDIR/test-source"
   mkdir -p "$work"
@@ -64,22 +70,43 @@ pkgs.runCommand "spaghetti-extractor-test-${sanitize shard.id}" {
   PY
   export PYTHONPATH="$work/src:$work/tests:$work"
   cd "$work"
-  mapfile -t test_paths < <(python - ${lib.escapeShellArg testPathsJson} <<'PY'
-  import json
-  import sys
-  for path in json.loads(sys.argv[1]):
-      print(path)
-  PY
-  )
-  python -m unittest "''${test_paths[@]}"
   mkdir -p "$out"
-  cat > "$out/test-shard-report.json" <<EOF
-  {
-    "format": "spaghetti-extractor-test-shard-report-v1",
-    "status": "pass",
-    "shard_id": ${builtins.toJSON shard.id},
-    "input_sha256": ${builtins.toJSON shard.input_sha256},
-    "test_count": ${toString (builtins.length shard.tests)}
+  python - ${lib.escapeShellArg testPathsJson} "$out/test-shard-report.json" <<'PY'
+  import json
+  import pathlib
+  import sys
+  import time
+  import unittest
+
+  paths = json.loads(sys.argv[1])
+  loader = unittest.TestLoader()
+  modules = [path.removesuffix(".py").replace("/", ".") for path in paths]
+  suite = loader.loadTestsFromNames(modules)
+  started = time.monotonic()
+  result = unittest.TextTestRunner(verbosity=1).run(suite)
+  elapsed_seconds = time.monotonic() - started
+  status_rows = pathlib.Path("/proc/self/status").read_text(encoding="ascii").splitlines()
+  peak_rss_kib = int(next(row.split()[1] for row in status_rows if row.startswith("VmHWM:")))
+  memory_limit_mib = int(${builtins.toJSON (toString memoryMiB)})
+  within_memory_limit = peak_rss_kib < memory_limit_mib * 1024
+  report = {
+      "format": "spaghetti-extractor-test-shard-report-v1",
+      "status": "pass" if result.wasSuccessful() and within_memory_limit else "fail",
+      "shard_id": ${builtins.toJSON shard.id},
+      "input_sha256": ${builtins.toJSON shard.input_sha256},
+      "test_modules": len(paths),
+      "tests_run": result.testsRun,
+      "skipped": len(result.skipped),
+      "failures": len(result.failures),
+      "errors": len(result.errors),
+      "elapsed_seconds": round(elapsed_seconds, 6),
+      "peak_rss_kib": peak_rss_kib,
+      "memory_limit_mib": memory_limit_mib,
+      "resource_class": ${builtins.toJSON shard.resource_class},
+      "within_memory_limit": within_memory_limit,
   }
-  EOF
+  pathlib.Path(sys.argv[2]).write_text(json.dumps(report, sort_keys=True) + "\n", encoding="utf-8")
+  if not result.wasSuccessful() or not within_memory_limit:
+      raise SystemExit(1)
+  PY
 ''

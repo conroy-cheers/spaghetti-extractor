@@ -262,7 +262,11 @@ def _generated_module(
 def _copy_lean_sources(
     destination: Path, *, kernel_cache: Path | None = None
 ) -> None:
-    source = Path(__file__).parent / "lean" / "StageA"
+    source = (
+        Path(kernel_cache) / "StageA"
+        if kernel_cache is not None
+        else Path(__file__).parent / "lean" / "StageA"
+    )
     stage_a = destination / "StageA"
     stage_a.mkdir(parents=True)
     for module in (

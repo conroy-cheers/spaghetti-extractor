@@ -26,7 +26,6 @@ from spaghetti_extractor.external_interface_profiles import (
     load_external_interface_profile,
     same_library_callback_call_through_effect_json,
 )
-from spaghetti_extractor.control_analysis_v2 import exact_control_inventory_v2
 from spaghetti_extractor.import_abi import SelectedImportABI
 from spaghetti_extractor.indirect_target_dependency_v2 import (
     has_profile_dispatch_dependency_v2,
@@ -108,6 +107,72 @@ def unit(
             "ordered_events": ordered or [],
         },
     }
+
+
+def direct_edges_with_normalized_guards(
+    units: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Build the guarded direct-edge fixture consumed by provenance tests."""
+
+    by_rva = {
+        int(row["source"]["original"]["rva_start"]): str(row["id"])
+        for row in units
+    }
+
+    def normalize(value: object, aliases: list[tuple[object, object]]) -> object:
+        for expression, replacement in aliases:
+            if value == expression:
+                return replacement
+        if not isinstance(value, dict):
+            if isinstance(value, list):
+                return [normalize(item, aliases) for item in value]
+            return value
+        result = {key: normalize(item, aliases) for key, item in value.items()}
+        args = result.get("args")
+        if (
+            result.get("op") in {"and", "and32", "bit_and"}
+            and isinstance(args, list)
+            and len(args) == 2
+            and args[0] == args[1]
+        ):
+            return args[0]
+        return result
+
+    edges: list[dict[str, object]] = []
+    for row in units:
+        control = row.get("control")
+        semantics = row.get("semantics")
+        if not isinstance(control, dict) or not isinstance(semantics, dict):
+            continue
+        aliases = [
+            (
+                write["value"],
+                {"op": "reg", "name": str(write["register"]).lower(), "width": 32},
+            )
+            for write in semantics.get("register_writes", [])
+            if isinstance(write, dict)
+            and "value" in write
+            and isinstance(write.get("register"), str)
+        ]
+        for target_rva in control.get("direct_targets", []):
+            target_id = by_rva.get(target_rva)
+            if target_id is None:
+                continue
+            edge: dict[str, object] = {
+                "source_unit_id": row["id"],
+                "target_unit_id": target_id,
+            }
+            conditions = [
+                condition["condition"]
+                for condition in semantics.get("edge_conditions", [])
+                if isinstance(condition, dict)
+                and condition.get("target_rva") == target_rva
+                and isinstance(condition.get("condition"), dict)
+            ]
+            if len(conditions) == 1:
+                edge["guard"] = normalize(conditions[0], aliases)
+            edges.append(edge)
+    return edges
 
 
 def factory_unit(identifier: str = "factory", rva: int = 0x1100) -> dict[str, object]:
@@ -5612,7 +5677,7 @@ class InterfaceProvenanceTests(unittest.TestCase):
 
         result = self._run(
             units,
-            exact_control_inventory_v2(units)["direct_edges"],
+            direct_edges_with_normalized_guards(units),
             roots=["root"],
             indirect_exits=[{
                 "id": "exit:callback",

@@ -12,7 +12,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from .address_expression_v2 import (
+from .address_expressions import (
     affine_register_offset,
     affine_special_offset,
     constant_u32,
@@ -663,6 +663,71 @@ def derive_memory_version_graph_v2(
             binary=binary,
             submitted=transition_summaries,
         )
+        return _derive_memory_version_graph_from_checked_summaries_v2(
+            by_id=by_id,
+            binary=binary,
+            summaries=summaries,
+            unknown_alias_policy=unknown_alias_policy,
+        )
+    except (AuthorityDataError, TransitionSummaryV2Error, KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, MemoryVersionGraphV2Error):
+            raise
+        raise MemoryVersionGraphV2Error(f"cannot derive memory-version graph: {exc}") from exc
+
+
+def derive_memory_version_graph_from_checked_summaries_v2(
+    *,
+    units: Sequence[Mapping[str, Any]],
+    binary: BinaryBinding,
+    transition_summaries: Sequence[TransitionSummaryV2],
+    unknown_alias_policy: str = "fail_closed",
+) -> MemoryVersionGraphV2:
+    """Compose a graph from summaries checked by a stronger artifact boundary.
+
+    This compatibility entry point deliberately cannot synthesize or recheck a
+    transition summary.  It exists for the v3 artifact pipeline while the
+    native memory graph is being migrated, and prevents the legacy checker
+    from symbolically deriving every transition a second time per SCC.
+    """
+
+    if unknown_alias_policy not in _ALIAS_POLICIES:
+        raise MemoryVersionGraphV2Error(
+            "unknown alias policy must be fail_closed or merge_all"
+        )
+    try:
+        by_id = _unit_index(units)
+        summaries = tuple(transition_summaries)
+        if {row.unit.unit_id for row in summaries} != set(by_id):
+            raise MemoryVersionGraphV2Error(
+                "checked transition summaries do not cover the exact unit inventory"
+            )
+        if len(summaries) != len(by_id):
+            raise MemoryVersionGraphV2Error(
+                "checked transition summaries duplicate a unit"
+            )
+        if any(row.unit.binary != binary for row in summaries):
+            raise MemoryVersionGraphV2Error(
+                "checked transition summaries use a different binary binding"
+            )
+        return _derive_memory_version_graph_from_checked_summaries_v2(
+            by_id=by_id,
+            binary=binary,
+            summaries=summaries,
+            unknown_alias_policy=unknown_alias_policy,
+        )
+    except (AuthorityDataError, TransitionSummaryV2Error, KeyError, TypeError, ValueError) as exc:
+        if isinstance(exc, MemoryVersionGraphV2Error):
+            raise
+        raise MemoryVersionGraphV2Error(f"cannot derive memory-version graph: {exc}") from exc
+
+
+def _derive_memory_version_graph_from_checked_summaries_v2(
+    *,
+    by_id: Mapping[str, Mapping[str, Any]],
+    binary: BinaryBinding,
+    summaries: Sequence[TransitionSummaryV2],
+    unknown_alias_policy: str,
+) -> MemoryVersionGraphV2:
         accesses = tuple(
             access
             for summary in summaries
@@ -769,10 +834,6 @@ def derive_memory_version_graph_v2(
             graph_id=_node_id("memory-version-graph", identity),
             **fields,
         )
-    except (AuthorityDataError, TransitionSummaryV2Error, KeyError, TypeError, ValueError) as exc:
-        if isinstance(exc, MemoryVersionGraphV2Error):
-            raise
-        raise MemoryVersionGraphV2Error(f"cannot derive memory-version graph: {exc}") from exc
 
 
 def check_memory_version_graph_v2(
@@ -1252,6 +1313,7 @@ __all__ = [
     "MemoryVersionV2",
     "UnknownWriteKillV2",
     "check_memory_version_graph_v2",
+    "derive_memory_version_graph_from_checked_summaries_v2",
     "derive_memory_version_graph_v2",
     "validate_memory_version_graph_v2",
 ]

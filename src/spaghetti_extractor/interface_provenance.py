@@ -42,7 +42,7 @@ from .call_frame_hypotheses import (
     PreservedRegisterHypothesis,
     hypothesis_id as call_frame_hypothesis_id,
 )
-from .address_expression_v2 import affine_register_offset
+from .address_expressions import affine_register_offset
 from .external_interface_profiles import (
     ExternalInterfaceProfile,
     InterfaceCallerMemoryFrame,

@@ -10,6 +10,7 @@ from spaghetti_extractor.testkit import (
     ImpactIndex,
     TestRecord,
     TestkitError,
+    apply_scaffold_plan,
     build_suite_plan,
     explain_plan_rebuild,
     plan_phase_scaffold,
@@ -86,9 +87,21 @@ class TestDeveloperServices(unittest.TestCase):
         phase = plan_phase_scaffold(phase_kind="map-sccs", name="alias_summary")
 
         self.assertEqual(test.files[0].path, "tests/unit/memory/test_alias_kill.py")
-        self.assertIn("plan affected", test.next_commands[1])
-        self.assertEqual(phase.files[0].path, "src/spaghetti_extractor/analysis/alias_summary.py")
-        self.assertIn("artifact identity and packing are framework-owned", phase.files[0].content)
+        self.assertIn("nix run .#test -- affected", test.next_commands[0])
+        self.assertEqual(phase.files[0].path, "src/spaghetti_extractor/analysis_v3/alias_summary.py")
+        self.assertIn("phase_framework_v3", phase.files[0].content)
+
+    def test_scaffold_apply_creates_files_and_refuses_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            plan = plan_test_scaffold(subsystem="memory", name="alias_kill")
+
+            created = apply_scaffold_plan(repository, plan)
+
+            self.assertEqual(created, (repository / plan.files[0].path,))
+            self.assertIn("class AliasKillTests", created[0].read_text(encoding="ascii"))
+            with self.assertRaisesRegex(TestkitError, "scaffold_destination_exists"):
+                apply_scaffold_plan(repository, plan)
 
 
 if __name__ == "__main__":

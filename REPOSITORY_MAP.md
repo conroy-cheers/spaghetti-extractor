@@ -62,6 +62,7 @@ Core support modules are deliberately small:
 | `errors.py` | Shared user-input and phase failure types. |
 | `util.py` | Canonical JSON, hashing, and atomic artifact helpers. |
 | `nix_support.py` | Nix discovery and content-addressed worker command construction. |
+| `python_module_index.py` | Canonical local-import index generation shared by the supported developer command and compatibility tool. |
 | `operation_provenance.py` | Provenance records shared by recovered operations and source rendering. |
 
 ## Static Analysis
@@ -84,6 +85,33 @@ machine-model qualification:
 
 PE primitives live in `pe.py`, `stage_binary.py`, and `recursive_decode.py`.
 `rooted_state_machine.py` performs rooted static control recovery.
+`stage_a_external_inputs_v3.py` is the untrusted ingestion boundary that
+re-parses machine-import profiles and exact PE roots into native-v3 artifacts;
+it is intentionally outside the authority kernel.
+
+`src/spaghetti_extractor/analysis_v3/` is the typed, recordized authority
+pipeline being migrated onto the content-addressed graph:
+
+| Module | Purpose |
+|---|---|
+| `_schema.py` | Strict schema, canonical identity, and dependency helpers shared by v3 records. |
+| `authority_common.py`, `identities.py` | Shared authority status, issue, binding, and exact indirect-exit identities. |
+| `exact_units.py` | Exact unit envelopes and projection from the canonical machine-IR universe. |
+| `semantic_index.py` | Compact checked decode/control/memory index consumed after exact-unit validation. |
+| `transition_records.py`, `transition_summaries.py` | Native typed transition records and one independently addressable summary per exact unit. |
+| `memory_records.py`, `memory_versions.py` | Native typed memory-version, alias, merge, access, kill, and issue records. |
+| `structural_targets.py` | Non-authorizing finite indirect-target proposals with explicit blockers. |
+| `inductive_records.py`, `inductive.py` | Native typed invariant proposals, dependency discharge, and checked SCC induction authority. |
+| `external_sites.py`, `callbacks.py` | Canonical checked external sites and callback entry/registration authority. |
+| `root_closure.py`, `exceptional_transitions.py` | Launch-root closure and checked fault/exception dispositions. |
+| `isa_qualification.py`, `fallback_coverage.py` | Exact reachable-form qualification and one fallback implementation disposition per structural unit. |
+| `final_authority.py` | Fail-closed reduction over all authority families; copied status fields cannot authorize it. |
+| `source_plan.py`, `planning.py`, `graph.py` | Bounded source preparation, framework-owned structural/dependency planning, and canonical graph metadata. |
+| `registry.py` | Unique, complete phase registry used to generate the v3 authority graph. |
+
+The transition proposal layer projects exact machine-IR units directly into
+checked native v3 records. No production v3 authority phase may import a v2
+implementation or authorize work through a compatibility adapter.
 
 ## Reference Contracts
 
@@ -109,36 +137,28 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_state_machine.py` | Normalizes static transfer contracts into the generated baseline state machine. |
 | `reconstruction_ir.py` | Prepares exact byte-bound units once, then exports byte-free canonical machine IR with freshly derived global control facts. |
 | `behavioral_roots.py` | Independently parses and hash-binds PE entry, executable export, and immutable TLS callback roots. |
-| `hybrid_authority_v2.py` | Immutable v2 authority records, exact bindings, finite alternatives, dependencies, and bundle closure. |
+| `hybrid_authority_v2.py` | Retired v2 bundle wire model retained for compatibility fixtures; it cannot authorize a candidate. |
 | `machine_ir_authority_v2.py` | Stable exact unit/event binding kernel shared by machine-IR extraction and downstream authority replay. |
 | `analysis_schema_v2.py`, `artifact_identity_v2.py`, `artifact_projection_v2.py` | Shared v2 wire formats, canonical content identities, and independently cached artifact projections. |
 | `artifact_set_v3.py` | Canonical manifest plus bounded compressed NDJSON packs, recursive value interning, streaming indexed reads, and structural/dependency scheduling manifests. |
 | `phase_framework_v3.py` | Typed map-unit, map-SCC, and checked-reduce phase definitions with automatic dependency recording and completeness enforcement. |
-| `transition_summary_v2.py`, `transition_inventory_v2.py`, `memory_version_graph_v2.py`, `structural_target_proposals_v2.py` | Root-independent normalized transition, memory-SSA, and finite target proposal artifacts used by inductive analysis during the v3 migration. |
-| `invariant_certificate_v2.py`, `inductive_invariant_input_v2.py`, `inductive_authority_phase_v2.py`, `inductive_dependency_closure_v2.py`, `parametric_indirect_exit_v2.py` | Typed inductive SCC proposal, replay, dependency closure, and parametric indirect-exit machinery. |
+| `transition_summary_v2.py`, `transition_inventory_v2.py`, `memory_version_graph_v2.py` | Source-format transition and memory-SSA inputs still consumed while exact machine-IR extraction migrates to native v3 records. |
+| `invariant_certificate_v2.py`, `inductive_invariant_input_v2.py`, `parametric_indirect_exit_v2.py` | Typed proposal formats that remain non-authorizing inputs to native v3 certificate checking. |
 | `authority_bindings_v2.py`, `authority_dependencies_v2.py`, `authority_record_core_v2.py` | Exact binary/unit/event bindings, canonical proof-dependency identities, and common immutable authority-record validation. |
-| `address_expression_v2.py` | Normalized address-expression IR used by provenance and target certificates. |
+| `address_expressions.py` | Normalized address-expression IR used by provenance and target certificates. |
 | `checked_memory_access_v2.py` | Exact event-bound finite memory-address facts emitted by cold interprocedural replay. |
 | `checked_memory_address_domain_v2.py` | Exhaustive bounded-context address-domain certificates for one exact memory event; these authorize conditional mutable-slot reads without turning ordinary provenance observations into coverage claims. |
-| `authority_v2_cli.py` | Stable command-line adapters for emitting and validating v2 authority artifacts. |
-| `control_analysis_v2.py` | Exact unit/control inventories and rooted closure, independent of legacy provenance. |
 | `control_disposition_profile.py` | Projects full import profiles onto the stable fixed-arity no-return facts required by structural control extraction. |
 | `entry_fact_derivation_v2.py` | Immutable launch/IAT facts and fail-closed mutable-slot promotion inputs. |
 | `entry_state_analysis_v2.py` | Exact PE/callback entry contracts and checked mutable-global invariants. |
 | `mutable_slot_candidates_v2.py` | Stable rooted discovery of writable 32-bit image slots for point-sensitive replay. |
 | `global_slot_hypotheses_v2.py` | Non-authorizing loader-value induction hypotheses for mutable-slot/interprocedural SCC bootstrap; cold replay must reproduce them before use. |
-| `global_slot_analysis_v2.py` | Point-sensitive mutable-slot replay, taint, dominance, finite joins, and cold replay. |
-| `global_slot_authority_v2.py` | Separately cached promotion of complete cold-replayed slots into typed v2 invariants. |
-| `global_slot_authority_replay_v2.py` | Replays normalized structural slot evidence independently before any mutable-slot fact enters v2 authority. |
 | `global_slot_contract_v2.py`, `global_slot_image_v2.py`, `global_slot_proposal_v2.py` | Typed mutable-slot invariants, exact image-span bindings, and non-authorizing replay proposals. |
 | `interprocedural_analysis.py` | Unified SCC worklist for call summaries, value provenance, indirect targets, and dependency closure. |
-| `interprocedural_phase_v2.py`, `joint_interprocedural_analysis_v2.py`, `joint_fixed_point_v2.py` | Phase adapters and the joint graph/stack/global-slot/interprocedural fixed point. |
-| `stack_range_analysis_v2.py` | Checked stack-range facts and call-frame entry offsets. |
-| `memory_range_invariants_v2.py` | Proposes and independently replays SCC induction facts, then exports exact event-bound static-memory ranges for alias analysis. |
 | `entry_state_contract_v2.py` | Typed entry-state and launch-root authority records. |
 | `indirect_target_dependency_v2.py`, `static_indirect_replay_v2.py` | Exact indirect-target dependencies and independent finite-target replay. |
 | `target_cutpoint_materialization_v2.py`, `recovered_executable_data.py` | Untrusted exact-span proposals for finite control destinations plus checked executable code/data and padding separation. |
-| `exception_invariants_v2.py`, `control_invariant_phase_v2.py` | Non-authorizing invariant synthesis plus independent replay of exceptional SCC and finite indirect-control certificates. |
+| `exception_invariants_v2.py` | Non-authorizing exceptional-invariant proposals retained as source evidence during native v3 migration. |
 | `exception_phase_v2.py` | Cached exceptional-control certificate phase adapter. |
 | `checked_external_site_contract.py` | Canonical machine-level external call/jump contracts and exact profile matching. |
 | `external_site_proposals_v2.py` | Exact-bound, untrusted external-site proposals consumed by v2 replay. |
@@ -148,12 +168,9 @@ conservative self-map used to emit a baseline contract and state machine.
 | `launch_profile_v2.py` | Conditional PE32 launch assumptions and exact static/callback root inventory. |
 | `launch_assumption_inputs_v2.py` | Content-stable, non-authorizing PE-bound assumption projection for root-independent SCC analysis. |
 | `launch_memory_ranges_v2.py` | Exact event-bound spatial separation facts for private launch ranges such as the Win32 TEB; it does not claim content immutability. |
-| `hybrid_authority_builder_v2.py` | Constructs the immutable authority bundle from independently replayed v2 records. |
+| `hybrid_authority_builder_v2.py` | Retired v2 compatibility-fixture constructor; native v3 phases do not consume its bundle. |
 | `hybrid_diagnostics_v2.py` | Collapses dependent consequences behind deterministic primary blocker IDs. |
-| `static_hybrid_pipeline_v2.py` | Compatibility facade over the phase-oriented v2 analysis modules. |
-| `static_hybrid_authority_v2.py` | Recomputing v2 completeness checker and dependency-aware blocker diagnostics. |
-| `static_hybrid_final_audit_v2.py` | Small final replay tying the v2 bundle to exact machine IR and manifest artifacts. |
-| `stage_b_candidate_authority_v2.py` | Sole candidate-generation receipt joining the passing v2 audit with fallback implementation coverage. |
+| `stage_b_candidate_authority_v3.py` | Sole candidate-generation receipt; independently joins checked v3 final authority with exact machine IR and complete fallback implementation coverage. |
 | `internal_function_contracts.py` | Validates PE- and unit-bound, analysis-only call-frame/result contracts for opaque internal library functions. |
 | `reconstruction_control.py` | Proposes clusters from decoded control structure. |
 | `reconstruction_composition.py` | Composes compatible machine units into larger reconstruction clusters. |
@@ -178,7 +195,6 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_typed_x87.py` | Typed, byte-free x87 replay records. |
 | `stage_b_provenance.py` | Candidate source/build/output hash binding. |
 | `stage_b_candidate_modes.py` | Stable fail-closed identifiers for static-closed and structural-diagnostic candidate builds. |
-| `stage_b_hybrid_completeness.py` | Legacy v1 diagnostic/proposal inventory; it cannot authorize candidate generation. |
 | `recovered_executable_data.py` | Checked classification of immutable initialized data embedded in executable sections. |
 
 `component_backend.py` contains the low-level component workspace engine.
@@ -317,10 +333,12 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-b-interpreter-package.nix` | Machine-IR interpreter package. |
 | `stage-b-native-object-graph.nix` | Deterministic native object graph plus a CA compile/assembly realization; avoids evaluation-time reads of CA outputs. |
 | `stage-b-hybrid-candidate.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |
-| `stage-b-static-hybrid-completeness.nix` | Emits the legacy cacheable v1 diagnostic/proposal report; no candidate authority. |
-| `stage-b-static-hybrid-authority-v2.nix` | Content-addressed v2 evidence DAG from exact unit preparation through separately cached mutable-slot replay/promotion, SCC analysis, root/external/ISA/exception closure, and the final audit. |
 | `ca-python-json-phase.nix` | Generic CA phase constructor with explicit store dependencies, schema/status checking, and phase manifests. |
-| `artifact-set-v3.nix`, `artifact-phase-v3.nix` | Typed streaming artifact validation and framework-owned map/reduce/SCC phase execution over bounded CA packs. |
+| `artifact-seed-v3.nix`, `artifact-set-v3.nix`, `artifact-phase-v3.nix` | Strict source-byte-bound artifact ingestion, typed streaming validation, complete checker-source provenance, and framework-owned map/reduce/SCC phase execution over bounded CA packs. |
+| `analysis-v3-source-plan.nix`, `analysis-v3-machine-ir-input.nix` | One streaming dynamic-analysis preparation boundary followed by stable bucket re-interning, so one changed unit invalidates one bounded machine-IR shard without thousands of evaluator reads. |
+| `analysis-v3-graph-manifest.nix`, `analysis-v3-authority.nix` | Registry-derived graph-manifest realization and the reusable fail-closed target adapter that combines exact machine IR with typed external evidence artifacts. |
+| `analysis-v3-external-inputs.nix` | Content-addressed ingestion of exact machine-import profiles and PE/load-image roots into native-v3 input artifact sets. |
+| `authority-graph-v3.nix`, `authority-graph-v3-boundaries.nix`, `authority-graph-v3-packs.nix`, `authority-resource-classes-v3.nix` | Manifest-driven v3 authority DAG, independently checked structural/dependency planning boundaries, stable schedule packs, and one shared resource policy used by dynamic preparation and standalone fixtures. |
 | `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix` | Convention-discovered stable test shards and shared heavy fixtures; the aggregate never reruns an unchanged shard. |
 | `stage-b-headless-diagnostic-run.nix` | Runs only a statically closed candidate in an isolated headless Wine session. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure for phase-specific invalidation. |
@@ -373,7 +391,7 @@ machine-generated catalogs belong in Nix outputs.
 `docs/README.md` is the documentation index. The active design references are
 `architecture.md`, `semantic-components.md`, `external-operations.md`,
 `isa-qualification.md`, `static-roundtrip-qualification.md`, and
-`target-bundles.md`. Historical plans and experiment reports remain in Git
+`target-bundles.md`, and `performance-and-invalidation.md`. Historical plans and experiment reports remain in Git
 history rather than competing with the current design.
 
 ## Validation Targets

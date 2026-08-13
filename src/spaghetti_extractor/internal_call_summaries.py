@@ -2072,6 +2072,26 @@ def _target_binary(
 ) -> _TargetExpression | None:
     if left is None or right is None:
         return None
+    left_alternatives = left[1] if left[0] == "finite_alternatives" else (left,)
+    right_alternatives = right[1] if right[0] == "finite_alternatives" else (right,)
+    if left[0] == "finite_alternatives" or right[0] == "finite_alternatives":
+        # Finite alternatives are lattice nodes, not ordinary expression
+        # operands.  Distribute arithmetic immediately so loops cannot build
+        # exponentially nested expression trees before the enclosing join
+        # applies its configured alternative budget.
+        if len(left_alternatives) * len(right_alternatives) > 64:
+            return None
+        distributed = {
+            value
+            for lhs in left_alternatives
+            for rhs in right_alternatives
+            if (value := _target_binary(op, lhs, rhs)) is not None
+        }
+        if len(distributed) != len(left_alternatives) * len(right_alternatives):
+            return None
+        if len(distributed) == 1:
+            return next(iter(distributed))
+        return ("finite_alternatives", tuple(sorted(distributed, key=repr)))
     if left[0] == "constant" and right[0] == "constant":
         lhs = int(left[1])
         rhs = int(right[1])
@@ -2095,6 +2115,19 @@ def _target_unary(
 ) -> _TargetExpression | None:
     if value is None:
         return None
+    if value[0] == "finite_alternatives":
+        if len(value[1]) > 64:
+            return None
+        distributed = {
+            result
+            for alternative in value[1]
+            if (result := _target_unary(op, alternative)) is not None
+        }
+        if len(distributed) != len(value[1]):
+            return None
+        if len(distributed) == 1:
+            return next(iter(distributed))
+        return ("finite_alternatives", tuple(sorted(distributed, key=repr)))
     if op == "neg32" and value[0] == "constant":
         return ("constant", (-int(value[1])) & 0xFFFFFFFF)
     return (op, value)
@@ -2128,7 +2161,16 @@ def _instantiate_target_expression(
         address = _instantiate_target_expression(
             expression[1], target_state=target_state, value_state=value_state
         )
-        return None if address is None else ("load32", address)
+        if address is None:
+            return None
+        if address[0] == "finite_alternatives":
+            if len(address[1]) > 64:
+                return None
+            return (
+                "finite_alternatives",
+                tuple(("load32", alternative) for alternative in address[1]),
+            )
+        return ("load32", address)
     if kind == "finite_alternatives":
         result: _TargetExpression | None = None
         for alternative in expression[1]:

@@ -6,36 +6,39 @@
   target ? null,
   changedPaths ? [ ],
   shardCount ? 32,
-  strictPolicy ? true,
 }:
 
 let
   lib = pkgs.lib;
   planningSource = lib.fileset.toSource {
     root = repositoryRoot;
-    fileset = lib.fileset.unions [
+    fileset = lib.fileset.unions ((if mode == "smoke" then [
+      (repositoryRoot + "/src")
+      (repositoryRoot + "/tests/smoke")
+      (repositoryRoot + "/flake.nix")
+    ] else [
       (repositoryRoot + "/README.md")
       (repositoryRoot + "/REPOSITORY_MAP.md")
       (repositoryRoot + "/docs")
       (repositoryRoot + "/src")
       (repositoryRoot + "/tests")
-      (repositoryRoot + "/fixtures")
+      (lib.fileset.maybeMissing (repositoryRoot + "/fixtures"))
       (repositoryRoot + "/isa-catalogs")
       (repositoryRoot + "/nix")
       (repositoryRoot + "/profiles")
       (repositoryRoot + "/targets")
       (repositoryRoot + "/flake.nix")
+      (repositoryRoot + "/flake.lock")
       (repositoryRoot + "/pyproject.toml")
       (repositoryRoot + "/tools")
-    ];
+    ]));
   };
   changedArguments = lib.concatMapStringsSep " "
     (path: "--changed ${lib.escapeShellArg path}")
     changedPaths;
   targetArgument = lib.optionalString (target != null) "--target ${lib.escapeShellArg target}";
-  policyArgument = lib.optionalString (!strictPolicy) "--allow-legacy-policy";
 in
-assert builtins.elem mode [ "affected" "benchmark" "full" "smoke" "target" ];
+assert builtins.elem mode [ "affected" "benchmark" "catalog" "full" "smoke" "target" ];
 assert builtins.isInt shardCount && shardCount >= 1 && shardCount <= 256;
 pkgs.runCommand "spaghetti-extractor-test-suite-plan-${mode}" {
   nativeBuildInputs = [ pythonEnv ];
@@ -51,11 +54,23 @@ pkgs.runCommand "spaghetti-extractor-test-suite-plan-${mode}" {
   mkdir -p "$out"
   python -m spaghetti_extractor.testkit \
     --repository ${planningSource} \
-    index --shards ${toString shardCount} ${policyArgument} \
+    index --shards ${toString shardCount} \
     --out "$out/impact-index.json"
-  python -m spaghetti_extractor.testkit \
-    --repository ${planningSource} \
-    plan ${mode} --index "$out/impact-index.json" \
-    ${targetArgument} ${changedArguments} \
-    --out "$out/suite-plan.json"
+  ${if mode == "catalog" then ''
+    python - "$out/impact-index.json" "$out/suite-plan.json" <<'PY'
+    import sys
+    from pathlib import Path
+
+    from spaghetti_extractor.testkit.io import load_index, write_manifest
+    from spaghetti_extractor.testkit.planning import build_suite_plan
+
+    write_manifest(Path(sys.argv[2]), build_suite_plan(load_index(Path(sys.argv[1])), mode="catalog"))
+    PY
+  '' else ''
+    python -m spaghetti_extractor.testkit \
+      --repository ${planningSource} \
+      plan ${mode} --index "$out/impact-index.json" \
+      ${targetArgument} ${changedArguments} \
+      --out "$out/suite-plan.json"
+  ''}
 ''

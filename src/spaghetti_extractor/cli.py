@@ -10,16 +10,6 @@ from typing import Any, Callable
 
 from .analysis.binary_inventory import stage_a_inventory_binary
 from .analysis.isa_inventory import write_binary_isa_inventory
-from .authority_v2_cli import (
-    build_base_launch_profile_v2_from_paths,
-    build_candidate_authority_v2_from_paths,
-    build_external_site_proposals_v2_from_paths,
-    build_static_hybrid_authority_v2_from_paths,
-    derive_callback_entry_contracts_v2_from_paths,
-    finalize_launch_profile_v2_from_paths,
-    validate_candidate_authority_v2_from_paths,
-    validate_static_hybrid_authority_v2_from_paths,
-)
 from .behavioral_roots import generate_behavioral_roots
 from .component_discovery import write_component_proposals
 from .component_selection import materialize_component_declarations
@@ -52,6 +42,10 @@ from .source_project import bind_source_project
 from .stage_b import (
     stage_b_explain_delta,
     stage_b_validate_candidate,
+)
+from .stage_b_candidate_authority_v3 import (
+    build_stage_b_candidate_authority_v3,
+    validate_stage_b_candidate_authority_v3,
 )
 from .stage_b_c_backend import stage_b_generate_semantic_c_from_state_machine
 from .stage_b_functional import (
@@ -115,61 +109,6 @@ def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     )
     _path(behavioral_roots, "original", required=True)
     _path(behavioral_roots, "out", required=True)
-
-    base_launch_v2 = _command(
-        commands,
-        "stage-a-build-base-launch-profile-v2",
-        "build exact PE launch assumptions before callback-root finalization",
-        lambda a: _generated_intermediate(
-            build_base_launch_profile_v2_from_paths(
-                original=a.original,
-                behavioral_roots=a.behavioral_roots,
-                assumptions=a.assumptions,
-                feature_inventory=a.feature_inventory,
-                out=a.out,
-            ),
-            artifact="base_launch_profile_v2",
-        ),
-    )
-    _path(base_launch_v2, "original", required=True)
-    _path(base_launch_v2, "behavioral_roots", required=True)
-    _path(base_launch_v2, "assumptions", required=True)
-    _path(base_launch_v2, "feature_inventory", required=True)
-    _path(base_launch_v2, "out", required=True)
-
-    callback_entries_v2 = _command(
-        commands,
-        "stage-a-derive-callback-entry-contracts-v2",
-        "derive callback entry contracts from registration and strict state evidence",
-        lambda a: derive_callback_entry_contracts_v2_from_paths(
-            original=a.original,
-            machine_ir=a.machine_ir,
-            interface_provenance=a.interface_provenance,
-            global_slot_invariants=a.global_slot_invariants,
-            out=a.out,
-        ),
-    )
-    _path(callback_entries_v2, "original", required=True)
-    _path(callback_entries_v2, "machine_ir", required=True)
-    _path(callback_entries_v2, "interface_provenance", required=True)
-    _path(callback_entries_v2, "global_slot_invariants", required=True)
-    _path(callback_entries_v2, "out", required=True)
-
-    finalize_launch_v2 = _command(
-        commands,
-        "stage-a-finalize-launch-profile-v2",
-        "bind checked event callback roots into an exact PE launch profile",
-        lambda a: finalize_launch_profile_v2_from_paths(
-            base_launch_profile=a.base_launch_profile,
-            behavioral_roots=a.behavioral_roots,
-            callback_entry_contracts=a.callback_entry_contracts,
-            out=a.out,
-        ),
-    )
-    _path(finalize_launch_v2, "base_launch_profile", required=True)
-    _path(finalize_launch_v2, "behavioral_roots", required=True)
-    _path(finalize_launch_v2, "callback_entry_contracts", required=True)
-    _path(finalize_launch_v2, "out", required=True)
 
     isa_inventory = _command(
         commands,
@@ -350,119 +289,24 @@ def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     _many_paths(machine_ir, "external_operation_profile")
     _path(machine_ir, "out", required=True)
 
-    external_sites_v2 = _command(
+    candidate_authority_v3 = _command(
         commands,
-        "stage-a-build-external-site-proposals-v2",
-        "bind normalized external-site candidates for strict v2 replay",
-        lambda a: build_external_site_proposals_v2_from_paths(
-            legacy_v1_diagnostic=a.legacy_v1_diagnostic,
-            machine_ir=a.machine_ir,
-            original=a.original,
-            out=a.out,
-        ),
+        "stage-b-build-candidate-authority-v3",
+        "recompute the fail-closed v3 candidate-generation authority receipt",
+        _build_candidate_authority_v3,
     )
-    _path(external_sites_v2, "legacy_v1_diagnostic", required=True)
-    _path(external_sites_v2, "machine_ir", required=True)
-    _path(external_sites_v2, "original", required=True)
-    _path(external_sites_v2, "out", required=True)
+    _add_candidate_authority_v3_inputs(candidate_authority_v3)
+    _path(candidate_authority_v3, "out", required=True)
 
-    static_authority_v2 = _command(
+    validate_candidate_authority_v3 = _command(
         commands,
-        "stage-a-build-static-hybrid-authority-v2",
-        "build strict v2 global-slot, entry, ISA, exception, and final authority artifacts",
-        lambda a: build_static_hybrid_authority_v2_from_paths(
-            machine_ir=a.machine_ir,
-            machine_ir_manifest=a.machine_ir_manifest,
-            original=a.original,
-            behavioral_roots=a.behavioral_roots,
-            legacy_v1_diagnostic=a.legacy_v1_diagnostic,
-            checked_external_sites=a.checked_external_sites,
-            external_profile_authority=a.external_profile_authority,
-            isa_requirements=a.isa_requirements,
-            isa_selection_authority=a.isa_selection_authority,
-            launch_profile=a.launch_profile,
-            checked_exception_reports=a.checked_exception_report,
-            entry_range_facts=a.entry_range_fact,
-            world_range_facts=a.world_range_fact,
-            machine_import_profiles=a.machine_import_profile,
-            external_interface_profiles=a.external_interface_profile,
-            external_operation_profiles=a.external_operation_profile,
-            callable_external_profiles=a.callable_external_profile,
-            internal_function_contract_profiles=a.internal_function_contract_profile,
-            static_recovery_inventory=a.static_recovery_inventory,
-            out=a.out,
-        ),
+        "stage-b-validate-candidate-authority-v3",
+        "recompute and validate a v3 candidate receipt against exact inputs",
+        _validate_candidate_authority_v3,
     )
-    _add_static_authority_v2_inputs(static_authority_v2)
-    _path(static_authority_v2, "out", required=True)
-
-    validate_static_authority_v2 = _command(
-        commands,
-        "stage-a-validate-static-hybrid-authority-v2",
-        "cold-replay a strict v2 static pipeline and reject stale artifacts",
-        lambda a: validate_static_hybrid_authority_v2_from_paths(
-            pipeline=a.pipeline,
-            machine_ir=a.machine_ir,
-            machine_ir_manifest=a.machine_ir_manifest,
-            original=a.original,
-            behavioral_roots=a.behavioral_roots,
-            legacy_v1_diagnostic=a.legacy_v1_diagnostic,
-            checked_external_sites=a.checked_external_sites,
-            external_profile_authority=a.external_profile_authority,
-            isa_requirements=a.isa_requirements,
-            isa_selection_authority=a.isa_selection_authority,
-            launch_profile=a.launch_profile,
-            checked_exception_reports=a.checked_exception_report,
-            entry_range_facts=a.entry_range_fact,
-            world_range_facts=a.world_range_fact,
-            machine_import_profiles=a.machine_import_profile,
-            external_interface_profiles=a.external_interface_profile,
-            external_operation_profiles=a.external_operation_profile,
-            callable_external_profiles=a.callable_external_profile,
-            internal_function_contract_profiles=a.internal_function_contract_profile,
-            static_recovery_inventory=a.static_recovery_inventory,
-            out=a.out,
-        ),
-    )
-    _path(validate_static_authority_v2, "pipeline", required=True)
-    _add_static_authority_v2_inputs(validate_static_authority_v2)
-    _path(validate_static_authority_v2, "out")
-
-    candidate_authority_v2 = _command(
-        commands,
-        "stage-b-build-candidate-authority-v2",
-        "build the strict v2 candidate-generation authority receipt",
-        lambda a: build_candidate_authority_v2_from_paths(
-            final_static_hybrid_audit=a.final_static_hybrid_audit,
-            authority_bundle=a.authority_bundle,
-            machine_ir=a.machine_ir,
-            machine_ir_manifest=a.machine_ir_manifest,
-            fallback_coverage_receipt=a.fallback_coverage_receipt,
-            legacy_v1_diagnostics=a.legacy_v1_diagnostic,
-            out=a.out,
-        ),
-    )
-    _add_candidate_authority_v2_inputs(candidate_authority_v2)
-    _path(candidate_authority_v2, "out", required=True)
-
-    validate_candidate_authority_v2 = _command(
-        commands,
-        "stage-b-validate-candidate-authority-v2",
-        "replay a strict v2 candidate receipt against its exact inputs",
-        lambda a: validate_candidate_authority_v2_from_paths(
-            receipt=a.receipt,
-            final_static_hybrid_audit=a.final_static_hybrid_audit,
-            authority_bundle=a.authority_bundle,
-            machine_ir=a.machine_ir,
-            machine_ir_manifest=a.machine_ir_manifest,
-            fallback_coverage_receipt=a.fallback_coverage_receipt,
-            legacy_v1_diagnostics=a.legacy_v1_diagnostic,
-            out=a.out,
-        ),
-    )
-    _path(validate_candidate_authority_v2, "receipt", required=True)
-    _add_candidate_authority_v2_inputs(validate_candidate_authority_v2)
-    _path(validate_candidate_authority_v2, "out")
+    _path(validate_candidate_authority_v3, "receipt", required=True)
+    _add_candidate_authority_v3_inputs(validate_candidate_authority_v3)
+    _path(validate_candidate_authority_v3, "out")
 
     skeleton = _command(
         commands,
@@ -775,35 +619,36 @@ def _run_isa_conformance_nix(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
-def _add_candidate_authority_v2_inputs(command: argparse.ArgumentParser) -> None:
-    _path(command, "final_static_hybrid_audit", required=True)
-    _path(command, "authority_bundle", required=True)
+def _add_candidate_authority_v3_inputs(command: argparse.ArgumentParser) -> None:
+    _path(command, "final_authority", required=True)
     _path(command, "machine_ir", required=True)
     _path(command, "machine_ir_manifest", required=True)
     _path(command, "fallback_coverage_receipt", required=True)
-    _many_paths(command, "legacy_v1_diagnostic")
 
 
-def _add_static_authority_v2_inputs(command: argparse.ArgumentParser) -> None:
-    _path(command, "machine_ir", required=True)
-    _path(command, "machine_ir_manifest", required=True)
-    _path(command, "original", required=True)
-    _path(command, "behavioral_roots", required=True)
-    _path(command, "legacy_v1_diagnostic")
-    _path(command, "checked_external_sites")
-    _path(command, "external_profile_authority")
-    _path(command, "isa_requirements", required=True)
-    _path(command, "isa_selection_authority", required=True)
-    _path(command, "launch_profile")
-    _many_paths(command, "checked_exception_report")
-    _many_paths(command, "entry_range_fact")
-    _many_paths(command, "world_range_fact")
-    _many_paths(command, "machine_import_profile")
-    _many_paths(command, "external_interface_profile")
-    _many_paths(command, "external_operation_profile")
-    _many_paths(command, "callable_external_profile")
-    _many_paths(command, "internal_function_contract_profile")
-    _path(command, "static_recovery_inventory")
+def _build_candidate_authority_v3(args: argparse.Namespace) -> dict[str, Any]:
+    receipt = build_stage_b_candidate_authority_v3(
+        final_authority=args.final_authority,
+        machine_ir=args.machine_ir,
+        machine_ir_manifest=args.machine_ir_manifest,
+        fallback_coverage_receipt=args.fallback_coverage_receipt,
+    )
+    args.out.write_bytes(receipt.to_bytes())
+    return receipt.to_payload()
+
+
+def _validate_candidate_authority_v3(args: argparse.Namespace) -> dict[str, Any]:
+    receipt = validate_stage_b_candidate_authority_v3(
+        receipt=args.receipt,
+        final_authority=args.final_authority,
+        machine_ir=args.machine_ir,
+        machine_ir_manifest=args.machine_ir_manifest,
+        fallback_coverage_receipt=args.fallback_coverage_receipt,
+        require_authorized=False,
+    )
+    if args.out is not None:
+        args.out.write_bytes(receipt.to_bytes())
+    return receipt.to_payload()
 
 
 def _run_isa_conformance_worker(args: argparse.Namespace) -> dict[str, Any]:

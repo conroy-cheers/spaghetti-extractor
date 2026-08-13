@@ -21,8 +21,6 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             "staticExport",
             "stateMachine",
             "machineIr",
-            "memoryRangeInvariants",
-            "staticHybridAuthorityV2",
             "reconstructionPlan",
             "componentProposals",
         ):
@@ -87,270 +85,116 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("interprocedural_control=False", module)
         self.assertNotIn("controlManifest = provisionalMachineIr", module)
         self.assertIn("prepared_units_reused", module)
+        self.assertIn("machineIrPreparationPythonSource", module)
+        self.assertIn("machineIrExportPythonSource", module)
+        self.assertIn('"spaghetti_extractor.finite_value_domain"', module)
+        preparation = module[
+            module.index("machineIrPreparationPythonSource") :
+            module.index("machineIrExportPythonSource")
+        ]
+        self.assertNotIn("finite_value_domain", preparation)
+        self.assertIn("finite_dataflow_factory=FiniteU32Dataflow", module)
 
-    def test_joint_phase_owns_slot_analysis_and_authority_replays_it(self) -> None:
+    def test_component_analysis_contains_no_legacy_authority_loop(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
             encoding="utf-8"
         )
-        joint_phase = module[
-            module.index("      jointInterproceduralV2 = {") :
-            module.index("      interproceduralV2 = {")
-        ]
-        projection_phases = module[
-            module.index("      interproceduralV2 = {") :
-            module.index("      callbackEntryContracts = {")
-        ]
+        for forbidden in (
+            "staticHybridAuthorityV2",
+            "jointInterproceduralV2",
+            "interproceduralSeed",
+            "globalSlotAuthority",
+            "diagnosticRootedClosure",
+        ):
+            self.assertNotIn(forbidden, module)
 
-        self.assertIn("spaghetti_extractor.global_slot_analysis_v2", joint_phase)
-        self.assertIn(
-            "spaghetti_extractor.checked_memory_address_domain_v2",
-            joint_phase,
-        )
-        self.assertIn("spaghetti_extractor.mutable_slot_candidates_v2", joint_phase)
-        self.assertIn("spaghetti_extractor.global_slot_authority_v2", joint_phase)
-        self.assertIn("derive_proposal_slot_dependencies", joint_phase)
-        self.assertIn('*seed.get("recovered_targets", [])', joint_phase)
-        self.assertIn("derive_dependency_scoped_slot_inventory_v2", joint_phase)
-        self.assertIn(
-            "proposal_dependencies=proposal_slot_dependencies",
-            joint_phase,
-        )
-        self.assertIn(
-            "proposal_slot_dependencies=proposal_slot_dependencies",
-            joint_phase,
-        )
-        self.assertNotIn("spaghetti_extractor.entry_state_analysis_v2", joint_phase)
-        self.assertIn(
-            "spaghetti_extractor.launch_assumption_inputs_v2", joint_phase
-        )
-        self.assertNotIn("spaghetti_extractor.launch_profile_v2", joint_phase)
-        self.assertIn("launch_analysis_assumptions", joint_phase)
-        self.assertEqual(
-            projection_phases.count(
-                'pythonModules = [ "spaghetti_extractor.artifact_projection_v2" ];'
-            ),
-            2,
-        )
-        self.assertNotIn("analyze_global_slots_v2", projection_phases)
-        self.assertIn("replay_global_slot_authority_v2", projection_phases)
-        self.assertIn('inputs["base_graph"]', projection_phases)
-        self.assertIn('inputs["memory_range_invariants"]', projection_phases)
-        authority_phase = module[
-            module.index("      globalSlotAuthority = {") :
-            module.index("      callbackEntryContracts = {")
-        ]
-        self.assertNotIn("artifact_projection_v2", authority_phase)
-        self.assertIn("derive_rooted_control_closure_v2", authority_phase)
-        self.assertIn("_parse_stage_a_pe", authority_phase)
-        self.assertIn(
-            'get("proposal_slot_dependencies", [])',
-            authority_phase,
-        )
+    def test_v3_registry_owns_the_complete_authority_family(self) -> None:
+        registry = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3" / "registry.py"
+        ).read_text(encoding="utf-8")
+        for phase in (
+            "TRANSITION_SUMMARIES_PHASE_V3",
+            "MEMORY_VERSIONS_PHASE_V3",
+            "INDUCTIVE_AUTHORITY_PHASE_V3",
+            "FINAL_AUTHORITY_PHASE_V3",
+        ):
+            self.assertIn(phase, registry)
+        self.assertIn("require_complete_family", registry)
 
-    def test_joint_python_closure_excludes_root_entry_analysis(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
+    def test_transition_summaries_are_native_content_addressed_units(self) -> None:
+        transition = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            / "transition_summaries.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("map_units(", transition)
+        self.assertIn('source_input="exact_units"', transition)
+        self.assertNotIn("transition_summary_v2", transition)
+        self.assertNotIn("authority_bindings_v2", transition)
+
+    def test_memory_authority_is_a_dependency_scc_phase(self) -> None:
+        memory = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            / "memory_versions.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("map_sccs(", memory)
+        self.assertIn('schedule_record_inputs=("semantic_index",)', memory)
+        self.assertIn('"transition_summaries": "transition-summaries-v3"', memory)
+
+    def test_inductive_authority_consumes_native_checked_summaries(self) -> None:
+        inductive = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3" / "inductive.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("map_sccs(", inductive)
+        self.assertIn('"memory_versions": "memory-versions-v3"', inductive)
+        self.assertIn('"transition_summaries": "transition-summaries-v3"', inductive)
+        self.assertNotIn("invariant_certificate_v2", inductive)
+
+    def test_authority_graph_is_registry_derived_not_manually_plumbed(self) -> None:
+        graph = (ROOT / "nix" / "authority-graph-v3.nix").read_text(
             encoding="utf-8"
         )
-        joint_phase = module[
-            module.index("      jointInterproceduralV2 = {") :
-            module.index("      interproceduralV2 = {")
-        ]
-        roots = set(
-            re.findall(r'"(spaghetti_extractor\.[a-zA-Z0-9_\.]+)"', joint_phase)
+        manifest = (ROOT / "nix" / "analysis-v3-graph-manifest.nix").read_text(
+            encoding="utf-8"
         )
+        self.assertIn("graph.phases", graph)
+        self.assertIn("authority_graph_manifest_v3", manifest)
+        graph_module = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3" / "graph.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("AUTHORITY_PHASE_REGISTRY_V3", graph_module)
+        self.assertNotIn("staticHybridAuthorityV2", graph)
+
+    def test_late_authority_families_have_independent_phase_boundaries(self) -> None:
+        registry = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3" / "registry.py"
+        ).read_text(encoding="utf-8")
+        for phase in (
+            "CANONICAL_EXTERNAL_SITES_PHASE_V3",
+            "CALLBACK_AUTHORITY_PHASE_V3",
+            "LAUNCH_ROOT_CLOSURE_PHASE_V3",
+            "EXCEPTIONAL_TRANSITIONS_PHASE_V3",
+            "ISA_QUALIFICATION_PHASE_V3",
+            "FALLBACK_COVERAGE_PHASE_V3",
+        ):
+            self.assertIn(phase, registry)
+
+    def test_exact_source_plan_is_separate_from_semantic_consumers(self) -> None:
+        source_plan = (ROOT / "nix" / "analysis-v3-source-plan.nix").read_text(
+            encoding="utf-8"
+        )
+        machine_input = (
+            ROOT / "nix" / "analysis-v3-machine-ir-input.nix"
+        ).read_text(encoding="utf-8")
+        self.assertIn("prepare_analysis_source_v3", source_plan)
+        self.assertIn('"${preparation}/plan.json"', machine_input)
+        self.assertIn("preplannedBoundaries", machine_input)
+        self.assertIn("builtins.toFile", machine_input)
+
+    def test_native_v3_module_closure_excludes_legacy_authority(self) -> None:
         index = json.loads(
             (ROOT / "nix" / "python-module-index.json").read_text(encoding="utf-8")
         )["modules"]
-        closure: set[str] = set()
-        pending = sorted(root for root in roots if root in index)
-        while pending:
-            current = pending.pop()
-            if current in closure:
-                continue
-            closure.add(current)
-            pending.extend(index[current]["dependencies"])
-
-        self.assertNotIn("spaghetti_extractor.entry_state_analysis_v2", closure)
-        self.assertNotIn("spaghetti_extractor.entry_state_contract_v2", closure)
-
-    def test_stack_range_authority_is_replayed_inside_joint_phase(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
-            encoding="utf-8"
-        )
-        call_phase = module[
-            module.index("      interproceduralSeed = {") :
-            module.index("      jointInterproceduralV2 = {")
-        ]
-        joint_phase = module[
-            module.index("      jointInterproceduralV2 = {") :
-            module.index("      interproceduralV2 = {")
-        ]
-
-        self.assertIn("derive_interprocedural_result_v2", call_phase)
-        self.assertNotIn("stackRangeAnalysis = {", module)
-        self.assertIn("derive_joint_fixed_point_v2", joint_phase)
-        self.assertIn("JointFixedPointCallbacks", joint_phase)
-        self.assertIn(
-            "from spaghetti_extractor.interprocedural_analysis import "
-            "InterproceduralAnalysisWorkspace",
-            joint_phase,
-        )
-        self.assertEqual(
-            joint_phase.count("workspace=interprocedural_workspace"), 2
-        )
-        self.assertIn("merge_recovery_proposals_v2", joint_phase)
-        self.assertIn("derive_stack_range_analysis_v2", joint_phase)
-        self.assertIn("discovery_call_frames", joint_phase)
-        self.assertIn("inductive_hypothesis_call_frames", joint_phase)
-        self.assertIn("proposal_call_frame_hypotheses", joint_phase)
-        self.assertEqual(module.count("derive_stack_range_analysis_v2"), 2)
-        self.assertIn("graph=proposal_graph", joint_phase)
-        self.assertNotIn('inputs["stack_range_analysis"]', joint_phase)
-        self.assertIn("range_authority_binding=stack_ranges.get(\"binding\")", joint_phase)
-        self.assertNotIn("entry_range_facts=", joint_phase)
-        self.assertIn("checked_memory_spatial_facts=", joint_phase)
-        self.assertIn(
-            'call_site_effects=operation.get("call_site_effects", [])',
-            joint_phase,
-        )
-        self.assertIn("build_global_slot_authority_v2", joint_phase)
-        self.assertNotIn("replay_global_slot_authority_v2", joint_phase)
-        authority_phase = module[
-            module.index("      globalSlotAuthority = {") :
-            module.index("      callbackEntryContracts = {")
-        ]
-        self.assertIn("replay_global_slot_authority_v2", authority_phase)
-
-    def test_exact_stack_state_budget_is_independent_of_value_origins(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("analysis_finite_value_budget = 32", module)
-        self.assertIn("analysis_stack_offset_budget = 64", module)
-        self.assertIn(
-            "finite_offset_budget=analysis_stack_offset_budget",
-            module,
-        )
-        self.assertIn(
-            "stack_finite_offset_budget=analysis_stack_offset_budget",
-            module,
-        )
-        self.assertEqual(
-            module.count(
-                "stack_entry_offset_budget=analysis_stack_offset_budget"
-            ),
-            2,
-        )
-        self.assertNotIn(
-            "finite_offset_budget=analysis_finite_value_budget",
-            module,
-        )
-        self.assertNotIn(
-            "stack_finite_offset_budget=analysis_finite_value_budget",
-            module,
-        )
-
-    def test_memory_range_invariants_are_checked_once_before_joint_analysis(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
-            encoding="utf-8"
-        )
-        range_phase = module[
-            module.index("      memoryRangeInvariants = {") :
-            module.index("      jointInterproceduralV2 = {")
-        ]
-        joint_phase = module[
-            module.index("      jointInterproceduralV2 = {") :
-            module.index("      interproceduralV2 = {")
-        ]
-
-        self.assertIn("derive_memory_range_invariants_v2", range_phase)
-        self.assertIn("inputs[\"memory_range_invariants\"]", joint_phase)
-        self.assertIn(
-            "memory_range_invariant_analysis=memory_range_invariants",
-            joint_phase,
-        )
-
-    def test_parametric_indirect_exits_have_a_ca_phase_boundary(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
-            encoding="utf-8"
-        )
-        graph = (
-            ROOT / "nix" / "stage-b-static-hybrid-authority-v2.nix"
-        ).read_text(encoding="utf-8")
-        phase = module[
-            module.index("      parametricIndirectExitSummaries = {") :
-            module.index("      controlInvariantCertificates = {")
-        ]
-        joint = module[
-            module.index("      jointInterproceduralV2 = {") :
-            module.index("      interproceduralV2 = {")
-        ]
-
-        self.assertIn("__contentAddressed = true;", module)
-        self.assertIn(
-            "build_parametric_indirect_exit_inventory_v2", phase
-        )
-        self.assertNotIn("selected_profiles", phase)
-        self.assertIn('inputs["interprocedural_seed"]', phase)
-        self.assertIn(
-            'inputs["parametric_indirect_exit_summaries"]', joint
-        )
-        self.assertIn(
-            'parametricIndirectExitSummaries = mkPhase '
-            '"parametricIndirectExitSummaries"',
-            graph,
-        )
-        self.assertIn(
-            "parametric_indirect_exit_summaries =", graph
-        )
-
-    def test_interprocedural_phase_does_not_import_pipeline_or_audit_layers(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
-            encoding="utf-8"
-        )
-        joint_phase = module[
-            module.index("      jointInterproceduralV2 = {") :
-            module.index("      interproceduralV2 = {")
-        ]
-        projection_phase = module[
-            module.index("      interproceduralV2 = {") :
-            module.index("      rootedClosure = {")
-        ]
-
-        self.assertIn("spaghetti_extractor.interprocedural_phase_v2", joint_phase)
-        self.assertIn("spaghetti_extractor.joint_fixed_point_v2", joint_phase)
-        self.assertIn("spaghetti_extractor.internal_function_contracts", joint_phase)
-        self.assertNotIn("spaghetti_extractor.static_hybrid_pipeline_v2", joint_phase)
-        self.assertIn("spaghetti_extractor.artifact_projection_v2", projection_phase)
-        self.assertNotIn("derive_interprocedural_result_v2", projection_phase)
-        phase_module = (
-            ROOT / "src" / "spaghetti_extractor" / "interprocedural_phase_v2.py"
-        ).read_text(encoding="utf-8")
-        self.assertNotIn("static_hybrid_authority_v2", phase_module)
-        self.assertNotIn("static_hybrid_final_audit_v2", phase_module)
-        self.assertNotIn("hybrid_diagnostics_v2", phase_module)
-
-    def test_exact_unit_phase_uses_the_stable_binding_kernel(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
-            encoding="utf-8"
-        )
-        phase = module[
-            module.index("      exactUnitPrep = {") :
-            module.index("      baseGraph = {")
-        ]
-
-        self.assertIn("spaghetti_extractor.machine_ir_authority_v2", phase)
-        self.assertNotIn("spaghetti_extractor.hybrid_authority_builder_v2", phase)
-
-    def test_machine_ir_closure_excludes_mutable_certificate_schemas(self) -> None:
-        index = json.loads(
-            (ROOT / "nix" / "python-module-index.json").read_text(
-                encoding="utf-8"
-            )
-        )["modules"]
-
-        pending = ["spaghetti_extractor.reconstruction_ir"]
+        pending = ["spaghetti_extractor.analysis_v3.registry"]
         closure: set[str] = set()
         while pending:
             module = pending.pop()
@@ -358,87 +202,42 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
                 continue
             closure.add(module)
             pending.extend(index[module]["dependencies"])
-
-        self.assertIn("spaghetti_extractor.authority_bindings_v2", closure)
-        self.assertNotIn("spaghetti_extractor.hybrid_authority_v2", closure)
-        self.assertNotIn(
-            "spaghetti_extractor.external_site_proposals_v2", closure
-        )
-        self.assertNotIn(
-            "spaghetti_extractor.static_hybrid_authority_v2", closure
+        self.assertFalse(
+            [module for module in closure if module.endswith("_v2")],
+            sorted(closure),
         )
 
-    def test_joint_analysis_closure_excludes_acceptance_only_schemas(self) -> None:
-        index = json.loads(
-            (ROOT / "nix" / "python-module-index.json").read_text(
-                encoding="utf-8"
-            )
-        )["modules"]
-        pending = [
-            "spaghetti_extractor.control_analysis_v2",
-            "spaghetti_extractor.global_slot_analysis_v2",
-            "spaghetti_extractor.global_slot_authority_v2",
-            "spaghetti_extractor.interprocedural_phase_v2",
-            "spaghetti_extractor.joint_fixed_point_v2",
-            "spaghetti_extractor.joint_interprocedural_analysis_v2",
-            "spaghetti_extractor.launch_assumption_inputs_v2",
-            "spaghetti_extractor.memory_range_invariants_v2",
-            "spaghetti_extractor.stack_range_analysis_v2",
-        ]
-        closure: set[str] = set()
-        while pending:
-            module = pending.pop()
-            if module in closure:
-                continue
-            closure.add(module)
-            pending.extend(index[module]["dependencies"])
+    def test_final_authority_recomputes_family_completeness(self) -> None:
+        final = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            / "final_authority.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("_check_unit_inventory", final)
+        self.assertIn("_check_inductive_authority", final)
+        self.assertIn("validate_authority_decision_v3", final)
+        self.assertNotIn("static_hybrid_final_audit_v2", final)
 
-        self.assertIn("spaghetti_extractor.authority_record_core_v2", closure)
-        self.assertIn(
-            "spaghetti_extractor.checked_memory_address_domain_v2", closure
-        )
-        self.assertIn("spaghetti_extractor.global_slot_contract_v2", closure)
-        self.assertNotIn("spaghetti_extractor.entry_state_analysis_v2", closure)
-        self.assertNotIn("spaghetti_extractor.entry_state_contract_v2", closure)
-        self.assertNotIn("spaghetti_extractor.hybrid_authority_v2", closure)
-        self.assertNotIn("spaghetti_extractor.external_site_proposals_v2", closure)
-        self.assertNotIn("spaghetti_extractor.static_hybrid_authority_v2", closure)
+    def test_candidate_builder_validates_v3_authority_twice(self) -> None:
+        builder = (
+            ROOT / "src" / "spaghetti_extractor"
+            / "stage_b_interpreter_native_build.py"
+        ).read_text(encoding="utf-8")
+        self.assertGreaterEqual(builder.count("_validate_candidate_authority_v3("), 3)
+        self.assertNotIn("stage_b_candidate_authority_v2", builder)
+        self.assertNotIn("final_static_hybrid_audit", builder)
 
-    def test_entry_phases_share_complete_slot_promotion_policy(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
-            encoding="utf-8"
-        )
-        callback_phase = module[
-            module.index("      callbackEntryContracts = {") :
-            module.index("      finalizedLaunchProfile = {")
-        ]
-        entry_phase = module[
-            module.index("      entryRootClosure = {") :
-            module.index("      isaSelectionAuthority = {")
-        ]
-
-        for phase in (callback_phase, entry_phase):
-            self.assertIn("apply_global_slot_authority_v2", phase)
-            self.assertIn("authoritative_provenance", phase)
-
-    def test_isa_requirements_are_lean_decoded_and_selection_is_rebound(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
-            encoding="utf-8"
-        )
-        requirements_phase = module[
-            module.index("      isaRequirements = {") :
-            module.index("      isaSelectionAuthority = {")
-        ]
-        selection_phase = module[
-            module.index("      isaSelectionAuthority = {") :
-            module.index("      exceptionCertificates = {")
-        ]
-
-        self.assertIn("extract_lean_instruction_forms_side", requirements_phase)
-        self.assertIn('pythonExtraPaths = [ "spaghetti_extractor/lean/StageA" ]', requirements_phase)
-        self.assertIn("extraNativeBuildInputs = [ pkgs.lean4 ]", requirements_phase)
-        self.assertIn("parse_machine_ir_isa_requirements_v2", selection_phase)
-        self.assertIn("compare_selection_to_machine_ir_requirements_v2", selection_phase)
+    def test_isa_and_fallback_bindings_are_v3_native(self) -> None:
+        isa = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            / "isa_qualification.py"
+        ).read_text(encoding="utf-8")
+        fallback = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            / "fallback_coverage.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("ISA_QUALIFICATION_PHASE_V3", isa)
+        self.assertIn("FALLBACK_COVERAGE_PHASE_V3", fallback)
+        self.assertIn('unit_aligned_inputs=("isa_qualification",)', fallback)
 
     def test_hybrid_candidate_uses_phase_specific_python_closures(self) -> None:
         module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
@@ -492,16 +291,16 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         ):
             self.assertRegex(target, rf"(?m)^\s+{exported}$")
         self.assertIn("externalInterfaceProfiles", target)
-        self.assertIn("staticAuthorityV2", target)
-        self.assertIn("staticCompletenessReport", target)
+        self.assertIn("staticAuthorityV3 = analysisV3", target)
+        self.assertNotIn("staticAuthorityV2", target)
+        self.assertNotIn("staticCompletenessReport", target)
         self.assertNotIn("staticCompletenessGate", target)
         self.assertIn("allowDeferredPotentialTransfers = false", target)
         self.assertIn('candidateMode = "structural-diagnostic"', target)
         self.assertIn("allowDeferredPotentialTransfers = true", target)
         self.assertIn("diagnosticFailureTrap = true", target)
-        self.assertIn(
-            "analysis.diagnosticExternalSiteProposals.artifact", target
-        )
+        self.assertNotIn("diagnosticExternalSiteProposals", target)
+        self.assertNotIn("diagnosticCallableExternalRuntime", target)
         self.assertIn("nativeEnginePlan", target)
         self.assertIn("nativeRuntimePackage", target)
 
@@ -516,17 +315,18 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("original_runtime_observations: $original_runtime_observations", module)
         self.assertIn("no behavioral acceptance authority", module)
 
-    def test_candidate_generation_has_only_v2_authority(self) -> None:
+    def test_candidate_generation_has_only_v3_authority(self) -> None:
         module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
             encoding="utf-8"
         )
 
         self.assertIn("candidateAuthorityReport", module)
         self.assertIn("candidateAuthorityGate", module)
-        self.assertIn("build_stage_b_candidate_authority_v2", module)
-        self.assertIn("require_stage_b_candidate_authority_v2", module)
-        self.assertIn("final_static_hybrid_audit", module)
-        self.assertIn("authority_bundle", module)
+        self.assertIn("build_stage_b_candidate_authority_v3", module)
+        self.assertIn("require_stage_b_candidate_authority_v3", module)
+        self.assertIn("final_authority=", module)
+        self.assertNotIn("final_static_hybrid_audit", module)
+        self.assertNotIn("authority_bundle", module)
         self.assertIn('candidateMode ? "static-closed"', module)
         self.assertIn('"structural-diagnostic"', module)
         self.assertIn("candidate_authority=optional_path", module)
@@ -540,29 +340,19 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             "proposal-only external-site evidence is diagnostic-only", module
         )
 
-    def test_checked_external_sites_use_only_the_canonical_v2_proposal(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
-            encoding="utf-8"
-        )
-        start = module.index("checkedExternalSites = {")
-        end = module.index("globalSlotAnalysis = {", start)
-        phase = module[start:end]
-
-        self.assertIn("checked_external_sites_proposal", phase)
-        self.assertIn(
-            "spaghetti-extractor-external-site-proposals-v2", phase
-        )
-        self.assertIn("derive_external_site_proposals_v2", phase)
-        self.assertIn("parse_external_site_proposals_v2", phase)
-        self.assertIn("external_profile_authority", phase)
-        self.assertIn("rooted_closure", phase)
-        self.assertNotIn("legacy_v1_diagnostic", phase)
-
-        authority_start = module.index("staticAuthority = {")
-        authority_end = module.index("authorityBundle = {", authority_start)
-        authority = module[authority_start:authority_end]
-        self.assertIn("parse_external_site_proposals_v2", authority)
-        self.assertNotIn("checked_external_sites", authority.split("inputs = {", 1)[1].split("};", 1)[0])
+    def test_checked_external_sites_and_callbacks_are_native_v3_phases(self) -> None:
+        external = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            / "external_sites.py"
+        ).read_text(encoding="utf-8")
+        callbacks = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            / "callbacks.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("CANONICAL_EXTERNAL_SITES_PHASE_V3 = map_units(", external)
+        self.assertIn("CALLBACK_AUTHORITY_PHASE_V3 = map_units(", callbacks)
+        self.assertNotIn("external_site_proposals_v2", external)
+        self.assertNotIn("callback_entry_contract_v2", callbacks)
 
     def test_fallback_coverage_is_v3_and_has_no_v1_authority_dependency(self) -> None:
         module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
@@ -578,39 +368,32 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("static_completeness_report", phase)
         self.assertNotIn("staticCompletenessReport", phase)
 
-    def test_global_slot_replay_is_outside_the_joint_fixed_point_closure(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
+    def test_mutable_memory_authority_uses_native_version_records(self) -> None:
+        memory = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            / "memory_records.py"
+        ).read_text(encoding="utf-8")
+        versions = (
+            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            / "memory_versions.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("MemoryVersionRecordV3", memory)
+        self.assertIn("check_memory_versions_completeness_v3", versions)
+        self.assertNotIn("global_slot_authority_replay_v2", versions)
+
+    def test_v3_root_isa_and_exception_phases_use_checked_records(self) -> None:
+        root = ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+        launch = (root / "root_closure.py").read_text(encoding="utf-8")
+        isa = (root / "isa_qualification.py").read_text(encoding="utf-8")
+        exceptional = (root / "exceptional_transitions.py").read_text(
             encoding="utf-8"
         )
-        joint_start = module.index("jointInterproceduralV2 =")
-        joint_end = module.index("interproceduralV2 =", joint_start)
-        authority_start = module.index("globalSlotAuthority =")
-        authority_end = module.index("callbackEntryContracts =", authority_start)
-
-        self.assertNotIn(
-            "global_slot_authority_replay_v2",
-            module[joint_start:joint_end],
-        )
-        self.assertIn(
-            "global_slot_authority_replay_v2",
-            module[authority_start:authority_end],
-        )
-
-    def test_v2_entry_isa_and_exception_phases_use_canonical_apis(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
-            encoding="utf-8"
-        )
-
-        self.assertIn("finalize_launch_profile_v2", module)
-        self.assertIn("launchProfileTemplate ? null", module)
-        self.assertIn("parse_launch_assumption_template_v1", module)
-        self.assertIn("original_pe = original;", module)
-        self.assertIn("launch_invariants_for_entry_state", module)
-        self.assertIn("derive_callback_entry_state_contracts_v2", module)
-        self.assertIn("build_external_profile_authority_v2", module)
-        self.assertIn('parsed.status.value != "qualified"', module)
-        self.assertIn("derive_checked_exception_reports_v2", module)
-        self.assertNotIn("scc_exception_certificates_missing", module)
+        self.assertIn("LAUNCH_ROOT_CLOSURE_PHASE_V3", launch)
+        self.assertIn("ISA_QUALIFICATION_PHASE_V3", isa)
+        self.assertIn("EXCEPTIONAL_TRANSITIONS_PHASE_V3", exceptional)
+        self.assertIn("check_launch_root_closure_completeness_v3", launch)
+        self.assertIn("check_isa_qualification_completeness_v3", isa)
+        self.assertIn("check_exceptional_transitions_completeness_v3", exceptional)
 
     def test_sdk_interface_profile_is_a_generic_content_addressed_phase(self) -> None:
         module = (
@@ -632,6 +415,28 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("./profiles", analysis_source)
         self.assertNotIn("./nix", analysis_source)
         self.assertIn("pythonSource = analysisSource", flake)
+
+    def test_flake_exposes_only_v3_static_authority(self) -> None:
+        flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
+        self.assertIn("mkAnalysisAuthorityV3", flake)
+        self.assertIn("dxball-final-authority-v3", flake)
+        self.assertNotIn("mkStaticHybridAuthorityV2Graph", flake)
+        self.assertNotIn("dxball-static-hybrid-authority-v2", flake)
+
+    def test_v3_nix_fixture_covers_structural_and_dependency_mutations(self) -> None:
+        fixture = (ROOT / "tests" / "unit" / "nix_v3" / "evaluation.nix").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("structuralMutation", fixture)
+        self.assertIn("recordMutation", fixture)
+        self.assertIn("edgeMutation", fixture)
+        self.assertIn("phaseSourceMutation", fixture)
+
+    def test_legacy_nix_authority_graph_is_removed(self) -> None:
+        self.assertFalse((ROOT / "nix" / "stage-b-static-hybrid-authority-v2.nix").exists())
+        self.assertFalse(
+            (ROOT / "nix" / "tests" / "stage-b-static-hybrid-authority-v2.nix").exists()
+        )
 
 
 if __name__ == "__main__":

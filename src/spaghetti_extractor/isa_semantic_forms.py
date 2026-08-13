@@ -20,6 +20,11 @@ from .util import sha256_bytes
 
 LEAN_ISA_REQUIREMENT_FORM_FORMAT = "stage-a-lean-x86-semantic-form-v1"
 _CLASSIFIER_SOURCES = ("X87.lean", "Formal.lean", "ISAQualification.lean")
+PYTHON_RESOURCES = (
+    "src/spaghetti_extractor/lean/StageA/Formal.lean",
+    "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
+    "src/spaghetti_extractor/lean/StageA/X87.lean",
+)
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 

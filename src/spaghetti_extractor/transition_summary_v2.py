@@ -9,7 +9,7 @@ recheck every projected field against the canonical unit record.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import InitVar, dataclass
 from typing import Any, Mapping, Sequence
 
 from .authority_bindings_v2 import (
@@ -56,14 +56,16 @@ class TransitionInputV2:
     category: str
     name: str
     value: CanonicalJson
+    _identity_checked: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _identity_checked: bool) -> None:
         if self.category not in _INPUT_CATEGORIES:
             raise AuthorityDataError("transition input has an invalid category")
         _text(self.name, "transition input name")
         if not isinstance(self.value, CanonicalJson):
             raise AuthorityDataError("transition input value is not canonical JSON")
-        _check_id(self.input_id, "transition-input", self.identity_payload())
+        if not _identity_checked:
+            _check_id(self.input_id, "transition-input", self.identity_payload())
 
     def identity_payload(self) -> dict[str, Any]:
         return {
@@ -79,7 +81,7 @@ class TransitionInputV2:
     def create(cls, *, category: str, name: str, value: Any) -> "TransitionInputV2":
         canonical = CanonicalJson.of(value)
         identity = {"category": category, "name": name, "value": canonical.to_value()}
-        return cls(_node_id("transition-input", identity), category, name, canonical)
+        return cls(_node_id("transition-input", identity), category, name, canonical, True)
 
     @classmethod
     def parse(cls, value: Any) -> "TransitionInputV2":
@@ -100,8 +102,9 @@ class TransitionOutputV2:
     destination: str
     value: CanonicalJson
     exact_record: CanonicalJson
+    _identity_checked: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _identity_checked: bool) -> None:
         if self.category not in _OUTPUT_CATEGORIES:
             raise AuthorityDataError("transition output has an invalid category")
         _uint(self.source_index, "transition output index")
@@ -110,7 +113,8 @@ class TransitionOutputV2:
             self.exact_record, CanonicalJson
         ):
             raise AuthorityDataError("transition output data is not canonical JSON")
-        _check_id(self.output_id, "transition-output", self.identity_payload())
+        if not _identity_checked:
+            _check_id(self.output_id, "transition-output", self.identity_payload())
 
     def identity_payload(self) -> dict[str, Any]:
         return {
@@ -150,6 +154,7 @@ class TransitionOutputV2:
             destination,
             canonical_value,
             canonical_record,
+            True,
         )
 
     @classmethod
@@ -178,8 +183,9 @@ class TransitionMemoryAccessV2:
     address: CanonicalJson
     value: CanonicalJson | None
     exact_record: CanonicalJson
+    _identity_checked: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _identity_checked: bool) -> None:
         if self.memory_kind not in _MEMORY_KINDS:
             raise AuthorityDataError("transition memory access has an invalid kind")
         if not 0 < self.width_bytes <= 4096:
@@ -192,7 +198,8 @@ class TransitionMemoryAccessV2:
             raise AuthorityDataError("transition memory write has no value")
         if self.value is not None and not isinstance(self.value, CanonicalJson):
             raise AuthorityDataError("transition memory value is not canonical JSON")
-        _check_id(self.access_id, "transition-memory", self.identity_payload())
+        if not _identity_checked:
+            _check_id(self.access_id, "transition-memory", self.identity_payload())
 
     def identity_payload(self) -> dict[str, Any]:
         return {
@@ -237,6 +244,7 @@ class TransitionMemoryAccessV2:
             canonical_address,
             canonical_value,
             canonical_record,
+            True,
         )
 
     @classmethod
@@ -263,13 +271,15 @@ class IndexedSemanticRecordV2:
     family: str
     source_index: int
     exact_record: CanonicalJson
+    _identity_checked: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _identity_checked: bool) -> None:
         _text(self.family, "semantic record family")
         _uint(self.source_index, "semantic record index")
         if not isinstance(self.exact_record, CanonicalJson):
             raise AuthorityDataError("semantic record is not canonical JSON")
-        _check_id(self.record_id, "transition-record", self.identity_payload())
+        if not _identity_checked:
+            _check_id(self.record_id, "transition-record", self.identity_payload())
 
     def identity_payload(self) -> dict[str, Any]:
         return {
@@ -291,7 +301,13 @@ class IndexedSemanticRecordV2:
             "source_index": source_index,
             "exact_record": canonical.to_value(),
         }
-        return cls(_node_id("transition-record", identity), family, source_index, canonical)
+        return cls(
+            _node_id("transition-record", identity),
+            family,
+            source_index,
+            canonical,
+            True,
+        )
 
     @classmethod
     def parse(cls, value: Any) -> "IndexedSemanticRecordV2":
@@ -313,8 +329,9 @@ class TransitionExitV2:
     transfer_kind: str
     binding: EventBinding | None
     exact_record: CanonicalJson
+    _identity_checked: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _identity_checked: bool) -> None:
         if self.category not in _EXIT_CATEGORIES:
             raise AuthorityDataError("transition exit has an invalid category")
         if self.source_kind not in {"outcome", "external_event"}:
@@ -331,7 +348,8 @@ class TransitionExitV2:
         _text(self.transfer_kind, "transition transfer kind")
         if not isinstance(self.exact_record, CanonicalJson):
             raise AuthorityDataError("transition exit record is not canonical JSON")
-        _check_id(self.exit_id, "transition-exit", self.identity_payload())
+        if not _identity_checked:
+            _check_id(self.exit_id, "transition-exit", self.identity_payload())
 
     def identity_payload(self) -> dict[str, Any]:
         return {
@@ -374,6 +392,7 @@ class TransitionExitV2:
             transfer_kind,
             binding,
             canonical,
+            True,
         )
 
     @classmethod
@@ -402,13 +421,15 @@ class TransitionFaultV2:
     fault_id: str
     binding: EventBinding
     exact_record: CanonicalJson
+    _identity_checked: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _identity_checked: bool) -> None:
         if self.binding.event_kind != "fault":
             raise AuthorityDataError("transition fault has a non-fault binding")
         if not isinstance(self.exact_record, CanonicalJson):
             raise AuthorityDataError("transition fault record is not canonical JSON")
-        _check_id(self.fault_id, "transition-fault", self.identity_payload())
+        if not _identity_checked:
+            _check_id(self.fault_id, "transition-fault", self.identity_payload())
 
     def identity_payload(self) -> dict[str, Any]:
         return {
@@ -423,7 +444,7 @@ class TransitionFaultV2:
     def create(cls, *, binding: EventBinding, exact_record: Any) -> "TransitionFaultV2":
         canonical = CanonicalJson.of(exact_record)
         identity = {"binding": binding.to_payload(), "exact_record": canonical.to_value()}
-        return cls(_node_id("transition-fault", identity), binding, canonical)
+        return cls(_node_id("transition-fault", identity), binding, canonical, True)
 
     @classmethod
     def parse(cls, value: Any) -> "TransitionFaultV2":
@@ -441,13 +462,15 @@ class UnsupportedTransitionEffectV2:
     code: str
     location: str
     detail: CanonicalJson
+    _identity_checked: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _identity_checked: bool) -> None:
         _text(self.code, "unsupported-effect code", maximum=128)
         _text(self.location, "unsupported-effect location")
         if not isinstance(self.detail, CanonicalJson):
             raise AuthorityDataError("unsupported-effect detail is not canonical JSON")
-        _check_id(self.effect_id, "unsupported-effect", self.identity_payload())
+        if not _identity_checked:
+            _check_id(self.effect_id, "unsupported-effect", self.identity_payload())
 
     def identity_payload(self) -> dict[str, Any]:
         return {
@@ -463,7 +486,13 @@ class UnsupportedTransitionEffectV2:
     def create(cls, *, code: str, location: str, detail: Any) -> "UnsupportedTransitionEffectV2":
         canonical = CanonicalJson.of(detail)
         identity = {"code": code, "location": location, "detail": canonical.to_value()}
-        return cls(_node_id("unsupported-effect", identity), code, location, canonical)
+        return cls(
+            _node_id("unsupported-effect", identity),
+            code,
+            location,
+            canonical,
+            True,
+        )
 
     @classmethod
     def parse(cls, value: Any) -> "UnsupportedTransitionEffectV2":
@@ -491,8 +520,9 @@ class TransitionSummaryV2:
     faults: tuple[TransitionFaultV2, ...]
     ordered_events: tuple[IndexedSemanticRecordV2, ...]
     unsupported_effects: tuple[UnsupportedTransitionEffectV2, ...]
+    _identity_checked: InitVar[bool] = False
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, _identity_checked: bool) -> None:
         if self.status not in _STATUS_VALUES:
             raise AuthorityDataError("transition summary has an invalid status")
         if not isinstance(self.unit, UnitBinding):
@@ -536,7 +566,8 @@ class TransitionSummaryV2:
             raise AuthorityDataError("unsupported effects are not canonically ordered")
         if (self.status == "complete") != (not self.unsupported_effects):
             raise AuthorityDataError("transition summary status does not match unsupported effects")
-        _check_id(self.summary_id, "transition-summary", self.identity_payload())
+        if not _identity_checked:
+            _check_id(self.summary_id, "transition-summary", self.identity_payload())
 
     def identity_payload(self) -> dict[str, Any]:
         return _summary_identity_payload(
@@ -665,6 +696,7 @@ def derive_transition_summary_v2(
             summary_id=_node_id(
                 "transition-summary", _summary_identity_payload(**fields)
             ),
+            _identity_checked=True,
             **fields,
         )
     except (AuthorityDataError, MachineIRAuthorityV2Error, KeyError, TypeError, ValueError) as exc:
@@ -694,6 +726,89 @@ def check_transition_summary_v2(
 
 
 validate_transition_summary_v2 = check_transition_summary_v2
+
+
+def rebind_checked_transition_summary_v2(
+    summary: TransitionSummaryV2,
+    *,
+    binary: BinaryBinding,
+) -> TransitionSummaryV2:
+    """Rebind already checked local semantics without deriving them again.
+
+    Aggregate legacy consumers historically included a whole-inventory digest
+    in every unit and event identity.  The v3 pipeline checks each summary at
+    its exact-unit boundary, then uses this adapter only to satisfy that legacy
+    identity shape.  No semantic proposal or machine-IR traversal occurs here.
+    """
+
+    unit = UnitBinding(
+        binary=binary,
+        unit_id=summary.unit.unit_id,
+        rva_start=summary.unit.rva_start,
+        rva_end=summary.unit.rva_end,
+        unit_sha256=summary.unit.unit_sha256,
+        instruction_bytes_sha256=summary.unit.instruction_bytes_sha256,
+    )
+
+    def event(binding: EventBinding) -> EventBinding:
+        return EventBinding(
+            unit=unit,
+            event_index=binding.event_index,
+            event_kind=binding.event_kind,
+            instruction_rva=binding.instruction_rva,
+            event_sha256=binding.event_sha256,
+        )
+
+    memory_accesses = tuple(
+        TransitionMemoryAccessV2.create(
+            binding=event(row.binding),
+            memory_kind=row.memory_kind,
+            width_bytes=row.width_bytes,
+            address=row.address.to_value(),
+            value=None if row.value is None else row.value.to_value(),
+            exact_record=row.exact_record.to_value(),
+        )
+        for row in summary.memory_accesses
+    )
+    exits = tuple(
+        TransitionExitV2.create(
+            category=row.category,
+            source_kind=row.source_kind,
+            source_index=row.source_index,
+            transfer_kind=row.transfer_kind,
+            binding=None if row.binding is None else event(row.binding),
+            exact_record=row.exact_record.to_value(),
+        )
+        for row in summary.exits
+    )
+    faults = tuple(
+        TransitionFaultV2.create(
+            binding=event(row.binding),
+            exact_record=row.exact_record.to_value(),
+        )
+        for row in summary.faults
+    )
+    fields = {
+        "status": summary.status,
+        "unit": unit,
+        "expression_model": summary.expression_model,
+        "semantics_sha256": summary.semantics_sha256,
+        "inputs": summary.inputs,
+        "outputs": summary.outputs,
+        "memory_accesses": memory_accesses,
+        "exits": exits,
+        "guards": summary.guards,
+        "faults": faults,
+        "ordered_events": summary.ordered_events,
+        "unsupported_effects": summary.unsupported_effects,
+    }
+    return TransitionSummaryV2(
+        summary_id=_node_id(
+            "transition-summary", _summary_identity_payload(**fields)
+        ),
+        _identity_checked=True,
+        **fields,
+    )
 
 
 def _validate_canonical_unit(row: Mapping[str, Any]) -> None:
@@ -1010,5 +1125,6 @@ __all__ = [
     "UnsupportedTransitionEffectV2",
     "check_transition_summary_v2",
     "derive_transition_summary_v2",
+    "rebind_checked_transition_summary_v2",
     "validate_transition_summary_v2",
 ]

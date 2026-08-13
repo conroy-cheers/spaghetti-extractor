@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+from spaghetti_extractor.finite_value_domain import FiniteU32Dataflow
 from spaghetti_extractor.reconstruction_ir import (
     MACHINE_IR_FILENAME,
     MACHINE_IR_FORMAT,
@@ -389,6 +390,7 @@ class ReconstructionIRTests(unittest.TestCase):
                         binary=binary,
                         units=units,
                         reference={"roots": [], "noncode_ranges": []},
+                        finite_dataflow_factory=FiniteU32Dataflow,
                     )
                 )
             finally:

@@ -74,7 +74,7 @@ class FixtureCatalog:
             except (OSError, json.JSONDecodeError) as exc:
                 raise TestkitError(Diagnostic("error", "fixture_definition_unreadable", str(exc), location=str(path), remediation="Regenerate the fixture definition with the scaffolder.")) from exc
             if not isinstance(value, Mapping) or value.get("format") != "spaghetti-extractor-test-fixture-definition-v1":
-                raise TestkitError(Diagnostic("error", "unsupported_fixture_definition", "fixture definition has an unsupported format", location=str(path), remediation="Regenerate it with `python -m spaghetti_extractor.testkit scaffold fixture`."))
+                raise TestkitError(Diagnostic("error", "unsupported_fixture_definition", "fixture definition has an unsupported format", location=str(path), remediation="Regenerate it with `nix run .#dev -- scaffold fixture <kind> <name>`."))
             capabilities = value.get("capabilities", [])
             if not isinstance(capabilities, list) or any(not isinstance(item, str) for item in capabilities):
                 raise TestkitError(Diagnostic("error", "invalid_fixture_definition", "fixture capabilities must be strings", location=str(path)))
@@ -153,7 +153,7 @@ class FixtureCatalog:
                     "error",
                     "unknown_fixture",
                     f"unknown fixture {fixture_id!r}",
-                    remediation="List available fixtures with `python -m spaghetti_extractor.testkit fixtures`.",
+                    remediation="List available fixtures with `nix run .#dev -- fixtures`.",
                 )
             )
         return definition.as_dict(path=self._paths.get(fixture_id))

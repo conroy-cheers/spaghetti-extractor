@@ -15,7 +15,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Mapping, Sequence
 
-from .address_expression_v2 import affine_special_offset
+from .address_expressions import affine_special_offset
 from .artifact_identity_v2 import canonical_sha256
 
 

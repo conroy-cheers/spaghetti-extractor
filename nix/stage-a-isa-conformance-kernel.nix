@@ -29,6 +29,7 @@ pkgs.runCommand "spaghetti-extractor-isa-conformance-kernel" {
   export LEAN_PATH="$out:$PWD"
 
   for module in ${builtins.concatStringsSep " " modules}; do
+    cp "StageA/$module.lean" "$out/StageA/$module.lean"
     lean --trust=0 \
       -o "$out/StageA/$module.olean" \
       -c "$out/StageA/$module.c" \

@@ -30,7 +30,7 @@ from .analysis.interprocedural_lattice import (
 )
 from .analysis.scc_worklist import SCCDecomposition, decompose_scc
 from .analysis_schema_v2 import interprocedural_authority_signature_v2
-from .address_expression_v2 import affine_register_offset, constant_u32
+from .address_expressions import affine_register_offset, constant_u32
 from .authority_dependencies_v2 import (
     CALL_SUMMARY_FAMILY_NODE_PREFIX,
     call_summary_family_node_id,

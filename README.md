@@ -17,11 +17,12 @@ repair iteration.
 1. Inventory the original PE, executable bytes, imports, relocations, roots,
    code regions, and required ISA forms.
 2. Emit an original-only reference contract and canonical machine IR.
-3. Recognize libraries and external interfaces, then build the immutable v2
-   entry, provenance, call, external-site, exception, and ISA evidence graph.
-4. Require a passing v2 final audit, `allowDeferredPotentialTransfers = false`,
-   and a separate complete fallback-coverage receipt before generating an
-   executable candidate. The legacy v1 completeness report is diagnostic only.
+3. Recognize libraries and external interfaces, then emit typed v3 evidence
+   packs for exact units, transitions, memory, targets, induction, external
+   sites, callbacks, roots, exceptions, ISA qualification, and fallback
+   capabilities.
+4. Require an authorizing `final-authority-v3` record and a separately checked,
+   exact fallback-coverage receipt before generating an executable candidate.
 5. Generate the complete machine-oriented baseline and propose components.
 6. Replace components with portable C using explicit interface contracts while
    retaining complete fallback coverage.
@@ -78,6 +79,9 @@ nix run .#dev -- scaffold phase map-sccs pointer_provenance
 nix run .#dev -- explain-rebuild --before before.json --after after.json
 ```
 
+Scaffolding creates convention-wired files and refuses overwrites; add
+`--dry-run` to inspect the generated files without changing the worktree.
+
 Use `spaghetti-extractor-slice` for repeated local candidate edits after the
 static contract has been prepared. The loop caches the original-side artifacts
 and invalidates candidate checks by content hash.
@@ -91,7 +95,7 @@ and invalidates candidate checks by content hash.
 - `nix run .#dev`: scaffolding, fixture discovery, environment diagnosis, and
   rebuild explanations.
 - `flake.lib`: generic Nix constructors for ISA qualification, round trips,
-  components, libraries, static hybrid completeness, gated candidate builds,
+  typed v3 authority graphs, components, libraries, gated candidate builds,
   headless diagnostics, source substitutions, and functional suites.
 - `targets/`: validation bundles containing authored intent and source, never
   generic Python implementation code.

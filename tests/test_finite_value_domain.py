@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unittest
 
+from spaghetti_extractor import finite_value_domain
 from spaghetti_extractor.finite_value_domain import FiniteU32Dataflow
 
 
@@ -41,6 +42,46 @@ def _const(value: int) -> dict:
 
 
 class FiniteU32DataflowTests(unittest.TestCase):
+    def test_submask_domains_are_shared_across_dataflow_instances(self) -> None:
+        finite_value_domain._submask_domain.cache_clear()
+        expected = finite_value_domain._submask_domain(0xFF, 256)
+
+        for _iteration in range(32):
+            self.assertIs(
+                finite_value_domain._submask_domain(0xFF, 256),
+                expected,
+            )
+
+        cache = finite_value_domain._submask_domain.cache_info()
+        self.assertEqual(cache.misses, 1)
+        self.assertEqual(cache.hits, 32)
+
+    def test_worklist_coalesces_updates_before_processing_a_join(self) -> None:
+        analysis = FiniteU32Dataflow(
+            units=[
+                _unit(
+                    "root-a",
+                    0x1000,
+                    targets=(0x1020,),
+                    writes=(("eax", _const(1)),),
+                ),
+                _unit(
+                    "root-b",
+                    0x1010,
+                    targets=(0x1020,),
+                    writes=(("eax", _const(2)),),
+                ),
+                _unit("join", 0x1020),
+            ],
+            roots=["root-a", "root-b"],
+        )
+
+        self.assertEqual(analysis.steps, 3)
+        self.assertEqual(
+            analysis.expression_domain("join", _reg("eax"))["values"],
+            [1, 2],
+        )
+
     def test_mask_has_finite_domain_from_unknown_root_state(self) -> None:
         analysis = FiniteU32Dataflow(
             units=[_unit("root", 0x1000)],
@@ -118,6 +159,35 @@ class FiniteU32DataflowTests(unittest.TestCase):
         )
 
         self.assertEqual(result["values"], [0])
+
+    def test_monotone_recovered_edges_match_a_cold_analysis(self) -> None:
+        source = _unit(
+            "source",
+            0x1000,
+            writes=(("ecx", _const(7)),),
+        )
+        units = [source, _unit("dispatch", 0x2000)]
+        recoveries = [{
+            "status": "recovered",
+            "source_unit_id": "source",
+            "target_unit_ids": ["dispatch"],
+        }]
+        incremental = FiniteU32Dataflow(units=units, roots=["source"])
+
+        self.assertTrue(
+            incremental.extend_recovered_indirect_targets(recoveries)
+        )
+        cold = FiniteU32Dataflow(
+            units=units,
+            roots=["source"],
+            recovered_indirect_targets=recoveries,
+        )
+
+        self.assertEqual(
+            incremental.expression_domain("dispatch", _reg("ecx"))["values"],
+            cold.expression_domain("dispatch", _reg("ecx"))["values"],
+        )
+        self.assertFalse(incremental.extend_recovered_indirect_targets([]))
 
     def test_unknown_join_and_external_transition_fail_closed(self) -> None:
         units = [

@@ -8,6 +8,7 @@ from .model import ImpactIndex, PlannedShard, SuitePlan, TestRecord
 from .planning import build_suite_plan, changed_paths_from_git
 from .rebuild import explain_index_rebuild, explain_plan_rebuild
 from .scaffold import (
+    apply_scaffold_plan,
     ScaffoldPlan,
     plan_fixture_scaffold,
     plan_phase_scaffold,
@@ -31,6 +32,7 @@ __all__ = [
     "explain_plan_rebuild",
     "fixture",
     "plan_fixture_scaffold",
+    "apply_scaffold_plan",
     "plan_phase_scaffold",
     "plan_test_scaffold",
     "run_doctor",

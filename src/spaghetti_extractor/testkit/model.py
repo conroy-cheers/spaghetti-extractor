@@ -12,7 +12,7 @@ from .diagnostics import Diagnostic, TestkitError
 
 
 INDEX_FORMAT = "spaghetti-extractor-test-impact-index-v1"
-PLAN_FORMAT = "spaghetti-extractor-test-suite-plan-v1"
+PLAN_FORMAT = "spaghetti-extractor-test-suite-plan-v2"
 REBUILD_EXPLANATION_FORMAT = "spaghetti-extractor-rebuild-explanation-v1"
 
 
@@ -33,7 +33,7 @@ def _strings(value: object, *, field_name: str) -> tuple[str, ...]:
                 "error",
                 "invalid_manifest_field",
                 f"{field_name} must be a list of strings",
-                remediation="Regenerate the manifest with `python -m spaghetti_extractor.testkit index`.",
+                remediation="Regenerate the manifest with `nix run .#dev -- index`.",
             )
         )
     return tuple(value)
@@ -44,6 +44,7 @@ class ModuleRecord:
     name: str
     path: str
     dependencies: tuple[str, ...]
+    resources: tuple[str, ...]
     sha256: str
 
     def as_dict(self) -> dict[str, object]:
@@ -51,6 +52,7 @@ class ModuleRecord:
             "name": self.name,
             "path": self.path,
             "dependencies": list(self.dependencies),
+            "resources": list(self.resources),
             "sha256": self.sha256,
         }
 
@@ -60,6 +62,7 @@ class ModuleRecord:
             name=str(value["name"]),
             path=str(value["path"]),
             dependencies=_strings(value["dependencies"], field_name="dependencies"),
+            resources=_strings(value["resources"], field_name="resources"),
             sha256=str(value["sha256"]),
         )
 
@@ -241,6 +244,7 @@ class SuitePlan:
     selected_tests: tuple[str, ...]
     selection_reasons: tuple[tuple[str, tuple[str, ...]], ...]
     shards: tuple[PlannedShard, ...]
+    nix_checks: tuple[str, ...] = field(default_factory=tuple)
     diagnostics: tuple[Diagnostic, ...] = field(default_factory=tuple)
 
     def as_dict(self) -> dict[str, object]:
@@ -255,6 +259,7 @@ class SuitePlan:
                 key: list(reasons) for key, reasons in self.selection_reasons
             },
             "shards": [row.as_dict() for row in self.shards],
+            "nix_checks": list(self.nix_checks),
             "diagnostics": [row.as_dict() for row in self.diagnostics],
         }
         payload["identity"] = canonical_sha256(payload)
@@ -286,6 +291,7 @@ class SuitePlan:
                 for key, row in sorted(reasons.items())
             ),
             shards=tuple(PlannedShard.from_dict(row) for row in shards if isinstance(row, Mapping)),
+            nix_checks=_strings(value.get("nix_checks", []), field_name="nix_checks"),
             diagnostics=tuple(
                 Diagnostic(
                     str(row["severity"]),

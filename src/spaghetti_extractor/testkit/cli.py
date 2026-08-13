@@ -17,7 +17,8 @@ from .io import load_index, load_plan, write_manifest
 from .model import INDEX_FORMAT, PLAN_FORMAT, canonical_json
 from .planning import MODES, build_suite_plan, changed_paths_from_git
 from .rebuild import explain_index_rebuild, explain_plan_rebuild
-from .scaffold import plan_fixture_scaffold, plan_phase_scaffold, plan_test_scaffold
+from .scaffold import apply_scaffold_plan, plan_fixture_scaffold, plan_phase_scaffold, plan_test_scaffold
+from ..python_module_index import refresh_python_module_index
 
 
 def _repository(value: str) -> Path:
@@ -36,7 +37,7 @@ def _print_human_diagnostics(rows: list[Mapping[str, object]]) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="spaghetti-extractor-test",
+        prog="spaghetti-extractor-dev",
         description="Plan and diagnose cached Spaghetti Extractor tests.",
     )
     parser.add_argument("--repository", default=".", help="repository root (default: current directory)")
@@ -45,7 +46,13 @@ def _build_parser() -> argparse.ArgumentParser:
     index = subcommands.add_parser("index", help="generate the import-based impact index")
     index.add_argument("--out", type=Path, default=Path("-"))
     index.add_argument("--shards", type=int, default=32)
-    index.add_argument("--allow-legacy-policy", action="store_true", help="report legacy direct-tool violations without failing")
+
+    refresh_index = subcommands.add_parser(
+        "refresh-index", help="refresh the checked Python module dependency index"
+    )
+    refresh_index.add_argument(
+        "--out", type=Path, help="output path (default: nix/python-module-index.json)"
+    )
 
     plan = subcommands.add_parser("plan", help="create an execution plan")
     plan.add_argument("mode", choices=sorted(MODES))
@@ -55,7 +62,6 @@ def _build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--changed", action="append", default=[])
     plan.add_argument("--base", default="HEAD")
     plan.add_argument("--shards", type=int, default=32)
-    plan.add_argument("--allow-legacy-policy", action="store_true")
 
     fixtures = subcommands.add_parser("fixtures", help="list or inspect shared fixtures")
     fixtures.add_argument("fixture_id", nargs="?")
@@ -69,7 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
     explain.add_argument("--after", type=Path, required=True)
     explain.add_argument("--artifact")
 
-    scaffold = subcommands.add_parser("scaffold", help="render convention-correct files")
+    scaffold = subcommands.add_parser("scaffold", help="create convention-correct files")
     scaffold.add_argument("kind", choices=("test", "phase", "fixture"))
     scaffold.add_argument("first", help="subsystem, phase kind, or fixture kind")
     scaffold.add_argument("second", help="new item name")
@@ -77,6 +83,7 @@ def _build_parser() -> argparse.ArgumentParser:
     scaffold.add_argument("--capability")
     scaffold.add_argument("--target")
     scaffold.add_argument("--json", action="store_true")
+    scaffold.add_argument("--dry-run", action="store_true", help="render files without creating them")
     return parser
 
 
@@ -86,11 +93,16 @@ def main(argv: list[str] | None = None) -> int:
     repository = _repository(args.repository)
     try:
         if args.command == "index":
-            index = build_impact_index(repository, shard_count=args.shards, strict_policy=not args.allow_legacy_policy)
+            index = build_impact_index(repository, shard_count=args.shards)
             write_manifest(args.out, index)
             return 0
+        if args.command == "refresh-index":
+            output = (args.out or repository / "nix" / "python-module-index.json").resolve()
+            changed = refresh_python_module_index(repository, output)
+            print(f"{'updated' if changed else 'current'} {output.relative_to(repository)}")
+            return 0
         if args.command == "plan":
-            index = load_index(args.index) if args.index else build_impact_index(repository, shard_count=args.shards, strict_policy=not args.allow_legacy_policy)
+            index = load_index(args.index) if args.index else build_impact_index(repository, shard_count=args.shards)
             changed = tuple(args.changed)
             if args.mode == "affected" and not changed:
                 changed = changed_paths_from_git(repository, base=args.base)
@@ -136,7 +148,16 @@ def main(argv: list[str] | None = None) -> int:
             scaffold_plan = plan_phase_scaffold(phase_kind=args.first, name=args.second)
         else:
             scaffold_plan = plan_fixture_scaffold(fixture_kind=args.first, name=args.second)
-        print(canonical_json(scaffold_plan.as_dict()) if args.json else scaffold_plan.render(), end="")
+        if args.json:
+            print(canonical_json(scaffold_plan.as_dict()), end="")
+        elif args.dry_run:
+            print(scaffold_plan.render(), end="")
+        else:
+            created = apply_scaffold_plan(repository, scaffold_plan)
+            for path in created:
+                print(f"created {path.relative_to(repository)}")
+            for command in scaffold_plan.next_commands:
+                print(f"then: {command}")
         return 0
     except TestkitError as exc:
         print(str(exc), file=sys.stderr)

@@ -15,6 +15,7 @@ from typing import Callable, Mapping, Sequence
 from .diagnostics import Diagnostic
 from .discovery import build_impact_index
 from .fixtures import FIXTURE_ENV, FixtureCatalog
+from .evaluation_receipts import evaluation_receipt_inventory
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,13 +82,20 @@ def _nix_checks(repository: Path, runner: Callable[[Sequence[str], Path], subpro
         )
     else:
         checks.append(Diagnostic("info", "nix_features", "nix-command and ca-derivations are enabled"))
-    builders_value = payload.get("builders", {})
-    if isinstance(builders_value, Mapping):
-        builders_value = builders_value.get("value", "")
-    if not str(builders_value).strip():
-        checks.append(Diagnostic("warning", "remote_builders_missing", "no remote builders are configured", remediation="Configure the project builder file for clean-suite parallelism; local incremental planning still works."))
+    project_builders = repository / "nix" / "stage-a-builders"
+    if not project_builders.is_file():
+        checks.append(Diagnostic("warning", "project_builders_missing", "the project CA builder inventory is absent", remediation="Restore nix/stage-a-builders; the supported runner selects it explicitly."))
     else:
-        checks.append(Diagnostic("info", "remote_builders", "remote builders are configured"))
+        rows = tuple(
+            line.strip()
+            for line in project_builders.read_text(encoding="ascii").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        )
+        invalid = tuple(line for line in rows if "ca-derivations" not in line)
+        if len(rows) < 2 or invalid:
+            checks.append(Diagnostic("error", "project_builders_invalid", "project builders must declare at least two CA-capable machines", location=str(project_builders), remediation="Declare the Acacia/Banksia ssh-ng builders with the ca-derivations feature."))
+        else:
+            checks.append(Diagnostic("info", "project_builders", f"{len(rows)} project CA builders are configured and selected by nix run .#test"))
     return checks
 
 
@@ -115,6 +123,21 @@ def run_doctor(
         diagnostics = getattr(exc, "diagnostics", ())
         checks.extend(diagnostics or (Diagnostic("error", "test_discovery_failed", str(exc)),))
     checks.extend(_nix_checks(repository, runner))
+    receipt_directory, receipt_count, receipt_bytes = evaluation_receipt_inventory()
+    checks.append(
+        Diagnostic(
+            "info",
+            "nix_evaluation_receipts",
+            (
+                f"{receipt_count} checked evaluator receipts use "
+                f"{receipt_bytes} bytes in {receipt_directory}"
+            ),
+            remediation=(
+                "Delete this cache directory only to force graph reevaluation; "
+                "Nix store realizations remain authoritative."
+            ),
+        )
+    )
     environment = dict(os.environ if environment is None else environment)
     if FIXTURE_ENV in environment:
         try:

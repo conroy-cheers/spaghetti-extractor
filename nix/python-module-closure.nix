@@ -47,12 +47,28 @@ let
         path = lib.removePrefix "src/" record.path;
         recordPath = record.path;
         dependencies = record.dependencies;
+        resources = record.resources;
         source = toString (builtins.path {
           path = sourcePath;
           name = "spaghetti-python-${sanitize module}";
         });
       })
     selectedModules;
+  moduleResourcePaths = builtins.sort builtins.lessThan (
+    lib.unique (
+      lib.concatMap (module: moduleRecords.${module}.resources) selectedModules
+    )
+  );
+  moduleResourceFiles = map
+    (relative: {
+      path = lib.removePrefix "src/" relative;
+      recordPath = relative;
+      source = toString (builtins.path {
+        path = repositoryRoot + "/${relative}";
+        name = "spaghetti-python-resource-${sanitize relative}";
+      });
+    })
+    moduleResourcePaths;
   extraFiles = map
     (relative: {
       path = relative;
@@ -63,10 +79,11 @@ let
     })
     (builtins.sort builtins.lessThan (lib.unique extraPaths));
   moduleFilesJson = builtins.toJSON moduleFiles;
+  moduleResourceFilesJson = builtins.toJSON moduleResourceFiles;
   extraFilesJson = builtins.toJSON extraFiles;
   rootsJson = builtins.toJSON (builtins.sort builtins.lessThan modules);
 in
-assert index.format == "spaghetti-extractor-python-module-index-v1";
+assert index.format == "spaghetti-extractor-python-module-index-v2";
 assert builtins.isList modules && modules != [ ];
 assert builtins.isList extraPaths;
 pkgs.runCommand name {
@@ -81,6 +98,7 @@ pkgs.runCommand name {
   ${pkgs.python3}/bin/python3 - "$out" \
       ${lib.escapeShellArg rootsJson} \
       ${lib.escapeShellArg moduleFilesJson} \
+      ${lib.escapeShellArg moduleResourceFilesJson} \
       ${lib.escapeShellArg extraFilesJson} <<'PY'
   from __future__ import annotations
 
@@ -94,7 +112,8 @@ pkgs.runCommand name {
   output = pathlib.Path(sys.argv[1])
   roots = json.loads(sys.argv[2])
   module_files = json.loads(sys.argv[3])
-  extra_files = json.loads(sys.argv[4])
+  module_resource_files = json.loads(sys.argv[4])
+  extra_files = json.loads(sys.argv[5])
   output_root = output / "src"
   rows = []
   copied = set()
@@ -146,9 +165,34 @@ pkgs.runCommand name {
       observed.discard(module)
       return sorted(observed)
 
+  def observed_resources(row):
+      source = pathlib.Path(row["source"])
+      tree = ast.parse(source.read_text(encoding="utf-8"), filename=row["recordPath"])
+      value = []
+      for node in tree.body:
+          if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+              continue
+          targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+          if not any(
+              isinstance(target, ast.Name) and target.id == "PYTHON_RESOURCES"
+              for target in targets
+          ):
+              continue
+          try:
+              value = ast.literal_eval(node.value)
+          except (TypeError, ValueError) as exc:
+              raise SystemExit(
+                  f"dynamic PYTHON_RESOURCES in {row['recordPath']}"
+              ) from exc
+      if not isinstance(value, (list, tuple)) or not all(
+          isinstance(item, str) for item in value
+      ):
+          raise SystemExit(f"malformed PYTHON_RESOURCES in {row['recordPath']}")
+      return sorted(set(value))
+
   for row in module_files:
       required_fields = {
-          "module", "path", "recordPath", "dependencies", "source"
+          "module", "path", "recordPath", "dependencies", "resources", "source"
       }
       if set(row) != required_fields:
           raise SystemExit(
@@ -160,6 +204,13 @@ pkgs.runCommand name {
           raise SystemExit(
               f"stale checked imports for {row['module']}: "
               f"expected {expected!r}, observed {observed!r}; "
+              "run `nix run .#dev -- refresh-index`"
+          )
+      observed_data = observed_resources(row)
+      if observed_data != row["resources"]:
+          raise SystemExit(
+              f"stale checked resources for {row['module']}: "
+              f"expected {row['resources']!r}, observed {observed_data!r}; "
               "run `nix run .#dev -- refresh-index`"
           )
 
@@ -178,6 +229,15 @@ pkgs.runCommand name {
   for row in module_files:
       copy_file(pathlib.Path(row["source"]), pathlib.PurePosixPath(row["path"]))
 
+  for row in module_resource_files:
+      source = pathlib.Path(row["source"])
+      relative = pathlib.PurePosixPath(row["path"])
+      if source.is_file():
+          copy_file(source, relative)
+          continue
+      for path in sorted(item for item in source.rglob("*") if item.is_file()):
+          copy_file(path, relative / path.relative_to(source).as_posix())
+
   for row in extra_files:
       source = pathlib.Path(row["source"])
       relative = pathlib.PurePosixPath(row["path"])
@@ -192,6 +252,7 @@ pkgs.runCommand name {
       "format": "spaghetti-extractor-python-module-closure-v1",
       "dependency_source": "inline-checked-module-index-v1",
       "root_modules": roots,
+      "module_resources": sorted(row["recordPath"] for row in module_resource_files),
       "extra_paths": sorted(row["path"] for row in extra_files),
       "files": rows,
   }

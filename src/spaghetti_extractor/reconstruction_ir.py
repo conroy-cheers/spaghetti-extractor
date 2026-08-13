@@ -10,11 +10,13 @@ cryptographic digests.  The original binary is parsed but never executed.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
@@ -24,7 +26,6 @@ from ._contract_tools.reference_contract import _semantic_transfer_contract
 from .analysis.cutpoints import semantic_cutpoint_spans_for_side
 from .callback_contracts import parse_callback_source
 from .authority_bindings_v2 import indirect_exit_id_v2
-from .finite_value_domain import FiniteU32Dataflow
 from .indirect_target_dependency_v2 import (
     build_bounded_selector_dependency_v2,
 )
@@ -95,6 +96,18 @@ _RAW_INSTRUCTION_FIELDS = frozenset(
         "encoded_instruction",
     }
 )
+
+
+def _default_finite_dataflow_factory() -> Callable[..., Any]:
+    """Load the optional global-control engine outside exact preparation.
+
+    Nix authority builds inject this dependency explicitly.  The lazy fallback
+    keeps the historical Python API usable without making exact unit
+    preparation depend on the finite-control implementation.
+    """
+
+    module = import_module("spaghetti_extractor.finite_value_domain")
+    return module.FiniteU32Dataflow
 _DIRECT_OUTCOME_FIELDS = {
     "fallthrough": ("target_rva",),
     "jump": ("target_rva",),
@@ -258,6 +271,7 @@ def prepare_machine_ir_units_package(
     """Prepare exact byte-bound units independently of global control analysis."""
 
     state_path = _regular_file(state_machine, "canonical state machine")
+    state_sha256 = sha256_file(state_path)
     original_path = _regular_file(original_pe, "original PE")
     binary = _parse_stage_a_pe(original_path)
     if binary.machine != "i386" or binary.bitness != 32:
@@ -274,7 +288,7 @@ def prepare_machine_ir_units_package(
 
     rows = _read_canonical_rows(state_path)
     _validate_unique_units(rows)
-    reusable = _load_reusable_prepared_units(
+    reusable, _reusable_state_sha256 = _load_reusable_prepared_units(
         prepared_machine_ir,
         binary_sha256=binary.sha256,
         reference_sha256=reference_sha256,
@@ -293,7 +307,7 @@ def prepare_machine_ir_units_package(
         "inputs": {
             "state_machine": {
                 "path": state_path.name,
-                "sha256": sha256_file(state_path),
+                "sha256": state_sha256,
             },
             "original_pe": {"path": original_path.name, "sha256": binary.sha256},
             "reference_contract": (
@@ -367,6 +381,7 @@ def export_machine_ir_package(
     internal_function_contract_profiles: Sequence[Path] = (),
     prepared_machine_ir: Path | None = None,
     interprocedural_control: bool = False,
+    finite_dataflow_factory: Callable[..., Any] | None = None,
 ) -> MachineIRPackage:
     """Validate and export a deterministic, byte-free PE32 machine IR package.
 
@@ -377,8 +392,14 @@ def export_machine_ir_package(
     """
 
     _ = interprocedural_control
+    dataflow_factory = (
+        finite_dataflow_factory
+        if finite_dataflow_factory is not None
+        else _default_finite_dataflow_factory()
+    )
 
     state_path = _regular_file(state_machine, "canonical state machine")
+    state_sha256 = sha256_file(state_path)
     original_path = _regular_file(original_pe, "original PE")
     binary = _parse_stage_a_pe(original_path)
     if binary.machine != "i386" or binary.bitness != 32:
@@ -426,19 +447,35 @@ def export_machine_ir_package(
             for path in internal_function_contract_profiles
         ),
     }
-    rows = _read_canonical_rows(state_path)
-    _validate_unique_units(rows)
-    reusable = _load_reusable_prepared_units(
+    reusable, reusable_state_sha256 = _load_reusable_prepared_units(
         prepared_machine_ir,
         binary_sha256=binary.sha256,
         reference_sha256=reference_sha256,
     )
-    prepared, reused_units = _prepare_units(
-        rows,
-        binary=binary,
-        reference_sha256=reference_sha256,
-        reusable=reusable,
-    )
+    if (
+        prepared_machine_ir is not None
+        and reusable_state_sha256 == state_sha256
+    ):
+        prepared = [dict(unit) for unit in reusable.values()]
+        for unit in prepared:
+            unit["reachable"] = False
+            unit.pop("reachability", None)
+        prepared.sort(
+            key=lambda item: (
+                int(item["source"]["original"]["rva_start"]),
+                str(item["id"]),
+            )
+        )
+        reused_units = len(prepared)
+    else:
+        rows = _read_canonical_rows(state_path)
+        _validate_unique_units(rows)
+        prepared, reused_units = _prepare_units(
+            rows,
+            binary=binary,
+            reference_sha256=reference_sha256,
+            reusable=reusable,
+        )
     prepared_input_units = len(prepared)
     (
         prepared,
@@ -452,6 +489,7 @@ def export_machine_ir_package(
             units=prepared,
             reference=reference,
             reference_sha256=reference_sha256,
+            finite_dataflow_factory=dataflow_factory,
         )
     )
     materialized_target_units = target_cutpoint_materialization["counts"][
@@ -472,6 +510,7 @@ def export_machine_ir_package(
             precomputed_static_rounds=target_cutpoint_materialization[
                 "static_recovery_rounds"
             ],
+            finite_dataflow_factory=dataflow_factory,
         )
     )
     issues = _unit_issues(prepared)
@@ -494,6 +533,7 @@ def export_machine_ir_package(
         executable_classification=executable_classification,
         preclassified_static_recoveries=preclassified_static_recoveries,
         target_profile=target_profile,
+        finite_dataflow_factory=dataflow_factory,
     )
     control["target_cutpoint_materialization"] = target_cutpoint_materialization
     issues.extend(control_issues)
@@ -551,7 +591,7 @@ def export_machine_ir_package(
         "inputs": {
             "state_machine": {
                 "path": state_path.name,
-                "sha256": sha256_file(state_path),
+                "sha256": state_sha256,
             },
             "original_pe": {
                 "path": original_path.name,
@@ -764,9 +804,9 @@ def _load_reusable_prepared_units(
     *,
     binary_sha256: str,
     reference_sha256: str | None,
-) -> dict[str, dict[str, Any]]:
+) -> tuple[dict[str, dict[str, Any]], str | None]:
     if value is None:
-        return {}
+        return {}, None
     machine_path = _machine_ir_artifact_path(Path(value))
     manifest_path = machine_path.parent / (
         PREPARED_MACHINE_IR_MANIFEST_FILENAME
@@ -793,6 +833,7 @@ def _load_reusable_prepared_units(
     artifacts = manifest.get("artifacts")
     artifact = artifacts.get(artifact_key) if isinstance(artifacts, Mapping) else None
     reference = inputs.get("reference_contract") if isinstance(inputs, Mapping) else None
+    state_machine = inputs.get("state_machine") if isinstance(inputs, Mapping) else None
     reference_binding_sha256 = (
         reference.get("sha256") if isinstance(reference, Mapping) else None
     )
@@ -800,10 +841,13 @@ def _load_reusable_prepared_units(
         not isinstance(binary, Mapping)
         or binary.get("sha256") != binary_sha256
         or not isinstance(inputs, Mapping)
+        or not isinstance(state_machine, Mapping)
+        or not isinstance(state_machine.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", state_machine["sha256"]) is None
         or (reference is not None and not isinstance(reference, Mapping))
         or reference_binding_sha256 != reference_sha256
         or not isinstance(artifact, Mapping)
-        or artifact.get("sha256") != sha256_file(machine_path)
+        or not isinstance(artifact.get("sha256"), str)
     ):
         raise MachineIRExportError(
             "prepared machine IR input or artifact binding is stale",
@@ -811,50 +855,59 @@ def _load_reusable_prepared_units(
         )
 
     units: dict[str, dict[str, Any]] = {}
-    for line_number, line in enumerate(
-        machine_path.read_text(encoding="utf-8").splitlines(), start=1
-    ):
-        try:
-            raw = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise MachineIRExportError(
-                f"prepared machine IR line {line_number} is not JSON",
-                code="prepared_machine_ir_malformed",
-            ) from exc
-        if not isinstance(raw, dict) or raw.get("format") != MACHINE_IR_FORMAT:
-            raise MachineIRExportError(
-                f"prepared machine IR line {line_number} is malformed",
-                code="prepared_machine_ir_malformed",
-            )
-        _assert_byte_free(raw)
-        identity = _required_string(raw.get("id"), "prepared machine IR unit id")
-        preparation = raw.get("preparation")
-        if (
-            not isinstance(preparation, Mapping)
-            or preparation.get("format")
-            != "stage-a-machine-ir-unit-preparation-v1"
-            or not isinstance(preparation.get("input_sha256"), str)
-            or re.fullmatch(r"[0-9a-f]{64}", preparation["input_sha256"]) is None
-        ):
-            raise MachineIRExportError(
-                f"prepared machine IR unit {identity} has no checked preparation binding",
-                code="prepared_machine_ir_unit_binding_missing",
-                unit_id=identity,
-            )
-        if identity in units:
-            raise MachineIRExportError(
-                f"prepared machine IR repeats unit {identity}",
-                code="duplicate_prepared_machine_ir_unit",
-                unit_id=identity,
-            )
-        units[identity] = raw
+    digest = hashlib.sha256()
+    with machine_path.open("rb") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            digest.update(line)
+            if not line.strip():
+                continue
+            try:
+                raw = json.loads(line)
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise MachineIRExportError(
+                    f"prepared machine IR line {line_number} is not JSON",
+                    code="prepared_machine_ir_malformed",
+                ) from exc
+            if not isinstance(raw, dict) or raw.get("format") != MACHINE_IR_FORMAT:
+                raise MachineIRExportError(
+                    f"prepared machine IR line {line_number} is malformed",
+                    code="prepared_machine_ir_malformed",
+                )
+            _assert_byte_free(raw)
+            identity = _required_string(raw.get("id"), "prepared machine IR unit id")
+            preparation = raw.get("preparation")
+            if (
+                not isinstance(preparation, Mapping)
+                or preparation.get("format")
+                != "stage-a-machine-ir-unit-preparation-v1"
+                or not isinstance(preparation.get("input_sha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", preparation["input_sha256"])
+                is None
+            ):
+                raise MachineIRExportError(
+                    f"prepared machine IR unit {identity} has no checked preparation binding",
+                    code="prepared_machine_ir_unit_binding_missing",
+                    unit_id=identity,
+                )
+            if identity in units:
+                raise MachineIRExportError(
+                    f"prepared machine IR repeats unit {identity}",
+                    code="duplicate_prepared_machine_ir_unit",
+                    unit_id=identity,
+                )
+            units[identity] = raw
+    if digest.hexdigest() != artifact.get("sha256"):
+        raise MachineIRExportError(
+            "prepared machine IR input or artifact binding is stale",
+            code="prepared_machine_ir_binding_mismatch",
+        )
     counts = manifest.get("counts")
     if not isinstance(counts, Mapping) or len(units) != counts.get("units"):
         raise MachineIRExportError(
             "prepared machine IR unit count differs from its manifest",
             code="prepared_machine_ir_count_mismatch",
         )
-    return units
+    return units, str(state_machine["sha256"])
 
 
 def _prepare_units(
@@ -883,7 +936,12 @@ def _prepare_units(
             )
             == DECODED_CONTROL_RECONCILIATION_FORMAT
         ):
-            unit = copy.deepcopy(dict(cached))
+            # Checked prepared units are immutable.  Final extraction adds only
+            # top-level reachability fields, while any newly materialized unit
+            # is created independently below.  A deep copy here traversed the
+            # complete semantic expression tree before the control phase made
+            # its own working copy.
+            unit = dict(cached)
             unit["reachable"] = False
             unit.pop("reachability", None)
             reused_units += 1
@@ -2529,6 +2587,7 @@ def _materialize_recovered_target_cutpoints(
     units: Sequence[Mapping[str, Any]],
     reference: Mapping[str, Any],
     reference_sha256: str | None,
+    finite_dataflow_factory: Callable[..., Any],
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, Any],
@@ -2561,6 +2620,7 @@ def _materialize_recovered_target_cutpoints(
         starts=starts,
         indirect_exits=_precontrol_indirect_exits(units),
         root_unit_ids=root_unit_ids,
+        finite_dataflow_factory=finite_dataflow_factory,
     )
     data_ranges = recover_executable_data_ranges(
         binary=binary,
@@ -2968,6 +3028,7 @@ def _classify_executable_data_before_control(
     precomputed_static_recoveries: Sequence[Mapping[str, Any]] | None = None,
     precomputed_data_ranges: Sequence[Any] | None = None,
     precomputed_static_rounds: int = 0,
+    finite_dataflow_factory: Callable[..., Any],
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, Any],
@@ -3009,6 +3070,7 @@ def _classify_executable_data_before_control(
                 starts=starts,
                 indirect_exits=indirect_exits,
                 root_unit_ids=root_unit_ids,
+                finite_dataflow_factory=finite_dataflow_factory,
             )
         )
         data_ranges = recover_executable_data_ranges(
@@ -3212,10 +3274,11 @@ def _classify_executable_data_before_control(
             )
         )
 
+    # Classification changes only top-level reachability fields in the next
+    # phase.  Preserve the checked nested semantic records by reference rather
+    # than cloning the full expression inventory again.
     retained = [
-        copy.deepcopy(dict(unit))
-        for unit in units
-        if str(unit["id"]) not in excluded
+        dict(unit) for unit in units if str(unit["id"]) not in excluded
     ]
     range_rows = [_classification_range_payload(item) for item in data_ranges]
     excluded_rows = sorted(
@@ -3457,6 +3520,7 @@ def _control_inventory(
     executable_classification: Mapping[str, Any],
     preclassified_static_recoveries: Sequence[Mapping[str, Any]],
     target_profile: Mapping[str, Any] | None,
+    finite_dataflow_factory: Callable[..., Any],
 ) -> tuple[dict[str, Any], list[ExportIssue]]:
     starts = {int(unit["source"]["original"]["rva_start"]): unit for unit in units}
     block_starts = {
@@ -3609,6 +3673,7 @@ def _control_inventory(
             starts=starts,
             indirect_exits=indirect,
             root_unit_ids=root_unit_ids,
+            finite_dataflow_factory=finite_dataflow_factory,
         )
     return _exact_only_control_inventory(
         binary=binary,
@@ -4162,18 +4227,26 @@ def _static_jump_table_recovery_fixed_point(
     starts: Mapping[int, Mapping[str, Any]],
     indirect_exits: Sequence[Mapping[str, Any]],
     root_unit_ids: Sequence[str],
+    finite_dataflow_factory: Callable[..., Any],
     max_rounds: int = 16,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     units_by_id = {str(unit["id"]): unit for unit in units}
     predecessors_by_target = _direct_predecessors_by_target(units)
     selected: list[dict[str, Any]] = []
     previous_signature: str | None = None
+    dataflow: Any | None = None
     for round_index in range(1, max_rounds + 1):
-        dataflow = FiniteU32Dataflow(
-            units=units,
-            roots=root_unit_ids,
-            recovered_indirect_targets=selected,
-        )
+        extend = getattr(dataflow, "extend_recovered_indirect_targets", None)
+        if (
+            dataflow is None
+            or not callable(extend)
+            or not extend(selected)
+        ):
+            dataflow = finite_dataflow_factory(
+                units=units,
+                roots=root_unit_ids,
+                recovered_indirect_targets=selected,
+            )
         recoveries: list[dict[str, Any]] = []
         for exit_record in indirect_exits:
             source_unit_id = str(exit_record["source_unit_id"])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 import unittest
+from dataclasses import replace
 
 from spaghetti_extractor.testkit import ImpactIndex, TestRecord, build_suite_plan
 
@@ -65,6 +66,9 @@ class TestPlanningTests(unittest.TestCase):
         self.assertEqual(full.selected_tests, (rows[0].id, rows[1].id))
         self.assertEqual(target.selected_tests, (rows[0].id, rows[2].id))
 
+        catalog = build_suite_plan(index, mode="catalog")
+        self.assertEqual(catalog.selected_tests, tuple(row.id for row in rows))
+
     def test_two_thousand_test_planning_stays_below_two_seconds(self) -> None:
         index = ImpactIndex(repository=".", modules=(), tests=tuple(_test(value) for value in range(2000)))
 
@@ -92,6 +96,31 @@ class TestPlanningTests(unittest.TestCase):
         )
 
         self.assertEqual(set(plan.selected_tests), {row.id for row in rows})
+
+    def test_nix_test_change_selects_only_its_owned_check(self) -> None:
+        rows = (
+            _test(0, tier="smoke", shard="smoke"),
+            _test(1),
+        )
+        index = ImpactIndex(repository=".", modules=(), tests=rows)
+
+        plan = build_suite_plan(
+            index,
+            mode="affected",
+            changed_paths=("nix/tests/analysis-v3-machine-ir-input.nix",),
+        )
+
+        self.assertEqual(plan.selected_tests, (rows[0].id,))
+        self.assertEqual(plan.nix_checks, ("analysis-v3-machine-ir-input",))
+
+    def test_directory_resource_suppresses_redundant_read_only_children(self) -> None:
+        row = _test(1, dependencies=("docs/README.md",))
+        row = replace(row, resources=("docs",))
+        index = ImpactIndex(repository=".", modules=(), tests=(row,))
+
+        plan = build_suite_plan(index, mode="full")
+
+        self.assertEqual(plan.shards[0].files, ("docs", row.path))
 
 
 if __name__ == "__main__":

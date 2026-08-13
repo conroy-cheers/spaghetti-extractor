@@ -350,8 +350,8 @@ class StageBFallbackCoverageTests(unittest.TestCase):
             "candidateAuthorityReport",
             "candidateAuthorityGate",
             "write_stage_b_fallback_coverage_receipt",
-            "build_stage_b_candidate_authority_v2",
-            "require_stage_b_candidate_authority_v2",
+            "build_stage_b_candidate_authority_v3",
+            "require_stage_b_candidate_authority_v3",
         ):
             self.assertIn(name, module)
         authorization_reference = (

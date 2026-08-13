@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 import unittest
@@ -9,6 +10,89 @@ from spaghetti_extractor.target_intent import (
     load_target_bundle,
     validate_authored_intent,
 )
+
+
+TESTKIT = {
+    "resources": (
+        "README.md",
+        "REPOSITORY_MAP.md",
+        "docs",
+        "flake.nix",
+        "isa-catalogs",
+        "nix",
+        "profiles",
+        "pyproject.toml",
+        "targets",
+    )
+}
+
+V3_AUTHORITY_PACKAGE = "spaghetti_extractor.analysis_v3"
+V3_NATIVE_IMPORT_ROOTS = frozenset(
+    {
+        V3_AUTHORITY_PACKAGE,
+        "spaghetti_extractor.address_expressions",
+        "spaghetti_extractor.artifact_set_v3",
+        "spaghetti_extractor.phase_framework_v3",
+    }
+)
+V3_LEGACY_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {}
+V3_LEGACY_IMPORT_REMEDIATION = (
+    "Replace the dependency with native spaghetti_extractor.analysis_v3 records. "
+    "Production v3 modules have no legacy import exceptions; do not add one. "
+    "Comparison tests must construct native fixture records rather than importing "
+    "a legacy analyzer."
+)
+
+
+def _module_name(root: Path, path: Path) -> str:
+    relative = path.relative_to(root)
+    if relative.parts[0] == "src":
+        relative = Path(*relative.parts[1:])
+    if relative.name == "__init__.py":
+        relative = relative.parent
+    else:
+        relative = relative.with_suffix("")
+    return ".".join(relative.parts)
+
+
+def _imported_modules(root: Path, path: Path) -> tuple[tuple[int, str], ...]:
+    module = _module_name(root, path)
+    package = module if path.name == "__init__.py" else module.rpartition(".")[0]
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.extend((node.lineno, alias.name) for alias in node.names)
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.level:
+            package_parts = package.split(".") if package else []
+            trim = node.level - 1
+            if trim > len(package_parts):
+                raise AssertionError(f"relative import escapes package in {path}")
+            target_parts = package_parts[: len(package_parts) - trim]
+            if node.module:
+                target_parts.extend(node.module.split("."))
+            target = ".".join(target_parts)
+        else:
+            target = node.module or ""
+        if node.module is None or target == "spaghetti_extractor":
+            imports.extend(
+                (node.lineno, f"{target}.{alias.name}".lstrip("."))
+                for alias in node.names
+                if alias.name != "*"
+            )
+        elif target:
+            imports.append((node.lineno, target))
+    return tuple(imports)
+
+
+def _is_v3_native_import(module: str) -> bool:
+    return any(
+        module == root or module.startswith(f"{root}.")
+        for root in V3_NATIVE_IMPORT_ROOTS
+    )
 
 
 class RepositoryBoundaryTests(unittest.TestCase):
@@ -122,6 +206,40 @@ class RepositoryBoundaryTests(unittest.TestCase):
             if path.is_file() and f'"nix/{path.name}"' not in manifest
         )
         self.assertEqual(missing, [])
+
+    def test_nix_graph_is_environment_independent_for_evaluation_receipts(self) -> None:
+        forbidden = ("builtins.getEnv", "builtins.currentTime")
+        offenders = []
+        for path in [
+            self.root / "flake.nix",
+            *(self.root / "nix").glob("*.nix"),
+            *(self.root / "targets").glob("**/*.nix"),
+        ]:
+            source = path.read_text(encoding="utf-8")
+            for token in forbidden:
+                if token in source:
+                    offenders.append(f"{path.relative_to(self.root)}:{token}")
+        self.assertEqual(offenders, [])
+
+    def test_v3_authority_consumers_do_not_import_legacy_modules(self) -> None:
+        guarded_paths = sorted(
+            (self.root / "src/spaghetti_extractor/analysis_v3").rglob("*.py")
+        ) + sorted((self.root / "tests/unit/analysis_v3").rglob("*.py"))
+        offenders = []
+        for path in guarded_paths:
+            relative = path.relative_to(self.root).as_posix()
+            exceptions = V3_LEGACY_IMPORT_EXCEPTIONS.get(relative, frozenset())
+            for line_number, module in _imported_modules(self.root, path):
+                if not module.startswith("spaghetti_extractor."):
+                    continue
+                if _is_v3_native_import(module) or module in exceptions:
+                    continue
+                offenders.append(f"{relative}:{line_number}: imports {module}")
+        self.assertEqual(
+            offenders,
+            [],
+            msg=V3_LEGACY_IMPORT_REMEDIATION,
+        )
 
 
 if __name__ == "__main__":

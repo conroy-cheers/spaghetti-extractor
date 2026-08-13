@@ -18,8 +18,8 @@ assert expectedRecordIds == null || builtins.isList expectedRecordIds;
 let
   lib = pkgs.lib;
   python = "${pythonEnv}/bin/python3";
-  statusesJson = builtins.toJSON allowedStatuses;
-  expectedIdsJson = builtins.toJSON expectedRecordIds;
+  statusesFile = builtins.toFile "${name}-allowed-statuses.json" (builtins.toJSON allowedStatuses);
+  expectedIdsFile = builtins.toFile "${name}-expected-record-ids.json" (builtins.toJSON expectedRecordIds);
   caAttrs = lib.optionalAttrs contentAddressed { __contentAddressed = true; };
   derivation = pkgs.runCommand name (
     {
@@ -40,8 +40,8 @@ let
     ${python} - \
       ${lib.escapeShellArg (toString artifact)} \
       ${lib.escapeShellArg expectedKind} \
-      ${lib.escapeShellArg statusesJson} \
-      ${lib.escapeShellArg expectedIdsJson} \
+      ${statusesFile} \
+      ${expectedIdsFile} \
       "$out" <<'PY'
     from __future__ import annotations
 
@@ -54,12 +54,12 @@ let
         parse_canonical_json_v3,
     )
 
-    artifact, expected_kind, statuses_json, expected_ids_json, output = sys.argv[1:]
+    artifact, expected_kind, statuses_file, expected_ids_file, output = sys.argv[1:]
     statuses = parse_canonical_json_v3(
-        statuses_json.encode("ascii"), location="allowedStatuses"
+        pathlib.Path(statuses_file).read_bytes(), location=statuses_file
     )
     expected_ids = parse_canonical_json_v3(
-        expected_ids_json.encode("ascii"), location="expectedRecordIds"
+        pathlib.Path(expected_ids_file).read_bytes(), location=expected_ids_file
     )
     reader = ArtifactSetReaderV3(pathlib.Path(artifact))
     if reader.manifest.artifact_kind != expected_kind:

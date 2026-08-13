@@ -19,13 +19,19 @@ from spaghetti_extractor.roundtrip_fuzz.image_contract import (
 from spaghetti_extractor.hybrid_authority_builder_v2 import (
     build_machine_ir_authority_bindings,
 )
-from spaghetti_extractor.hybrid_authority_v2 import (
-    AuthorityBundle,
-    BinaryBinding,
-    FiniteAlternatives,
-    UnitBinding,
-    ValueFact,
-    canonical_json_bytes,
+from spaghetti_extractor.analysis_v3._schema import stable_id
+from spaghetti_extractor.analysis_v3.final_authority import (
+    FINAL_AUTHORITY_ARTIFACT_KIND_V3,
+    FINAL_AUTHORITY_CODEC_V3,
+    FINAL_AUTHORITY_SCOPE_V3,
+    AuthorityFamilyBindingV3,
+    FinalAuthorityRecordV3,
+)
+from spaghetti_extractor.artifact_set_v3 import (
+    ArtifactBindingV3,
+    ArtifactSetWriterV3,
+    canonical_json_bytes_v3,
+    canonical_sha256_v3,
 )
 from spaghetti_extractor.stage_b_interpreter_backend import (
     write_stage_b_interpreter_package,
@@ -49,9 +55,8 @@ from spaghetti_extractor.stage_b_native_runtime import (
 from spaghetti_extractor.stage_b_pe_composer import (
     EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
 )
-from spaghetti_extractor.stage_b_candidate_authority_v2 import (
-    STATIC_HYBRID_FINAL_AUDIT_V2_FORMAT,
-    build_stage_b_candidate_authority_v2,
+from spaghetti_extractor.stage_b_candidate_authority_v3 import (
+    build_stage_b_candidate_authority_v3,
 )
 from spaghetti_extractor.stage_b_candidate_modes import (
     STATIC_CLOSED_CANDIDATE_MODE,
@@ -76,7 +81,7 @@ def _write_json(path: Path, value: object) -> None:
 
 
 def _canonical_sha256(value: object) -> str:
-    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+    return canonical_sha256_v3(value)
 
 
 def _expanded_header_pe() -> bytes:
@@ -184,8 +189,7 @@ def _transfer(rva: int = 0x1000) -> dict[str, Any]:
 
 class _ReleaseInputs(TypedDict):
     candidate_authority: Path
-    final_static_hybrid_audit: Path
-    authority_bundle: Path
+    final_authority: Path
     machine_ir: Path
     machine_ir_manifest: Path
     fallback_coverage_receipt: Path
@@ -209,10 +213,9 @@ class _Packages:
         self.machine_ir = root / "machine-ir.jsonl"
         self.machine_ir_manifest = root / "machine-ir-manifest.json"
         self.profile = root / "profile.json"
-        self.authority_bundle = root / "authority-bundle-v2.json"
-        self.final_audit = root / "static-hybrid-final-audit-v2.json"
+        self.final_authority = root / "final-authority-v3"
         self.fallback_receipt = root / "fallback-coverage-receipt.json"
-        self.candidate_authority = root / "candidate-authority-v2.json"
+        self.candidate_authority = root / "candidate-authority-v3.json"
         root.mkdir(parents=True)
 
         unit = _transfer()
@@ -313,52 +316,75 @@ class _Packages:
         contract = write_stage_a_load_image_contract(
             original_pe=self.original, out=self.contract
         )
-        binary_binding = BinaryBinding(original_sha256, machine_ir_sha256)
-        unit_binding = UnitBinding(
-            binary=binary_binding,
-            unit_id=str(unit["id"]),
-            rva_start=0x1000,
-            rva_end=0x1001,
-            unit_sha256=_canonical_sha256(unit),
-            instruction_bytes_sha256=str(
-                unit["source"]["instruction_bytes_sha256"]
-            ),
+        family_names = (
+            "callbacks",
+            "exceptional_transitions",
+            "external_sites",
+            "fallback_coverage",
+            "inductive_authority",
+            "isa_qualification",
+            "root_closure",
+            "semantic_index",
         )
-        fact = ValueFact(
-            binding=unit_binding,
-            location="register:eax",
-            width_bits=32,
-            alternatives=FiniteAlternatives.of([0], maximum=1),
+        families = tuple(
+            AuthorityFamilyBindingV3(
+                input_name=name,
+                artifact_kind=f"{name}-v3",
+                artifact_id=(
+                    "artifact-set-v3:"
+                    + hashlib.sha256(name.encode("ascii")).hexdigest()
+                ),
+                manifest_sha256=hashlib.sha256(
+                    f"manifest:{name}".encode("ascii")
+                ).hexdigest(),
+                record_count=1,
+                record_inventory_sha256=hashlib.sha256(
+                    f"inventory:{name}".encode("ascii")
+                ).hexdigest(),
+            )
+            for name in family_names
         )
-        bundle = AuthorityBundle.of(
-            binary=binary_binding,
-            records=(fact,),
-            required_content_ids=(fact.content_id,),
+        unit_id = str(unit["id"])
+        unit_ir_sha256 = _canonical_sha256(unit)
+        inventory_sha256 = canonical_sha256_v3([unit_id])
+        universe_sha256 = canonical_sha256_v3(
+            {
+                "pe_sha256": original_sha256,
+                "units": [
+                    {"id": unit_id, "unit_ir_sha256": unit_ir_sha256}
+                ],
+            }
         )
-        bundle_payload = bundle.to_payload()
-        _write_json(self.authority_bundle, bundle_payload)
-        audit_body = {
-            "format": STATIC_HYBRID_FINAL_AUDIT_V2_FORMAT,
-            "status": "pass",
-            "authority_bundle": {
-                "format": bundle.FORMAT,
-                "content_id": bundle.content_id,
-                "artifact_sha256": sha256_file(self.authority_bundle),
-            },
-            "machine_ir": {"sha256": machine_ir_sha256},
-            "machine_ir_manifest": {
-                "sha256": sha256_file(self.machine_ir_manifest)
-            },
-            "policy": {
-                "v2_authority_is_only_candidate_authority": True,
-                "tainted_accepted_facts_forbidden": True,
-                "deferred_transfers_forbidden": True,
-            },
-            "findings": [],
+        identity = {
+            "scope": FINAL_AUTHORITY_SCOPE_V3,
+            "families": [row.to_payload() for row in families],
+            "exact_unit_count": 1,
+            "exact_unit_inventory_sha256": inventory_sha256,
         }
-        _write_json(
-            self.final_audit,
-            {**audit_body, "audit_sha256": _canonical_sha256(audit_body)},
+        final = FinalAuthorityRecordV3(
+            record_id=stable_id("final-authority-v3", identity),
+            scope=FINAL_AUTHORITY_SCOPE_V3,
+            status="complete",
+            authorizing=True,
+            pe_sha256=original_sha256,
+            exact_universe_sha256=universe_sha256,
+            exact_unit_count=1,
+            exact_unit_inventory_sha256=inventory_sha256,
+            families=families,
+            primary_blocker=None,
+            dependencies=(),
+        )
+        ArtifactSetWriterV3(
+            artifact_kind=FINAL_AUTHORITY_ARTIFACT_KIND_V3,
+            bindings=(
+                ArtifactBindingV3(
+                    "binary", "pe32", "original.exe", original_sha256
+                ),
+            ),
+            status="complete",
+        ).write(
+            self.final_authority,
+            (FINAL_AUTHORITY_CODEC_V3.write(final.record_id, final),),
         )
         fallback_entry_core = {
             "unit_id": unit["id"],
@@ -388,6 +414,8 @@ class _Packages:
                 "structural_units_require_lowering": True,
                 "one_implementation_kind_per_structural_unit": True,
                 "rooted_containment_authority": False,
+                "portable_replacements_must_be_explicit": True,
+                "portable_fallback_on_unimplemented": False,
                 "candidate_generation_fails_closed": True,
             },
             "inputs": {
@@ -413,9 +441,8 @@ class _Packages:
                 "receipt_sha256": _canonical_sha256(fallback_body),
             },
         )
-        candidate_authority = build_stage_b_candidate_authority_v2(
-            final_static_hybrid_audit=self.final_audit,
-            authority_bundle=self.authority_bundle,
+        candidate_authority = build_stage_b_candidate_authority_v3(
+            final_authority=self.final_authority,
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.machine_ir_manifest,
             fallback_coverage_receipt=self.fallback_receipt,
@@ -449,8 +476,7 @@ class _Packages:
     def release_inputs(self) -> _ReleaseInputs:
         return {
             "candidate_authority": self.candidate_authority,
-            "final_static_hybrid_audit": self.final_audit,
-            "authority_bundle": self.authority_bundle,
+            "final_authority": self.final_authority,
             "machine_ir": self.machine_ir,
             "machine_ir_manifest": self.machine_ir_manifest,
             "fallback_coverage_receipt": self.fallback_receipt,
@@ -473,8 +499,7 @@ class StageBInterpreterNativeBuildValidationTests(unittest.TestCase):
                     native_engine_package=packages.engine,
                     native_runtime_package=packages.runtime,
                     candidate_authority=None,
-                    final_static_hybrid_audit=None,
-                    authority_bundle=None,
+                    final_authority=None,
                     machine_ir=packages.machine_ir,
                     machine_ir_manifest=packages.machine_ir_manifest,
                     fallback_coverage_receipt=None,
@@ -509,7 +534,7 @@ class StageBInterpreterNativeBuildValidationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             packages = _Packages(Path(temporary) / "inputs")
             packages.candidate_authority.write_bytes(
-                canonical_json_bytes(
+                canonical_json_bytes_v3(
                     {
                         "format": "stage-b-static-hybrid-closure-receipt-v1",
                         "status": "complete",
@@ -519,7 +544,7 @@ class StageBInterpreterNativeBuildValidationTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                StageBInterpreterNativeBuildError, "candidate-authority receipt"
+                StageBInterpreterNativeBuildError, "candidate receipt"
             ):
                 build_stage_b_interpreter_native_candidate(
                     interpreter_package=packages.interpreter,
@@ -616,8 +641,7 @@ class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
                 native_engine_package=packages.engine,
                 native_runtime_package=packages.runtime,
                 candidate_authority=None,
-                final_static_hybrid_audit=None,
-                authority_bundle=None,
+                final_authority=None,
                 machine_ir=packages.machine_ir,
                 machine_ir_manifest=packages.machine_ir_manifest,
                 fallback_coverage_receipt=None,
@@ -822,7 +846,7 @@ class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
             self.assertEqual(manifest["acceptance_authority"], "none")
             self.assertEqual(
                 manifest["inputs"]["candidate_authority"]["format"],
-                "spaghetti-extractor-stage-b-candidate-authority-v2",
+                "spaghetti-extractor-stage-b-candidate-authority-receipt-v3",
             )
             self.assertTrue(
                 manifest["inputs"]["candidate_authority"]["authorizes"]
