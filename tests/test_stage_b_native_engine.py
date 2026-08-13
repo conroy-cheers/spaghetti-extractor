@@ -18,7 +18,7 @@ from spaghetti_extractor.checked_external_site_contract import (
 from spaghetti_extractor.external_site_proposals_v2 import (
     build_external_site_proposals_v2,
 )
-from spaghetti_extractor.hybrid_authority_v2 import canonical_json_bytes
+from spaghetti_extractor.authority_bindings_v2 import canonical_json_bytes
 from spaghetti_extractor.stage_binary import StageAInputError
 from spaghetti_extractor.stage_b_native_engine import (
     STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,

@@ -8,12 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .artifact_formats import SEMANTIC_IR_FORMAT
-from .stage_b_state_machine import (
-    STAGE_B_STATE_MACHINE_FORMAT,
-    normalize_stage_a_semantic_transfer,
-    normalize_stage_a_semantic_transfers,
-)
-from .stage_b_api_catalog import MachineCallCatalog, MachineCallSignature, load_machine_call_catalog
+from .stage_b_api_catalog import MachineCallCatalog, MachineCallSignature
 from .util import sha256_bytes, sha256_file, write_json
 
 
@@ -438,52 +433,6 @@ def write_stage_b_semantic_c_backend(
     write_json(report_path, report)
     report["report"] = {"path": report_path.name, "sha256": sha256_file(report_path)}
     return report
-
-
-def stage_b_generate_semantic_c_from_state_machine(
-    *,
-    state_machine: Path,
-    out_dir: Path,
-    machine_call_catalog: Path | None = None,
-) -> dict[str, Any]:
-    """Regenerate the semantic-C work package from a canonical Stage B state machine."""
-
-    state_machine = Path(state_machine)
-    source_rows: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for line_number, line in enumerate(state_machine.read_text(encoding="utf-8").splitlines(), start=1):
-        if not line.strip():
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"invalid state-machine JSON on line {line_number}: {exc}") from exc
-        if not isinstance(row, dict):
-            raise ValueError(f"state-machine line {line_number} must be a JSON object")
-        if row.get("stage_b_format") != STAGE_B_STATE_MACHINE_FORMAT:
-            raise ValueError(
-                f"state-machine line {line_number} must have stage_b_format {STAGE_B_STATE_MACHINE_FORMAT}"
-            )
-        normalized = normalize_stage_a_semantic_transfer(row)
-        if row.get("contract_sha256") != normalized["contract_sha256"]:
-            raise ValueError(f"state-machine line {line_number} contract_sha256 does not match its transfer payload")
-        identity = str(normalized.get("id") or "")
-        if not identity:
-            raise ValueError(f"state-machine line {line_number} is missing a transfer id")
-        if identity in seen_ids:
-            raise ValueError(f"state-machine contains duplicate transfer id {identity!r}")
-        seen_ids.add(identity)
-        source_rows.append(normalized)
-
-    rows = normalize_stage_a_semantic_transfers(source_rows)
-    binding = {"path": state_machine.name, "sha256": sha256_file(state_machine)}
-    catalog = load_machine_call_catalog(machine_call_catalog) if machine_call_catalog is not None else None
-    return write_stage_b_semantic_c_backend(
-        Path(out_dir),
-        rows,
-        state_machine_binding=binding,
-        machine_call_catalog=catalog,
-    )
 
 
 def _row_blockers(row: dict[str, Any]) -> list[str]:

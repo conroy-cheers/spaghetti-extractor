@@ -16,7 +16,7 @@ from spaghetti_extractor.external_site_proposals_v2 import (
 from spaghetti_extractor.external_profile_authority_v2 import (
     build_external_profile_authority_v2,
 )
-from spaghetti_extractor.hybrid_authority_v2 import canonical_json_bytes
+from spaghetti_extractor.authority_bindings_v2 import canonical_json_bytes
 from tests.test_checked_external_site_contract import (
     _checked,
     _profile_entry,

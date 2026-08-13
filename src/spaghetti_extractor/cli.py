@@ -47,7 +47,6 @@ from .stage_b_candidate_authority_v3 import (
     build_stage_b_candidate_authority_v3,
     validate_stage_b_candidate_authority_v3,
 )
-from .stage_b_c_backend import stage_b_generate_semantic_c_from_state_machine
 from .stage_b_functional import (
     StageBFunctionalInputError,
     stage_b_run_functional_suite,
@@ -56,7 +55,6 @@ from .stage_b_interpreter_backend import write_stage_b_interpreter_package
 from .stage_b_native_engine import write_stage_b_native_engine_package
 from .stage_b_native_runtime import write_stage_b_native_runtime_package
 from .stage_b_provenance import StageBProvenanceInputError, stage_b_generate_candidate_provenance
-from .stage_b_skeleton import stage_b_generate_skeleton
 from .stage_binary import StageAInputError
 from .util import write_json
 
@@ -307,43 +305,6 @@ def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     _path(validate_candidate_authority_v3, "receipt", required=True)
     _add_candidate_authority_v3_inputs(validate_candidate_authority_v3)
     _path(validate_candidate_authority_v3, "out")
-
-    skeleton = _command(
-        commands,
-        "stage-b-generate-skeleton",
-        "generate a compilable C scaffold or contract-guided baseline",
-        lambda a: stage_b_generate_skeleton(
-            original=a.original,
-            linker_map=a.linker_map,
-            reference_contract=a.reference_contract,
-            out_dir=a.out,
-            target_name=a.target_name,
-            implementation_mode=a.mode,
-            source_language="c",
-        ),
-    )
-    _path(skeleton, "original", required=True)
-    _path(skeleton, "linker_map")
-    _path(skeleton, "reference_contract")
-    skeleton.add_argument("--target-name", required=True)
-    skeleton.add_argument(
-        "--mode", choices=("scaffold", "decompiled-c", "contract-guided-c"), default="contract-guided-c"
-    )
-    _path(skeleton, "out", required=True)
-
-    semantic_c = _command(
-        commands,
-        "stage-b-generate-semantic-c",
-        "lower the canonical state machine into deterministic C",
-        lambda a: stage_b_generate_semantic_c_from_state_machine(
-            state_machine=a.state_machine,
-            machine_call_catalog=a.machine_call_catalog,
-            out_dir=a.out,
-        ),
-    )
-    _path(semantic_c, "state_machine", required=True)
-    _path(semantic_c, "machine_call_catalog")
-    _path(semantic_c, "out", required=True)
 
     interpreter = _command(
         commands,

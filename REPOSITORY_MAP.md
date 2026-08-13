@@ -29,8 +29,9 @@ PE bytes
   -> contract_tools.py / opaque_reconstruction.py
   -> stage_b_state_machine.py
   -> reconstruction_ir.py
-  -> generated interpreter or C backend
-  -> library/interface/component analysis
+  -> typed v3 authority graph
+  -> complete interpreter/native fallback
+  -> library/interface/component proposals
   -> component workspaces and portable source
   -> rebuilt candidate
   -> stage_b.py static assurance
@@ -45,7 +46,6 @@ surface through Nix or CLI; generic modules never import `targets/`.
 | Module | Purpose |
 |---|---|
 | `cli.py` | Canonical `spaghetti-extractor` command registry and exit policy. |
-| `slice_loop.py` | Incremental, content-hash-cached candidate repair loop. |
 | `contract_tools.py` | Stable facade over static contract generation and candidate feedback. |
 | `stage_b.py` | Candidate-only provenance, static checks, failure extraction, and ranked delta explanation. |
 | `__main__.py` | `python -m spaghetti_extractor`. |
@@ -62,8 +62,7 @@ Core support modules are deliberately small:
 | `errors.py` | Shared user-input and phase failure types. |
 | `util.py` | Canonical JSON, hashing, and atomic artifact helpers. |
 | `nix_support.py` | Nix discovery and content-addressed worker command construction. |
-| `python_module_index.py` | Canonical local-import index generation shared by the supported developer command and compatibility tool. |
-| `operation_provenance.py` | Provenance records shared by recovered operations and source rendering. |
+| `python_module_index.py` | Canonical local-import index plus production-root closure enforcement used by Nix and developer diagnostics. |
 
 ## Static Analysis
 
@@ -80,7 +79,6 @@ machine-model qualification:
 | `instruction_support.py` | Fail-closed instruction/profile preflight. |
 | `isa_inventory.py` | Required instruction-form inventory for one binary. |
 | `isa_requirements.py` | Required Lean form/capability projection. |
-| `isa_qualification.py` | Qualification-set validation and binding. |
 | `x87_profile.py` | x87-specific static requirements and replay metadata. |
 
 PE primitives live in `pe.py`, `stage_binary.py`, and `recursive_decode.py`.
@@ -89,8 +87,8 @@ PE primitives live in `pe.py`, `stage_binary.py`, and `recursive_decode.py`.
 re-parses machine-import profiles and exact PE roots into native-v3 artifacts;
 it is intentionally outside the authority kernel.
 
-`src/spaghetti_extractor/analysis_v3/` is the typed, recordized authority
-pipeline being migrated onto the content-addressed graph:
+`src/spaghetti_extractor/analysis_v3/` is the authoritative typed pipeline on
+the content-addressed graph:
 
 | Module | Purpose |
 |---|---|
@@ -138,49 +136,28 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_state_machine.py` | Normalizes static transfer contracts into the generated baseline state machine. |
 | `reconstruction_ir.py` | Prepares exact byte-bound units once, then exports byte-free canonical machine IR with freshly derived global control facts. |
 | `behavioral_roots.py` | Independently parses and hash-binds PE entry, executable export, and immutable TLS callback roots. |
-| `hybrid_authority_v2.py` | Retired v2 bundle wire model retained for compatibility fixtures; it cannot authorize a candidate. |
 | `machine_ir_authority_v2.py` | Stable exact unit/event binding kernel shared by machine-IR extraction and downstream authority replay. |
-| `analysis_schema_v2.py`, `artifact_identity_v2.py`, `artifact_projection_v2.py` | Shared v2 wire formats, canonical content identities, and independently cached artifact projections. |
+| `artifact_identity_v2.py` | Stable canonical content identities still shared by active artifact producers. |
 | `artifact_set_v3.py` | Canonical manifest plus bounded compressed NDJSON packs, recursive value interning, streaming indexed reads, and structural/dependency scheduling manifests. |
 | `phase_framework_v3.py` | Typed map-unit, map-SCC, and checked-reduce phase definitions with automatic dependency recording and completeness enforcement. |
-| `transition_summary_v2.py`, `transition_inventory_v2.py`, `memory_version_graph_v2.py` | Source-format transition and memory-SSA inputs still consumed while exact machine-IR extraction migrates to native v3 records. |
-| `invariant_certificate_v2.py`, `inductive_invariant_input_v2.py`, `parametric_indirect_exit_v2.py` | Typed proposal formats that remain non-authorizing inputs to native v3 certificate checking. |
-| `authority_bindings_v2.py`, `authority_dependencies_v2.py`, `authority_record_core_v2.py` | Exact binary/unit/event bindings, canonical proof-dependency identities, and common immutable authority-record validation. |
+| `authority_bindings_v2.py` | Exact binary/unit/event bindings and canonical JSON used at stable active wire boundaries. |
 | `address_expressions.py` | Normalized address-expression IR used by provenance and target certificates. |
-| `checked_memory_access_v2.py` | Exact event-bound finite memory-address facts emitted by cold interprocedural replay. |
-| `checked_memory_address_domain_v2.py` | Exhaustive bounded-context address-domain certificates for one exact memory event; these authorize conditional mutable-slot reads without turning ordinary provenance observations into coverage claims. |
 | `control_disposition_profile.py` | Projects full import profiles onto the stable fixed-arity no-return facts required by structural control extraction. |
-| `entry_fact_derivation_v2.py` | Immutable launch/IAT facts and fail-closed mutable-slot promotion inputs. |
-| `entry_state_analysis_v2.py` | Exact PE/callback entry contracts and checked mutable-global invariants. |
-| `mutable_slot_candidates_v2.py` | Stable rooted discovery of writable 32-bit image slots for point-sensitive replay. |
-| `global_slot_hypotheses_v2.py` | Non-authorizing loader-value induction hypotheses for mutable-slot/interprocedural SCC bootstrap; cold replay must reproduce them before use. |
-| `global_slot_contract_v2.py`, `global_slot_image_v2.py`, `global_slot_proposal_v2.py` | Typed mutable-slot invariants, exact image-span bindings, and non-authorizing replay proposals. |
-| `interprocedural_analysis.py` | Unified SCC worklist for call summaries, value provenance, indirect targets, and dependency closure. |
-| `entry_state_contract_v2.py` | Typed entry-state and launch-root authority records. |
 | `indirect_target_dependency_v2.py`, `static_indirect_replay_v2.py` | Exact indirect-target dependencies and independent finite-target replay. |
 | `target_cutpoint_materialization_v2.py`, `recovered_executable_data.py` | Untrusted exact-span proposals for finite control destinations plus checked executable code/data and padding separation. |
-| `exception_invariants_v2.py` | Non-authorizing exceptional-invariant proposals retained as source evidence during native v3 migration. |
-| `exception_phase_v2.py` | Cached exceptional-control certificate phase adapter. |
 | `checked_external_site_contract.py` | Canonical machine-level external call/jump contracts and exact profile matching. |
-| `external_site_proposals_v2.py` | Exact-bound, untrusted external-site proposals consumed by v2 replay. |
-| `external_profile_authority_v2.py` | Cold-replayed index over exact profile bytes for imports, interfaces, operations, resolvers, targets, and callbacks. |
+| `external_site_proposals_v2.py` | Exact-bound, untrusted external-site proposals consumed by candidate diagnostics. |
+| `external_profile_authority_v2.py` | Exact profile-byte index for imports, interfaces, operations, resolvers, targets, and callbacks. |
 | `isa_kernel_selection.py` | Binary-specific binding from reachable forms to qualified semantics and fallback capabilities. |
 | `machine_ir_isa_catalog_v2.py`, `machine_ir_isa_requirements_v2.py`, `machine_ir_isa_selection_v2.py` | Exact machine-IR ISA inventory, required-form extraction, and binary-bound qualification selection. |
-| `launch_profile_v2.py` | Conditional PE32 launch assumptions and exact static/callback root inventory. |
 | `launch_assumption_inputs_v2.py` | Content-stable, non-authorizing PE-bound assumption projection for root-independent SCC analysis. |
-| `launch_memory_ranges_v2.py` | Exact event-bound spatial separation facts for private launch ranges such as the Win32 TEB; it does not claim content immutability. |
-| `hybrid_authority_builder_v2.py` | Retired v2 compatibility-fixture constructor; native v3 phases do not consume its bundle. |
-| `hybrid_diagnostics_v2.py` | Collapses dependent consequences behind deterministic primary blocker IDs. |
 | `stage_b_candidate_authority_v3.py` | Sole candidate-generation receipt; independently joins checked v3 final authority with exact machine IR and complete fallback implementation coverage. |
-| `internal_function_contracts.py` | Validates PE- and unit-bound, analysis-only call-frame/result contracts for opaque internal library functions. |
 | `reconstruction_control.py` | Proposes clusters from decoded control structure. |
 | `reconstruction_composition.py` | Composes compatible machine units into larger reconstruction clusters. |
 | `reconstruction_contract_analysis.py` | Derives cluster inputs, outputs, effects, and frontiers. |
 | `reconstruction_validation.py` | Synthesizes finite validation cases. |
-| `reconstruction_assurance.py` | Aggregates reconstruction/component evidence without overstating scope. |
 | `opaque_reconstruction.py` | Original-only bootstrap from static inventory. |
-| `stage_b_skeleton.py` | Emits compilable scaffolds or contract-guided baseline C. |
-| `stage_b_c_backend.py` | Deterministic semantic-state-machine to C lowering. |
+| `stage_b_c_backend.py` | Shared low-level C runtime helpers used by the active interpreter fallback. |
 | `stage_b_interpreter_backend.py` | Portable machine-IR interpreter generation. |
 | `stage_b_interpreter_native_build.py` | Freestanding PE32 build from interpreter, engine, and runtime packages. |
 | `stage_b_fallback_coverage.py` | Replays exact interpreter lowerings and portable selections and proves one implementation kind per unit in the complete structural universe; it has no rooted-reachability authority. |
@@ -242,22 +219,13 @@ and interfaces; it does not erase unresolved whole-program reconstruction gaps.
 | `machine_abi.py` | Machine-level calling conventions and the reviewed conditional normal-return register premise. |
 | `import_abi.py` | Expands reviewed ABI policy against exact PE imports. |
 | `machine_import_profiles.py` | Imported-call profile parsing and binding. |
-| `call_arguments.py` | Argument-source recovery. |
-| `internal_call_summaries.py` | Interprocedural call effect proposals. |
-| `call_frame_hypotheses.py` | Typed, non-authorizing preserved-register hypotheses used by cold interprocedural replay. |
-| `call_site_effects.py` | Canonical typed summaries of stack, register, result, and memory effects at call sites. |
-| `intrinsic_call_site_effects.py` | State-independent direct-import ABI frames and fail-closed merging with stateful call evidence. |
 | `callback_contracts.py` | Callback registration, ABI, lifetime, and activation protocol validation. |
 | `checked_external_site_contract.py` | Canonical fail-closed machine contract shared by native external-call planning and runtime. |
-| `value_provenance.py` | Static/dynamic/code/data/import/resource value origins. |
-| `provenance_domain.py` | Bounded provenance joins and domains. |
-| `interface_provenance.py` | Receiver, vtable, callback, out-parameter, and call-target propagation. |
 | `external_operation_profiles.py` | Machine external-operation and environment contracts. |
 | `external_interface_profiles.py` | Interface/vtable catalogs and call identities. |
 | `external_capabilities.py` | Resolver-issued callable capability contracts. |
 | `external_sites.py` | Static machine-level external call-site bindings. |
 | `callable_external_runtime.py` | Candidate runtime projection for callable capabilities. |
-| `external_function_ast.py` | Function declarations recovered from SDK/compiler AST JSON. |
 | `external_interface_ast.py` | Interface declarations recovered from AST JSON. |
 | `stage_b_api_catalog.py` | Known API signature/substitution catalog support. |
 
@@ -284,7 +252,6 @@ partial constellations remain hypotheses and do not authorize replacement.
 | `isa_conformance_lean.py` | Concrete evaluator over compact Lean semantics. |
 | `isa_conformance_unicorn.py` | Unicorn veto oracle. |
 | `isa_conformance_bochs.py` | Batched Bochs veto oracle adapter. |
-| `isa_conformance_80386.py` | Hardware-derived 80386 corpus support. |
 | `isa_corpus_generator.py` | Deterministic strict vector generation. |
 | `isa_kernel_qualification.py` | Cross-oracle qualification aggregation. |
 | `isa_campaign.py` | Coverage campaigns and missing-form prioritization. |
@@ -317,7 +284,6 @@ The corpus is an untrusted regression system, not a candidate equivalence claim.
 | Module | Purpose |
 |---|---|
 | `stage_b_functional.py` | Curated expected-output cases and sharded candidate execution. |
-| `stage_b_contract.py` | Stable re-export of candidate contract helpers. |
 | `target_intent.py` | Strict authored-intent validation and generated provenance separation. |
 | `ghidra.py` | Optional headless decompiler proposal exporter. |
 
@@ -336,7 +302,6 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-a-machine-ir-isa-qualification-v2.nix` | Binary-specific machine-IR requirement, oracle, selection, and authority DAG. |
 | `stage-a-roundtrip-corpus.nix` | Generated static corpus and qualification result. |
 | `bochs-conformance.nix` | Pinned batched Bochs adapter. |
-| `singlestep-80386-conformance.nix` | Hardware-vector corpus packaging. |
 | `machine-import-control-profile.nix` | Content-addressed no-return import projection that isolates machine IR from ordinary API-profile edits. |
 | `stage-b-component-analysis.nix` | Original inventory through component proposals. |
 | `stage-b-component-discovery.nix` | Independent proposal phase. |
@@ -453,8 +418,7 @@ Tests are phase-oriented by filename:
   `test_rooted_state_machine.py`: static reconstruction and machine IR.
 - `test_component_*`, `test_semantic_components.py`,
   `test_*component_contract.py`: component discovery/interface/source checks.
-- `test_external_*`, `test_callable_external_runtime.py`,
-  `test_call_arguments.py`, `test_value_provenance.py`: ABI and external calls.
+- `test_external_*`, `test_callable_external_runtime.py`: ABI and external calls.
 - `test_linked_libraries.py`, `test_source_call_substitution.py`: library and
   source substitution.
 - `test_stage_b_*`: C/interpreter/native/PE/functional/Nix integration.

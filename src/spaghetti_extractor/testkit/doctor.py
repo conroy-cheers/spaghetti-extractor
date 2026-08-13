@@ -16,6 +16,7 @@ from .diagnostics import Diagnostic
 from .discovery import build_impact_index
 from .fixtures import FIXTURE_ENV, FixtureCatalog
 from .evaluation_receipts import evaluation_receipt_inventory
+from ..python_module_index import production_unreachable_modules
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,6 +123,38 @@ def run_doctor(
     except ValueError as exc:
         diagnostics = getattr(exc, "diagnostics", ())
         checks.extend(diagnostics or (Diagnostic("error", "test_discovery_failed", str(exc)),))
+    try:
+        unreachable = production_unreachable_modules(repository)
+        if unreachable:
+            checks.append(
+                Diagnostic(
+                    "error",
+                    "production_module_unreachable",
+                    "package modules have no supported production consumer: "
+                    + ", ".join(unreachable),
+                    remediation=(
+                        "Delete retired modules, connect production code through an "
+                        "installed entrypoint or Nix phase, or move test helpers under tests/."
+                    ),
+                )
+            )
+        else:
+            checks.append(
+                Diagnostic(
+                    "info",
+                    "production_module_closure",
+                    "every package module is reachable from a supported production root",
+                )
+            )
+    except ValueError as exc:
+        checks.append(
+            Diagnostic(
+                "error",
+                "production_module_closure_invalid",
+                str(exc),
+                remediation="Repair Python imports, entrypoints, or Nix module roots.",
+            )
+        )
     checks.extend(_nix_checks(repository, runner))
     receipt_directory, receipt_count, receipt_bytes = evaluation_receipt_inventory()
     checks.append(

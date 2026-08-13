@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.stage_b_c_backend import (
-    stage_b_generate_semantic_c_from_state_machine,
     write_stage_b_semantic_c_backend,
 )
 from spaghetti_extractor.stage_b_api_catalog import load_machine_call_catalog
@@ -773,34 +772,6 @@ int main(void) {
             self.assertEqual(report["dispatch"]["duplicate_rvas"][0]["rva_start"], 0x1000)
             dispatch = (root / "state-machine-dispatch.c").read_text(encoding="utf-8")
             self.assertIn("if (match != 0) return 0;", dispatch)
-
-    def test_regenerates_from_hash_checked_canonical_state_machine(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            state_machine = root / "state-machine.jsonl"
-            row = normalize_stage_a_semantic_transfer(_transfer())
-            state_machine.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
-
-            report = stage_b_generate_semantic_c_from_state_machine(
-                state_machine=state_machine,
-                out_dir=root / "semantic-c",
-            )
-
-            self.assertEqual(report["status"], "complete", report)
-            self.assertEqual(report["state_machine"]["path"], "state-machine.jsonl")
-            implementation = json.loads(
-                (root / "semantic-c" / "state-machine-implementation.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(implementation["state_machine"], report["state_machine"])
-
-            row["register_writes"][0]["register"] = "edx"
-            state_machine.write_text(json.dumps(row, sort_keys=True) + "\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "contract_sha256"):
-                stage_b_generate_semantic_c_from_state_machine(
-                    state_machine=state_machine,
-                    out_dir=root / "tampered",
-                )
-
 
 if __name__ == "__main__":
     unittest.main()

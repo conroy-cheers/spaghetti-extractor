@@ -69,6 +69,44 @@ class TargetIntentTests(unittest.TestCase):
             with self.assertRaisesRegex(TargetIntentError, "normalized relative"):
                 load_target_bundle(root)
 
+    def test_target_bundle_rejects_unknown_path_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "legacy.json").write_text("{}\n", encoding="ascii")
+            write_json(
+                root / "target.json",
+                {
+                    "format": TARGET_BUNDLE_FORMAT,
+                    "id": "sample-pe",
+                    "display_name": "Sample PE",
+                    "input": {"kind": "pe32", "expected_sha256": "a" * 64},
+                    "paths": {"slice_profile": "legacy.json"},
+                },
+            )
+
+            with self.assertRaisesRegex(
+                TargetIntentError, "unsupported target path labels"
+            ):
+                load_target_bundle(root)
+
+    def test_target_bundle_pairs_source_projects_and_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "project.json").write_text("{}\n", encoding="ascii")
+            write_json(
+                root / "target.json",
+                {
+                    "format": TARGET_BUNDLE_FORMAT,
+                    "id": "sample-pe",
+                    "display_name": "Sample PE",
+                    "input": {"kind": "pe32", "expected_sha256": "a" * 64},
+                    "paths": {"source_projects": ["project.json"]},
+                },
+            )
+
+            with self.assertRaisesRegex(TargetIntentError, "equal lengths"):
+                load_target_bundle(root)
+
     def test_component_intent_resolves_unique_semantic_selector(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

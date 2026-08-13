@@ -29,9 +29,6 @@ from spaghetti_extractor.reconstruction_ir import (
     export_machine_ir_package,
     prepare_machine_ir_units_package,
 )
-from spaghetti_extractor.interprocedural_analysis import (
-    _prefer_indirect_recoveries,
-)
 from spaghetti_extractor.stage_b_state_machine import (
     normalize_stage_a_semantic_transfer,
 )
@@ -471,35 +468,6 @@ class ReconstructionIRTests(unittest.TestCase):
         self.assertEqual(
             [instruction["mnemonic"] for instruction in history],
             ["cmp", "ja"],
-        )
-
-    def test_conflicting_indirect_recovery_mechanisms_fail_closed(self) -> None:
-        static = [{
-            "id": "exit",
-            "status": "incomplete",
-            "failure": {"code": "unresolved"},
-        }]
-        value = [{
-            "id": "exit",
-            "status": "recovered",
-            "target_rvas": [0x1000],
-            "target_unit_ids": ["one"],
-            "external_targets": [],
-        }]
-        interface = [{
-            "id": "exit",
-            "status": "recovered",
-            "target_rvas": [],
-            "target_unit_ids": [],
-            "external_targets": [{"external_protocol": {"kind": "different"}}],
-        }]
-
-        selected = _prefer_indirect_recoveries(static, value, interface)[0]
-
-        self.assertEqual(selected["status"], "incomplete")
-        self.assertEqual(
-            selected["failure"]["code"],
-            "conflicting_indirect_recovery_evidence",
         )
 
     def test_unknown_non_control_terminal_instruction_recovers_fallthrough(self):

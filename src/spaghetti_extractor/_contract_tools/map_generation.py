@@ -69,7 +69,6 @@ def stage_a_generate_map(
     original_functions = _parse_linker_map_functions(linker_map_original, original_bin)
     candidate_functions = _parse_linker_map_functions(linker_map_candidate, candidate_bin)
     issues = _generic_map_layout_issues(original_bin, candidate_bin)
-    issues.extend(_generated_mapping_proof_metadata_issues(proof_rule, proof_metadata))
     issues.extend(_linker_function_issues("original", original_functions))
     issues.extend(_linker_function_issues("candidate", candidate_functions))
 
@@ -1757,31 +1756,6 @@ def _generated_mapping_proof(
         proof.update(proof_metadata)
     return proof
 
-def _generated_mapping_proof_metadata_issues(proof_rule: str, proof_metadata: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if proof_rule != "stage_b_skeleton_reimplementation_contract_v1":
-        return []
-    if _stage_b_proof_metadata_checked((proof_metadata or {}).get("stage_b")):
-        return []
-    return [
-        _incomplete_record(
-            category="missing_stage_b_proof_metadata",
-            obligation_id="mapping:stage-b-proof-metadata",
-            blocker="Stage B generated mapping proofs require checked skeleton, provenance, and functional-test metadata",
-            next_action="generate the map through stage-b-validate-candidate with a compliant candidate provenance manifest",
-        )
-    ]
-
-def _stage_b_proof_metadata_checked(value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-    return (
-        value.get("checked") is True
-        and isinstance(value.get("skeleton_manifest_sha256"), str)
-        and bool(value.get("skeleton_manifest_sha256"))
-        and isinstance(value.get("candidate_provenance_sha256"), str)
-        and bool(value.get("candidate_provenance_sha256"))
-    )
-
 __all__ = [
     '_absolute_mem_operand_rva',
     '_ambiguous_block_match_details',
@@ -1804,7 +1778,6 @@ __all__ = [
     '_generated_layout_contract',
     '_generated_map_issues',
     '_generated_mapping_proof',
-    '_generated_mapping_proof_metadata_issues',
     '_generic_map_layout_issues',
     '_group_import_thunks_by_signature',
     '_import_for_absolute_memory_operand',
@@ -1843,7 +1816,6 @@ __all__ = [
     '_section_gaps',
     '_section_permission_signature',
     '_section_rva_start_signature',
-    '_stage_b_proof_metadata_checked',
     '_trim_padding_edges',
     '_unique_functions_by_name',
     '_verify_waiver',

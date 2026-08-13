@@ -39,7 +39,6 @@ from ..util import sha256_bytes, sha256_file, utc_now, write_json
 
 CHECKED_GENERATED_MAPPING_PROOF_RULES = {
     "same_source_layout_preserving_build_v1",
-    "stage_b_skeleton_reimplementation_contract_v1",
 }
 
 REFERENCE_CONTRACT_MODEL_ID = "x86-pe32-static-reconstruction-v1"

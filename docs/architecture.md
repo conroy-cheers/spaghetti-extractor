@@ -2,455 +2,207 @@
 
 ## Objective
 
-Produce a faithful, progressively portable reimplementation of an opaque PE32
-program while minimizing silent reconstruction mistakes. Full automation is not
-required: operator or LLM-guided component selection, type recovery, and source
-repair are expected. The tooling must make those interventions local,
-reviewable, reproducible, and testable.
+Spaghetti Extractor reconstructs IA-32 PE32 applications as progressively more
+portable C. It must first produce a statically complete machine-oriented
+baseline, then allow bounded regions to be replaced by reviewed source without
+losing coverage of the original program.
+
+The toolkit does not claim an unrestricted whole-program equivalence theorem.
+Its assurance comes from exact binary binding, independently qualified machine
+semantics, fail-closed static closure, complete fallback ownership, bounded
+component checks, and candidate-only behavior tests. Runtime execution of the
+original binary is forbidden during repair iteration.
 
 ## Canonical Pipeline
 
 ```text
-original PE32
-  -> exact static inventory and ISA requirements
-  -> original-only reference contract
-  -> canonical machine IR
-  -> linked-library and interface recognition
-  -> typed v3 transition, memory, target, induction, external, and ISA evidence
-  -> dependency-aware content-addressed authority graph
-  -> checked final-authority-v3 reduction
-  -> independent fallback implementation-coverage receipt
-  -> generated baseline/interpreter
-  -> semantic components with explicit boundaries
-  -> portable C replacements
-  -> rebuilt candidate
-  -> candidate-only behavioral suites
-  -> assurance report
+original PE bytes
+  -> exact PE inventory and executable-byte classification
+  -> rooted static state machine and byte-bound unit preparation
+  -> canonical byte-free machine IR
+  -> typed v3 evidence and authority graph
+  -> final-authority-v3
+  -> candidate-authority-v3 plus complete fallback receipt
+  -> interpreter/native fallback candidate
+  -> component proposals and reviewed source replacements
+  -> source qualification and implementation ownership ledger
+  -> lift completion receipt
+  -> candidate-only tests in headless Wine
 ```
 
-The original may be parsed and disassembled statically. Repair iteration must
-not execute or trace it. Candidate generation fails until static closure has no
-deferred potential transfers. Runtime diagnosis begins only after that gate,
-is candidate-only, and uses public or curated expectations. Runtime failures
-after static closure indicate a tooling defect or an under-specified contract;
-they are not the expected mechanism for discovering omitted original regions.
+Extraction and proposal phases may use Capstone, `pefile`, Z3, SDK catalogs,
+library signatures, and operator-authored hints. Those inputs are not authority.
+Each accepting record is rebound to exact PE, machine-IR, unit, event, profile,
+and dependency identities by a checker-owned phase.
+
+The structural universe is prepared independently of source lifting. Replacing
+a component changes its source and implementation evidence; it does not reopen
+original PE extraction or permit an unrepresented executable region.
+
+## Native V3 Authority
+
+`analysis_v3/registry.py` is the complete authority-family registry. The active
+phases, in dependency order, are:
+
+| Phase | Responsibility |
+|---|---|
+| `exact-units-v3` | Bind every submitted unit to its exact machine-IR and PE identity. |
+| `semantic-index-v3` | Normalize checked control, memory, call, and exception occurrences. |
+| `transition-summaries-v3` | Emit one typed local transition summary per exact unit. |
+| `memory-versions-v3` | Build alias components, versions, merges, writes, reads, and unknown-write kills. |
+| `structural-target-proposals-v3` | Propose finite indirect destinations without granting reachability authority. |
+| `indirect-target-certificates-v3` | Check target expressions, finite alternatives, mapped destinations, and evidence dependencies. |
+| `inductive-authority-v3` | Check SCC entry facts, preservation, exports, and bounded circular invariants. |
+| `canonical-external-sites-v3` | Bind resolved external transfers to exact ABI, argument, effect, and continuation evidence. |
+| `callback-authority-v3` | Bind callback registration, entry state, ABI, lifetime, and nested transition evidence. |
+| `launch-root-closure-v3` | Derive rooted closure from PE entry/export/TLS roots and checked callback roots. |
+| `exceptional-transitions-v3` | Classify feasible faults as supported transfer, observable termination, or frontier. |
+| `isa-qualification-v3` | Bind every reachable instruction form to qualified decode and semantics evidence. |
+| `fallback-coverage-v3` | Check one supported fallback implementation for every structural unit. |
+| `final-authority-v3` | Reduce all required families and dependencies into the sole static acceptance record. |
+
+The registry rejects missing phases, duplicate names, duplicate artifact
+producers, and phases without independent completeness hooks. Generated status
+fields cannot create final authority.
 
 ## Trust Boundaries
 
-- Raw PE bytes and content hashes are authoritative inputs.
-- Behavioral roots are independently re-parsed from the exact PE and include
-  the executable entrypoint, exports, and immutable TLS callbacks; submitted
-  reachability cannot redefine that root surface.
-- Capstone, `pefile`, Ghidra, symbols, linker maps, Z3, and library matchers make
-  proposals. Their output is validated structurally and fails closed.
-- The compact Lean ISA model is authoritative only for the instruction forms it
-  implements. It is qualified against Unicorn, Bochs, and hardware corpora;
-  oracle agreement is evidence, not a candidate correctness claim.
-- CBMC establishes bounded component claims under explicit finite domains. It
-  does not silently generalize them.
-- Source rendering and library substitutions require exact catalog/profile
-  bindings and never qualify a candidate on their own.
-- Portable implementation ownership has three explicit assurance classes.
-  `checked_semantic_refinement` is the only class that proves replacement
-  semantics. `validation_backed_reconstruction` records exact source,
-  interface, dependency, assumption, and candidate-behavior evidence without
-  claiming a proof. `pinned_runtime_substitution` records the corresponding
-  evidence for the exact non-application unit universe and runtime lock; it is
-  likewise validation-backed rather than a semantic proof.
-- Operator-reviewed internal-function contracts may supply call-frame and value
-  provenance for opaque linked runtimes. They must bind the exact PE, entry,
-  and complete normal-control unit closure. They guide static analysis only:
-  the exact machine-IR body remains the executable fallback and the contract
-  has no replacement authority.
-- Candidate behavior tests cannot establish exhaustive correctness, but a
-  failure vetoes qualification. A statically qualified candidate that fails a
-  public behavior test is a tooling defect or an under-specified contract.
+Authoritative inputs are limited to exact bytes, checked profiles, qualified
+machine-semantics artifacts, checker code, and explicitly reviewed assumptions.
+Hashes identify content and dependencies; they do not prove correctness by
+themselves.
+
+The following are proposals only:
+
+- Capstone and `pefile` extraction results;
+- Ghidra output, symbols, linker maps, library matches, and source locations;
+- Z3-generated finite facts or invariants;
+- component boundaries and C rendering suggestions;
+- runtime diagnostics and candidate behavior reports.
+
+Lean, Unicorn, Bochs, and hardware-derived corpora qualify the supported ISA
+profile. Unicorn and Bochs are veto oracles, not proof authorities. Disputed or
+unsupported observations leave the corresponding form incomplete.
+
+Operator-authored target intent selects reviewed facts using stable selectors.
+Generated hashes, statuses, blocker counts, and proposal IDs may not be checked
+into intent files. Resolution produces fresh binary-bound artifacts in Nix.
 
 ## Status Vocabulary
 
-- `complete`: every requirement in the artifact's declared scope was checked.
-- `qualified`: an ISA form or other explicitly qualified capability has passed
-  its declared evidence policy.
-- `incomplete`: evidence is missing, unsupported, ambiguous, or out of scope.
-- `violated`: evidence contradicts an expected contract or behavior.
-- `not_applicable`: a checked family does not apply to this artifact.
-- `pass` / `fail`: reserved for ordinary command execution and behavior-test
-  cases, not static assurance claims.
+- `complete` means the checker closed the artifact's declared bounded scope.
+- `incomplete` means evidence, support, coverage, or a finite invariant is
+  missing. It is cacheable diagnostic output but cannot authorize execution.
+- `violated` means supplied evidence contradicts exact bytes, identities,
+  schema, semantics, or another checked dependency.
 
-No Python status field grants stronger authority than the checker named by the
-artifact. Hashes bind artifacts but do not prove semantic correctness.
+Dependent fallout uses explicit `blocked_by` relationships. Operator progress
+is measured using primary unresolved certificates, SCCs, external sites, ISA
+forms, and environment frontiers rather than duplicated downstream errors.
 
-## Static Authority
+## Static Closure And Fallback
 
-The active static gate is the typed v3 artifact graph. Its immutable records bind
-an exact PE, machine-IR unit or event, finite alternatives, dependencies, and
-explicit missing or contradictory evidence. Registered phase definitions are
-the single source of graph topology; Nix realizes their map-unit, map-SCC, and
-checked-reduce dependencies as bounded content-addressed artifacts. Proposal
-code may synthesize facts, but each phase independently rechecks exact inputs,
-dependencies, and completeness before exporting authority.
+Candidate generation requires all of the following:
 
-Only `final-authority-v3` may authorize candidate generation. The candidate
-receipt independently joins that record with exact machine IR and complete
-fallback implementation coverage. Legacy completeness reports and copied
-status fields are neither active inputs nor candidate authority.
+- every executable byte is classified;
+- every structurally discovered unit has exact machine IR;
+- every rooted transfer remains inside the structural universe;
+- direct, indirect, callback, call, return, and exceptional exits are closed;
+- every external site has a checked machine-level contract;
+- every reachable instruction form is qualified;
+- every structural unit has exactly one fallback or reviewed-source owner;
+- the `final-authority-v3` record is complete and authorizing;
+- the independently recomputed candidate-authority receipt matches all inputs.
 
-Fallback coverage is deliberately separate. It checks that every unit in the
-complete structural machine-IR universe has exactly one portable or machine-IR
-implementation and that the selected fallback lowering exists. It has no
-rooted-reachability authority; v3 root, target, and final-authority phases independently establish
-that every transfer possible from the declared roots remains inside that
-structural universe. Candidate generation requires both receipts, bound to the
-same machine IR and manifest.
+The fallback engine interprets canonical machine IR and uses explicit native
+bridges for PE32 ABI and external operations. Diagnostic candidate modes may be
+built for static inspection, but only a static-closed candidate may reach the
+runtime test constructors.
 
-The v3 evidence graph is fail-closed:
+## External Operations
 
-1. PE entry, export, TLS, and registered callback roots receive explicit entry
-   state contracts.
-2. Mutable image slots are tracked point-sensitively. Unknown or aliasing
-   writes taint downstream facts; they are never pooled into every root.
-   Stack- and FS-relative accesses may be excluded from image-slot aliasing
-   only through exact event-bound spatial facts replayed from the corresponding
-   private launch-range contract. Such facts establish separation, not
-   immutability of stack or TEB contents.
-3. The call-summary universe contains every exact direct call target and every
-   proposed finite indirect target, whether or not its call site is currently
-   rooted-reachable. Declared launch entries are stable structural cutpoints;
-   callback discovery may grow rooted propagation without redefining that
-   inventory. Every structural unit receives a root-independent normalized
-   transition/effect summary. Concrete memory ranges become sparse checked
-   versions and merge nodes only where a unit actually accesses that alias
-   component. An unknown or aliasing write kills the affected fact. A compact
-   `all_components` scope represents a fully unknown write without serializing
-   the complete component inventory at every site. Value, memory, target, call,
-   callback, external-site, and resource facts inhabit one typed dependency
-   graph. Each control SCC consumes only its actual dependency predecessors and
-   carries a bounded invariant certificate.
+External interactions use exact site identities and machine-level contracts.
+Contracts describe transfer kind, calling convention, argument expressions,
+register effects, memory footprints, resource changes, callback adapters, and
+continuations. C prototypes and friendly SDK names are source-lifting metadata,
+not authority.
 
-   Incoming facts bind an exact transition ID, exact exit ID, and target
-   cutpoint. The checker derives rooted closure from checked control edges and
-   requires induction only for rooted SCCs. Disconnected structural units remain
-   fully summarized without acquiring false root obligations. A reachable
-   unresolved indirect exit still makes closure incomplete.
+The initial environment profile requires exact one-for-one interactions with a
+pinned runtime or a separately qualified replacement. Concrete addresses and
+handles may differ only through checked runtime bindings. Threads, unknown
+asynchronous callbacks, direct syscalls, unmodelled SEH, and executable-memory
+writes remain explicit frontiers.
 
-   Static target discoveries first enter a compact, non-authorizing structural
-   proposal artifact. Local induction depends on that artifact, not on the
-   legacy interprocedural fixed point. The exact transition inventory still
-   covers every structural unit, while certificate proposal and checking are
-   limited to the independently derived rooted closure. Consequently, a small
-   rooted-unit count is not a completeness claim: every reachable unresolved
-   target retains an `indirect_target` dependency, and adding a checked finite
-   target expands the closure and invalidates the affected certificates.
+## Components And Source Lifting
 
-   Large independently checked artifacts compose through content identities.
-   Transition-witness identities bind ordered checked summary IDs rather than
-   embedding the full summary payload again, and induction proposals bind a
-   reconstructed dependency-graph identity. The checker rebuilds both from its
-   exact Nix dependencies. Shared transition, dependency-SCC, incoming-edge,
-   and memory-discharge indexes are constructed once per checker process;
-   individual certificates inspect only their members and incident edges.
+Components are reviewed groupings of machine units. Their interfaces describe
+logical inputs, outputs, objects, services, effects, and claims while retaining
+an exact projection back to machine ranges and events.
 
-   Cycles are closed by checked induction, not bounded execution replay. A loop
-   invariant may be proposed by static analysis, an operator, or Z3. Authority
-   follows only when the checker establishes root initiation, every represented
-   transition's preservation step, complete outgoing control, finite target
-   bounds, and all external dependency receipts. The Lean kernel proves that
-   these premises imply the invariant for every finite execution prefix, so a
-   nonterminating game loop does not need to be unrolled.
+A source replacement must provide:
 
-   Local induction is cached independently of environment evidence. A later
-   dependency-closure phase may discharge only typed nodes whose ID, kind, and
-   exact transition-exit binding match a receipt from the checker that owns the
-   evidence. External-site receipts are re-derived from exact machine IR,
-   rooted reachability, recovered targets, and the pinned profile index.
-   Callback-bearing calls require both that external-site receipt and a
-   binary-bound registration/entry contract. Indirect targets, call summaries,
-   resources, and callbacks without matching owner receipts remain incomplete;
-   a bare list of available dependency IDs has no authority. Local induction
-   and dependency closure use distinct artifact formats and content IDs. The
-   final static gate accepts only the latter, preventing a cached local report
-   from being mistaken for environment-closed authority.
+- an exact source-project binding and translation-unit inventory;
+- complete ownership of its selected machine units;
+- source-call and linked-library coverage;
+- a checked component assurance record for the declared scope;
+- a reproducible candidate identity and dependency audit;
+- no loss of fallback coverage outside the replacement.
 
-   External-site and callback receipts consume canonical v3 evidence bound to
-   exact transition/event identities. Older wire-format proposals may be
-   ingested as non-authorizing source evidence, but their copied status or
-   convergence fields cannot discharge a v3 certificate dependency.
+The source iteration audit is deliberately cheap and non-authorizing. It gives
+source-mapped repair feedback without rebuilding the full authority graph. The
+lift completion receipt is the release join and cannot substitute source tests
+for missing static authority.
 
-   Invariant inputs may also request typed exports at named cutpoints. Export
-   requests are non-authorizing and independently threaded through proposal,
-   local checking, and dependency closure. A fact is emitted only when the
-   checked invariant implies it. Mutable-slot, callback, and resource
-   authorities can therefore migrate to exact inductive exports without
-   treating analyzer proposals as globally valid facts.
+## Nix And Invalidation
 
-   Candidate authority has no discovery/cold/promotion fixed-point loop.
-   Structural discovery, parametric summaries, SCC induction, and root-specific
-   closure are separate phases, and each dependency is explicit in the v3
-   record graph. Caller evidence is projected onto independently checked
-   summary families.
-   A value retained in a preserved register depends on that register's summary
-   fact, rather than an aggregate summary which may remain incomplete because
-   of unrelated memory or result effects. Aggregate call-frame identities stay
-   readable during migration but cannot stand in for a more precise family
-   witness. Register summaries distinguish checked preservation, checked
-   clobber, and unknown relations per register. The reviewed PE32 normal-return
-   premise may fill only unknown nonvolatile relations, applies to internal and
-   indirect calls, and fails closed if exact machine evidence contradicts it.
-4. External sites are normalized only after target recovery and are rebound to
-   the exact event, ABI, arguments, effects, continuation, and selected profile.
-5. Every reachable instruction form is bound to one binary-specific qualified
-   ISA selection and the corresponding fallback capability.
-6. Exceptional transitions use local semantic fault predicates and checked SCC
-   invariants. Bounded predecessor search cannot close an exception frontier.
-7. Dependent fallout is reported through `blocked_by`; progress is measured by
-   unresolved certificates, SCCs, environment sites, and ISA forms.
+Nix is the only first-class build and test system. Phase-specific Python import
+closures, content-addressed artifact packs, and registry-derived dependency
+graphs keep unrelated source changes out of a derivation's identity.
 
-Typed facts and dependency edges describe the current converged proposal graph.
-They are not unioned with transient earlier evaluations: those evaluations are
-successive approximations, not simultaneous execution alternatives. Contextual
-address domains are accepted only from an explicitly scheduled and executed
-checkpoint. These rules make the authority inventory independent of evaluation
-history and prevent stale contextual proposals from being sealed.
+The stable invalidation boundaries are:
 
-Rooted graph closure and value provenance have separate authority. A recovered
-indirect edge determines whether its destination is behaviorally reachable;
-merely traversing that edge does not make every later machine value depend on
-its target certificate. Values and effects carry the certificate only when the
-indirect transition semantically produced or preserved them. This prevents an
-unresolved earlier operation from contaminating otherwise independent target
-facts while retaining fail-closed rooted reachability.
+```text
+PE inventory
+  -> machine IR preparation
+  -> bounded machine-IR packs
+  -> local v3 summaries
+  -> dependent SCC and target certificates
+  -> rooted/final authority
+  -> fallback and candidate receipts
+  -> source qualification and release receipts
+```
+
+A candidate source edit should rebuild source audits, the candidate, and
+dependent qualification receipts. It must not regenerate original extraction,
+ISA oracle corpora, or unrelated authority packs. Diagnostic formatting must
+not invalidate authority evidence.
+
+`python_module_index.py` derives the production module closure from installed
+entrypoints and Nix phase roots. Package modules reachable only from tests are a
+repository error. This keeps retired analyzers from silently remaining in the
+distributed package or test graph.
+
+## Runtime Policy
+
+The original binary is consumed statically only. Runtime suites execute the
+candidate against curated public expectations and always use an isolated
+headless Wine session. A runtime failure after static closure is treated as a
+tooling defect or an unsound assumption, not as ordinary region discovery.
 
 ## Completion Criteria
 
-Completion profiles are intentionally distinct:
+A target is fully reconstructed only when:
 
-- `static-baseline-v1` owns every structural unit with checked machine-IR
-  fallback and makes no portable-source claim.
-- `portable-application-v1` accepts portable source or library ownership only
-  with checked semantic-refinement qualifications.
-- `validation-qualified-v1` additionally permits validation-backed source and
-  pinned-runtime qualifications. It still requires final static authority,
-  complete ownership, exact dependency and candidate identities, explicit
-  assumptions, and matching candidate-only behavior on PE32 and another
-  architecture. Its completion receipt explicitly does not claim semantic
-  equivalence.
+1. `final-authority-v3` passes for the complete declared PE and environment
+   profile;
+2. fallback coverage and implementation ownership are complete;
+3. every selected portable component is source-qualified;
+4. the lift completion receipt passes;
+5. candidate-only smoke, functional, and upstream suites pass where available;
+6. all artifacts are reproducible through the checked Nix graph.
 
-A source-project binding, source-call report, linked-library classification,
-or behavior report cannot authorize ownership by itself. The ownership ledger
-consumes a qualification with the assurance class permitted by the selected
-profile, and the completion receipt independently rechecks the candidate,
-runtime-lock, qualification, validation, authority, and fallback bindings.
-
-A target is ready for release qualification when:
-
-1. Every executable byte has a static classification.
-2. Every required ISA form is supported and qualified.
-3. Root closure contains every reachable direct, finite indirect, callback,
-   call, and return transfer; its potential-transfer inventory is empty.
-4. Every reachable instruction has executable semantics, and every reachable
-   import or interface call has an exact machine ABI plus memory, resource,
-   lifetime, and callback effects.
-5. Every reachable region is implemented by portable C or the machine-IR
-   fallback, with `allowDeferredPotentialTransfers = false`. A hash-bound
-   dispatch receipt requires exactly one implementation kind and replays the
-   selected interpreter lowering.
-6. The v3 final authority is authorizing, the fallback receipt is complete,
-   and their exact machine-IR and manifest bindings agree.
-7. The candidate-only suites required by the selected profile pass. PE32 Wine
-   execution is headless and authority-gated. The validation-qualified profile
-   additionally requires the same curated case inventory and expected outputs
-   on a non-x86 build; a full upstream suite may strengthen this evidence but
-   is not silently inferred when absent.
-8. Generated artifacts are reproducible through the pinned Nix graph.
-
-This is an assurance claim, not a universal theorem over all executions. The
-architecture intentionally prioritizes useful, localized evidence and a viable
-lifting workflow over an impractical whole-program bisimulation requirement.
-
-## Caching
-
-The Nix graph separates extraction, ISA qualification, machine IR, component
-analysis, source checks, candidate builds, and behavior suites. Original-side
-artifacts should remain unchanged during source repair. Content-addressed
-derivations allow local and remote builders to substitute identical work.
-
-CA phase outputs never embed their resolved dependency store paths. Those
-paths may legitimately differ between equivalent CA realizations and would
-therefore make an otherwise deterministic output acquire a new content hash on
-every build. Phase manifests instead record stable file/tree SHA-256 identities,
-sizes, and the checked Python-module-closure manifest digest. The derivation DAG
-retains the exact producing dependencies. The phase-graph fixture rejects any
-manifest that leaks a `store_path` field.
-
-The v3 static-authority graph has explicit CA phases for exact units, compact
-semantic indexes, transitions, memory versions, structural targets, inductive
-SCC authority, external sites, callbacks, rooted closure, exceptional control,
-ISA qualification, fallback coverage, and final authority. The framework owns
-the structural and dependency schedules; phase implementations cannot submit a
-smaller universe. A changed unit invalidates its stable transition pack and
-only the dependency SCC and composition descendants which consume it. The Nix
-fixture compares derivation paths under unit, edge, phase-source, and external
-record mutations to enforce that contract.
-
-An unchanged CA build may still print the input-addressed derivations Nix would
-realize before resolving their content-addressed outputs. The operational cache
-criterion is that no builders execute and the same output path is returned;
-the warm DX-Ball final-authority build is the benchmark for this behavior. The
-current unchanged authority graph realizes in about 0.10 seconds with no
-builders.
-
-Native candidate preparation emits a deterministic checked object graph, then
-compiles and assembles that graph in a content-addressed realization. It does
-not read generated CA outputs during Nix evaluation: CA output paths are not
-known until realization, so that would create an invalid hidden IFD boundary.
-The object graph retains stable per-unit compile keys for an explicit two-pass
-manifest workflow if per-unit derivations become necessary. Phase-specific
-Python import closures prevent unrelated generator edits from invalidating
-static analysis. Computed quoted includes fail closed rather than silently
-widening a dependency.
-
-Machine-IR construction separates exact per-unit preparation from global
-reachability and control finalization. The direct rooted pass prepares each
-unit once; an expanded rooted pass reuses exact input-hash-bound units and only
-prepares newly discovered transfers. Final manifests recompute graph-derived
-facts rather than accepting cached reachability.
-
-The direct rooted pass consumes a canonical control-disposition projection of
-the selected import profiles.  That projection contains only exact fixed-arity
-imports proven not to return.  Argument inventories, memory/resource effects,
-callbacks, and source-profile bindings are deliberately excluded and enter at
-the interprocedural/external-site phases.  Adding or repairing an ordinary
-returning API contract therefore cannot invalidate the exact state machine or
-machine IR; changing a no-return disposition correctly invalidates rooted
-control and its descendants.
-
-Exact stack-entry offsets have a separate finite resource budget from typed
-value alternatives. A program can have many exact ESP states at a join without
-requiring the pointer-provenance lattice, global-slot alternatives, or indirect
-target sets to grow by the same amount. Both limits remain explicit and
-fail-closed.
-
-Analysis derivations preserve structurally valid `incomplete` artifacts so
-their blocker inventories are cacheable and inspectable. Policy enforcement is
-kept in a separate closure gate; an incomplete analysis must not discard hours
-of extraction work, but it also must never become an executable candidate.
-
-## Proposal Discovery And Certificate Caching
-
-Within one immutable proposal pass, unit transfers are retained in a
-bounded in-memory cache across fixed-point evaluations. Ordinary units are
-keyed by their exact abstract input and local slot environment. Call-bearing
-units additionally include the complete call-summary, recovered-target, and
-hypothesis environment, so an evolving call contract invalidates only
-call-sensitive transfers. The cache is created afresh for each legacy
-discovery pass, is never serialized, and carries no authority. Accepted facts
-come from typed certificate checkers, not from convergence of this proposal
-graph.
-Mutable-slot influence has a separate pass-scoped memo keyed only by the exact
-roots, recovered control, call-result, and memory-frame projection that its
-transfer function consumes. Changes confined to provenance hypotheses do not
-replay that graph; changes to any mutable-analysis dependency invalidate the
-memo. Within a replay, independently converged SCC summaries are also retained
-under exact incoming-state, local-control, target, and consumed-call-fact keys.
-A proposal pass uses the same SCC schedule while retaining finite target hints
-observed before a local join. Those hints remain non-authorizing. A checked
-target-expression or call-summary dependency must establish complete context
-coverage before an invariant certificate can consume it. The SCC cache binds
-and restores hints only to avoid repeating proposal computation.
-A hit restores the checked final member states, outgoing contributions, and
-the final per-unit transfers used by diagnostics and mutable-slot proposal
-extraction. Finalization therefore consumes converged transfer evidence without
-executing every reached unit again. Changed edges or predecessor facts
-invalidate the affected SCC and descendants. These caches are intermediate
-optimizations and carry no authority. The durable boundary is the
-content-addressed transition summary, memory-version graph, invariant proposal,
-checker receipt, and true condensation-graph descendants.
-
-Internal-call summaries use the same dependency discipline. Callee SCCs are
-cached under their local control closure, unresolved exits, call effects,
-memory-write footprints, return evidence, and the exact call-boundary
-projection of summaries they consume. A changed leaf invalidates that leaf and
-its callers without replaying independent call chains. Prepared memory-access
-facts are validated once per exact frozen inventory in the context-bound pass
-workspace; the resulting typed facts are shared by call-summary and provenance
-analysis instead of being revalidated independently. Whole-summary and
-component caches remain pass-local proposal optimizations, while the emitted
-artifact and downstream certificate checker remain unchanged.
-
-The structural callee inventory is independent of rooted reachability.
-Root-specific propagation may add registered callbacks and other event-derived
-entries; those entries receive summaries, but they do not add or remove direct
-structural callees merely by becoming reachable. A newly recovered indirect
-target extends the structural call inventory through its explicit target
-certificate and invalidates only the affected summary SCC and callers.
-
-Structural summaries are conditional facts, not reachability claims. The typed
-authority lattice starts from behavioral-entry summary nodes and follows their
-actual dependencies. An incomplete unreachable structural summary remains a
-diagnostic frontier, while an incomplete root or rooted callee fails closed.
-
-Each joint fixed-point round runs dependency-scoped global-slot analysis once.
-The round emits a distinct non-authorizing promotion artifact from the
-just-produced stack and slot inventories; it does not replay stack-range
-analysis merely to feed the next lattice iteration. The separately cached
-`globalSlotAuthority` phase reconstructs the exact final inputs, independently
-replays stack ranges and slot analysis, and compares the submitted analysis
-byte-for-byte before those invariants can authorize any downstream artifact.
-Iteration therefore avoids duplicate work without moving the authority boundary
-or treating fixed-point promotion as candidate authority.
-
-The independent replay implementation lives outside the joint fixed-point
-Python closure. Checker-only changes therefore rebuild the final authority
-phase without invalidating the expensive joint artifact. Provenance-alternative
-and stack-offset budgets are separate bound inputs and must match the producing
-analysis exactly; canonical serialized content, rather than Python container
-identity, defines replay equality.
-
-Joint convergence is extensional over the facts consumed by the next typed
-analysis pass. Global-slot record identities remain part of that state because
-target evidence refers to them directly. Checked stack-range record IDs and
-their prior graph/call-effect hashes do not: the interprocedural adapter first
-replays those records, then consumes only the accepted unit set and exact entry
-offsets. Treating evidence-lineage hashes as lattice coordinates creates an
-unbounded `H(previous evidence)` chain after the represented stack state has
-already stabilized. The joint artifact records both semantic and full-evidence
-signatures, while the final replay still binds the exact output stack artifact
-to the current graph and current call-effect inventory.
-
-Finite domains use family-specific resource bounds. Value-origin alternatives
-remain capped at 32, while exact launch-relative stack states are capped at 64.
-The latter are integer control states rather than possible machine values;
-sharing the tighter provenance bound caused otherwise exact control-flow joins
-to fail without reducing the accepted value set. Exhausting either bound still
-produces `incomplete` and never widens to an arbitrary value or address.
-
-Stack states carry exact launch-relative `ESP`, active call-frame, and optional
-`EBP` offsets. The `EBP` offset is established only by replaying a represented
-affine register write, is retained across calls only by a checked register
-frame or ABI, and is killed by an unrepresented write. This lets ordinary
-`leave` and `mov esp, ebp` epilogues compose without treating a conventional
-frame pointer as a special binary pattern; an unknown frame pointer still
-stops propagation as `incomplete`.
-
-Exact direct-import events also project their state-independent machine-ABI
-families before provenance replay: preserved registers and fixed stack cleanup
-come from the selected import profile even when an upstream unresolved target
-prevents abstract state from reaching the site. Argument-dependent memory
-writes and result origins remain stateful and therefore incomplete until their
-inputs are recovered. If a reached site's stateful frame disagrees with the
-intrinsic ABI projection, the merged effect fails closed instead of selecting
-either result. An external tail transfer with no local continuation does not
-create a fictitious returning-stack obligation; its external-site contract
-still governs the terminal transfer itself.
-
-Internal return behavior is likewise a separate structural summary family.
-An exact finite intraprocedural closure containing no return instruction and
-ending only in checked terminal dispositions proves that the callee cannot
-resume its caller, even when unrelated nested-call register or memory families
-remain incomplete. Stack propagation still enters that callee but suppresses
-the impossible caller continuation. Any unresolved direct or indirect exit
-keeps the return family incomplete instead of being treated as non-returning.
-
-Generated files belong under Nix outputs or ignored `build/` workspaces. Authored
-intent and source belong in target bundles. Private binaries belong under the
-ignored `private/` tree and must never be copied into source or target data.
+GNU Hello is the small end-to-end source-lifting validation target. jq tests
+larger CLI/library behavior and analysis scale. DX-Ball tests legacy multimedia
+APIs, callbacks, mutable resources, loops, and a substantially larger control
+universe. New generic mechanisms must first pass a small target-independent
+fixture before a validation target relies on them.

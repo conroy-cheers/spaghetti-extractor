@@ -42,6 +42,14 @@ from .util import sha256_file, write_json
 _IDENTIFIER = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
+_TARGET_PATH_KINDS = {
+    "nix": "single",
+    "components": "single",
+    "linked_islands": "single",
+    "source_projects": "multiple",
+    "source_evidence": "multiple",
+}
+
 _GENERATED_FIELD_NAMES = frozenset(
     {
         "adapter_effects",
@@ -121,10 +129,16 @@ def load_target_bundle(path: Path | str) -> TargetBundle:
     identity.validate()
     display_name = _string(payload.get("display_name"), "target display name")
     paths = _object(payload.get("paths"), "target paths")
+    unknown_path_labels = sorted(set(paths) - set(_TARGET_PATH_KINDS))
+    if unknown_path_labels:
+        raise TargetIntentError(
+            f"unsupported target path labels: {unknown_path_labels}"
+        )
     for label, value in paths.items():
-        if isinstance(value, str):
+        expected_kind = _TARGET_PATH_KINDS[label]
+        if expected_kind == "single" and isinstance(value, str):
             _validate_relative_path(manifest.parent, value, f"target path {label}")
-        elif isinstance(value, list):
+        elif expected_kind == "multiple" and isinstance(value, list):
             for index, item in enumerate(value):
                 _validate_relative_path(
                     manifest.parent,
@@ -132,7 +146,18 @@ def load_target_bundle(path: Path | str) -> TargetBundle:
                     f"target path {label}[{index}]",
                 )
         else:
-            raise TargetIntentError(f"target path {label} must be a path or path list")
+            expected = "a path" if expected_kind == "single" else "a path list"
+            raise TargetIntentError(f"target path {label} must be {expected}")
+    source_projects = paths.get("source_projects", [])
+    source_evidence = paths.get("source_evidence", [])
+    if source_evidence and not source_projects:
+        raise TargetIntentError(
+            "target source_evidence requires corresponding source_projects"
+        )
+    if len(source_evidence) != len(source_projects):
+        raise TargetIntentError(
+            "target source_projects and source_evidence must have equal lengths"
+        )
     return TargetBundle(
         root=manifest.parent,
         identity=identity,

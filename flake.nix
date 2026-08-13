@@ -253,7 +253,7 @@
               fixtures = testFixtures;
             });
           roundtrip = import ./nix/stage-a-roundtrip-corpus.nix {
-            inherit pkgs pythonEnv isaSemanticKernel;
+            inherit pkgs pythonEnv;
             source = analysisSource;
             count = 6;
           };
@@ -540,11 +540,6 @@
           type = "app";
           program = "${self.packages.${system}.spaghetti-extractor}/bin/spaghetti-extractor";
           meta.description = "Static PE32 reconstruction and component-lifting toolkit";
-        };
-        slice = {
-          type = "app";
-          program = "${self.packages.${system}.spaghetti-extractor}/bin/spaghetti-extractor-slice";
-          meta.description = "Incremental candidate repair loop";
         };
         test = {
           type = "app";

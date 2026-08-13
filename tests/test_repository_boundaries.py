@@ -10,6 +10,8 @@ from spaghetti_extractor.target_intent import (
     load_target_bundle,
     validate_authored_intent,
 )
+from spaghetti_extractor.python_module_index import production_unreachable_modules
+from spaghetti_extractor.analysis_v3.registry import AUTHORITY_PHASE_REGISTRY_V3
 
 
 TESTKIT = {
@@ -110,6 +112,9 @@ class RepositoryBoundaryTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [])
 
+    def test_every_package_module_has_a_production_consumer(self) -> None:
+        self.assertEqual(production_unreachable_modules(self.root), ())
+
     def test_generic_python_contains_no_validation_target_policy(self) -> None:
         package = self.root / "src/spaghetti_extractor"
         forbidden = re.compile(
@@ -197,6 +202,64 @@ class RepositoryBoundaryTests(unittest.TestCase):
             if path.is_file() and path.name not in repository_map
         )
         self.assertEqual(missing, [])
+
+    def test_architecture_lists_the_exact_v3_phase_registry(self) -> None:
+        architecture = (self.root / "docs" / "architecture.md").read_text(
+            encoding="utf-8"
+        )
+        missing = sorted(
+            phase
+            for phase in AUTHORITY_PHASE_REGISTRY_V3.names
+            if f"`{phase}`" not in architecture
+        )
+        self.assertEqual(missing, [])
+
+    def test_documented_python_and_nix_files_exist(self) -> None:
+        documents = [self.root / "README.md", *(self.root / "docs").glob("*.md")]
+        repository_map = (self.root / "REPOSITORY_MAP.md").read_text(
+            encoding="utf-8"
+        )
+        document_texts = [
+            *(document.read_text(encoding="utf-8") for document in documents),
+            # Test shards intentionally contain only their selected test modules.
+            # The production/tooling inventory precedes the Tests section.
+            repository_map.split("## Tests", maxsplit=1)[0],
+        ]
+        available = {
+            path.name
+            for path in self.root.rglob("*")
+            if path.is_file() and path.suffix in {".py", ".nix"}
+        }
+        missing = []
+        pattern = re.compile(r"`([A-Za-z0-9_][A-Za-z0-9_.-]*\.(?:py|nix))`")
+        for document_text in document_texts:
+            for name in pattern.findall(document_text):
+                if name not in available:
+                    missing.append(name)
+        self.assertEqual(sorted(set(missing)), [])
+
+    def test_removed_workflows_are_absent_from_public_surfaces(self) -> None:
+        public = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in (
+                self.root / "README.md",
+                self.root / "REPOSITORY_MAP.md",
+                self.root / "docs" / "architecture.md",
+                self.root / "docs" / "target-bundles.md",
+                self.root / "pyproject.toml",
+                self.root / "flake.nix",
+                self.root / "src" / "spaghetti_extractor" / "cli.py",
+            )
+        )
+        for removed in (
+            "spaghetti-extractor-slice",
+            "stage-b-generate-skeleton",
+            "stage-b-generate-semantic-c",
+            "stage-a-jq-fixtures-check",
+            "stage-b-jq-skeleton",
+        ):
+            with self.subTest(removed=removed):
+                self.assertNotIn(removed, public)
 
     def test_installed_nix_data_covers_every_generic_nix_surface(self) -> None:
         manifest = (self.root / "pyproject.toml").read_text(encoding="utf-8")

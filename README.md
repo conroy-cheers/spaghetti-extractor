@@ -82,15 +82,22 @@ nix run .#dev -- explain-rebuild --before before.json --after after.json
 Scaffolding creates convention-wired files and refuses overwrites; add
 `--dry-run` to inspect the generated files without changing the worktree.
 
-Use `spaghetti-extractor-slice` for repeated local candidate edits after the
-static contract has been prepared. The loop caches the original-side artifacts
-and invalidates candidate checks by content hash.
+Portable-source iteration is also Nix-native. The GNU Hello validation target
+exposes the canonical workbench shape:
+
+```console
+nix build .#gnu-hello-lift-workbench --no-link
+nix build .#gnu-hello-source-iteration-audit --no-link
+nix build .#gnu-hello-authority-diagnostics-v3 --no-link
+```
+
+The workbench remains buildable while authority is incomplete. Executable and
+runtime outputs stay behind the explicit final-authority gate.
 
 ## Public Surfaces
 
 - `spaghetti-extractor`: inventory, contract, ISA, machine-IR, component,
   source-rendering, candidate assurance, and functional-test commands.
-- `spaghetti-extractor-slice`: incremental component/slice iteration.
 - `nix run .#test`: cached smoke, affected, full, target, and benchmark gates.
 - `nix run .#dev`: scaffolding, fixture discovery, environment diagnosis, and
   rebuild explanations.

@@ -1,7 +1,7 @@
 """Exact replay of static PE32 indirect-control recoveries.
 
 Machine-IR recovery rows are proposals. This module reconstructs the subset
-that can authorize cold interprocedural analysis directly from exact unit
+that can support checked indirect-target evidence directly from exact unit
 semantics and PE bytes. Unsupported recovery mechanisms remain incomplete.
 """
 

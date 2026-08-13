@@ -20,7 +20,6 @@ conformance = [
 
 [project.scripts]
 spaghetti-extractor = "spaghetti_extractor.cli:main"
-spaghetti-extractor-slice = "spaghetti_extractor.slice_loop:main"
 spaghetti-extractor-test = "spaghetti_extractor.testkit.runner:main"
 spaghetti-extractor-dev = "spaghetti_extractor.testkit.cli:main"
 
@@ -66,7 +65,6 @@ spaghetti_extractor = [ "lean/**/*.lean" ]
   "nix/test-suite-plan.nix",
   "nix/test-suite-shard.nix",
   "nix/test-suite.nix",
-  "nix/singlestep-80386-conformance.nix",
   "nix/stage-a-builder-public-keys",
   "nix/stage-a-builders",
   "nix/stage-a-external-interface-profile.nix",

@@ -4,15 +4,17 @@
 of the generic toolkit, not a Python extension point.
 
 Required `target.json` fields identify the target, expected input hash, and
-relative authored paths. A bundle may contain:
+relative paths consumed by the generic intent resolver. The supported path
+keys are `nix`, `components`, `linked_islands`, `source_projects`, and
+`source_evidence`; unknown keys fail closed. A bundle may contain:
 
 - `intent/`: reviewed component, linked-island, source-project, runtime-import,
-  and slice-loop intent;
+  and source-evidence intent;
 - `source/`: manually created or reviewed portable source;
 - `tests/`: curated candidate-only expectations;
 - `default.nix`: acquisition or build wiring;
-- `tools/`: target-local operator scripts when a generic command cannot express
-  an authored workflow.
+- `tools/`: target-local input conversion helpers only when a generic command
+  cannot express the operation; build and validation loops remain Nix-native.
 
 Target bundles must not contain generic analysis implementation, copied Python
 packages, Lean modules, generated proof/data graphs, downloaded binaries, Nix

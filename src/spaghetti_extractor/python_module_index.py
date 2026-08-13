@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ast
 import json
+import re
+import tomllib
 from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
@@ -11,6 +13,9 @@ from pathlib import Path, PurePosixPath
 FORMAT = "spaghetti-extractor-python-module-index-v2"
 PACKAGE = "spaghetti_extractor"
 RESOURCE_DECLARATION = "PYTHON_RESOURCES"
+_MODULE_REFERENCE = re.compile(
+    r'["\'](spaghetti_extractor(?:\.[A-Za-z0-9_]+)+)["\']'
+)
 
 
 def _module_name(path: Path, source_root: Path) -> str:
@@ -145,6 +150,85 @@ def build_python_module_index(repository: Path) -> dict[str, object]:
     return {"format": FORMAT, "modules": rows}
 
 
+def production_module_roots(
+    repository: Path, index: dict[str, object] | None = None
+) -> tuple[str, ...]:
+    """Derive supported package roots from public entrypoints and Nix phases."""
+
+    repository = repository.resolve()
+    current = index or build_python_module_index(repository)
+    modules = current.get("modules")
+    if not isinstance(modules, dict):
+        raise ValueError("Python module index has no module mapping")
+    roots: set[str] = {
+        module
+        for module, row in modules.items()
+        if isinstance(module, str)
+        and isinstance(row, dict)
+        and str(row.get("path", "")).endswith("/__main__.py")
+    }
+    project = tomllib.loads((repository / "pyproject.toml").read_text(encoding="utf-8"))
+    scripts = project.get("project", {}).get("scripts", {})
+    if not isinstance(scripts, dict):
+        raise ValueError("pyproject project.scripts must be a table")
+    for command, reference in scripts.items():
+        if not isinstance(reference, str) or ":" not in reference:
+            raise ValueError(f"installed script {command!r} has no module:function target")
+        roots.add(reference.split(":", 1)[0])
+
+    nix_paths = [repository / "flake.nix"]
+    nix_paths.extend(sorted((repository / "nix").glob("*.nix")))
+    nix_paths.extend(sorted((repository / "targets").glob("**/*.nix")))
+    for path in nix_paths:
+        if path.is_file():
+            roots.update(
+                match.group(1)
+                for match in _MODULE_REFERENCE.finditer(
+                    path.read_text(encoding="utf-8")
+                )
+            )
+    missing = sorted(roots - set(modules))
+    if missing:
+        raise ValueError(f"production roots name missing modules: {missing!r}")
+    return tuple(sorted(roots))
+
+
+def production_module_closure(
+    repository: Path, index: dict[str, object] | None = None
+) -> tuple[str, ...]:
+    """Return every module transitively used by a supported production root."""
+
+    current = index or build_python_module_index(repository.resolve())
+    modules = current.get("modules")
+    if not isinstance(modules, dict):
+        raise ValueError("Python module index has no module mapping")
+    pending = list(production_module_roots(repository, current))
+    selected: set[str] = set()
+    while pending:
+        module = pending.pop()
+        if module in selected:
+            continue
+        selected.add(module)
+        row = modules.get(module)
+        if not isinstance(row, dict) or not isinstance(row.get("dependencies"), list):
+            raise ValueError(f"Python module index record is malformed: {module}")
+        pending.extend(str(value) for value in row["dependencies"])
+    return tuple(sorted(selected))
+
+
+def production_unreachable_modules(
+    repository: Path, index: dict[str, object] | None = None
+) -> tuple[str, ...]:
+    """Find package code that can only be reached from tests or stale code."""
+
+    current = index or build_python_module_index(repository.resolve())
+    modules = current.get("modules")
+    if not isinstance(modules, dict):
+        raise ValueError("Python module index has no module mapping")
+    reachable = set(production_module_closure(repository, current))
+    return tuple(sorted(set(modules) - reachable))
+
+
 def render_python_module_index(repository: Path) -> str:
     return json.dumps(
         build_python_module_index(repository.resolve()), indent=2, sort_keys=True
@@ -167,6 +251,9 @@ __all__ = [
     "FORMAT",
     "build_python_module_index",
     "declared_python_resources",
+    "production_module_closure",
+    "production_module_roots",
+    "production_unreachable_modules",
     "refresh_python_module_index",
     "render_python_module_index",
 ]

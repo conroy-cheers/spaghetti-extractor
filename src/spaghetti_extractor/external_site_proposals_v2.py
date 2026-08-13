@@ -21,7 +21,7 @@ from .external_profile_authority_v2 import (
     ExternalProfileAuthorityV2,
     ExternalProfileEntry,
 )
-from .hybrid_authority_v2 import canonical_json_bytes
+from .authority_bindings_v2 import canonical_json_bytes
 
 
 EXTERNAL_SITE_PROPOSALS_V2_FORMAT = (

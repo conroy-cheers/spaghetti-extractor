@@ -389,8 +389,8 @@ let
       ' "$out/prepared-machine-ir-manifest.json" >/dev/null
     '';
 
-  # Exact decode is prepared once. Interprocedural closure belongs exclusively
-  # to the content-addressed v2 SCC phase below.
+  # Exact decode is prepared once. Dependency closure and induction belong to
+  # the content-addressed native v3 authority graph, not this extraction phase.
   directStateMachine = mkRootedStateMachine {
     name = "${namePrefix}-direct-rooted-state-machine-v1";
     inputStateMachine = "${staticExport}/state-machine.jsonl";

@@ -16,7 +16,7 @@ from tests.pe_fixtures import pe32_image
 from spaghetti_extractor.roundtrip_fuzz.image_contract import (
     write_stage_a_load_image_contract,
 )
-from spaghetti_extractor.hybrid_authority_builder_v2 import (
+from spaghetti_extractor.machine_ir_authority_v2 import (
     build_machine_ir_authority_bindings,
 )
 from spaghetti_extractor.analysis_v3._schema import stable_id

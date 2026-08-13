@@ -10,10 +10,7 @@
     "nix": "default.nix",
     "components": "intent/components.json",
     "linked_islands": "intent/linked-islands.json",
-    "runtime_imports": "intent/runtime-imports.json",
-    "runtime_substitution": "intent/runtime-substitution.json",
     "source_projects": ["intent/source/project.json"],
-    "source_evidence": ["intent/source/evidence.json"],
-    "source_roots": ["source/components", "source/idiomatic"]
+    "source_evidence": ["intent/source/evidence.json"]
   }
 }
