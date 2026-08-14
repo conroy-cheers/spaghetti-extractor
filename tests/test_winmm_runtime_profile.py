@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.callback_contracts import (
+from spaghetti_extractor.external.callbacks import (
     parse_callback_abi,
     parse_callback_source,
     parse_nested_native_callback_behavior,
@@ -19,7 +19,7 @@ from spaghetti_extractor.external.machine_import_profiles import (
 from spaghetti_extractor.candidate.state_machine import (
     _machine_import_contracts,
 )
-from spaghetti_extractor.stage_binary import StageAInputError
+from spaghetti_extractor.pe32.stage_binary import StageAInputError
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]

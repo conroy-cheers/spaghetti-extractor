@@ -47,14 +47,20 @@ from ..authority.transition_records import (
     TRANSITION_SUMMARY_CODEC_V3,
     TransitionSummaryRecordV3,
 )
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactDependencyV3,
-    ArtifactInputReaderV3,
     ArtifactRecordV3,
     ArtifactSetWriterV3,
     canonical_json_bytes_v3,
     canonical_sha256_v3,
+)
+from ..artifacts.formats import (
+    MACHINE_IR_FORMAT as MACHINE_IR_FORMAT_V2,
+    TARGET_HINTS_ARTIFACT_KIND as TARGET_HINTS_ARTIFACT_KIND_V3,
+)
+from ..artifacts.io import (
+    ArtifactInputReaderV3,
     open_artifact_reader_v3,
 )
 
@@ -62,8 +68,6 @@ from ..artifact_set_v3 import (
 INDEXED_TARGET_EVIDENCE_REPORT_V3 = (
     "spaghetti-extractor-indexed-target-evidence-report-v3"
 )
-TARGET_HINTS_ARTIFACT_KIND_V3 = "target-hints-v3"
-MACHINE_IR_FORMAT_V2 = "stage-a-machine-ir-v2"
 _IMAGE_SCN_MEM_EXECUTE = 0x20000000
 _IMAGE_SCN_MEM_READ = 0x40000000
 _IMAGE_SCN_MEM_WRITE = 0x80000000

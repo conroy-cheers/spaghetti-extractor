@@ -41,14 +41,14 @@ from spaghetti_extractor.authority.target_certificate_records import (
     INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3,
     IndirectTargetCertificateUnitV3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
     CanonicalValueV3,
     canonical_sha256_v3,
 )
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
 
 PE_SHA256 = "1" * 64

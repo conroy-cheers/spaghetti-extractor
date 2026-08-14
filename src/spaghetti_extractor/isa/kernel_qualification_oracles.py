@@ -18,7 +18,6 @@ from .kernel_qualification import (
     ISAOracleObservation,
     ISAProfileBinding,
     ISA_FORM_QUALIFICATION_FORMAT,
-    ISA_FORM_QUALIFICATION_FORMAT_V1,
     ISA_ORACLE_CONSENSUS_FORMAT,
     ISA_ORACLE_OBSERVATION_FORMAT,
     MismatchDiagnostic,
@@ -597,7 +596,6 @@ def build_form_qualification(
 def parse_form_qualification(value: Any) -> ISAFormQualification:
     payload = _object(value, "ISA form qualification")
     artifact_format = payload.get("format")
-    legacy = artifact_format == ISA_FORM_QUALIFICATION_FORMAT_V1
     _exact_fields(
         payload,
         {
@@ -615,14 +613,11 @@ def parse_form_qualification(value: Any) -> ISAFormQualification:
             "diagnostics",
             "counts",
             "trust",
-        }
-        | (set() if legacy else {"qualification_layers"}),
+            "qualification_layers",
+        },
         "ISA form qualification",
     )
-    if artifact_format not in {
-        ISA_FORM_QUALIFICATION_FORMAT_V1,
-        ISA_FORM_QUALIFICATION_FORMAT,
-    }:
+    if artifact_format != ISA_FORM_QUALIFICATION_FORMAT:
         raise ISAKernelQualificationError(
             "unsupported ISA form qualification format"
         )
@@ -703,23 +698,22 @@ def parse_form_qualification(value: Any) -> ISAFormQualification:
         raise ISAKernelQualificationError(
             "ISA form qualification counts are inconsistent"
         )
-    if not legacy:
-        expected_layers = _qualification_layers_payload(
-            structural_status=result.structural_status,
-            structural_statuses=(result.structural_status,),
-            structural_diagnostics=result.structural_diagnostics,
-            structural_total_name="required_forms",
-            concrete_oracle_status=result.concrete_oracle_status,
-            concrete_oracle_counts=result.counts,
-            concrete_oracle_diagnostics=result.concrete_oracle_diagnostics,
-        )
-        _validate_qualification_layers(
-            payload.get("qualification_layers"),
-            expected=expected_layers,
-            context="ISA form qualification.qualification_layers",
-            structural_total_name="required_forms",
-            concrete_oracle_total_name="consensus_cases",
-        )
+    expected_layers = _qualification_layers_payload(
+        structural_status=result.structural_status,
+        structural_statuses=(result.structural_status,),
+        structural_diagnostics=result.structural_diagnostics,
+        structural_total_name="required_forms",
+        concrete_oracle_status=result.concrete_oracle_status,
+        concrete_oracle_counts=result.counts,
+        concrete_oracle_diagnostics=result.concrete_oracle_diagnostics,
+    )
+    _validate_qualification_layers(
+        payload.get("qualification_layers"),
+        expected=expected_layers,
+        context="ISA form qualification.qualification_layers",
+        structural_total_name="required_forms",
+        concrete_oracle_total_name="consensus_cases",
+    )
     _parse_trust(payload.get("trust"), "ISA form qualification.trust")
     return replace(result, format=artifact_format)
 
@@ -751,20 +745,19 @@ def serialize_form_qualification(
         "counts": dict(value.counts),
         "trust": _trust_payload(value.trust),
     }
-    if value.format == ISA_FORM_QUALIFICATION_FORMAT:
-        payload["qualification_layers"] = _qualification_layers_payload(
-            structural_status=value.structural_status,
-            structural_statuses=(value.structural_status,),
-            structural_diagnostics=value.structural_diagnostics,
-            structural_total_name="required_forms",
-            concrete_oracle_status=value.concrete_oracle_status,
-            concrete_oracle_counts=value.counts,
-            concrete_oracle_diagnostics=value.concrete_oracle_diagnostics,
-        )
-    elif value.format != ISA_FORM_QUALIFICATION_FORMAT_V1:
+    if value.format != ISA_FORM_QUALIFICATION_FORMAT:
         raise ISAKernelQualificationError(
             "form qualification has an unsupported format"
         )
+    payload["qualification_layers"] = _qualification_layers_payload(
+        structural_status=value.structural_status,
+        structural_statuses=(value.structural_status,),
+        structural_diagnostics=value.structural_diagnostics,
+        structural_total_name="required_forms",
+        concrete_oracle_status=value.concrete_oracle_status,
+        concrete_oracle_counts=value.counts,
+        concrete_oracle_diagnostics=value.concrete_oracle_diagnostics,
+    )
     if parse_form_qualification(payload) != value:
         raise ISAKernelQualificationError(
             "form qualification is not a valid typed instance"

@@ -15,11 +15,11 @@ from spaghetti_extractor.authority.semantic_index import (
     SEMANTIC_INDEX_CODEC_V3,
     derive_semantic_index_v3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
 )
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
 from spaghetti_extractor.isa.kernel_qualification import (
     BackendBinding,
@@ -51,10 +51,10 @@ from spaghetti_extractor.isa.frontier_report_v1 import (
     build_isa_frontier_report_v1,
 )
 from spaghetti_extractor.isa.semantic_forms import lean_semantic_form_id
-from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+from spaghetti_extractor.authority_inputs.isa_requirements import (
     MACHINE_IR_FALLBACK_CAPABILITY_V2,
 )
-from spaghetti_extractor.machine_ir_isa_selection_v2 import (
+from spaghetti_extractor.authority_inputs.isa_selection import (
     MachineIRISASelectionV2Error,
     build_machine_ir_isa_selection_certificate_v2,
     build_machine_ir_isa_selection_authority_v2,
@@ -282,7 +282,7 @@ class ISAKernelSelectionAuthorityTests(unittest.TestCase):
         return path
 
     def test_machine_ir_bridge_localizes_generic_qualification(self) -> None:
-        from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+        from spaghetti_extractor.authority_inputs.isa_requirements import (
             build_machine_ir_isa_extraction_request_v2,
             build_machine_ir_isa_requirements_v2,
         )
@@ -394,7 +394,7 @@ class ISAKernelSelectionAuthorityTests(unittest.TestCase):
         from spaghetti_extractor.isa.semantic_forms import (
             lean_semantic_form_classifier_sha256,
         )
-        from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+        from spaghetti_extractor.authority_inputs.isa_requirements import (
             build_machine_ir_isa_extraction_request_v2,
             build_machine_ir_isa_requirements_v2,
         )
@@ -468,7 +468,7 @@ class ISAKernelSelectionAuthorityTests(unittest.TestCase):
         from spaghetti_extractor.isa.semantic_forms import (
             lean_semantic_form_classifier_sha256,
         )
-        from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+        from spaghetti_extractor.authority_inputs.isa_requirements import (
             build_machine_ir_isa_extraction_request_v2,
             build_machine_ir_isa_requirements_v2,
         )

@@ -26,6 +26,7 @@ let
   hybridCandidate = callWith ./stage-b-hybrid-candidate.nix candidateCommon;
   structuralDiagnostics = callWith ./structural-diagnostics.nix candidateCommon;
   candidateTestSuite = callWith ./candidate-test-suite.nix candidateCommon;
+  targetBundleLint = callWith ./target-bundle-lint.nix analysisCommon;
   mkBundleRecord = {
     targetRoot,
     artifacts,
@@ -183,10 +184,50 @@ let
     checks ? { },
     acceptanceChecks ? { },
     candidateTests ? { },
+    targetAssets ? { },
     apps ? { },
   }:
     let
       metadata = builtins.fromJSON (builtins.readFile (targetRoot + "/target.json"));
+      targetRootString = toString targetRoot;
+      relativeTargetPath = path:
+        let
+          value = toString path;
+          prefix = "${targetRootString}/";
+        in assert lib.assertMsg (lib.hasPrefix prefix value)
+          "target asset ${value} is outside ${targetRootString}";
+          lib.removePrefix prefix value;
+      metadataAssets = [ {
+        path = "target.json";
+        role = "metadata";
+        owner = "target-sdk";
+      } ] ++ lib.optional (metadata.paths ? nix) {
+        path = metadata.paths.nix;
+        role = "module";
+        owner = "target-sdk";
+      };
+      componentAssets = map (asset: asset // {
+        path = relativeTargetPath asset.path;
+      }) workflow.components.assetInventory;
+      candidateTestAssets = lib.mapAttrsToList (id: test: {
+        path = relativeTargetPath test.suite;
+        role = "candidate_test";
+        owner = id;
+      }) candidateTests;
+      manualAssetRoles = [ "runtime" "documentation" "license" ];
+      invalidManualRoles = lib.subtractLists manualAssetRoles
+        (builtins.attrNames targetAssets);
+      manualAssets = lib.concatMap (role: map (path: {
+        inherit path role;
+        owner = "target-bundle";
+      }) (targetAssets.${role} or [ ])) manualAssetRoles;
+      declaredAssets = metadataAssets ++ componentAssets
+        ++ candidateTestAssets ++ manualAssets;
+      ownership = targetBundleLint {
+        inherit targetRoot declaredAssets;
+        targetId = metadata.id;
+        namePrefix = "spaghetti-extractor-${metadata.id}";
+      };
       defaultConfiguration = metadata.workflow.default_configuration or null;
       configurationIds = workflow.configurationIds;
       standardArtifacts = {
@@ -224,7 +265,10 @@ let
           runtimes = workflow.componentRuntimes;
           bundle = workflow.components.bundle;
         };
-        diagnostics.structural = workflow.structuralDiagnostic;
+        diagnostics = {
+          structural = workflow.structuralDiagnostic;
+          target-ownership = ownership;
+        };
         candidate = {
           static = lib.mapAttrs (_: candidate: projectCandidate candidate)
             workflow.staticCandidates;
@@ -234,6 +278,7 @@ let
         target = extraArtifacts;
       };
       standardChecks = {
+        target-bundle-assets = ownership;
         component-resolution = workflow.components.resolution;
         default-component-configuration =
           workflow.components.activationPlans.${defaultConfiguration};
@@ -310,6 +355,14 @@ let
       assert metadata.format or null == "spaghetti-extractor-target-bundle-v2";
       assert builtins.isString defaultConfiguration
         && builtins.elem defaultConfiguration configurationIds;
+      assert lib.assertMsg (invalidManualRoles == [ ])
+        "targetAssets contains unsupported roles: ${builtins.toJSON invalidManualRoles}";
+      assert lib.assertMsg
+        (!(metadata.paths ? components) ||
+          (workflow.components.assetInventory != [ ] &&
+            metadata.paths.components == relativeTargetPath
+              (builtins.head workflow.components.assetInventory).path))
+        "target metadata component intent does not match the workflow intent";
       assert builtins.all
         (test:
           test._type or null == "spaghetti-extractor-candidate-test-suite-v1"

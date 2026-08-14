@@ -601,8 +601,6 @@ def parse_stage_b_engine_layout_payload(
     )
 
 
-render_engine_layout_c = render_stage_b_engine_layout_c
-parse_engine_layout_payload = parse_stage_b_engine_layout_payload
 
 
 def _validate_c_token(value: str, pattern: re.Pattern[str], label: str) -> None:
@@ -777,8 +775,6 @@ __all__ = [
     "STAGE_B_ENGINE_LAYOUT_TABLE_SYMBOL",
     "STAGE_B_ENGINE_LAYOUT_VERSION",
     "canonical_stage_b_machine_state_spec",
-    "parse_engine_layout_payload",
     "parse_stage_b_engine_layout_payload",
-    "render_engine_layout_c",
     "render_stage_b_engine_layout_c",
 ]

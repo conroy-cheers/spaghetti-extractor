@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from ...artifact_set_v3 import canonical_json_bytes_v3, canonical_sha256_v3
+from ...artifacts.artifact_set import (
+    canonical_json_bytes_v3,
+    canonical_sha256_v3,
+)
 
 
 STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT = (

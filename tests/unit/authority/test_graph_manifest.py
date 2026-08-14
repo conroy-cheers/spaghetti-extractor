@@ -71,7 +71,7 @@ class AuthorityGraphManifestV3Tests(unittest.TestCase):
     def test_phase_implementation_hash_does_not_invalidate_topology(self) -> None:
         before = authority_graph_manifest_v3(graph_id="fixture")
         with patch(
-            "spaghetti_extractor.phase_framework_v3.PhaseDefinitionV3.definition_sha256",
+            "spaghetti_extractor.artifacts.phases.PhaseDefinitionV3.definition_sha256",
             new_callable=PropertyMock,
             return_value="f" * 64,
         ):

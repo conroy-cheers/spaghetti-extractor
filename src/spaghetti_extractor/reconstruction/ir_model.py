@@ -9,11 +9,11 @@ from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from ..stage_binary import StageAInputError
+from ..artifacts.formats import MACHINE_IR_FORMAT
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes
 
 
-MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
 MACHINE_IR_FILENAME = "machine-ir.jsonl"
 MACHINE_IR_MANIFEST_FILENAME = "machine-ir-manifest.json"
 PREPARED_MACHINE_IR_FORMAT = "stage-a-prepared-machine-ir-v1"
@@ -62,7 +62,7 @@ def _default_finite_dataflow_factory() -> Callable[..., Any]:
     preparation depend on the finite-control implementation.
     """
 
-    module = import_module("spaghetti_extractor.finite_value_domain")
+    module = import_module("spaghetti_extractor.authority_inputs.finite_values")
     return module.FiniteU32Dataflow
 
 

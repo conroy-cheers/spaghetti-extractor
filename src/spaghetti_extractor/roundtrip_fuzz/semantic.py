@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping, TypeAlias
 
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from .model import _exact_fields, _identifier, _integer, _nonempty_string, _object
 
 

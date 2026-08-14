@@ -1115,7 +1115,6 @@ def validate_isa_kernel_selection_authority(
     )
 
 
-check_isa_kernel_selection_authority = validate_isa_kernel_selection_authority
 build_binary_isa_kernel_selection_authority = (
     build_isa_kernel_selection_authority
 )
@@ -1139,7 +1138,6 @@ __all__ = [
     "build_binary_isa_kernel_selection_authority",
     "build_isa_kernel_selection_authority",
     "check_binary_isa_kernel_selection_authority",
-    "check_isa_kernel_selection_authority",
     "parse_binary_isa_kernel_selection_authority",
     "parse_isa_kernel_selection_authority",
     "serialize_isa_kernel_selection_authority",

@@ -23,18 +23,18 @@ from ..authority.isa_qualification import (
     isa_qualification_sha256_v3,
 )
 from ..authority.semantic_index import SEMANTIC_INDEX_CODEC_V3
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
     ArtifactSetWriterV3,
     canonical_json_bytes_v3,
     canonical_sha256_v3,
-    open_artifact_reader_v3,
 )
-from ..machine_ir_isa_requirements_v2 import (
+from ..artifacts.io import open_artifact_reader_v3
+from ..authority_inputs.isa_requirements import (
     parse_machine_ir_isa_requirements_v2,
 )
-from ..machine_ir_isa_selection_v2 import (
+from ..authority_inputs.isa_selection import (
     build_machine_ir_isa_selection_certificate_v2,
     parse_machine_ir_isa_selection_certificate_v2,
 )

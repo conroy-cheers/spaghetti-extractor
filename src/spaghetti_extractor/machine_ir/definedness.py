@@ -17,7 +17,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
+    INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
     SEMANTIC_IR_FORMAT,
     SEMANTIC_TRANSFER_CONTRACT_FORMAT,
 )
@@ -42,9 +43,7 @@ _BOUNDARY_OBSERVATION_FIELDS = (
     "outcome",
     "fpu_state",
 )
-_INSTRUCTION_EFFECT_SCHEDULE_FORMAT = (
-    "stage-a-instruction-ordered-effect-schedule-v1"
-)
+_INSTRUCTION_EFFECT_SCHEDULE_FORMAT = INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
 
 _CLOSURE_REQUIREMENTS: dict[str, tuple[str, ...]] = {
     "ambiguous_cfg_target": ("a unique decoded transfer at every target RVA",),

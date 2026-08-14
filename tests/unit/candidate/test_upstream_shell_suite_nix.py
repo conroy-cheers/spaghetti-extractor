@@ -1,0 +1,37 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[3]
+
+
+class UpstreamShellSuiteNixTests(unittest.TestCase):
+    def test_generic_runner_is_candidate_only_sharded_and_content_addressed(self) -> None:
+        source = (ROOT / "nix" / "stage-b-upstream-shell-suite.nix").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("mkCase =", source)
+        self.assertIn("cases = map mkCase tests", source)
+        self.assertIn("__contentAddressed = true", source)
+        self.assertIn("stage-b-upstream-shell-case-report-v1", source)
+        self.assertIn("stage-b-upstream-shell-suite-report-v1", source)
+        self.assertIn("executes_original_binary: false", source)
+        self.assertIn("original_runtime_observations: false", source)
+        self.assertIn("candidate_binary_sha256", source)
+        self.assertIn("script_sha256", source)
+        self.assertIn("environment_sha256", source)
+
+    def test_stable_target_sdk_exports_the_generic_runner(self) -> None:
+        flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
+        sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
+
+        self.assertIn("mkTargetSdk", flake)
+        self.assertIn("upstreamShellSuite", sdk)
+        self.assertIn("stage-b-upstream-shell-suite.nix", sdk)
+
+
+if __name__ == "__main__":
+    unittest.main()

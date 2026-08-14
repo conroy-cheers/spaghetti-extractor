@@ -11,7 +11,7 @@ from spaghetti_extractor.extraction.ghidra import (
     GHIDRA_PROPOSAL_FORMAT,
     export_ghidra_proposal,
 )
-from spaghetti_extractor.stage_binary import StageAInputError
+from spaghetti_extractor.pe32.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_file
 
 

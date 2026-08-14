@@ -14,7 +14,7 @@ from spaghetti_extractor.commands.manifest import (
     COMMANDS_BY_NAME,
     SUPPORTED_COMMANDS,
 )
-from spaghetti_extractor.python_module_index import (
+from spaghetti_extractor.build_support.python_module_index import (
     build_python_module_index,
     declared_public_command_roots,
 )

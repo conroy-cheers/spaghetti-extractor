@@ -9,7 +9,7 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 
-from ..python_module_index import (
+from ..build_support.python_module_index import (
     build_python_module_index,
     declared_public_command_roots,
     declared_python_resources,

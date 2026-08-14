@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes
 from .schema import STATIC_ANALYSIS_MODEL_ID, STATIC_ANALYSIS_PROFILE_ID
 

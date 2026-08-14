@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -143,11 +144,13 @@ let
             import pathlib
             import sys
 
-            from spaghetti_extractor.artifact_set_v3 import (
-                DependencyNodePlanV3,
-                DependencySchedulingManifestV3,
+            from spaghetti_extractor.artifacts.artifact_set import (
                 canonical_json_bytes_v3,
                 parse_canonical_json_v3,
+            )
+            from spaghetti_extractor.artifacts.scheduling import (
+                DependencyNodePlanV3,
+                DependencySchedulingManifestV3,
             )
 
 
@@ -286,11 +289,11 @@ let
             import pathlib
             import sys
 
-            from spaghetti_extractor.artifact_set_v3 import (
+            from spaghetti_extractor.artifacts.artifact_set import (
                 canonical_json_bytes_v3,
                 parse_canonical_json_v3,
-                write_artifact_bundle_v3,
             )
+            from spaghetti_extractor.artifacts.io import write_artifact_bundle_v3
 
 
             artifacts_file, expected_kind, expected_ids_file, output, receipt = sys.argv[1:]
@@ -379,13 +382,13 @@ let
             import pathlib
             import sys
 
-            from spaghetti_extractor.artifact_set_v3 import (
-                ArtifactSetReaderV3,
+            from spaghetti_extractor.artifacts.artifact_set import (
                 ArtifactSetWriterV3,
                 canonical_json_bytes_v3,
                 parse_canonical_json_v3,
                 value_codec_v3,
             )
+            from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
 
             (
@@ -524,13 +527,13 @@ let
             import pathlib
             import sys
 
-            from spaghetti_extractor.artifact_set_v3 import (
-                ArtifactSetReaderV3,
+            from spaghetti_extractor.artifacts.artifact_set import (
                 ArtifactSetWriterV3,
                 canonical_json_bytes_v3,
                 parse_canonical_json_v3,
                 value_codec_v3,
             )
+            from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
 
             source_arg, expected_kind, expected_ids_file, output, receipt = sys.argv[1:]

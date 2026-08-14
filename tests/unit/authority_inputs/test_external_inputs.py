@@ -17,10 +17,8 @@ from spaghetti_extractor.authority.external_site_records import (
 from spaghetti_extractor.authority.root_closure import (
     LAUNCH_ROOT_EVIDENCE_CODEC_V3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
-    ArtifactSetReaderV3,
-    canonical_json_bytes_v3,
-)
+from spaghetti_extractor.artifacts.artifact_set import canonical_json_bytes_v3
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
 
 def _unit(

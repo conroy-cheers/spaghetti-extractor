@@ -24,7 +24,7 @@ from .kernel_qualification import (
     serialize_kernel_qualification,
 )
 from .semantic_forms import lean_semantic_form_id
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file, write_json
 
 

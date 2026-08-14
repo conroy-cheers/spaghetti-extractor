@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from ..artifact_formats import NATIVE_ENGINE_PACKAGE_FORMAT
-from ..stage_binary import StageAInputError
+from ..artifacts.formats import NATIVE_ENGINE_PACKAGE_FORMAT
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file, write_json
 from .engine_layout import render_stage_b_engine_layout_c
 from .engine_render import _bridge_assembly, _wrapper_header, _wrapper_source

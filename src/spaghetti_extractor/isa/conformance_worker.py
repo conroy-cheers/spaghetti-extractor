@@ -14,7 +14,7 @@ from .conformance_bochs import run_bochs_corpus
 from .conformance_lean import run_lean_isa_conformance_with_definedness
 from .conformance_shards import lean_semantic_forms_payload
 from .conformance_unicorn import run_unicorn_corpus
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 
 
 def run_isa_conformance_worker(

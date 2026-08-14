@@ -1,0 +1,90 @@
+{
+  "format": "spaghetti-extractor-profile-catalog-v1",
+  "profiles": [
+    {
+      "path": "i686-mingw-freestanding-c0-v1.json",
+      "role": "candidate-toolchain-policy",
+      "validator_id": "c0-toolchain-v1"
+    },
+    {
+      "path": "pe32-kernel32-callable-resolvers-v1.json",
+      "role": "callable-external-resolution",
+      "validator_id": "callable-external-v2"
+    },
+    {
+      "path": "pe32-kernel32-console-lockstep-v1.json",
+      "role": "machine-import-environment",
+      "validator_id": "machine-import-profile-v1"
+    },
+    {
+      "path": "pe32-kernel32-lockstep-v1.json",
+      "role": "machine-import-environment",
+      "validator_id": "machine-import-profile-v1"
+    },
+    {
+      "path": "pe32-kernel32-runtime-v1.json",
+      "role": "machine-import-runtime",
+      "validator_id": "machine-import-profile-v1"
+    },
+    {
+      "path": "pe32-mingw-directx-interface-extraction-v1.json",
+      "role": "external-interface-extraction",
+      "validator_id": "external-interface-extraction-v1"
+    },
+    {
+      "path": "pe32-mingw-win32-function-extraction-v1.json",
+      "role": "external-function-extraction",
+      "validator_id": "external-function-extraction-v1"
+    },
+    {
+      "path": "pe32-msvcrt-lockstep-v1.json",
+      "role": "machine-import-environment",
+      "validator_id": "machine-import-profile-v1"
+    },
+    {
+      "path": "pe32-msvcrt-machine-runtime-v1.json",
+      "role": "machine-import-runtime",
+      "validator_id": "machine-import-profile-v1"
+    },
+    {
+      "path": "pe32-native-callthrough-runtime-v1.json",
+      "role": "machine-import-runtime",
+      "validator_id": "machine-import-profile-v1"
+    },
+    {
+      "path": "pe32-normal-return-nonvolatile-v1.json",
+      "role": "normal-call-abi-premise",
+      "validator_id": "normal-call-abi-premise-v1"
+    },
+    {
+      "path": "pe32-static-cutpoints-and-paired-callables-v1.json",
+      "role": "indirect-target-assumption",
+      "validator_id": "indirect-target-profile-v1"
+    },
+    {
+      "path": "pe32-win32-console-launch-assumptions-v1.json",
+      "role": "console-launch-assumption-template",
+      "validator_id": "launch-assumption-template-v1"
+    },
+    {
+      "path": "pe32-win32-gui-launch-assumptions-v1.json",
+      "role": "gui-launch-assumption-template",
+      "validator_id": "launch-assumption-template-v1"
+    },
+    {
+      "path": "pe32-win32-system-dll-abi-policy-v1.json",
+      "role": "import-abi-policy",
+      "validator_id": "import-abi-policy-v1"
+    },
+    {
+      "path": "pe32-win32-windowing-runtime-v1.json",
+      "role": "machine-import-runtime",
+      "validator_id": "machine-import-profile-v1"
+    },
+    {
+      "path": "pe32-winmm-runtime-v1.json",
+      "role": "machine-import-runtime",
+      "validator_id": "machine-import-profile-v1"
+    }
+  ]
+}

@@ -5,17 +5,17 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable, Mapping, Sequence
 
-from ..authority_bindings_v2 import indirect_exit_id_v2
+from ..authority_inputs.bindings import indirect_exit_id_v2
 from ..reference_contract.common import BlockMapping
 from ..reference_contract.reference_semantics import _semantic_transfer_contract
 from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
-from ..recovered_executable_data import recover_executable_data_ranges
+from ..pe32.recovered_executable_data import recover_executable_data_ranges
 from ..candidate.state_machine import (
     STAGE_A_REFERENCE_CONTRACT_FORMAT,
     normalize_stage_a_semantic_transfer,
 )
-from ..stage_binary import BlockSide, StageABinary
-from ..target_cutpoint_materialization_v2 import plan_recovered_target_cutpoints_v2
+from ..pe32.stage_binary import BlockSide, StageABinary
+from ..pe32.target_cutpoint_materialization import plan_recovered_target_cutpoints_v2
 from ..util import sha256_bytes
 from .control_reachability import (
     classify_overlapping_instruction_starts,

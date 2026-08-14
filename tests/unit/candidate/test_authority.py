@@ -16,7 +16,7 @@ from spaghetti_extractor.authority.final_authority import (
     AuthorityFamilyBindingV3,
     FinalAuthorityRecordV3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactSetWriterV3,
     canonical_json_bytes_v3,

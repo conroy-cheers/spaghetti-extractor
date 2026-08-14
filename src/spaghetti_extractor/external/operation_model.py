@@ -20,7 +20,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, TypeAlias
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     EXTERNAL_OPERATION_CONTRACT_FORMAT,
     EXTERNAL_OPERATION_PROFILE_FORMAT,
 )
@@ -38,7 +38,7 @@ from .machine_abi import (
     resolve_machine_call_abi,
 )
 from .machine_import_profiles import MachineImportIdentity
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 
 MAX_ARGUMENT_WORDS = 64
 MAX_TABLE_SLOT = 0xFFFF

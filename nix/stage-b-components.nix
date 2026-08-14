@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: candidate
 {
   pkgs,
   pythonEnv,
@@ -20,7 +21,26 @@ let
   liftUnits =
     (map (row: row // { kind = "component"; }) intentPayload.components)
     ++ (map (row: row // { kind = "group"; }) (intentPayload.groups or [ ]));
+  sourceAssets = lib.concatMap (liftUnit:
+    let source = liftUnit.source or null;
+    in if source == null then [ ] else map (relative: {
+      path = toString (sourceRoot + "/${lib.removePrefix "source/" relative}");
+      role = "component_source";
+      owner = liftUnit.id;
+    }) (source.files ++ (source.shared_inputs or [ ]))) liftUnits;
+  reviewAssets = map (liftUnit: {
+    path = toString (reviewRoot + "/${lib.removePrefix "reviews/" liftUnit.interface_review}");
+    role = "component_review";
+    owner = liftUnit.id;
+  }) (builtins.filter (liftUnit: (liftUnit.interface_review or null) != null)
+    liftUnits);
+  assetInventory = [ {
+    path = toString intent;
+    role = "component_intent";
+    owner = "component-workflow";
+  } ] ++ sourceAssets ++ reviewAssets;
   mkPhaseSource = phase: modules: import ./python-module-closure.nix {
+    phaseRole = "candidate";
     inherit pkgs modules;
     source = pythonSource;
     name = "${namePrefix}-components-${phase}-python-closure";
@@ -571,7 +591,7 @@ in
     activationPlans sourceBundles runtimeConfigurations mkRuntime runtimeFor
     runtimePackages statusReports workPackages checkGates
     configurationStatusReports configurationCheckGates liftUnitIndex
-    configurationIndex bundle;
+    configurationIndex bundle assetInventory;
   contractIds = map (row: row.id) liftUnits;
   format = "spaghetti-extractor-component-dag-v3";
 }

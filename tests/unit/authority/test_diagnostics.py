@@ -8,12 +8,12 @@ from spaghetti_extractor.authority.diagnostics import (
     AUTHORITY_DIAGNOSTICS_V3_FORMAT,
     summarize_authority_artifacts_v3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
     ArtifactSetWriterV3,
-    write_artifact_bundle_v3,
 )
+from spaghetti_extractor.artifacts.io import write_artifact_bundle_v3
 
 
 BINDING = ArtifactBindingV3("binary", "pe32", "fixture.exe", "a" * 64)

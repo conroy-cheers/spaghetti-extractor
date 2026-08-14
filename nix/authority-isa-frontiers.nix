@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: diagnostic
 {
   pkgs,
   pythonEnv,
@@ -11,6 +12,7 @@
 let
   lib = pkgs.lib;
   pythonClosure = import ./python-module-closure.nix {
+    phaseRole = "diagnostic";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.isa.frontier_report_v1" ];

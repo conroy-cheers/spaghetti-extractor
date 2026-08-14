@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..artifact_formats import NATIVE_RUNTIME_PACKAGE_FORMAT
+from ..artifacts.formats import (
+    CALLBACK_ADAPTER_RECEIPT_FORMAT as _CALLBACK_ADAPTER_RECEIPT_FORMAT,
+    IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT as _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT,
+    NATIVE_RUNTIME_PACKAGE_FORMAT,
+)
 from ..errors import StageAInputError
 from .interpreter_model import STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT
 
@@ -24,12 +28,6 @@ _NATIVE_ENGINE_MANIFEST_FILENAME = "native-engine-package.json"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _STRICT_INPUT_MODE = "strict_exact_state_machine_v1"
 _MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v2"
-_CALLBACK_ADAPTER_RECEIPT_FORMAT = (
-    "stage-b-native-callback-adapter-receipt-v1"
-)
-_IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
-    "stage-b-native-implementation-dispatch-receipt-v3"
-)
 
 
 class StageBNativeRuntimeError(StageAInputError):

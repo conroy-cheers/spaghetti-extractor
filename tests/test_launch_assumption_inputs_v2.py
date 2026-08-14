@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 
-from spaghetti_extractor.launch_assumption_inputs_v2 import (
+from spaghetti_extractor.authority_inputs.launch_assumptions import (
     LAUNCH_ANALYSIS_ASSUMPTIONS_V2_FORMAT,
     LaunchAssumptionInputsV2Error,
     build_launch_analysis_assumptions_v2,

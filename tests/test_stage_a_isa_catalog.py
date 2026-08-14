@@ -56,7 +56,7 @@ def entry(
     features: list[str] | None = None,
 ) -> dict:
     return {
-        "format": "pe32-i686-form-v1",
+        "format": ISA_FORM_CATALOG_ENTRY_FORMAT,
         "form_id": form_id,
         "encoding_id": "encoding-" + form_id,
         "instruction_bytes": instruction or [0x90],
@@ -68,7 +68,7 @@ def entry(
 
 def catalog_payload() -> dict:
     return {
-        "format": "stage-a-isa-form-catalog-v1",
+        "format": ISA_FORM_CATALOG_FORMAT,
         "profile": "pe32-i686-v1",
         "source": {
             "extractor": "fixture-metadata",
@@ -82,8 +82,8 @@ def catalog_payload() -> dict:
                     "class": "register",
                     "id": "effect-register",
                     "width_bits": 32,
-                    "reads": ["eax"],
-                    "writes": ["eax"],
+                    "reads": [{"register": "eax", "lsb": 0}],
+                    "writes": [{"register": "eax", "lsb": 0}],
                 },
             )
         ],

@@ -26,7 +26,7 @@ from ..isa.semantic_forms import (
     lean_semantic_form_core,
     lean_semantic_form_id,
 )
-from ..stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
+from ..pe32.stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 from .instruction_support import instruction_supported
 from .region_inventory import request_payload as side_extraction_request_payload
@@ -864,7 +864,7 @@ def extract_lean_instruction_forms_side(
         "lean_form_source_sha256": source_hashes["source_sha256"],
         "allow_decode_gaps": allow_decode_gaps,
     }
-    from ..lean_runner import run_lean_module_graph
+    from ..build_support.lean_runner import run_lean_module_graph
 
     cache_root = None
     cache = (

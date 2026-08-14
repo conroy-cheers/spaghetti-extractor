@@ -8,8 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..nix_support import find_flake_root, nix_build_expression
-from ..stage_binary import StageAInputError
+from ..build_support.nix_support import find_flake_root, nix_build_expression
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file
 
 

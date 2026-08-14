@@ -16,9 +16,7 @@ from .kernel_qualification import (
     ISAKernelSelection,
     ISAProfileBinding,
     ISA_KERNEL_QUALIFICATION_FORMAT,
-    ISA_KERNEL_QUALIFICATION_FORMAT_V1,
     ISA_KERNEL_SELECTION_FORMAT,
-    ISA_KERNEL_SELECTION_FORMAT_V1,
     MismatchDiagnostic,
     OracleSuiteBinding,
     QualificationStatus,
@@ -181,7 +179,6 @@ def build_isa_kernel_qualification(
 def parse_kernel_qualification(value: Any) -> ISAKernelQualification:
     payload = _object(value, "ISA kernel qualification")
     artifact_format = payload.get("format")
-    legacy = artifact_format == ISA_KERNEL_QUALIFICATION_FORMAT_V1
     _exact_fields(
         payload,
         {
@@ -198,14 +195,11 @@ def parse_kernel_qualification(value: Any) -> ISAKernelQualification:
             "diagnostics",
             "counts",
             "trust",
-        }
-        | (set() if legacy else {"qualification_layers"}),
+            "qualification_layers",
+        },
         "ISA kernel qualification",
     )
-    if artifact_format not in {
-        ISA_KERNEL_QUALIFICATION_FORMAT_V1,
-        ISA_KERNEL_QUALIFICATION_FORMAT,
-    }:
+    if artifact_format != ISA_KERNEL_QUALIFICATION_FORMAT:
         raise ISAKernelQualificationError(
             "unsupported ISA kernel qualification format"
         )
@@ -292,8 +286,7 @@ def parse_kernel_qualification(value: Any) -> ISAKernelQualification:
         raise ISAKernelQualificationError(
             "ISA kernel qualification counts are inconsistent"
         )
-    if not legacy:
-        expected_layers = _qualification_layers_payload(
+    expected_layers = _qualification_layers_payload(
             structural_status=result.structural_status,
             structural_statuses=(
                 row.structural_status for row in result.forms
@@ -307,7 +300,7 @@ def parse_kernel_qualification(value: Any) -> ISAKernelQualification:
             ),
             concrete_oracle_diagnostics=result.concrete_oracle_diagnostics,
         )
-        _validate_qualification_layers(
+    _validate_qualification_layers(
             payload.get("qualification_layers"),
             expected=expected_layers,
             context="ISA kernel qualification.qualification_layers",
@@ -342,8 +335,11 @@ def serialize_kernel_qualification(
         "counts": dict(value.counts),
         "trust": _trust_payload(value.trust),
     }
-    if value.format == ISA_KERNEL_QUALIFICATION_FORMAT:
-        payload["qualification_layers"] = _qualification_layers_payload(
+    if value.format != ISA_KERNEL_QUALIFICATION_FORMAT:
+        raise ISAKernelQualificationError(
+            "kernel qualification has an unsupported format"
+        )
+    payload["qualification_layers"] = _qualification_layers_payload(
             structural_status=value.structural_status,
             structural_statuses=(
                 row.structural_status for row in value.forms
@@ -356,10 +352,6 @@ def serialize_kernel_qualification(
                 total_name="required_forms",
             ),
             concrete_oracle_diagnostics=value.concrete_oracle_diagnostics,
-        )
-    elif value.format != ISA_KERNEL_QUALIFICATION_FORMAT_V1:
-        raise ISAKernelQualificationError(
-            "kernel qualification has an unsupported format"
         )
     if parse_kernel_qualification(payload) != value:
         raise ISAKernelQualificationError(
@@ -713,7 +705,6 @@ def select_isa_kernel_qualification(
 def parse_kernel_selection(value: Any) -> ISAKernelSelection:
     payload = _object(value, "ISA kernel selection")
     artifact_format = payload.get("format")
-    legacy = artifact_format == ISA_KERNEL_SELECTION_FORMAT_V1
     _exact_fields(
         payload,
         {
@@ -728,14 +719,11 @@ def parse_kernel_selection(value: Any) -> ISAKernelSelection:
             "diagnostics",
             "counts",
             "trust",
-        }
-        | (set() if legacy else {"qualification_layers"}),
+            "qualification_layers",
+        },
         "ISA kernel selection",
     )
-    if artifact_format not in {
-        ISA_KERNEL_SELECTION_FORMAT_V1,
-        ISA_KERNEL_SELECTION_FORMAT,
-    }:
+    if artifact_format != ISA_KERNEL_SELECTION_FORMAT:
         raise ISAKernelQualificationError(
             "unsupported ISA kernel selection format"
         )
@@ -762,7 +750,7 @@ def parse_kernel_selection(value: Any) -> ISAKernelSelection:
         _parse_selected_form(
             row,
             f"ISA kernel selection.selected_forms[{index}]",
-            layered=not legacy,
+            layered=True,
         )
         for index, row in enumerate(
             _objects(
@@ -853,8 +841,7 @@ def parse_kernel_selection(value: Any) -> ISAKernelSelection:
         counts=counts,
         format=artifact_format,
     )
-    if not legacy:
-        expected_layers = _qualification_layers_payload(
+    expected_layers = _qualification_layers_payload(
             structural_status=result.structural_status,
             structural_statuses=(
                 row.structural_status for row in result.selected_forms
@@ -871,7 +858,7 @@ def parse_kernel_selection(value: Any) -> ISAKernelSelection:
             ),
             concrete_oracle_diagnostics=result.concrete_oracle_diagnostics,
         )
-        _validate_qualification_layers(
+    _validate_qualification_layers(
             payload.get("qualification_layers"),
             expected=expected_layers,
             context="ISA kernel selection.qualification_layers",
@@ -896,9 +883,7 @@ def serialize_kernel_selection(
         "kernel_qualification_sha256": value.kernel_qualification_sha256,
         "required_form_ids": list(value.required_form_ids),
         "selected_forms": [
-            _selected_form_payload(
-                row, layered=value.format == ISA_KERNEL_SELECTION_FORMAT
-            )
+            _selected_form_payload(row, layered=True)
             for row in value.selected_forms
         ],
         "status": value.status.value,
@@ -908,8 +893,11 @@ def serialize_kernel_selection(
         "counts": dict(value.counts),
         "trust": _trust_payload(value.trust),
     }
-    if value.format == ISA_KERNEL_SELECTION_FORMAT:
-        payload["qualification_layers"] = _qualification_layers_payload(
+    if value.format != ISA_KERNEL_SELECTION_FORMAT:
+        raise ISAKernelQualificationError(
+            "kernel selection has an unsupported format"
+        )
+    payload["qualification_layers"] = _qualification_layers_payload(
             structural_status=value.structural_status,
             structural_statuses=(
                 row.structural_status for row in value.selected_forms
@@ -925,10 +913,6 @@ def serialize_kernel_selection(
                 total_name="required_forms",
             ),
             concrete_oracle_diagnostics=value.concrete_oracle_diagnostics,
-        )
-    elif value.format != ISA_KERNEL_SELECTION_FORMAT_V1:
-        raise ISAKernelQualificationError(
-            "kernel selection has an unsupported format"
         )
     if parse_kernel_selection(payload) != value:
         raise ISAKernelQualificationError(

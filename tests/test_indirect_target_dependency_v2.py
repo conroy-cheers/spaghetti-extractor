@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 
-from spaghetti_extractor.indirect_target_dependency_v2 import (
+from spaghetti_extractor.authority_inputs.target_dependencies import (
     IndirectTargetDependencyV2Error,
     build_bounded_selector_dependency_v2,
     build_profile_dispatch_dependency_v2,

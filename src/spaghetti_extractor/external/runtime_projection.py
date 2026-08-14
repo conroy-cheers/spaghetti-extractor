@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..artifact_set_v3 import ArtifactSetReaderV3
+from ..artifacts.io import ArtifactSetReaderV3
 from ..authority.external_site_records import (
     CANONICAL_EXTERNAL_SITE_CODEC_V3,
     CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..artifact_set_v3 import open_artifact_reader_v3
+from ..artifacts.io import open_artifact_reader_v3
 
 
 AUTHORITY_DIAGNOSTICS_V3_FORMAT = (

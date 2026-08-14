@@ -16,16 +16,18 @@ from typing import Any, Mapping, Sequence
 
 import pefile
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     PAYLOAD_RELOCATION_INVENTORY_FORMAT,
     PE_COMPOSITION_MANIFEST_FORMAT,
 )
-from ..roundtrip_fuzz.image_contract import (
-    STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT,
-    StageALoadImageContract,
+from ..roundtrip_fuzz.image_io import (
     load_stage_a_load_image_contract,
 )
-from ..recovered_executable_data import (
+from ..roundtrip_fuzz.image_model import (
+    STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT,
+    StageALoadImageContract,
+)
+from ..pe32.recovered_executable_data import (
     RecoveredExecutableDataContract,
     RecoveredExecutableDataRange,
     load_recovered_executable_data_contract,

@@ -93,7 +93,7 @@ class TestDeveloperServices(unittest.TestCase):
         self.assertEqual(test.files[0].path, "tests/unit/memory/test_alias_kill.py")
         self.assertIn("nix run .#test -- affected", test.next_commands[0])
         self.assertEqual(phase.files[0].path, "src/spaghetti_extractor/authority/alias_summary.py")
-        self.assertIn("phase_framework_v3", phase.files[0].content)
+        self.assertIn("artifacts.phases", phase.files[0].content)
 
     def test_scaffold_apply_creates_files_and_refuses_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -132,7 +132,7 @@ class TestDeveloperServices(unittest.TestCase):
     def test_refresh_command_uses_joint_repository_metadata_service(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             repository = Path(temporary)
-            updated = repository / "nix/python-module-index.json"
+            updated = repository / "nix/generated/python-module-index.json"
             output = StringIO()
 
             with patch(

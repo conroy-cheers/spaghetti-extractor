@@ -1408,10 +1408,6 @@ def serialize_isa_conformance_report(
 
 
 # Concise aliases for callers that already know they are in this module.
-parse_corpus = parse_isa_conformance_corpus
-serialize_corpus = serialize_isa_conformance_corpus
-parse_report = parse_isa_conformance_report
-serialize_report = serialize_isa_conformance_report
 
 
 __all__ = [
@@ -1447,12 +1443,8 @@ __all__ = [
     "canonical_isa_conformance_corpus_input",
     "isa_conformance_corpus_sha256",
     "observation_matches_case",
-    "parse_corpus",
     "parse_isa_conformance_corpus",
     "parse_isa_conformance_report",
-    "parse_report",
-    "serialize_corpus",
     "serialize_isa_conformance_corpus",
     "serialize_isa_conformance_report",
-    "serialize_report",
 ]

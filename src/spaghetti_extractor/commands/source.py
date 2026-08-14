@@ -6,7 +6,7 @@ import argparse
 import json
 
 from ..external.operation_profiles import load_external_operation_profile
-from ..source_operation_catalog import render_source_operations
+from ..external.source_operations import render_source_operations
 from ..errors import StageAInputError
 from .common import Handler, path_argument
 

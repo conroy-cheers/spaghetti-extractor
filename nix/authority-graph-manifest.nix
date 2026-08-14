@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -11,6 +12,7 @@
 let
   lib = pkgs.lib;
   graphPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.authority.graph" ];
@@ -43,7 +45,7 @@ pkgs.runCommand name (
   import sys
 
   from spaghetti_extractor.authority.graph import authority_graph_manifest_v3
-  from spaghetti_extractor.artifact_set_v3 import (
+  from spaghetti_extractor.artifacts.artifact_set import (
       canonical_json_bytes_v3,
       parse_canonical_json_v3,
   )

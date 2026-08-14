@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -14,15 +15,17 @@
 let
   lib = pkgs.lib;
   sourcePlanPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.authority.source_plan" ];
     name = "${name}-source-plan-python-closure";
   };
   artifactSeedPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.artifact_set_v3" ];
+    modules = [ "spaghetti_extractor.artifacts.artifact_set" ];
     name = "${name}-artifact-seed-python-closure";
   };
   preparation = import ./authority-source-plan.nix {

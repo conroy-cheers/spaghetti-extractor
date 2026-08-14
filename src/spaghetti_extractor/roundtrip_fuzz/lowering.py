@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from .semantic import (
     AdjustStack,
     AssignRegister,

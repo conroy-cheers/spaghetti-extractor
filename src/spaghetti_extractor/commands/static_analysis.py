@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from ..extraction.binary_inventory import stage_a_inventory_binary
-from ..behavioral_roots import generate_behavioral_roots
+from ..pe32.behavioral_roots import generate_behavioral_roots
 from ..reference_contract import (
     REFERENCE_CONTRACT_MODEL_ID,
     stage_a_diff_obligations,

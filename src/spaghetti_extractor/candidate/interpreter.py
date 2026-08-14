@@ -1,6 +1,6 @@
 """Public Stage B semantic interpreter API."""
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PROGRAM_FORMAT,
 )

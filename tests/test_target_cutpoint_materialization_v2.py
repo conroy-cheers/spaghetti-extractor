@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.stage_binary import _parse_stage_a_pe
-from spaghetti_extractor.target_cutpoint_materialization_v2 import (
+from spaghetti_extractor.pe32.stage_binary import _parse_stage_a_pe
+from spaghetti_extractor.pe32.target_cutpoint_materialization import (
     TARGET_CUTPOINT_PLAN_V2_FORMAT,
     plan_recovered_target_cutpoints_v2,
 )

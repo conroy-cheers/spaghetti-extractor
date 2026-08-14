@@ -8,7 +8,7 @@ from pathlib import Path
 import tempfile
 from typing import Mapping
 
-from ..python_module_index import render_python_module_index
+from ..build_support.python_module_index import render_python_module_index
 from .diagnostics import Diagnostic, TestkitError
 from .discovery import build_impact_index
 from .model import PlannedShard, SuitePlan, canonical_json, canonical_sha256
@@ -18,8 +18,8 @@ from .planning import build_suite_plan
 STATIC_MANIFEST_FORMAT = "spaghetti-extractor-static-test-manifest-v1"
 STATIC_MODES = ("benchmark", "catalog", "full", "smoke")
 DEFAULT_SHARD_COUNT = 32
-PYTHON_MODULE_INDEX_PATH = Path("nix/python-module-index.json")
-STATIC_TEST_MANIFEST_PATH = Path("nix/test-suite-manifest.json")
+PYTHON_MODULE_INDEX_PATH = Path("nix/generated/python-module-index.json")
+STATIC_TEST_MANIFEST_PATH = Path("nix/generated/test-suite-manifest.json")
 REPOSITORY_METADATA_REMEDIATION = "Run `nix run .#dev -- refresh`."
 _GENERIC_SUITE_INCLUDED_ROOTS = frozenset(
     {

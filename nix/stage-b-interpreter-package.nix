@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: candidate
 {
   pkgs,
   pythonEnv,
@@ -9,6 +10,7 @@
 
 let
   phasePythonSource = import ./python-module-closure.nix {
+    phaseRole = "candidate";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.candidate.interpreter" ];

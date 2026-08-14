@@ -48,14 +48,14 @@ from spaghetti_extractor.authority.root_closure import (
     LAUNCH_ROOT_CLOSURE_CODEC_V3,
     LaunchRootClosureV3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
     CanonicalValueV3,
     RecordDependencyV3,
 )
-from spaghetti_extractor.phase_framework_v3 import PhaseFrameworkV3Error
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
+from spaghetti_extractor.artifacts.phases import PhaseFrameworkV3Error
 from tests.unit.authority.test_fallback_coverage import _capability
 from tests.unit.authority.test_isa_qualification import (
     BINDING,

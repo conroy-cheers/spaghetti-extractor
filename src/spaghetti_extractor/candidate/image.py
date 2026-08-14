@@ -8,8 +8,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..external.machine_import_profiles import load_machine_import_profile_set
-from ..roundtrip_fuzz.image_contract import load_stage_a_load_image_contract
-from ..stage_binary import StageAInputError
+from ..roundtrip_fuzz.image_io import (
+    load_stage_a_load_image_contract,
+)
+from ..pe32.stage_binary import StageAInputError
 
 
 _DYNAMIC_BASE = 0x0040

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     MACHINE_IR_FORMAT,
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PROGRAM_FORMAT,
@@ -837,11 +837,6 @@ def _file(path: Path, context: str) -> Path:
     return path
 
 
-# Short aliases keep the artifact API readable for non-Nix callers.
-write_fallback_coverage_receipt = write_stage_b_fallback_coverage_receipt
-validate_fallback_coverage_receipt = validate_stage_b_fallback_coverage_receipt
-
-
 __all__ = [
     "FALLBACK_COVERAGE_CHECKER_ID",
     "FALLBACK_COVERAGE_CHECKER_VERSION",
@@ -849,8 +844,6 @@ __all__ = [
     "PORTABLE_SELECTION_V3_FORMAT",
     "FallbackCoverageReceipt",
     "FallbackCoverageReceiptError",
-    "validate_fallback_coverage_receipt",
     "validate_stage_b_fallback_coverage_receipt",
-    "write_fallback_coverage_receipt",
     "write_stage_b_fallback_coverage_receipt",
 ]

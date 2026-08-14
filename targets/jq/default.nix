@@ -63,7 +63,6 @@ let
       "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
     componentIntent = ./intent/components.json;
     componentReviewRoot = ./intent/reviews;
-    componentSourceRoot = ./source;
     namePrefix = "spaghetti-extractor-jq-1.8.1";
   };
   components = workflow.components;

@@ -17,11 +17,11 @@ _EXPORT_MODULES = {
     "SPIKE_CASES": ".generator",
     "generate_spike_corpus": ".generator",
     "run_roundtrip_corpus": ".runner",
-    "STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT": ".image_contract",
-    "StageALoadImageContract": ".image_contract",
-    "build_stage_a_load_image_contract": ".image_contract",
-    "load_stage_a_load_image_contract": ".image_contract",
-    "write_stage_a_load_image_contract": ".image_contract",
+    "STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT": ".image_model",
+    "StageALoadImageContract": ".image_model",
+    "build_stage_a_load_image_contract": ".image_io",
+    "load_stage_a_load_image_contract": ".image_io",
+    "write_stage_a_load_image_contract": ".image_io",
 }
 
 __all__ = [

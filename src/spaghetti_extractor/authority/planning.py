@@ -15,17 +15,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     MAX_DEPENDENCY_SCHEDULE_BYTES,
     MAX_STRUCTURAL_SCHEDULE_BYTES,
-    DependencyNodePlanV3,
-    DependencySchedulingManifestV3,
     RecordDependencyV3,
-    StructuralSchedulingManifestV3,
-    StructuralUnitPlanV3,
     canonical_json_bytes_v3,
     canonical_sha256_v3,
     identity_bucket_v3,
+)
+from ..artifacts.scheduling import (
+    DependencyNodePlanV3,
+    DependencySchedulingManifestV3,
+    StructuralSchedulingManifestV3,
+    StructuralUnitPlanV3,
 )
 from ._schema import fail, mapping, sequence, text, uint
 

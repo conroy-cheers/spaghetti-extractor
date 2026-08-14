@@ -20,7 +20,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, TypeAlias
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     EXTERNAL_OPERATION_CONTRACT_FORMAT,
     EXTERNAL_OPERATION_PROFILE_FORMAT,
 )
@@ -70,7 +70,7 @@ from .operation_model import (
     _U32_MAX,
     _import_json,
 )
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 
 
 def load_external_operation_profile(
@@ -420,8 +420,6 @@ def convert_external_interface_profile(
 
 
 # Explicit aliases keep the conversion discoverable from either schema direction.
-convert_external_interface_profile_v1 = convert_external_interface_profile
-external_operation_profile_from_interface_profile = convert_external_interface_profile
 
 
 def _view(value: Any, index: int) -> ExternalOperationView:
@@ -1344,8 +1342,6 @@ __all__ = [
     "TableSlotSelector",
     "WorldEffect",
     "convert_external_interface_profile",
-    "convert_external_interface_profile_v1",
-    "external_operation_profile_from_interface_profile",
     "load_external_operation_contract",
     "load_external_operation_profile",
     "parse_external_operation_contract",

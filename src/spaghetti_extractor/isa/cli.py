@@ -53,7 +53,7 @@ from ..extraction.isa_requirements import (
     ISARequirementInventory,
 )
 from .side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 
 

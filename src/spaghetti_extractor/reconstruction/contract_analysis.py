@@ -16,7 +16,7 @@ import json
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from ..artifact_formats import RECONSTRUCTION_CONTRACT_ANALYSIS_FORMAT
+from ..artifacts.formats import RECONSTRUCTION_CONTRACT_ANALYSIS_FORMAT
 
 _ACCESS_ORDER = {"read": 0, "write": 1, "read_write": 2}
 _ATOMIC_OPERATIONS = {
@@ -825,13 +825,24 @@ def _callback_metadata(
     unit_id = str(service["unit_id"])
     event_index = int(service["event_index"])
     local_complete = True
-    argument_index, conflict = _reconcile_values(
-        event.get("world_effect_argument"),
-        abi.get("world_effect_argument"),
-        signature.get("world_effect_argument") if signature else None,
+    callback_source, conflict = _reconcile_mappings(
+        event.get("callback_source"),
+        abi.get("callback_source"),
+        signature.get("callback_source") if signature else None,
+    )
+    source_kind = (
+        callback_source.get("kind")
+        if isinstance(callback_source, Mapping)
+        else None
+    )
+    argument_index = (
+        callback_source.get("argument")
+        if isinstance(callback_source, Mapping)
+        else None
     )
     if (
         conflict
+        or source_kind not in {"argument_word", "argument_pointee"}
         or not _is_int(argument_index)
         or argument_index < 0
         or argument_index >= len(argument_values)
@@ -846,7 +857,33 @@ def _callback_metadata(
             event_index=event_index,
         )
     else:
-        target = _json_copy(argument_values[argument_index], "callback target")
+        base = _json_copy(argument_values[argument_index], "callback target")
+        if source_kind == "argument_pointee":
+            offset = callback_source.get("offset")
+            if not _is_int(offset) or offset < 0:
+                local_complete = False
+                target = None
+                _add_issue(
+                    issues,
+                    "ambiguous_callback_target",
+                    "callback pointee source has no exact nonnegative offset",
+                    unit_id=unit_id,
+                    event_index=event_index,
+                )
+            else:
+                target = {
+                    "op": "load",
+                    "address": {
+                        "op": "add32",
+                        "args": [
+                            base,
+                            {"op": "const", "value": offset, "width": 32},
+                        ],
+                    },
+                    "width": 4,
+                }
+        else:
+            target = base
 
     callback_abi, conflict = _reconcile_mappings(
         event.get("callback_abi"),
@@ -925,6 +962,9 @@ def _callback_metadata(
         "service_id": service["id"],
         "registration_argument_index": argument_index
         if _is_int(argument_index)
+        else None,
+        "callback_source": _json_copy(callback_source, "callback source")
+        if isinstance(callback_source, Mapping)
         else None,
         "target": target,
         "abi": _json_copy(callback_abi, "callback ABI"),

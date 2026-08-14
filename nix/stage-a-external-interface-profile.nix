@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -14,6 +15,7 @@ let
     if name != null then name
     else "spaghetti-extractor-${specification.id}-interface-profile-v1";
   phasePythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.external.interface_ast" ];

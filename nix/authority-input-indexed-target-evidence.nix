@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -17,6 +18,7 @@
 let
   lib = pkgs.lib;
   phasePythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
     modules = [

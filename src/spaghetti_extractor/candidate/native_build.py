@@ -18,10 +18,16 @@ from typing import Any, Mapping, Sequence
 
 import pefile
 
+from ..artifacts.formats import (
+    NATIVE_ENGINE_PACKAGE_FORMAT as _NATIVE_FORMAT,
+    NATIVE_ENGINE_PLAN_FORMAT as _NATIVE_PLAN_FORMAT,
+)
 from ..errors import StageAInputError
-from ..roundtrip_fuzz.image_contract import (
-    StageALoadImageContract,
+from ..roundtrip_fuzz.image_io import (
     load_stage_a_load_image_contract,
+)
+from ..roundtrip_fuzz.image_model import (
+    StageALoadImageContract,
 )
 from .engine_layout import (
     EngineLayout,
@@ -55,8 +61,6 @@ PAYLOAD_RELOCATION_INVENTORY_FILENAME = "payload-relocations.json"
 _SEMANTIC_MANIFEST = "state-machine-implementation.json"
 _NATIVE_MANIFEST = "native-engine-package.json"
 _SEMANTIC_FORMAT = "stage-b-semantic-c-implementation-v1"
-_NATIVE_FORMAT = "stage-b-native-engine-package-v1"
-_NATIVE_PLAN_FORMAT = "stage-b-native-engine-plan-v1"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _PLACEHOLDER_INT3 = re.compile(

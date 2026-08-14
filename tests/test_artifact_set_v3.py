@@ -7,25 +7,29 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     IDENTITY_BUCKETS,
     ArtifactBindingV3,
-    ArtifactBundleReaderV3,
     ArtifactDependencyV3,
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
     ArtifactV3Error,
-    DependencyNodePlanV3,
-    DependencySchedulingManifestV3,
     InternedExpressionV3,
     RecordDependencyV3,
-    StructuralSchedulingManifestV3,
-    StructuralUnitPlanV3,
     canonical_json_bytes_v3,
     identity_bucket_v3,
+)
+from spaghetti_extractor.artifacts.io import (
+    ArtifactBundleReaderV3,
+    ArtifactSetReaderV3,
     open_artifact_reader_v3,
     write_artifact_bundle_v3,
+)
+from spaghetti_extractor.artifacts.scheduling import (
+    DependencyNodePlanV3,
+    DependencySchedulingManifestV3,
+    StructuralSchedulingManifestV3,
+    StructuralUnitPlanV3,
 )
 
 

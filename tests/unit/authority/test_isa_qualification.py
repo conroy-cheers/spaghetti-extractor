@@ -30,14 +30,14 @@ from spaghetti_extractor.authority.semantic_index import (
     SEMANTIC_INDEX_CODEC_V3,
     derive_semantic_index_v3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
     RecordDependencyV3,
     canonical_sha256_v3,
 )
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
 
 PE_SHA256 = "a" * 64

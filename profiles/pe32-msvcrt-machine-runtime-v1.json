@@ -88,7 +88,7 @@
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
       "callback_effect": "explicit",
-      "world_effect_argument": 0,
+      "callback_source": {"kind": "argument_word", "argument": 0},
       "callback_lifetime": "until_invoked_or_process_exit",
       "callback_abi": {
         "kind": "generic_callback",
@@ -167,7 +167,7 @@
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
       "callback_effect": "explicit",
-      "world_effect_argument": 0,
+      "callback_source": {"kind": "argument_word", "argument": 0},
       "callback_lifetime": "until_replaced_or_process_exit",
       "callback_abi": {
         "kind": "generic_callback",

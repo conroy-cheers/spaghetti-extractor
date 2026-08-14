@@ -10,7 +10,7 @@ from spaghetti_extractor.reconstruction.rooted_state_machine import (
     _merge_roots,
     _rooted_direct_reachability,
 )
-from spaghetti_extractor.stage_binary import StageAInputError
+from spaghetti_extractor.pe32.stage_binary import StageAInputError
 
 
 def _row(

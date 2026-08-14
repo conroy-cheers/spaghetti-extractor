@@ -8,17 +8,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from ..artifacts.formats import (
+    STATIC_MACHINE_IMPORT_PROFILE_FORMAT as EXPANDED_IMPORT_ABI_FORMAT,
+)
 from .machine_abi import MachineCallABI, resolve_machine_call_abi
 from .machine_import_profiles import (
     MachineImportIdentity,
     load_machine_import_profile_set,
 )
-from ..stage_binary import StageAInputError, _parse_stage_a_pe
+from ..pe32.stage_binary import StageAInputError, _parse_stage_a_pe
 from ..util import sha256_file, write_json
 
 
 IMPORT_ABI_POLICY_FORMAT = "stage-a-import-abi-policy-v1"
-EXPANDED_IMPORT_ABI_FORMAT = "stage-a-static-machine-import-profile-v1"
 
 
 @dataclass(frozen=True)

@@ -12,7 +12,7 @@ from spaghetti_extractor.reconstruction.opaque import (
     opaque_self_map_from_inventory,
     stage_a_export_opaque_reconstruction,
 )
-from spaghetti_extractor.stage_binary import StageAInputError, _parse_stage_a_pe
+from spaghetti_extractor.pe32.stage_binary import StageAInputError, _parse_stage_a_pe
 from spaghetti_extractor.util import sha256_bytes
 
 

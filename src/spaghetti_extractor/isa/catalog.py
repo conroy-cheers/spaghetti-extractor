@@ -27,8 +27,6 @@ from .conformance import (
 
 ISA_FORM_CATALOG_FORMAT = "stage-a-isa-form-catalog-v2"
 ISA_FORM_CATALOG_ENTRY_FORMAT = "pe32-i686-form-v2"
-LEGACY_ISA_FORM_CATALOG_FORMAT = "stage-a-isa-form-catalog-v1"
-LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT = "pe32-i686-form-v1"
 XED_INSTRUCTION_CATALOG_FORMAT = "spaghetti-extractor-xed-inst-catalog-v1"
 ISA_PROFILE_ID = "pe32-i686-v1"
 SUPPORTED_WIDTHS = frozenset({8, 16, 32})
@@ -1010,12 +1008,8 @@ def _parse_entry(value: Any, context: str) -> ISAFormCatalogEntry:
         context,
     )
     entry_format = payload.get("format")
-    if entry_format not in {
-        ISA_FORM_CATALOG_ENTRY_FORMAT,
-        LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT,
-    }:
+    if entry_format != ISA_FORM_CATALOG_ENTRY_FORMAT:
         raise ISAConformanceError(f"{context}.format is unsupported")
-    legacy = entry_format == LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT
     raw_bytes = payload.get("instruction_bytes")
     if not isinstance(raw_bytes, list) or not raw_bytes:
         raise ISAConformanceError(f"{context}.instruction_bytes must not be empty")
@@ -1042,10 +1036,10 @@ def _parse_entry(value: Any, context: str) -> ISAFormCatalogEntry:
         _parse_effect(
             row,
             f"{context}.effects[{index}]",
-            legacy=legacy,
+            legacy=False,
             # The in-tree enrichment producer is independently owned and may
             # transition to canonical v2 locations in a separate change.
-            allow_legacy_v2=not legacy,
+            allow_legacy_v2=True,
         )
         for index, row in enumerate(
             _objects(payload.get("effects"), f"{context}.effects")
@@ -1095,10 +1089,7 @@ def parse_isa_form_catalog(value: Any) -> ISAFormCatalog:
         payload, {"format", "profile", "source", "entries"}, "ISA form catalog"
     )
     catalog_format = payload.get("format")
-    if catalog_format not in {
-        ISA_FORM_CATALOG_FORMAT,
-        LEGACY_ISA_FORM_CATALOG_FORMAT,
-    }:
+    if catalog_format != ISA_FORM_CATALOG_FORMAT:
         raise ISAConformanceError("unsupported ISA form catalog format")
     if payload.get("profile") != ISA_PROFILE_ID:
         raise ISAConformanceError(
@@ -1112,12 +1103,7 @@ def parse_isa_form_catalog(value: Any) -> ISAFormCatalog:
     )
     if not entries:
         raise ISAConformanceError("ISA form catalog.entries must not be empty")
-    expected_entry_format = (
-        LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT
-        if catalog_format == LEGACY_ISA_FORM_CATALOG_FORMAT
-        else ISA_FORM_CATALOG_ENTRY_FORMAT
-    )
-    if any(entry.format != expected_entry_format for entry in entries):
+    if any(entry.format != ISA_FORM_CATALOG_ENTRY_FORMAT for entry in entries):
         raise ISAConformanceError(
             "ISA form catalog entries do not match the catalog schema version"
         )
@@ -1361,7 +1347,8 @@ def _effect_payload(
 
 
 def _entry_payload(entry: ISAFormCatalogEntry) -> dict[str, Any]:
-    legacy = entry.format == LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT
+    if entry.format != ISA_FORM_CATALOG_ENTRY_FORMAT:
+        raise ISAConformanceError("catalog entry has an unsupported format")
     return {
         "format": entry.format,
         "form_id": entry.form_id,
@@ -1369,7 +1356,7 @@ def _entry_payload(entry: ISAFormCatalogEntry) -> dict[str, Any]:
         "instruction_bytes": list(entry.instruction_bytes),
         "required_features": list(entry.required_features),
         "effects": [
-            _effect_payload(effect, legacy=legacy) for effect in entry.effects
+            _effect_payload(effect, legacy=False) for effect in entry.effects
         ],
         "defined_outputs": conformance._defined_outputs_payload(
             entry.defined_outputs
@@ -1442,8 +1429,6 @@ __all__ = [
     "ISAFormCatalog",
     "ISAFormCatalogEntry",
     "InstructionEffect",
-    "LEGACY_ISA_FORM_CATALOG_ENTRY_FORMAT",
-    "LEGACY_ISA_FORM_CATALOG_FORMAT",
     "MAX_MEMORY_EFFECT_WIDTH_BITS",
     "MemoryControlTarget",
     "MemoryEffect",

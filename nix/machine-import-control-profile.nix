@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -11,9 +12,10 @@ let
   python = "${pythonEnv}/bin/python3";
   profilePathsJson = builtins.toJSON (map toString profiles);
   closure = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.control_disposition_profile" ];
+    modules = [ "spaghetti_extractor.authority_inputs.control_disposition" ];
     name = "${name}-python-closure";
   };
 in
@@ -38,7 +40,7 @@ pkgs.runCommand name {
   import pathlib
   import sys
 
-  from spaghetti_extractor.control_disposition_profile import (
+  from spaghetti_extractor.authority_inputs.control_disposition import (
       build_control_disposition_profile,
   )
   from spaghetti_extractor.util import write_json

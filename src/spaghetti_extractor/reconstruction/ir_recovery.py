@@ -6,10 +6,10 @@ import copy
 import json
 from typing import Any, Callable, Mapping, Sequence
 
-from ..callback_contracts import parse_callback_source
-from ..indirect_target_dependency_v2 import build_bounded_selector_dependency_v2
-from ..stage_binary import StageABinary
-from ..static_indirect_replay_v2 import (
+from ..external.callbacks import parse_callback_source
+from ..authority_inputs.target_dependencies import build_bounded_selector_dependency_v2
+from ..pe32.stage_binary import StageABinary
+from ..authority_inputs.static_indirect_replay import (
     direct_predecessors_by_target as _direct_predecessors_by_target,
     indirect_predecessor_evidence as _indirect_predecessor_evidence,
 )

@@ -6,12 +6,12 @@ import time
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
 )
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
 
 RECORD_COUNT = 12_000

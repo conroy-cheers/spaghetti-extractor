@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -13,9 +14,13 @@
 let
   lib = pkgs.lib;
   phasePythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.authority_inputs.external_site_evidence" ];
+    modules = [
+      "spaghetti_extractor.authority_inputs.external_site_evidence"
+      "spaghetti_extractor.artifacts.io"
+    ];
     name = "${name}-python-closure";
   };
   caAttrs = lib.optionalAttrs contentAddressed { __contentAddressed = true; };
@@ -48,10 +53,10 @@ pkgs.runCommand name (
   import pathlib
   import sys
 
-  from spaghetti_extractor.artifact_set_v3 import (
-      ArtifactSetReaderV3,
+  from spaghetti_extractor.artifacts.artifact_set import (
       canonical_json_bytes_v3,
   )
+  from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
   output = pathlib.Path(sys.argv[1])
   reader = ArtifactSetReaderV3(output / "artifact")

@@ -11,7 +11,10 @@ from spaghetti_extractor.authority.registry import (
     AUTHORITY_PHASE_REGISTRY_V3,
     AuthorityPhaseRegistryV3,
 )
-from spaghetti_extractor.artifact_set_v3 import CanonicalValueV3, canonical_sha256_v3
+from spaghetti_extractor.artifacts.artifact_set import (
+    CanonicalValueV3,
+    canonical_sha256_v3,
+)
 
 
 class AnalysisV3CodecAndRegistryTests(unittest.TestCase):

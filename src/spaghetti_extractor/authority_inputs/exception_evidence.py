@@ -31,15 +31,15 @@ from ..authority.exceptional_transitions import (
     exceptional_transition_id_v3,
 )
 from ..authority.semantic_index import SEMANTIC_INDEX_CODEC_V3
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
     ArtifactSetWriterV3,
     CanonicalValueV3,
     canonical_json_bytes_v3,
     canonical_sha256_v3,
-    open_artifact_reader_v3,
 )
+from ..artifacts.io import open_artifact_reader_v3
 
 
 EXCEPTION_EVIDENCE_REPORT_V3 = (

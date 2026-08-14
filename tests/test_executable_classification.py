@@ -7,7 +7,7 @@ from pathlib import Path
 from spaghetti_extractor.reference_contract.map_analysis import (
     _is_padding_bytes as contract_is_padding_bytes,
 )
-from spaghetti_extractor.stage_binary import (
+from spaghetti_extractor.pe32.stage_binary import (
     _is_padding_bytes as binary_is_padding_bytes,
     _parse_stage_a_pe,
 )

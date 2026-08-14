@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.artifact_formats import (
+from spaghetti_extractor.artifacts.formats import (
     COMPONENT_INTERFACE_REFINEMENT_FORMAT,
     COMPONENT_INTERFACE_SPEC_FORMAT,
     SEMANTIC_COMPONENT_CATALOG_FORMAT,

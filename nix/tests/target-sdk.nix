@@ -35,6 +35,7 @@ let
       graph.phases.example.derivation = artifact;
     };
     components = {
+      assetInventory = [ ];
       resolution = artifact;
       contracts.example = artifact;
       sourcePackages.example = artifact;

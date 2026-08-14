@@ -6,7 +6,7 @@ import hashlib
 from collections.abc import Mapping
 from typing import Any
 
-from ..artifact_set_v3 import canonical_json_bytes_v3
+from ..artifacts.artifact_set import canonical_json_bytes_v3
 
 
 def indirect_exit_id_v3(value: Mapping[str, Any]) -> str:

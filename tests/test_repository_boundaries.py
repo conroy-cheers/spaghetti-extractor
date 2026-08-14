@@ -5,7 +5,7 @@ import re
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.python_module_index import (
+from spaghetti_extractor.build_support.python_module_index import (
     build_python_module_index,
     production_module_closure,
     production_unreachable_modules,
@@ -30,9 +30,8 @@ V3_AUTHORITY_PACKAGE = "spaghetti_extractor.authority"
 V3_NATIVE_IMPORT_ROOTS = frozenset(
     {
         V3_AUTHORITY_PACKAGE,
-        "spaghetti_extractor.address_expressions",
-        "spaghetti_extractor.artifact_set_v3",
-        "spaghetti_extractor.phase_framework_v3",
+        "spaghetti_extractor.authority_inputs.address_expressions",
+        "spaghetti_extractor.artifacts",
     }
 )
 V3_LEGACY_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {}
@@ -179,7 +178,7 @@ class RepositoryBoundaryTests(unittest.TestCase):
 
     def test_shared_artifact_formats_have_production_consumers(self) -> None:
         formats_path = (
-            self.root / "src/spaghetti_extractor/artifact_formats.py"
+            self.root / "src/spaghetti_extractor/artifacts/formats.py"
         )
         namespace: dict[str, object] = {}
         exec(formats_path.read_text(encoding="utf-8"), namespace)
@@ -200,6 +199,70 @@ class RepositoryBoundaryTests(unittest.TestCase):
             msg=(
                 "Remove dead shared format identifiers instead of retaining "
                 "formats with no producer or consumer."
+            ),
+        )
+
+    def test_cross_module_artifact_identifiers_are_declared_once(self) -> None:
+        declarations: dict[str, list[str]] = {}
+        suffixes = ("FORMAT", "MODEL_ID", "PROFILE_ID", "ARTIFACT_KIND")
+        package = self.root / "src/spaghetti_extractor"
+        for path in sorted(package.rglob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in tree.body:
+                if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                names = [target.id for target in targets if isinstance(target, ast.Name)]
+                if not any(name.endswith(suffixes) for name in names):
+                    continue
+                try:
+                    value = ast.literal_eval(node.value)
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(value, str):
+                    continue
+                declarations.setdefault(value, []).append(
+                    path.relative_to(self.root).as_posix()
+                )
+        duplicates = {
+            value: sorted(set(paths))
+            for value, paths in declarations.items()
+            if len(set(paths)) > 1
+        }
+        self.assertEqual(
+            duplicates,
+            {},
+            msg=(
+                "A cross-module artifact identifier has one literal owner. Import "
+                "shared identifiers from artifacts/formats.py instead of copying strings."
+            ),
+        )
+
+    def test_authorizing_record_fields_are_typed_before_codec_boundaries(self) -> None:
+        offenders = []
+        record_paths = sorted(
+            (self.root / "src/spaghetti_extractor/authority").glob("*_records.py")
+        )
+        for path in record_paths:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for class_node in (
+                node for node in tree.body if isinstance(node, ast.ClassDef)
+            ):
+                for node in class_node.body:
+                    if not isinstance(node, ast.AnnAssign):
+                        continue
+                    annotation = ast.unparse(node.annotation)
+                    if "Any" in annotation or "dict[" in annotation or "Mapping[" in annotation:
+                        offenders.append(
+                            f"{path.relative_to(self.root).as_posix()}:"
+                            f"{node.lineno}:{class_node.name}.{ast.unparse(node.target)}"
+                        )
+        self.assertEqual(
+            offenders,
+            [],
+            msg=(
+                "Authorizing phase records use typed immutable fields. Catch-all "
+                "JSON mappings belong in parse/encode functions, not checked records."
             ),
         )
 
@@ -386,25 +449,16 @@ class RepositoryBoundaryTests(unittest.TestCase):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, public)
 
-    def test_installed_nix_data_covers_every_generic_nix_surface(self) -> None:
+    def test_python_distribution_does_not_duplicate_nix_or_profile_inventory(self) -> None:
         manifest = (self.root / "pyproject.toml").read_text(encoding="utf-8")
-        flake_only = {
-            "target-sdk.nix",
-            "test-suite-fixtures.nix",
-            "test-suite-manifest.json",
-            "test-suite-plan.nix",
-            "test-suite-shard.nix",
-            "test-suite.nix",
-            "toolkit-context.nix",
-        }
-        missing = sorted(
-            path.name
-            for path in (self.root / "nix").iterdir()
-            if path.is_file()
-            and path.name not in flake_only
-            and f'"nix/{path.name}"' not in manifest
+        self.assertNotIn(
+            "[tool.setuptools.data-files]",
+            manifest,
+            msg=(
+                "Nix owns the supported toolkit distribution. Do not restore a "
+                "second hand-maintained setuptools inventory for Nix/profile files."
+            ),
         )
-        self.assertEqual(missing, [])
 
     def test_test_metadata_does_not_invalidate_the_installed_toolkit(self) -> None:
         context = (self.root / "nix/toolkit-context.nix").read_text(
@@ -413,7 +467,7 @@ class RepositoryBoundaryTests(unittest.TestCase):
         manifest = (self.root / "pyproject.toml").read_text(encoding="utf-8")
         for path in (
             "nix/test-suite-fixtures.nix",
-            "nix/test-suite-manifest.json",
+            "nix/generated/test-suite-manifest.json",
             "nix/test-suite-plan.nix",
             "nix/test-suite-shard.nix",
             "nix/test-suite.nix",
@@ -439,6 +493,31 @@ class RepositoryBoundaryTests(unittest.TestCase):
                 if token in source:
                     offenders.append(f"{path.relative_to(self.root)}:{token}")
         self.assertEqual(offenders, [])
+
+    def test_python_module_closures_declare_and_record_phase_roles(self) -> None:
+        offenders = []
+        for path in sorted((self.root / "nix").rglob("*.nix")):
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for index, line in enumerate(lines):
+                if "python-module-closure.nix {" not in line:
+                    continue
+                nearby = "\n".join(lines[index + 1 : index + 6])
+                if "phaseRole" not in nearby:
+                    offenders.append(
+                        f"{path.relative_to(self.root).as_posix()}:{index + 1}"
+                    )
+        self.assertEqual(
+            offenders,
+            [],
+            msg=(
+                "Every Python closure must state its authority role at the call "
+                "site; filenames are not an authority policy."
+            ),
+        )
+        closure = (self.root / "nix/python-module-closure.nix").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('"phase_role": phase_role', closure)
 
     def test_v3_authority_consumers_do_not_import_legacy_modules(self) -> None:
         guarded_paths = sorted(
@@ -517,34 +596,63 @@ class RepositoryBoundaryTests(unittest.TestCase):
             ),
         )
 
-    def test_active_pipeline_modules_remain_reviewable(self) -> None:
+    def test_package_root_contains_only_entrypoints_and_shared_primitives(self) -> None:
+        package = self.root / "src/spaghetti_extractor"
+        expected = {
+            "__init__.py",
+            "__main__.py",
+            "cli.py",
+            "errors.py",
+            "util.py",
+        }
+        actual = {path.name for path in package.glob("*.py")}
+        self.assertEqual(actual, expected)
+        root_lines = sum(
+            len(path.read_text(encoding="utf-8").splitlines())
+            for path in package.glob("*.py")
+        )
+        self.assertLessEqual(
+            root_lines,
+            500,
+            msg=(
+                "The package root is a stable entrypoint surface, not an "
+                "implementation ownership bucket. Move behavior into a domain package."
+            ),
+        )
+
+    def test_all_production_modules_remain_reviewable(self) -> None:
         offenders = []
-        for package_name in (
-            "authority",
-            "authority_inputs",
-            "candidate",
-            "components",
-            "external",
-            "extraction",
-            "isa",
-            "machine_ir",
-            "reconstruction",
-            "reference_contract",
-        ):
-            package = self.root / "src/spaghetti_extractor" / package_name
-            for path in sorted(package.rglob("*.py")):
-                line_count = len(path.read_text(encoding="utf-8").splitlines())
-                if line_count > 1600:
-                    offenders.append(
-                        f"{path.relative_to(self.root).as_posix()}: {line_count} lines"
-                    )
+        package = self.root / "src/spaghetti_extractor"
+        for path in sorted(package.rglob("*.py")):
+            line_count = len(path.read_text(encoding="utf-8").splitlines())
+            if line_count > 1600:
+                offenders.append(
+                    f"{path.relative_to(self.root).as_posix()}: {line_count} lines"
+                )
         self.assertEqual(
             offenders,
             [],
             msg=(
-                "Split active pipeline modules by model, codec, checker, and "
-                "phase ownership before adding more behavior. The phase "
-                "scaffolder provides the supported starting structure."
+                "Every production package is guarded, including package-root and "
+                "round-trip code. Split modules by model, codec, checker, and phase "
+                "ownership before adding more behavior."
+            ),
+        )
+
+    def test_test_modules_remain_shardable_by_behavior(self) -> None:
+        offenders = []
+        for path in sorted((self.root / "tests").rglob("*.py")):
+            line_count = len(path.read_text(encoding="utf-8").splitlines())
+            if line_count > 1000:
+                offenders.append(
+                    f"{path.relative_to(self.root).as_posix()}: {line_count} lines"
+                )
+        self.assertEqual(
+            offenders,
+            [],
+            msg=(
+                "Split tests by model, validation, rendering, receipt, or failure "
+                "policy so the static Nix sharder can invalidate them independently."
             ),
         )
 

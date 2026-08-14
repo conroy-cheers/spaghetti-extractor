@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file, write_json
 
 

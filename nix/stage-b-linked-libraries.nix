@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: proposal
 {
   pkgs,
   pythonEnv,
@@ -21,10 +22,15 @@ let
   lib = pkgs.lib;
   python = "${pythonEnv}/bin/python3";
   phasePythonSource = import ./python-module-closure.nix {
+    phaseRole = "proposal";
     inherit pkgs;
     source = pythonSource;
     modules = [
-      "spaghetti_extractor.linked_libraries"
+      "spaghetti_extractor.libraries.catalog"
+      "spaghetti_extractor.libraries.interfaces"
+      "spaghetti_extractor.libraries.matching"
+      "spaghetti_extractor.libraries.refinement"
+      "spaghetti_extractor.libraries.replacements"
       "spaghetti_extractor.util"
     ];
     name = "${namePrefix}-linked-libraries-python-closure";
@@ -69,7 +75,7 @@ let
           "$out/library-artifact-index.json" <<'PY'
         import pathlib
         import sys
-        from spaghetti_extractor.linked_libraries import index_library_artifacts
+        from spaghetti_extractor.libraries.catalog import index_library_artifacts
 
         index_library_artifacts(
             inputs=pathlib.Path(sys.argv[1]),
@@ -99,7 +105,7 @@ let
         ${python} - "$out/library-catalog-lock.json" ${lib.escapeShellArgs allIndexes} <<'PY'
         import pathlib
         import sys
-        from spaghetti_extractor.linked_libraries import lock_library_catalog
+        from spaghetti_extractor.libraries.catalog import lock_library_catalog
 
         lock_library_catalog(
             indexes=[pathlib.Path(value) for value in sys.argv[2:]],
@@ -132,7 +138,7 @@ let
         "$out/match-evidence.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.linked_libraries import propose_library_match_evidence
+      from spaghetti_extractor.libraries.matching import propose_library_match_evidence
 
       original, machine_ir, catalog_lock, review, output = sys.argv[1:]
       propose_library_match_evidence(
@@ -165,7 +171,7 @@ let
         "$out/library-hypotheses.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.linked_libraries import infer_library_hypotheses
+      from spaghetti_extractor.libraries.matching import infer_library_hypotheses
 
       infer_library_hypotheses(
           match_evidence=pathlib.Path(sys.argv[1]),
@@ -193,7 +199,7 @@ let
         "$out/dynamic-library-requirements.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.linked_libraries import derive_dynamic_library_requirements
+      from spaghetti_extractor.libraries.refinement import derive_dynamic_library_requirements
 
       derive_dynamic_library_requirements(
           machine_ir=pathlib.Path(sys.argv[1]),
@@ -227,7 +233,7 @@ let
         "$out/linked-islands.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.linked_libraries import refine_linked_islands
+      from spaghetti_extractor.libraries.refinement import refine_linked_islands
 
       original, machine_ir, evidence, hypotheses, review, output = sys.argv[1:]
       refine_linked_islands(
@@ -260,7 +266,7 @@ let
         ${python} - "$out/interface-contract-catalog.json" <<'PY'
         import pathlib
         import sys
-        from spaghetti_extractor.linked_libraries import bind_interface_contract_catalog
+        from spaghetti_extractor.libraries.interfaces import bind_interface_contract_catalog
         from spaghetti_extractor.util import write_json
 
         write_json(pathlib.Path(sys.argv[1]), bind_interface_contract_catalog({
@@ -290,7 +296,7 @@ let
         import json
         import pathlib
         import sys
-        from spaghetti_extractor.linked_libraries import bind_linked_interface_assignments
+        from spaghetti_extractor.libraries.interfaces import bind_linked_interface_assignments
         from spaghetti_extractor.util import write_json
 
         manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -318,7 +324,7 @@ let
           "$out/interface-qualification.json" <<'PY'
         import pathlib
         import sys
-        from spaghetti_extractor.linked_libraries import qualify_linked_interfaces
+        from spaghetti_extractor.libraries.interfaces import qualify_linked_interfaces
 
         qualify_linked_interfaces(
             linked_islands=pathlib.Path(sys.argv[1]),
@@ -348,7 +354,7 @@ let
           "$out/replacement-plan.json" <<'PY'
         import pathlib
         import sys
-        from spaghetti_extractor.linked_libraries import plan_library_replacements
+        from spaghetti_extractor.libraries.replacements import plan_library_replacements
 
         plan_library_replacements(
             linked_islands=pathlib.Path(sys.argv[1]),

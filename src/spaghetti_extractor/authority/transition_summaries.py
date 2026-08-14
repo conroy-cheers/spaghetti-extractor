@@ -6,13 +6,14 @@ import hashlib
 from collections.abc import Mapping
 from typing import Any
 
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     CanonicalValueV3,
     canonical_json_bytes_v3,
 )
-from ..phase_framework_v3 import PhaseContextV3, map_units
+from ..artifacts.io import ArtifactSetReaderV3
+from ..artifacts.formats import MACHINE_IR_FORMAT as _MACHINE_IR_FORMAT
+from ..artifacts.phases import PhaseContextV3, map_units
 from ._schema import (
     fail,
     mapping,
@@ -41,7 +42,6 @@ from .transition_records import (
 )
 
 
-_MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
 _SEMANTIC_ARRAYS = (
     "register_writes",
     "flag_writes",

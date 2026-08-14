@@ -5,8 +5,9 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
+from ..artifacts.formats import STATIC_ANALYSIS_PROFILE_ID as SPIKE_CAPABILITY_PROFILE
 from ..extraction.binary_inventory import stage_a_inventory_binary
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file, write_json
 from .lowering import (
     AssemblyLoweringVariant,
@@ -48,7 +49,6 @@ from .semantic import (
 
 
 SPIKE_GENERATOR_VERSION = "static-machine-ir-roundtrip-v2"
-SPIKE_CAPABILITY_PROFILE = "x86-pe32-static-reconstruction-v1"
 SPIKE_POSITIVE_CASES = 24
 SPIKE_NEGATIVE_CASES = 12
 SPIKE_CASES = SPIKE_POSITIVE_CASES + SPIKE_NEGATIVE_CASES

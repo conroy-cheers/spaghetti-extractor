@@ -7,8 +7,11 @@ import re
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from ..artifact_set_v3 import CanonicalValueV3, canonical_json_bytes_v3
-from ..phase_framework_v3 import RecordCodecV3
+from ..artifacts.artifact_set import (
+    CanonicalValueV3,
+    canonical_json_bytes_v3,
+)
+from ..artifacts.phases import RecordCodecV3
 from ._schema import digest, fail, sequence, strict_object, text, uint
 
 
@@ -731,12 +734,6 @@ class TransitionSummaryRecordV3:
             self.unit_sha256,
             self.instruction_bytes_sha256,
         )
-
-    @property
-    def parsed_summary(self) -> "TransitionSummaryRecordV3":
-        """Compatibility view for consumers not yet renamed to native records."""
-
-        return self
 
     def identity_payload(self) -> dict[str, Any]:
         return {

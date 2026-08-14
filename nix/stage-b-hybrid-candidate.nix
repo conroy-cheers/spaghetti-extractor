@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: candidate
 {
   pkgs,
   pythonEnv,
@@ -34,6 +35,7 @@ let
   python = "${pythonEnv}/bin/python3";
   loadImageContract = "${staticExport}/load-image-contract.json";
   mkPythonClosure = suffix: modules: import ./python-module-closure.nix {
+    phaseRole = "candidate";
     inherit pkgs modules;
     source = pythonSource;
     name = "${namePrefix}-${suffix}-python-closure";

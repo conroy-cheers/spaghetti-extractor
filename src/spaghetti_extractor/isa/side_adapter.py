@@ -28,7 +28,7 @@ from ..extraction.isa_requirements import (
 )
 from ..extraction.schema import STATIC_ANALYSIS_MODEL_ID
 from ..extraction.isa_inventory import parse_side_isa_unbound
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 
 

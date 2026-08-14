@@ -16,7 +16,7 @@ from .diagnostics import Diagnostic
 from .discovery import build_impact_index
 from .fixtures import FIXTURE_ENV, FixtureCatalog
 from .evaluation_receipts import evaluation_receipt_inventory
-from ..python_module_index import production_unreachable_modules
+from ..build_support.python_module_index import production_unreachable_modules
 
 
 @dataclass(frozen=True, slots=True)

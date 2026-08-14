@@ -6,13 +6,13 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     CanonicalValueV3,
     RecordDependencyV3,
 )
-from ..phase_framework_v3 import PhaseContextV3, RecordCodecV3, map_units
+from ..artifacts.io import ArtifactSetReaderV3
+from ..artifacts.phases import PhaseContextV3, RecordCodecV3, map_units
 from ._schema import (
     canonical_json_rows,
     canonical_sort,
@@ -394,7 +394,7 @@ def _bind_hint(
 
 
 def digest_of_hint(value: Mapping[str, Any]) -> str:
-    from ..artifact_set_v3 import canonical_sha256_v3
+    from ..artifacts.artifact_set import canonical_sha256_v3
 
     return canonical_sha256_v3(value)
 

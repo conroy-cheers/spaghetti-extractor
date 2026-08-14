@@ -5,8 +5,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Mapping, Sequence
 
-from ..authority_bindings_v2 import indirect_exit_id_v2
-from ..stage_binary import StageABinary
+from ..authority_inputs.bindings import indirect_exit_id_v2
+from ..pe32.stage_binary import StageABinary
 from ..util import sha256_bytes
 from .control_reachability import (
     canonical_indirect_external_targets,

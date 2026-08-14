@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: diagnostic
 {
   pkgs,
   pythonEnv,
@@ -15,6 +16,7 @@ let
   profileArgs = lib.concatMapStringsSep " "
     (profile: lib.escapeShellArg (toString profile)) machineImportProfiles;
   phaseSource = import ./python-module-closure.nix {
+    phaseRole = "diagnostic";
     inherit pkgs;
     source = pythonSource;
     modules = [

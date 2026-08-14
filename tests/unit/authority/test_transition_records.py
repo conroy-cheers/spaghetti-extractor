@@ -13,9 +13,7 @@ from spaghetti_extractor.authority.transition_records import (
     TransitionSummaryRecordV3,
 )
 from spaghetti_extractor.authority.transition_summaries import _derive_summary
-from spaghetti_extractor.artifact_set_v3 import (
-    canonical_json_bytes_v3,
-)
+from spaghetti_extractor.artifacts.artifact_set import canonical_json_bytes_v3
 
 
 PE_SHA256 = "a" * 64
@@ -154,7 +152,6 @@ class TransitionRecordV3Tests(unittest.TestCase):
         self.assertIsInstance(decoded, TransitionSummaryRecordV3)
         self.assertIsInstance(decoded.memory_accesses[0], TransitionMemoryAccessV3)
         self.assertIsInstance(decoded.exits[0], TransitionExitV3)
-        self.assertIs(decoded.parsed_summary, decoded)
 
     def test_nested_schema_and_identity_corruption_fail_closed(self) -> None:
         _exact, native = self._exact_and_native()

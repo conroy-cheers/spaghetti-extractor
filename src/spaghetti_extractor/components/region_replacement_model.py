@@ -9,8 +9,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..artifact_formats import REGION_REPLACEMENT_BUNDLE_FORMAT
-from ..stage_binary import StageAInputError
+from ..artifacts.formats import REGION_REPLACEMENT_BUNDLE_FORMAT
+from ..pe32.stage_binary import StageAInputError
 
 REGION_REPLACEMENT_FORMAT = "stage-b-region-replacement-v1"
 _REGION_REPLACEMENT_FORMATS = frozenset(

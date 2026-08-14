@@ -7,8 +7,8 @@ import re
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..artifact_formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
-from ..stage_binary import StageAInputError
+from ..artifacts.formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes
 from .engine_model import (
     PE32_BASE_RELOCATION_EVIDENCE_FORMAT,

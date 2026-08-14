@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from ..callback_contracts import parse_callback_abi, parse_callback_source
-from ..stage_binary import StageAInputError
+from ..external.callbacks import parse_callback_abi, parse_callback_source
+from ..pe32.stage_binary import StageAInputError
 from .engine_analysis import (
     _direct_outcome_targets,
     _exact_u32_expression,

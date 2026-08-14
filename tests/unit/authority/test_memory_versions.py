@@ -14,15 +14,17 @@ from spaghetti_extractor.authority.semantic_index import SEMANTIC_INDEX_PHASE_V3
 from spaghetti_extractor.authority.transition_summaries import (
     TRANSITION_SUMMARIES_PHASE_V3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
+)
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
+from spaghetti_extractor.artifacts.scheduling import (
     DependencyNodePlanV3,
     DependencySchedulingManifestV3,
 )
-from spaghetti_extractor.phase_framework_v3 import PhaseFrameworkV3Error
+from spaghetti_extractor.artifacts.phases import PhaseFrameworkV3Error
 
 
 PE_SHA256 = "a" * 64

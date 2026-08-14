@@ -6,14 +6,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..artifact_set_v3 import (
+from ..artifacts.formats import (
+    LAUNCH_ASSUMPTION_TEMPLATE_FORMAT as LAUNCH_ASSUMPTION_TEMPLATE_FORMAT_V1,
+)
+from ..artifacts.artifact_set import (
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     CanonicalValueV3,
     RecordDependencyV3,
     canonical_sha256_v3,
 )
-from ..phase_framework_v3 import PhaseContextV3, RecordCodecV3, map_units
+from ..artifacts.io import ArtifactSetReaderV3
+from ..artifacts.phases import PhaseContextV3, RecordCodecV3, map_units
 from ._schema import (
     digest,
     fail,
@@ -56,9 +59,6 @@ EXCEPTIONAL_TRANSITION_RECORD_V3_SCHEMA = (
 EXCEPTIONAL_TRANSITIONS_ARTIFACT_KIND_V3 = "exceptional-transitions-v3"
 EXCEPTION_CLOSURE_CERTIFICATE_V3 = (
     "spaghetti-extractor-exception-closure-certificate-v3"
-)
-LAUNCH_ASSUMPTION_TEMPLATE_FORMAT_V1 = (
-    "spaghetti-extractor-pe32-launch-assumption-template-v1"
 )
 TERMINAL_SYNCHRONOUS_FAULT_MODEL_V1 = (
     "pe32-win32-console-unhandled-synchronous-fault-v1"

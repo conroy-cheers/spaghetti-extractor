@@ -6,13 +6,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     RecordDependencyV3,
     canonical_sha256_v3,
 )
-from ..phase_framework_v3 import PhaseContextV3, RecordCodecV3, map_units
+from ..artifacts.io import ArtifactSetReaderV3
+from ..artifacts.phases import PhaseContextV3, RecordCodecV3, map_units
 from ._schema import (
     canonical_strings,
     digest,

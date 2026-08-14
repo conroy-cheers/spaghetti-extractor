@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   name,
@@ -13,6 +14,7 @@
 
 let
   workerSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.isa.conformance_worker" ];

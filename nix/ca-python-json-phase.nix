@@ -8,6 +8,7 @@
   expectedFormat,
   allowedStatuses,
   pythonModules,
+  phaseRole,
   pythonExtraPaths ? [ ],
   extraNativeBuildInputs ? [ ],
   inputs ? { },
@@ -17,6 +18,7 @@
 
 assert builtins.isAttrs inputs;
 assert builtins.isList pythonModules && pythonModules != [ ];
+assert builtins.isString phaseRole && phaseRole != "";
 assert builtins.isList pythonExtraPaths;
 assert builtins.isList extraNativeBuildInputs;
 assert builtins.isList allowedStatuses && allowedStatuses != [ ];
@@ -29,6 +31,7 @@ let
   lib = pkgs.lib;
   python = "${pythonEnv}/bin/python3";
   phasePythonSource = import ./python-module-closure.nix {
+    phaseRole = phaseRole;
     inherit pkgs;
     source = pythonSource;
     modules = pythonModules;

@@ -6,8 +6,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
-from ..artifact_set_v3 import RecordDependencyV3
-from ..phase_framework_v3 import PhaseContextV3
+from ..artifacts.artifact_set import RecordDependencyV3
+from ..artifacts.phases import PhaseContextV3
 from ._schema import fail, strict_object, text
 
 

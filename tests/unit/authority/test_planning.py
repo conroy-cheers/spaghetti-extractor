@@ -13,11 +13,13 @@ from spaghetti_extractor.authority.planning import (
     prepare_scheduling_boundaries_v3,
     prepare_structural_boundary_v3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactV3Error,
+    canonical_json_bytes_v3,
+)
+from spaghetti_extractor.artifacts.scheduling import (
     StructuralSchedulingManifestV3,
     StructuralUnitPlanV3,
-    canonical_json_bytes_v3,
 )
 
 

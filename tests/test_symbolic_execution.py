@@ -8,7 +8,7 @@ from spaghetti_extractor.reference_contract.reference_semantics import (
     _semantic_transfer_contract,
 )
 from spaghetti_extractor.reference_contract.symbolic_execution import _symbolic_execute
-from spaghetti_extractor.stage_binary import BlockSide
+from spaghetti_extractor.pe32.stage_binary import BlockSide
 
 
 def _execute(encoded: bytes) -> dict[str, object]:

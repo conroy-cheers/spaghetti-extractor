@@ -5,7 +5,7 @@ import unittest
 import json
 from pathlib import Path
 
-from spaghetti_extractor.python_module_index import declared_public_command_roots
+from spaghetti_extractor.build_support.python_module_index import declared_public_command_roots
 from spaghetti_extractor.testkit import TestkitError, build_impact_index
 
 

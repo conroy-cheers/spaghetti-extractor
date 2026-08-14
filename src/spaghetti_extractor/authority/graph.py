@@ -6,8 +6,8 @@ from collections.abc import Iterable
 import importlib
 from typing import Any
 
-from ..artifact_set_v3 import canonical_sha256_v3
-from ..phase_framework_v3 import PhaseDefinitionV3
+from ..artifacts.artifact_set import canonical_sha256_v3
+from ..artifacts.phases import PhaseDefinitionV3
 from ._schema import fail
 from .registry import AUTHORITY_PHASE_REGISTRY_V3, AuthorityPhaseRegistryV3
 

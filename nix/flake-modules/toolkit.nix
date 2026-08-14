@@ -4,6 +4,9 @@
   perSystem = { pkgs, ... }:
     let
       context = import ../toolkit-context.nix { inherit pkgs; };
+      xedIsaCatalog = pkgs.callPackage ../xed-isa-catalog.nix {
+        xedCatalogSrc = ../../tools/xed-isa-catalog;
+      };
     in
     {
       packages = {
@@ -11,6 +14,7 @@
         spaghetti-extractor = context.package;
         testkit-test-runner = context.packages.testkitTestRunner;
         testkit-developer = context.packages.testkitDeveloper;
+        xed-isa-catalog = xedIsaCatalog;
       };
 
       legacyPackages = {
@@ -45,6 +49,11 @@
           type = "app";
           program = "${context.packages.testkitDeveloper}/bin/spaghetti-extractor-dev";
           meta.description = "Test scaffolding, fixture discovery, rebuild explanation, and environment diagnosis";
+        };
+        xed-isa-catalog = {
+          type = "app";
+          program = "${xedIsaCatalog}/bin/xed-isa-catalog";
+          meta.description = "Emit the pinned raw XED instruction catalog for PE32 i686";
         };
       };
 

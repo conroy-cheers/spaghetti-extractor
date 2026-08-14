@@ -6,7 +6,7 @@ from typing import Any
 
 import capstone
 
-from ..stage_binary import StageAInputError, _parse_stage_a_pe
+from ..pe32.stage_binary import StageAInputError, _parse_stage_a_pe
 from .x87_profile import instruction_is_x87, qualified_singleton_bytes
 
 

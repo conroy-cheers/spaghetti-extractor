@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -105,11 +106,11 @@ let
         import pathlib
         import sys
 
-        from spaghetti_extractor.artifact_set_v3 import (
+        from spaghetti_extractor.artifacts.artifact_set import (
             canonical_json_bytes_v3,
             parse_canonical_json_v3,
         )
-        from spaghetti_extractor.phase_framework_v3 import run_phase_reference_v3
+        from spaghetti_extractor.artifacts.phases import run_phase_reference_v3
 
         (
             reference,

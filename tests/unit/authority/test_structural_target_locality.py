@@ -17,13 +17,13 @@ from spaghetti_extractor.authority.structural_targets import (
     STRUCTURAL_TARGETS_PHASE_V3,
     flatten_structural_target_proposals_v3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
     RecordDependencyV3,
 )
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
 
 PE_SHA256 = "a" * 64

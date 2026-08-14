@@ -10,7 +10,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..artifact_formats import RECONSTRUCTION_PLAN_FORMAT
+from ..artifacts.formats import RECONSTRUCTION_PLAN_FORMAT
 from ..external.machine_import_profiles import load_machine_import_profile_set
 from .contract_analysis import analyze_reconstruction_contracts
 from .composition import (
@@ -24,7 +24,7 @@ from .ir import (
     MACHINE_IR_FORMAT,
     MACHINE_IR_MANIFEST_FILENAME,
 )
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file, write_json
 
 

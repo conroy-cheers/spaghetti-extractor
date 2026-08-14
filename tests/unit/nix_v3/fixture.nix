@@ -17,8 +17,11 @@ let
     root = repositoryRoot;
     fileset = pkgs.lib.fileset.unions [
       ../../../src/spaghetti_extractor/__init__.py
-      ../../../src/spaghetti_extractor/artifact_set_v3.py
-      ../../../src/spaghetti_extractor/phase_framework_v3.py
+      ../../../src/spaghetti_extractor/artifacts/__init__.py
+      ../../../src/spaghetti_extractor/artifacts/artifact_set.py
+      ../../../src/spaghetti_extractor/artifacts/io.py
+      ../../../src/spaghetti_extractor/artifacts/phases.py
+      ../../../src/spaghetti_extractor/artifacts/scheduling.py
       ../../../src/spaghetti_extractor/authority/__init__.py
       ../../../src/spaghetti_extractor/authority/_schema.py
       ../../../src/spaghetti_extractor/authority/planning.py
@@ -34,10 +37,11 @@ let
       mkdir -p "$out/src/spaghetti_extractor"
       ln -s ${frameworkSource}/src/spaghetti_extractor/__init__.py \
         "$out/src/spaghetti_extractor/__init__.py"
-      ln -s ${frameworkSource}/src/spaghetti_extractor/artifact_set_v3.py \
-        "$out/src/spaghetti_extractor/artifact_set_v3.py"
-      ln -s ${frameworkSource}/src/spaghetti_extractor/phase_framework_v3.py \
-        "$out/src/spaghetti_extractor/phase_framework_v3.py"
+      mkdir -p "$out/src/spaghetti_extractor/artifacts"
+      for file in __init__.py artifact_set.py io.py phases.py scheduling.py; do
+        ln -s ${frameworkSource}/src/spaghetti_extractor/artifacts/"$file" \
+          "$out/src/spaghetti_extractor/artifacts/$file"
+      done
       mkdir -p "$out/src/spaghetti_extractor/authority"
       ln -s ${frameworkSource}/src/spaghetti_extractor/authority/__init__.py \
         "$out/src/spaghetti_extractor/authority/__init__.py"
@@ -189,7 +193,7 @@ let
         import pathlib
         import sys
 
-        from spaghetti_extractor.artifact_set_v3 import (
+        from spaghetti_extractor.artifacts.artifact_set import (
             ArtifactBindingV3,
             ArtifactRecordV3,
             ArtifactSetWriterV3,
@@ -234,7 +238,7 @@ let
       import pathlib
       import sys
 
-      from spaghetti_extractor.artifact_set_v3 import (
+      from spaghetti_extractor.artifacts.artifact_set import (
           ArtifactBindingV3,
           ArtifactSetWriterV3,
       )

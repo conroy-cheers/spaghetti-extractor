@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: proposal
 {
   pkgs,
   pythonEnv,
@@ -34,6 +35,7 @@ let
   '';
   mkPythonClosure = source: suffix: modules:
     import ./python-module-closure.nix {
+    phaseRole = "proposal";
       inherit pkgs source modules;
       name = "${namePrefix}-${suffix}-python-closure";
     };
@@ -41,7 +43,7 @@ let
     "spaghetti_extractor.extraction.binary_inventory"
   ];
   staticExportPythonSource = mkPythonClosure staticPythonSource "static-export" [
-    "spaghetti_extractor.behavioral_roots"
+    "spaghetti_extractor.pe32.behavioral_roots"
     "spaghetti_extractor.reconstruction.opaque"
   ];
   rootedControlPythonSource = mkPythonClosure staticPythonSource "rooted-control" [
@@ -54,12 +56,12 @@ let
   machineIrExportPythonSource = mkPythonClosure staticPythonSource
     "machine-ir-export" [
       "spaghetti_extractor.reconstruction.ir"
-      "spaghetti_extractor.finite_value_domain"
+      "spaghetti_extractor.authority_inputs.finite_values"
     ];
   launchAssumptionProjectionPythonSource = mkPythonClosure staticPythonSource
     "launch-assumption-projection" [
-      "spaghetti_extractor.launch_assumption_inputs_v2"
-      "spaghetti_extractor.stage_binary"
+      "spaghetti_extractor.authority_inputs.launch_assumptions"
+      "spaghetti_extractor.pe32.stage_binary"
     ];
   reconstructionPlanPythonSource = mkPythonClosure planningPythonSource "reconstruction-plan" [
     "spaghetti_extractor.reconstruction.plan"
@@ -103,10 +105,10 @@ let
         import pathlib
         import sys
 
-        from spaghetti_extractor.launch_assumption_inputs_v2 import (
+        from spaghetti_extractor.authority_inputs.launch_assumptions import (
             build_launch_analysis_assumptions_v2,
         )
-        from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+        from spaghetti_extractor.pe32.stage_binary import _parse_stage_a_pe
 
         original, source, output = map(pathlib.Path, sys.argv[1:])
         binary = _parse_stage_a_pe(original)
@@ -180,7 +182,7 @@ let
       from spaghetti_extractor.reconstruction.opaque import (
           stage_a_export_opaque_reconstruction,
       )
-      from spaghetti_extractor.behavioral_roots import generate_behavioral_roots
+      from spaghetti_extractor.pe32.behavioral_roots import generate_behavioral_roots
       from spaghetti_extractor.util import write_json
 
       original, inventory, output = map(pathlib.Path, sys.argv[1:])
@@ -282,7 +284,7 @@ let
       import json
       import pathlib
       import sys
-      from spaghetti_extractor.finite_value_domain import FiniteU32Dataflow
+      from spaghetti_extractor.authority_inputs.finite_values import FiniteU32Dataflow
       from spaghetti_extractor.reconstruction.ir import export_machine_ir_package
 
       (

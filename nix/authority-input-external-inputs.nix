@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -18,6 +19,7 @@ assert builtins.isList machineImportProfiles;
 let
   lib = pkgs.lib;
   adapterPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.authority_inputs.external_inputs" ];

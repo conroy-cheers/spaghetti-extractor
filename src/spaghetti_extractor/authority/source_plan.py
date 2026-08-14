@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     canonical_json_bytes_v3,
     canonical_sha256_v3,
     identity_bucket_v3,

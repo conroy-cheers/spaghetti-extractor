@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactRecordV3,
     ArtifactSetWriterV3,
     CanonicalValueV3,

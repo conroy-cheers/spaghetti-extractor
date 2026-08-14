@@ -2,9 +2,10 @@
   pkgs,
   source,
   modules,
+  phaseRole,
   extraPaths ? [ ],
   name ? "spaghetti-extractor-python-module-closure",
-  moduleIndexFile ? ./python-module-index.json,
+  moduleIndexFile ? ./generated/python-module-index.json,
   repositoryRoot ? ../.,
 }:
 
@@ -82,10 +83,20 @@ let
   moduleResourceFilesJson = builtins.toJSON moduleResourceFiles;
   extraFilesJson = builtins.toJSON extraFiles;
   rootsJson = builtins.toJSON (builtins.sort builtins.lessThan modules);
+  supportedPhaseRoles = [
+    "operator"
+    "authority"
+    "candidate"
+    "diagnostic"
+    "proposal"
+    "expert"
+    "developer"
+  ];
 in
 assert index.format == "spaghetti-extractor-python-module-index-v2";
 assert builtins.isList modules && modules != [ ];
 assert builtins.isList extraPaths;
+assert builtins.elem phaseRole supportedPhaseRoles;
 pkgs.runCommand name {
   nativeBuildInputs = [ pkgs.python3 ];
   preferLocalBuild = false;
@@ -97,6 +108,7 @@ pkgs.runCommand name {
   export LC_ALL=C.UTF-8
   ${pkgs.python3}/bin/python3 - "$out" \
       ${lib.escapeShellArg rootsJson} \
+      ${lib.escapeShellArg phaseRole} \
       ${lib.escapeShellArg moduleFilesJson} \
       ${lib.escapeShellArg moduleResourceFilesJson} \
       ${lib.escapeShellArg extraFilesJson} <<'PY'
@@ -111,9 +123,10 @@ pkgs.runCommand name {
 
   output = pathlib.Path(sys.argv[1])
   roots = json.loads(sys.argv[2])
-  module_files = json.loads(sys.argv[3])
-  module_resource_files = json.loads(sys.argv[4])
-  extra_files = json.loads(sys.argv[5])
+  phase_role = sys.argv[3]
+  module_files = json.loads(sys.argv[4])
+  module_resource_files = json.loads(sys.argv[5])
+  extra_files = json.loads(sys.argv[6])
   output_root = output / "src"
   rows = []
   copied = set()
@@ -251,6 +264,7 @@ pkgs.runCommand name {
   manifest = {
       "format": "spaghetti-extractor-python-module-closure-v1",
       "dependency_source": "inline-checked-module-index-v1",
+      "phase_role": phase_role,
       "root_modules": roots,
       "module_resources": sorted(row["recordPath"] for row in module_resource_files),
       "extra_paths": sorted(row["path"] for row in extra_files),

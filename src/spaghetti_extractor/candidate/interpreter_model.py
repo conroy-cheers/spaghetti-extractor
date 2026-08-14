@@ -5,12 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
+    MACHINE_IR_FORMAT as _MACHINE_IR_FORMAT,
+    NATIVE_X87_REPLAY_FORMAT as _X87_REPLAY_FORMAT,
+    NATIVE_X87_REPLAY_PROGRAM_FORMAT as _X87_REPLAY_PROGRAM_FORMAT,
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PROGRAM_FORMAT,
 )
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from .x87 import (
     TYPED_NATIVE_X87_PROGRAM_FORMAT,
     TypedX87Operation,
@@ -35,7 +38,6 @@ STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS = frozenset({
     "slots",
     "metadata_sha256",
 })
-_MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
 
 _REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 _FLAGS = ("cf", "zf", "sf", "of", "pf", "df")
@@ -45,8 +47,6 @@ _AF_FLAG_INDEX = len(_FLAGS)
 _REP_SCAS_OWNED_REGISTERS = ("edi", "ecx")
 _REP_SCAS_OWNED_FLAGS = ("cf", "pf", "af", "zf", "sf", "of")
 _X87_REPLAY_MODEL = "native_exact_x87_command_replay_obligation_v1"
-_X87_REPLAY_FORMAT = "stage-a-native-exact-x87-command-replay-obligation-v1"
-_X87_REPLAY_PROGRAM_FORMAT = "stage-b-native-exact-x87-command-replay-program-v1"
 _X87_TYPED_PROGRAM_FORMAT = TYPED_NATIVE_X87_PROGRAM_FORMAT
 _X87_CHECKED_DECODER = X87_CHECKED_DECODER
 _X87_CHECKED_EXECUTOR = X87_CHECKED_EXECUTOR

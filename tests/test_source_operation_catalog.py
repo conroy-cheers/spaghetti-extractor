@@ -14,7 +14,7 @@ from spaghetti_extractor.external.operation_profiles import (
     EXTERNAL_OPERATION_PROFILE_FORMAT,
     parse_external_operation_profile,
 )
-from spaghetti_extractor.source_operation_catalog import (
+from spaghetti_extractor.external.source_operations import (
     NON_AUTHORITATIVE_RENDERING_METADATA,
     SOURCE_OPERATION_CATALOG_FORMAT,
     SOURCE_OPERATION_RENDERING_FORMAT,

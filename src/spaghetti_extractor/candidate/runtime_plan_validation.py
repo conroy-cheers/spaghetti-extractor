@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..artifact_formats import NATIVE_ENGINE_PLAN_FORMAT
+from ..artifacts.formats import NATIVE_ENGINE_PLAN_FORMAT
 from ..external.contracts import (
     CheckedExternalSiteContractError,
     ExternalSiteIdentity,

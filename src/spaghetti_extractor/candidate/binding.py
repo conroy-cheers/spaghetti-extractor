@@ -12,7 +12,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from ..artifact_formats import NATIVE_ENGINE_PLAN_FORMAT
+from ..artifacts.formats import NATIVE_ENGINE_PLAN_FORMAT
 from ..errors import StageAInputError
 from ..util import json_dumps, sha256_file, sha256_text, write_json
 

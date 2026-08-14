@@ -43,14 +43,14 @@ from spaghetti_extractor.authority.target_certificate_records import (
 from spaghetti_extractor.authority.transition_summaries import (
     TRANSITION_SUMMARIES_PHASE_V3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
     CanonicalValueV3,
     canonical_sha256_v3,
 )
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
 
 PE_SHA256 = "a" * 64

@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Mapping
 
-from ..artifact_formats import SEMANTIC_COMPONENT_DECLARATIONS_FORMAT
+from ..artifacts.formats import SEMANTIC_COMPONENT_DECLARATIONS_FORMAT
 from .formats import (
     COMPONENT_BOUNDARY_REVIEW_V2_FORMAT,
     COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
 
-from ..artifact_formats import SEMANTIC_IR_FORMAT
+from ..artifacts.formats import SEMANTIC_IR_FORMAT
 from .api_catalog import MachineCallCatalog, MachineCallSignature
 from .c_domains import (
     _CALL_EVENT_KINDS,

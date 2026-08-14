@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from spaghetti_extractor.artifact_set_v3 import ArtifactRecordV3
-from spaghetti_extractor.phase_framework_v3 import map_sccs, map_units, reduce
+from spaghetti_extractor.artifacts.artifact_set import ArtifactRecordV3
+from spaghetti_extractor.artifacts.phases import map_sccs, map_units, reduce
 
 
 def _transition(_context, record):

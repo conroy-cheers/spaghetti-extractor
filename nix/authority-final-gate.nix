@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -12,9 +13,13 @@ assert builtins.isString name && name != "";
 let
   lib = pkgs.lib;
   pythonClosure = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.authority.final_authority" ];
+    modules = [
+      "spaghetti_extractor.authority.final_authority"
+      "spaghetti_extractor.artifacts.io"
+    ];
     name = "${name}-python-closure";
   };
   caAttrs = lib.optionalAttrs contentAddressed { __contentAddressed = true; };
@@ -47,10 +52,10 @@ pkgs.runCommand name (
       FINAL_AUTHORITY_ARTIFACT_KIND_V3,
       FINAL_AUTHORITY_CODEC_V3,
   )
-  from spaghetti_extractor.artifact_set_v3 import (
-      ArtifactSetReaderV3,
+  from spaghetti_extractor.artifacts.artifact_set import (
       canonical_json_bytes_v3,
   )
+  from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
   artifact, output = sys.argv[1:]
   reader = ArtifactSetReaderV3(pathlib.Path(artifact))

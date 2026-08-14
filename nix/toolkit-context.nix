@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: developer
 { pkgs }:
 
 let
@@ -7,7 +8,7 @@ let
     ../nix/flake-modules
     ../nix/tests
     ../nix/test-suite-fixtures.nix
-    ../nix/test-suite-manifest.json
+    ../nix/generated/test-suite-manifest.json
     ../nix/test-suite-plan.nix
     ../nix/test-suite-shard.nix
     ../nix/test-suite.nix

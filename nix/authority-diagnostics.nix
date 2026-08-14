@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: diagnostic
 {
   pkgs,
   pythonEnv,
@@ -13,6 +14,7 @@ assert builtins.isAttrs artifacts && artifacts != { };
 let
   lib = pkgs.lib;
   pythonClosure = import ./python-module-closure.nix {
+    phaseRole = "diagnostic";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.authority.diagnostics" ];
@@ -57,7 +59,7 @@ pkgs.runCommand name (
   from spaghetti_extractor.authority.diagnostics import (
       summarize_authority_artifacts_v3,
   )
-  from spaghetti_extractor.artifact_set_v3 import canonical_json_bytes_v3
+  from spaghetti_extractor.artifacts.artifact_set import canonical_json_bytes_v3
 
   artifacts_file = pathlib.Path(sys.argv[1])
   graph_manifest_path = sys.argv[2]

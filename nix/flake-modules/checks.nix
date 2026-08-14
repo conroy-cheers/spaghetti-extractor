@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: developer
 { ... }:
 
 {
@@ -61,6 +62,12 @@
       candidateTestSuiteCheck = import ../tests/candidate-test-suite.nix {
         inherit pkgs;
       };
+      profileRegistryCheck = import ../profile-registry-check.nix {
+        inherit pkgs;
+        inherit (context) pythonEnv;
+        pythonSource = context.sources.staticSource;
+        profiles = context.sources.profileSource;
+      };
       fullGate = pkgs.linkFarm "spaghetti-extractor-test-full" [
         { name = "repository-metadata-freshness"; path = repositoryMetadataFreshness; }
         { name = "python-suite"; path = fullSuite.aggregate; }
@@ -68,6 +75,7 @@
         { name = "authority-graph-v3"; path = authorityGraphV3Check; }
         { name = "artifact-seed-v3"; path = artifactSeedV3Check; }
         { name = "candidate-test-suite"; path = candidateTestSuiteCheck; }
+        { name = "profile-registry"; path = profileRegistryCheck; }
         { name = "roundtrip-qualification"; path = roundtrip.qualification; }
       ];
       smokeGate = pkgs.linkFarm "spaghetti-extractor-test-smoke" [
@@ -79,12 +87,14 @@
         { name = "python-suite"; path = benchmarkSuite.aggregate; }
       ];
       interpreterPythonClosure = import ../python-module-closure.nix {
+    phaseRole = "developer";
         inherit pkgs;
         source = testSource;
         modules = [ "spaghetti_extractor.candidate.interpreter" ];
         name = "spaghetti-extractor-interpreter-python-closure-smoke";
       };
       isaClassifierPythonClosure = import ../python-module-closure.nix {
+    phaseRole = "developer";
         inherit pkgs;
         source = testSource;
         modules = [ "spaghetti_extractor.isa.semantic_forms" ];
@@ -151,6 +161,7 @@
         target-sdk = targetSdkCheck;
         components = componentsCheck;
         candidate-test-suite = candidateTestSuiteCheck;
+        profile-registry = profileRegistryCheck;
       };
     };
 }

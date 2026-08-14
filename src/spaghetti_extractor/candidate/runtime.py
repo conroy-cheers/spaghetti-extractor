@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     NATIVE_ENGINE_PACKAGE_FORMAT,
     NATIVE_RUNTIME_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,

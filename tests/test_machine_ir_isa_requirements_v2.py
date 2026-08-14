@@ -8,7 +8,7 @@ from typing import Any
 from spaghetti_extractor.extraction.isa_requirements import (
     _lean_side_form_extraction_source,
 )
-from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+from spaghetti_extractor.authority_inputs.isa_requirements import (
     MACHINE_IR_FALLBACK_CAPABILITY_V2,
     MachineIRISARequirementsV2Error,
     build_machine_ir_isa_extraction_request_v2,

@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from ..artifacts.formats import ISA_ENCODING_PROPOSAL_FORMAT as _PROPOSAL_ENCODING_FORMAT
 from .catalog import (
     ISA_FORM_CATALOG_ENTRY_FORMAT,
     ISA_FORM_CATALOG_FORMAT,
@@ -33,9 +34,9 @@ from .semantic_forms import (
     lean_semantic_form_id,
 )
 from .side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
-from ..lean_runner import run_lean_module_graph
+from ..build_support.lean_runner import run_lean_module_graph
 from ..extraction.schema import STATIC_ANALYSIS_MODEL_ID
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 
 
@@ -49,9 +50,6 @@ SIDE_ISA_CATALOG_ENRICHMENT_RESULT_FORMAT = (
     "stage-a-side-isa-catalog-enrichment-result-v1"
 )
 _ENRICHER_VERSION = "lean-exact-encoding-catalog-enrichment-v1"
-_PROPOSAL_ENCODING_FORMAT = (
-    "stage-a-side-isa-executable-encoding-proposal-v1"
-)
 _GPRS = ("eax", "ebp", "ebx", "ecx", "edi", "edx", "esi", "esp")
 _ARITHMETIC_FLAGS = 0x8D5
 _LOGICAL_FLAGS = 0x8C5

@@ -19,7 +19,8 @@ import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 import pefile
 
-from ..stage_binary import (
+from ..artifacts.formats import STATIC_ANALYSIS_PROFILE_ID as REFERENCE_CONTRACT_MODEL_ID
+from ..pe32.stage_binary import (
     BlockSide,
     StageABinary,
     StageAImport,
@@ -41,7 +42,6 @@ CHECKED_GENERATED_MAPPING_PROOF_RULES = {
     "same_source_layout_preserving_build_v1",
 }
 
-REFERENCE_CONTRACT_MODEL_ID = "x86-pe32-static-reconstruction-v1"
 
 NORETURN_IMPORT_SYMBOLS = {
     "abort",

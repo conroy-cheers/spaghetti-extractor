@@ -179,7 +179,6 @@ class ISAQualificationCampaign:
         return tuple(row for row in self.frontier if row.rank is None)
 
 
-ISACampaignPlan = ISAQualificationCampaign
 
 
 def _object(value: Any, context: str) -> Mapping[str, Any]:
@@ -1500,11 +1499,6 @@ def isa_qualification_campaign_sha256(
 
 
 # Concise aliases for callers that use the module's shorter campaign name.
-build_isa_campaign_plan = build_isa_qualification_campaign
-plan_isa_qualification_campaign = build_isa_qualification_campaign
-parse_isa_campaign_plan = parse_isa_qualification_campaign
-serialize_isa_campaign_plan = serialize_isa_qualification_campaign
-isa_campaign_sha256 = isa_qualification_campaign_sha256
 
 
 __all__ = [
@@ -1517,20 +1511,14 @@ __all__ = [
     "CampaignQualificationStatus",
     "CampaignReasonCode",
     "CampaignTrust",
-    "ISACampaignPlan",
     "ISAQualificationCampaign",
     "ISAQualificationCampaignError",
     "ISA_QUALIFICATION_CAMPAIGN_FORMAT",
     "ISA_QUALIFICATION_CAMPAIGN_TRUST_ROLE",
-    "build_isa_campaign_plan",
     "build_isa_qualification_campaign",
     "canonical_isa_qualification_campaign_input",
-    "isa_campaign_sha256",
     "isa_qualification_campaign_sha256",
-    "parse_isa_campaign_plan",
     "parse_isa_qualification_campaign",
-    "plan_isa_qualification_campaign",
-    "serialize_isa_campaign_plan",
     "serialize_isa_qualification_campaign",
     "xed_instruction_catalog_sha256",
 ]

@@ -16,7 +16,7 @@ from spaghetti_extractor.external.machine_import_profiles import (
     MachineImportProfileError,
     load_machine_import_profile_set,
 )
-from spaghetti_extractor.control_disposition_profile import (
+from spaghetti_extractor.authority_inputs.control_disposition import (
     build_control_disposition_profile,
 )
 from spaghetti_extractor.candidate.state_machine import (
@@ -396,10 +396,7 @@ class MachineImportProfileTests(unittest.TestCase):
                 self.assertEqual(contract["callback_effect"], "explicit")
                 self.assertIn("callback_lifetime", contract)
                 self.assertIn("callback_abi", contract)
-                self.assertTrue(
-                    "callback_source" in contract
-                    or "world_effect_argument" in contract
-                )
+                self.assertIn("callback_source", contract)
         for contract in profile_set.contracts:
             expected = (
                 "explicit"
@@ -594,7 +591,7 @@ class MachineImportProfileTests(unittest.TestCase):
         )
         contract.update({
             "world_effect": "callbackRegistration",
-            "world_effect_argument": 0,
+            "callback_source": {"kind": "argument_word", "argument": 0},
             "callback_lifetime": "until_replaced_or_process_exit",
             "callback_abi": {
                 "kind": "generic_callback",

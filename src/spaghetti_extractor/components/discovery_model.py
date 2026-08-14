@@ -9,10 +9,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-PROPOSAL_SET_FORMAT = "stage-b-component-proposal-set-v1"
-COMPONENT_PROPOSAL_SET_FORMAT = PROPOSAL_SET_FORMAT
-MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
-RECONSTRUCTION_PLAN_FORMAT = "stage-b-reconstruction-plan-v1"
+from ..artifacts.formats import (
+    COMPONENT_PROPOSAL_SET_FORMAT,
+    MACHINE_IR_FORMAT,
+    RECONSTRUCTION_PLAN_FORMAT,
+)
+
+PROPOSAL_SET_FORMAT = COMPONENT_PROPOSAL_SET_FORMAT
 MACHINE_IR_MANIFEST_FILENAME = "machine-ir-manifest.json"
 MACHINE_IR_FILENAME = "machine-ir.jsonl"
 _EVIDENCE_SAMPLE_LIMIT = 1

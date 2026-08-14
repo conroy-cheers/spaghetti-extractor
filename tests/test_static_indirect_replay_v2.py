@@ -3,10 +3,10 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from spaghetti_extractor.indirect_target_dependency_v2 import (
+from spaghetti_extractor.authority_inputs.target_dependencies import (
     has_value_independent_target_set_v2,
 )
-from spaghetti_extractor.static_indirect_replay_v2 import (
+from spaghetti_extractor.authority_inputs.static_indirect_replay import (
     replay_exact_static_recoveries_v2,
     replay_inductive_static_hypotheses_v2,
 )

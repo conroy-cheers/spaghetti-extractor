@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -17,11 +18,12 @@ let
   lib = pkgs.lib;
   caAttrs = lib.optionalAttrs contentAddressed { __contentAddressed = true; };
   requirementsPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = isaPythonSource;
     modules = [
       "spaghetti_extractor.extraction.isa_requirements"
-      "spaghetti_extractor.machine_ir_isa_requirements_v2"
+      "spaghetti_extractor.authority_inputs.isa_requirements"
     ];
     extraPaths = [ "spaghetti_extractor/lean/StageA" ];
     name = "${name}-requirements-python-closure";
@@ -55,7 +57,7 @@ let
     from spaghetti_extractor.extraction.isa_requirements import (
         extract_lean_instruction_forms_side,
     )
-    from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+    from spaghetti_extractor.authority_inputs.isa_requirements import (
         build_machine_ir_isa_extraction_request_v2,
         build_machine_ir_isa_requirements_v2,
         parse_machine_ir_isa_requirements_v2,
@@ -113,6 +115,7 @@ let
     name = "${name}-qualification";
   };
   projectionPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.authority_inputs.isa_evidence" ];

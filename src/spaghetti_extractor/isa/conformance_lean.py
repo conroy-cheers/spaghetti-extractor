@@ -40,7 +40,7 @@ from .conformance import (
     parse_isa_conformance_report,
     serialize_isa_conformance_report,
 )
-from ..lean_runner import run_lean_module_graph
+from ..build_support.lean_runner import run_lean_module_graph
 from .semantic_forms import lean_semantic_form_classifier_sha256
 
 

@@ -21,7 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     COMPONENT_INTERFACE_REFINEMENT_FORMAT,
     COMPONENT_INTERFACE_SPEC_FORMAT,
     MACHINE_IR_FORMAT,

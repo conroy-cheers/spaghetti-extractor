@@ -14,12 +14,12 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from ..callback_contracts import (
+from ..external.callbacks import (
     parse_callback_abi,
     parse_callback_source,
     parse_nested_native_callback_behavior,
 )
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 
 
 CHECKED_EXTERNAL_SITE_CONTRACT_FORMAT = (

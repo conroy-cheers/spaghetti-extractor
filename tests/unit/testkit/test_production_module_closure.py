@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.python_module_index import (
+from spaghetti_extractor.build_support.python_module_index import (
     build_python_module_index,
     declared_public_command_modules,
     nix_phase_module_roots,
@@ -35,10 +35,16 @@ version = "0"
 fixture = "spaghetti_extractor.cli:main"
 """.lstrip(),
             )
-            _write(root, "flake.nix", '"spaghetti_extractor.phase"\n')
+            _write(
+                root,
+                "flake.nix",
+                "# spaghetti-extractor-python-role: authority\n"
+                '"spaghetti_extractor.phase"\n',
+            )
             _write(
                 root,
                 "nix/phases/worker.nix",
+                "# spaghetti-extractor-python-role: developer\n"
                 "python -m \\\n"
                 "    spaghetti_extractor.worker\n",
             )
@@ -138,6 +144,16 @@ fixture = "spaghetti_extractor.missing:main"
 
             with self.assertRaisesRegex(ValueError, "missing modules"):
                 production_unreachable_modules(root)
+
+    def test_python_bearing_nix_file_requires_explicit_role(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write(root, "flake.nix", '"spaghetti_extractor.phase"\n')
+            _write(root, "src/spaghetti_extractor/__init__.py", "")
+            _write(root, "src/spaghetti_extractor/phase.py", "")
+
+            with self.assertRaisesRegex(ValueError, "must declare exactly one"):
+                nix_phase_module_roots(root)
 
 
 if __name__ == "__main__":

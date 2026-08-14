@@ -8,12 +8,14 @@ import struct
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     PAYLOAD_RELOCATION_INVENTORY_FORMAT,
     PE_COMPOSITION_MANIFEST_FORMAT,
 )
-from ..recovered_executable_data import RecoveredExecutableDataContract
-from ..roundtrip_fuzz.image_contract import StageALoadImageContract
+from ..pe32.recovered_executable_data import RecoveredExecutableDataContract
+from ..roundtrip_fuzz.image_model import (
+    StageALoadImageContract,
+)
 from ..util import sha256_bytes
 from .pe_model import (
     CANDIDATE_FILENAME,

@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from ..artifact_formats import NATIVE_ENGINE_PACKAGE_FORMAT, NATIVE_ENGINE_PLAN_FORMAT
-from ..callback_contracts import CallbackABI, CallbackSource
+from ..artifacts.formats import NATIVE_ENGINE_PACKAGE_FORMAT, NATIVE_ENGINE_PLAN_FORMAT
+from ..external.callbacks import CallbackABI, CallbackSource
 from ..external.contracts import (
     CheckedExternalSiteContract,
     CheckedExternalSiteContractError,
@@ -19,11 +19,11 @@ from ..external.machine_import_profiles import (
     load_machine_import_profile_set,
 )
 from ..external.runtime_projection import load_authoritative_external_sites
-from ..recovered_executable_data import (
+from ..pe32.recovered_executable_data import (
     RecoveredExecutableDataRange,
     load_recovered_executable_data_contract,
 )
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes, sha256_file, write_json
 from .engine_analysis import (
     _RegisterImportSiteAnalysis,

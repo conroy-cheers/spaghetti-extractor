@@ -20,7 +20,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
-from ..artifact_set_v3 import (
+from ..artifacts.formats import (
+    LAUNCH_ASSUMPTION_TEMPLATE_FORMAT as LAUNCH_ASSUMPTION_TEMPLATE_FORMAT_V1,
+)
+from ..artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
     ArtifactSetWriterV3,
@@ -28,7 +31,7 @@ from ..artifact_set_v3 import (
     canonical_json_bytes_v3,
     parse_canonical_json_v3,
 )
-from ..behavioral_roots import (
+from ..pe32.behavioral_roots import (
     BehavioralRootsError,
     generate_behavioral_roots,
 )
@@ -39,7 +42,7 @@ from ..external.machine_import_profiles import (
     SelectedMachineImportContract,
     load_machine_import_profile_set,
 )
-from ..stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
+from ..pe32.stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from ..authority._schema import AnalysisV3Error, mapping, sequence, text, uint
 from ..authority.authority_common import PrimaryBlockerV3
 from ..authority.exact_units import ExactUnitV3
@@ -58,9 +61,6 @@ from ..authority.root_closure import (
 
 EXTERNAL_INPUT_ADAPTER_FORMAT_V3 = (
     "spaghetti-extractor-external-input-adapter-v3"
-)
-LAUNCH_ASSUMPTION_TEMPLATE_FORMAT_V1 = (
-    "spaghetti-extractor-pe32-launch-assumption-template-v1"
 )
 
 _LAUNCH_ASSUMPTIONS = frozenset(

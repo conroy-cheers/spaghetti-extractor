@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -48,11 +49,11 @@ let
     import pathlib
     import sys
 
-    from spaghetti_extractor.artifact_set_v3 import (
-        ArtifactSetReaderV3,
+    from spaghetti_extractor.artifacts.artifact_set import (
         canonical_json_bytes_v3,
         parse_canonical_json_v3,
     )
+    from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 
     artifact, expected_kind, statuses_file, expected_ids_file, output = sys.argv[1:]
     statuses = parse_canonical_json_v3(

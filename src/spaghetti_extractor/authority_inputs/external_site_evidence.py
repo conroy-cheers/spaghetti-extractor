@@ -53,19 +53,21 @@ from ..authority.transition_records import (
     TRANSITION_SUMMARY_CODEC_V3,
     TransitionSummaryRecordV3,
 )
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactDependencyV3,
-    ArtifactInputReaderV3,
     ArtifactRecordV3,
     ArtifactSetManifestV3,
     ArtifactSetWriterV3,
     CanonicalValueV3,
     RecordDependencyV3,
     canonical_sha256_v3,
+)
+from ..artifacts.io import (
+    ArtifactInputReaderV3,
     open_artifact_reader_v3,
 )
-from ..control_disposition_profile import CONTROL_DISPOSITION_PROFILE_ID
+from ..authority_inputs.control_disposition import CONTROL_DISPOSITION_PROFILE_ID
 
 
 _EFFECT_INVENTORIES = (

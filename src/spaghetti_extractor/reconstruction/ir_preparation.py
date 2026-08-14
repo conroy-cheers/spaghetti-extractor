@@ -9,13 +9,13 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..machine_ir_authority_v2 import build_machine_ir_authority_bindings
+from ..authority_inputs.machine_ir_authority import build_machine_ir_authority_bindings
 from ..candidate.state_machine import (
     STAGE_B_STATE_MACHINE_FORMAT,
     load_stage_a_reference_contract_binding,
     normalize_stage_a_semantic_transfer,
 )
-from ..stage_binary import StageABinary, _parse_stage_a_pe
+from ..pe32.stage_binary import StageABinary, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 from .ir_decoding import _semantic_call_events
 from .ir_decoding import (

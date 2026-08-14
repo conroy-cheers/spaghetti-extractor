@@ -10,7 +10,7 @@ from typing import Any, Mapping
 import capstone
 from capstone import x86_const
 
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes
 
 

@@ -18,7 +18,7 @@ from spaghetti_extractor.authority.isa_qualification import (
     ISA_QUALIFICATION_EVIDENCE_CODEC_V3,
     ISA_QUALIFICATION_PHASE_V3,
 )
-from spaghetti_extractor.artifact_set_v3 import ArtifactSetReaderV3
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 from tests.unit.authority.test_isa_qualification import (
     BINDING,
     _base_inputs,

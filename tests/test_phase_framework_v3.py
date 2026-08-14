@@ -4,18 +4,22 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
     ArtifactV3Error,
-    DependencyNodePlanV3,
-    DependencySchedulingManifestV3,
     RecordDependencyV3,
+)
+from spaghetti_extractor.artifacts.io import (
+    ArtifactSetReaderV3,
     write_artifact_bundle_v3,
 )
-from spaghetti_extractor.phase_framework_v3 import (
+from spaghetti_extractor.artifacts.scheduling import (
+    DependencyNodePlanV3,
+    DependencySchedulingManifestV3,
+)
+from spaghetti_extractor.artifacts.phases import (
     PhaseDefinitionV3,
     PhaseFrameworkV3Error,
     RecordCodecV3,

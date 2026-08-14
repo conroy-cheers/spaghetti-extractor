@@ -1,6 +1,6 @@
 {
   mode ? "full",
-  manifest ? ./test-suite-manifest.json,
+  manifest ? ./generated/test-suite-manifest.json,
 }:
 
 let

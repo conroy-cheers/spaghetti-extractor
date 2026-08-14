@@ -22,7 +22,7 @@ from .semantic_forms import (
 )
 from .side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
 from ..extraction.schema import STATIC_ANALYSIS_MODEL_ID
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 
 def _parse_proposal(value: Any) -> dict[str, Any]:
     payload = _exact_fields(

@@ -330,7 +330,7 @@ class ReconstructionContractAnalysisTests(unittest.TestCase):
                 "argument_words": 1,
                 "memory_effect": "none",
                 "world_effect": "callbackRegistration",
-                "world_effect_argument": 0,
+                "callback_source": {"kind": "argument_word", "argument": 0},
                 "callback_abi": callback_abi,
             },
         }
@@ -340,7 +340,7 @@ class ReconstructionContractAnalysisTests(unittest.TestCase):
                     "SetUnhandledExceptionFilter",
                     argument_words=1,
                     world_effect="callbackRegistration",
-                    world_effect_argument=0,
+                    callback_source={"kind": "argument_word", "argument": 0},
                     callback_abi=callback_abi,
                     callback_lifetime="until_replaced_or_process_exit",
                 )
@@ -389,7 +389,7 @@ class ReconstructionContractAnalysisTests(unittest.TestCase):
                 "argument_words": 1,
                 "memory_effect": "none",
                 "world_effect": "callbackRegistration",
-                "world_effect_argument": 0,
+                "callback_source": {"kind": "argument_word", "argument": 0},
                 "callback_lifetime": "until_replaced_or_process_exit",
                 "callback_abi": callback_abi,
             },

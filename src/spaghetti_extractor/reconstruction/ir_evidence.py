@@ -6,7 +6,7 @@ import copy
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..stage_binary import StageABinary
+from ..pe32.stage_binary import StageABinary
 from .ir_decoding import _sanitize_metadata
 from .ir_model import (
     INDIRECT_TARGET_PROFILE_FORMAT,

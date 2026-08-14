@@ -6,14 +6,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.recovered_executable_data import (
+from spaghetti_extractor.pe32.recovered_executable_data import (
     RecoveredExecutableDataRange,
     RecoveredExecutableDataError,
     build_recovered_executable_data_contract,
     load_recovered_executable_data_contract,
     recover_executable_data_ranges,
 )
-from spaghetti_extractor.stage_binary import _parse_stage_a_pe
+from spaghetti_extractor.pe32.stage_binary import _parse_stage_a_pe
 from spaghetti_extractor.util import sha256_bytes
 
 from tests.pe_fixtures import pe32_image

@@ -1,6 +1,6 @@
 """Public interpreter-native build API."""
 
-from ..artifact_formats import INTERPRETER_NATIVE_BUILD_FORMAT
+from ..artifacts.formats import INTERPRETER_NATIVE_BUILD_FORMAT
 from .build_model import (
     INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME,
     INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT,

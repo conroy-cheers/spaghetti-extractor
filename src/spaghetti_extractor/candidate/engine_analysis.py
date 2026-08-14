@@ -9,14 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from ..callback_contracts import (
+from ..external.callbacks import (
     CallbackABI,
     CallbackSource,
     parse_callback_abi,
     parse_callback_source,
 )
 from ..external.contracts import CheckedExternalSiteContract
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes, sha256_file
 from .engine_model import (
     NativeTerminationImport,

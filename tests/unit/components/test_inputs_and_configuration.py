@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.artifact_formats import (
+from spaghetti_extractor.artifacts.formats import (
     COMPONENT_PROPOSAL_SET_FORMAT,
     RECONSTRUCTION_PLAN_FORMAT,
 )

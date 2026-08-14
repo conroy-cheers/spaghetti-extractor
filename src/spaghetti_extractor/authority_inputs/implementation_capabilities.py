@@ -36,15 +36,17 @@ from ..authority.semantic_index import (
     SEMANTIC_INDEX_CODEC_V3,
     semantic_universe_sha256_v3,
 )
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactBindingV3,
-    ArtifactInputReaderV3,
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
     RecordDependencyV3,
     canonical_json_bytes_v3,
     canonical_sha256_v3,
+)
+from ..artifacts.io import (
+    ArtifactInputReaderV3,
+    ArtifactSetReaderV3,
     open_artifact_reader_v3,
 )
 from ..machine_ir.coverage import (

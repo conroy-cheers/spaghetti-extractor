@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -12,10 +13,11 @@
 
 let
   semanticRequirementsPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = isaPythonSource;
     modules = [
-      "spaghetti_extractor.machine_ir_isa_requirements_v2"
+      "spaghetti_extractor.authority_inputs.isa_requirements"
     ];
     extraPaths = [ "spaghetti_extractor/lean/StageA" ];
     name = "${name}-semantic-requirements-python-closure";
@@ -39,7 +41,7 @@ let
     import pathlib
     import sys
 
-    from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+    from spaghetti_extractor.authority_inputs.isa_requirements import (
         build_machine_ir_isa_semantic_requirements_v2,
     )
 
@@ -61,6 +63,7 @@ let
     ' "$out/semantic-requirements.json" >/dev/null
   '';
   mkPhase = args: import ./ca-python-json-phase.nix ({
+    phaseRole = "authority";
     inherit pkgs pythonEnv;
     pythonSource = isaPythonSource;
     name = "${name}-${args.derivationSuffix}";
@@ -83,14 +86,14 @@ let
     expectedFormat = "stage-a-side-isa-executable-catalog-proposal-v1";
     allowedStatuses = [ "incomplete_missing_effect_enrichment" ];
     pythonModules = [
-      "spaghetti_extractor.machine_ir_isa_catalog_v2"
+      "spaghetti_extractor.authority_inputs.isa_catalog"
     ];
     pythonExtraPaths = [ "spaghetti_extractor/lean/StageA" ];
     inputs = {
       requirements = "${semanticRequirements}/semantic-requirements.json";
     };
     program = ''
-      from spaghetti_extractor.machine_ir_isa_catalog_v2 import (
+      from spaghetti_extractor.authority_inputs.isa_catalog import (
           build_machine_ir_isa_catalog_proposal_v2,
       )
 
@@ -134,6 +137,7 @@ let
     '';
   };
   corpusPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.isa.cli" ];
@@ -190,14 +194,14 @@ let
     expectedFormat = "stage-a-binary-isa-kernel-selection-authority-v1";
     allowedStatuses = [ "qualified" "incomplete" "violated" ];
     pythonModules = [
-      "spaghetti_extractor.machine_ir_isa_selection_v2"
+      "spaghetti_extractor.authority_inputs.isa_selection"
     ];
     inputs = {
       inherit requirements;
       qualification = "${qualificationGraph.qualification}/qualification.json";
     };
     program = ''
-      from spaghetti_extractor.machine_ir_isa_selection_v2 import (
+      from spaghetti_extractor.authority_inputs.isa_selection import (
           build_machine_ir_isa_selection_authority_v2,
       )
 

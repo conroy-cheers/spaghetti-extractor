@@ -25,18 +25,18 @@ from ..authority.inductive_records import (
     InvariantBudgetsV3,
 )
 from ..authority.root_closure import LAUNCH_ROOT_EVIDENCE_CODEC_V3
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
     canonical_json_bytes_v3,
     canonical_sha256_v3,
 )
+from ..artifacts.io import ArtifactSetReaderV3
+from ..artifacts.formats import TARGET_HINTS_ARTIFACT_KIND as TARGET_HINTS_ARTIFACT_KIND_V3
 
 
 STANDARD_EVIDENCE_FORMAT_V3 = "spaghetti-extractor-standard-evidence-v3"
-TARGET_HINTS_ARTIFACT_KIND_V3 = "target-hints-v3"
 INDUCTIVE_INPUTS_ARTIFACT_KIND_V3 = "inductive-inputs-v3"
 
 

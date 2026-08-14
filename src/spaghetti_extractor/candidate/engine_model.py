@@ -15,12 +15,17 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
+    CALLBACK_ADAPTER_RECEIPT_FORMAT as _CALLBACK_ADAPTER_RECEIPT_FORMAT,
+    IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT as _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT,
     INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
+    MACHINE_IR_FORMAT as _MACHINE_IR_FORMAT,
     NATIVE_ENGINE_PACKAGE_FORMAT,
     NATIVE_ENGINE_PLAN_FORMAT,
+    NATIVE_X87_REPLAY_FORMAT as _X87_REPLAY_FORMAT,
+    NATIVE_X87_REPLAY_PROGRAM_FORMAT as _X87_REPLAY_PROGRAM_FORMAT,
 )
-from ..callback_contracts import (
+from ..external.callbacks import (
     CallbackABI,
     CallbackSource,
     parse_callback_abi,
@@ -38,7 +43,7 @@ from ..external.machine_import_profiles import (
     MachineImportIdentity,
     load_machine_import_profile_set,
 )
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from .engine_layout import (
     render_stage_b_engine_layout_c,
 )
@@ -56,14 +61,13 @@ from .modes import (
     STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
     require_candidate_mode,
 )
-from ..recovered_executable_data import (
+from ..pe32.recovered_executable_data import (
     RecoveredExecutableDataRange,
     load_recovered_executable_data_contract,
 )
 from ..util import sha256_bytes, sha256_file, write_json
 
 
-_MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
 _STRICT_INPUT_MODE = "strict_exact_state_machine_v1"
 _MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v2"
 _CALL_KINDS = frozenset({"external_call", "indirect_call"})
@@ -73,8 +77,6 @@ _SEMANTIC_RUNTIME_EVENT_KINDS = frozenset(
 _HEX_BYTES = re.compile(r"(?:[0-9a-fA-F]{2})+")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _X87_REPLAY_MODEL = "native_exact_x87_command_replay_obligation_v1"
-_X87_REPLAY_FORMAT = "stage-a-native-exact-x87-command-replay-obligation-v1"
-_X87_REPLAY_PROGRAM_FORMAT = "stage-b-native-exact-x87-command-replay-program-v1"
 _X87_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
 _X87_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
 PE32_BASE_RELOCATION_EVIDENCE_FORMAT = "stage-b-pe32-base-relocation-evidence-v1"
@@ -87,12 +89,6 @@ _MACHINE_STATE_SIZE = 252
 _MACHINE_REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 _MACHINE_FLAGS = ("cf", "zf", "sf", "of", "pf", "df")
 _PE32_CALLEE_PRESERVED_REGISTERS = frozenset({"ebx", "esi", "edi", "ebp"})
-_CALLBACK_ADAPTER_RECEIPT_FORMAT = (
-    "stage-b-native-callback-adapter-receipt-v1"
-)
-_IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
-    "stage-b-native-implementation-dispatch-receipt-v3"
-)
 _RAW_INSTRUCTION_FIELDS = frozenset({
     "bytes", "instruction_bytes", "opcode_bytes", "raw_bytes",
     "encoded_instruction",

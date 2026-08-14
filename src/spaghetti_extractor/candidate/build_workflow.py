@@ -6,14 +6,16 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     INTERPRETER_NATIVE_BUILD_FORMAT,
     NATIVE_ENGINE_PACKAGE_FORMAT,
     NATIVE_RUNTIME_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,
 )
-from ..recovered_executable_data import load_recovered_executable_data_contract
-from ..roundtrip_fuzz.image_contract import load_stage_a_load_image_contract
+from ..pe32.recovered_executable_data import load_recovered_executable_data_contract
+from ..roundtrip_fuzz.image_io import (
+    load_stage_a_load_image_contract,
+)
 from ..util import sha256_file
 from . import native_build
 from .authority import CandidateAuthorityV3Receipt

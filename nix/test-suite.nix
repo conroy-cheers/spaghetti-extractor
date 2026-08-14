@@ -3,7 +3,7 @@
   pythonEnv,
   repositoryRoot ? ../.,
   mode ? "full",
-  manifest ? ./test-suite-manifest.json,
+  manifest ? ./generated/test-suite-manifest.json,
   planPayload ? null,
   # This is the reviewed post-legacy-cleanup inventory baseline. Lower it only
   # when a change deliberately removes or consolidates tests.

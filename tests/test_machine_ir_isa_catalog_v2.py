@@ -19,11 +19,11 @@ from spaghetti_extractor.isa.corpus_generator import (
     generate_boundary_isa_corpus,
     generated_corpus_executor_input,
 )
-from spaghetti_extractor.machine_ir_isa_catalog_v2 import (
+from spaghetti_extractor.authority_inputs.isa_catalog import (
     MachineIRISACatalogV2Error,
     build_machine_ir_isa_catalog_proposal_v2,
 )
-from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+from spaghetti_extractor.authority_inputs.isa_requirements import (
     build_machine_ir_isa_extraction_request_v2,
     build_machine_ir_isa_requirements_v2,
 )
@@ -74,7 +74,7 @@ def _requirements() -> dict[str, Any]:
 
 
 def _rehash(payload: dict[str, Any]) -> None:
-    from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+    from spaghetti_extractor.authority_inputs.isa_requirements import (
         _canonical_sha256,
     )
 

@@ -16,8 +16,8 @@ from .semantic_forms import (
     LEAN_SEMANTIC_FORM_CLASSIFIER_MODULES,
     lean_semantic_form_classifier_sha256,
 )
-from ..lean_runner import run_lean_module_graph
-from ..stage_binary import StageAInputError
+from ..build_support.lean_runner import run_lean_module_graph
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes
 
 _LEAN_METADATA_SUPPORT = r"""

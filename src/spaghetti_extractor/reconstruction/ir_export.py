@@ -6,8 +6,8 @@ import copy
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from ..machine_ir_authority_v2 import build_machine_ir_authority_bindings
-from ..recovered_executable_data import (
+from ..authority_inputs.machine_ir_authority import build_machine_ir_authority_bindings
+from ..pe32.recovered_executable_data import (
     RECOVERED_EXECUTABLE_DATA_FILENAME,
     RECOVERED_EXECUTABLE_DATA_FORMAT,
     build_recovered_executable_data_contract,
@@ -16,7 +16,7 @@ from ..candidate.state_machine import (
     STAGE_A_REFERENCE_CONTRACT_FORMAT,
     load_stage_a_reference_contract_binding,
 )
-from ..stage_binary import _parse_stage_a_pe
+from ..pe32.stage_binary import _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 from .ir_evidence import (
     _binary_inventory,

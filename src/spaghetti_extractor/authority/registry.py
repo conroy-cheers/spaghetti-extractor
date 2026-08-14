@@ -6,7 +6,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
-from ..phase_framework_v3 import PhaseDefinitionV3
+from ..artifacts.phases import PhaseDefinitionV3
 from ._schema import fail
 from .callbacks import CALLBACK_AUTHORITY_PHASE_V3
 from .exact_units import EXACT_UNITS_PHASE_V3

@@ -20,7 +20,7 @@ import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 import pefile
 
-from ..stage_binary import (
+from ..pe32.stage_binary import (
     BlockSide,
     StageABinary,
     StageAImport,

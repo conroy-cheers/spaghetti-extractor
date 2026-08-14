@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from ..artifact_formats import STAGE_B_INTERPRETER_PROGRAM_FORMAT
+from ..artifacts.formats import STAGE_B_INTERPRETER_PROGRAM_FORMAT
 from ..util import sha256_bytes
 from .interpreter_model import (
     STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS,

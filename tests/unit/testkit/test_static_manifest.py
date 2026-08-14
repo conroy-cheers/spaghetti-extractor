@@ -84,8 +84,8 @@ class StaticTestManifestTests(unittest.TestCase):
     def test_dependency_change_is_detected_as_stale(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _repository(Path(temporary))
-            manifest_path = root / "nix/test-suite-manifest.json"
-            manifest_path.parent.mkdir()
+            manifest_path = root / "nix/generated/test-suite-manifest.json"
+            manifest_path.parent.mkdir(parents=True)
             manifest_path.write_text(
                 canonical_json(build_static_test_manifest(root)),
                 encoding="utf-8",
@@ -116,8 +116,8 @@ class StaticTestManifestTests(unittest.TestCase):
             self.assertEqual(
                 {path.relative_to(root).as_posix() for path in changed},
                 {
-                    "nix/python-module-index.json",
-                    "nix/test-suite-manifest.json",
+                    "nix/generated/python-module-index.json",
+                    "nix/generated/test-suite-manifest.json",
                 },
             )
             self.assertEqual(unchanged, ())
@@ -125,9 +125,9 @@ class StaticTestManifestTests(unittest.TestCase):
     def test_repository_check_reports_all_stale_metadata_with_one_remediation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _metadata_repository(Path(temporary))
-            (root / "nix").mkdir()
-            (root / "nix/python-module-index.json").write_text("{}\n", encoding="ascii")
-            (root / "nix/test-suite-manifest.json").write_text("{}\n", encoding="ascii")
+            (root / "nix/generated").mkdir(parents=True)
+            (root / "nix/generated/python-module-index.json").write_text("{}\n", encoding="ascii")
+            (root / "nix/generated/test-suite-manifest.json").write_text("{}\n", encoding="ascii")
 
             with self.assertRaises(TestkitError) as raised:
                 check_repository_metadata(root)
@@ -135,16 +135,16 @@ class StaticTestManifestTests(unittest.TestCase):
         self.assertEqual(len(raised.exception.diagnostics), 1)
         rendered = str(raised.exception)
         self.assertIn("stale_repository_metadata", rendered)
-        self.assertIn("nix/python-module-index.json", rendered)
-        self.assertIn("nix/test-suite-manifest.json", rendered)
+        self.assertIn("nix/generated/python-module-index.json", rendered)
+        self.assertIn("nix/generated/test-suite-manifest.json", rendered)
         self.assertEqual(rendered.count("nix run .#dev -- refresh"), 1)
 
     def test_repository_refresh_rolls_back_if_publication_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _metadata_repository(Path(temporary))
-            (root / "nix").mkdir()
-            python_index = root / "nix/python-module-index.json"
-            test_manifest = root / "nix/test-suite-manifest.json"
+            (root / "nix/generated").mkdir(parents=True)
+            python_index = root / "nix/generated/python-module-index.json"
+            test_manifest = root / "nix/generated/test-suite-manifest.json"
             python_index.write_text("old python index\n", encoding="ascii")
             test_manifest.write_text("old test manifest\n", encoding="ascii")
             original_replace = os.replace

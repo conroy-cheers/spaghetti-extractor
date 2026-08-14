@@ -12,14 +12,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, TypeAlias
 
+from ..artifacts.formats import (
+    CALLER_MEMORY_FRAME_MODEL as INTERFACE_CALLER_MEMORY_FRAME_MODEL,
+    SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL,
+)
 from .machine_abi import MachineCallABI, resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file
 
 
 EXTERNAL_INTERFACE_PROFILE_FORMAT = "stage-a-external-interface-profile-v1"
-SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL = "same-library-call-through-v1"
 _SAME_NATIVE_TARGET_EFFECT = "sameNativeTargetCallThrough"
 _SDK_EXTRACTION_PROVENANCE_KIND = (
     "pinned_clang_ast_from_reviewed_sdk_headers"
@@ -32,9 +35,6 @@ _SAME_LIBRARY_CALL_THROUGH_PREREQUISITES = (
     "candidate_invokes_native_target_exactly_once",
 )
 _CALLBACK_PREREQUISITE = "candidate_preserves_native_callback_boundary"
-INTERFACE_CALLER_MEMORY_FRAME_MODEL = (
-    "pe32-declared-pointer-arguments-v1"
-)
 RECEIVER_RESOURCE_REQUIRED_STATE = "live"
 ReceiverLifecycleEffect: TypeAlias = Literal[
     "preserve", "may_release", "release"

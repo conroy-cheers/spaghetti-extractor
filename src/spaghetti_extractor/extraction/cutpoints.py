@@ -11,7 +11,7 @@ from typing import Any
 
 import capstone
 
-from ..stage_binary import StageABinary, StageAInputError
+from ..pe32.stage_binary import StageABinary, StageAInputError
 from .x87_profile import instruction_is_x87
 
 

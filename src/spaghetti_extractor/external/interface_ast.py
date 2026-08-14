@@ -17,7 +17,7 @@ from .interface_profiles import (
 )
 from .machine_abi import resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file, write_json
 
 

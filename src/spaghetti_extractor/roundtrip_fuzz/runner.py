@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..extraction.binary_inventory import parse_binary_cutpoint_inventory
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file, write_json
 from .model import CaseManifest, ExpectedDisposition, load_corpus_manifest
 from .semantic import SemanticProgram

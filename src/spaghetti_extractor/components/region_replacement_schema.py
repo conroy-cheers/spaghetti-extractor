@@ -6,7 +6,7 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from .region_replacement_model import (
     REGION_OBSERVATIONS_FORMAT,
     REGION_REPLACEMENT_BUNDLE_FORMAT,

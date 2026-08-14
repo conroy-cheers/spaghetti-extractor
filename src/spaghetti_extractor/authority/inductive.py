@@ -6,13 +6,13 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     CanonicalValueV3,
     canonical_json_bytes_v3,
 )
-from ..phase_framework_v3 import PhaseContextV3, SccWorkItemV3, map_sccs
+from ..artifacts.io import ArtifactSetReaderV3
+from ..artifacts.phases import PhaseContextV3, SccWorkItemV3, map_sccs
 from ._schema import fail, sorted_records, stable_id, text
 from .inductive_records import (
     INDUCTIVE_AUTHORITY_ARTIFACT_KIND_V3,

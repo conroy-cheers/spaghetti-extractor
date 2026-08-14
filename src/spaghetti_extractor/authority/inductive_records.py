@@ -11,8 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, TypeAlias
 
-from ..artifact_set_v3 import CanonicalValueV3, canonical_json_bytes_v3
-from ..phase_framework_v3 import RecordCodecV3
+from ..artifacts.artifact_set import (
+    CanonicalValueV3,
+    canonical_json_bytes_v3,
+)
+from ..artifacts.phases import RecordCodecV3
 from ._schema import (
     boolean,
     canonical_strings,

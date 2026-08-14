@@ -10,7 +10,7 @@ from spaghetti_extractor.roundtrip_fuzz.semantic import (
     SemanticBlock,
     SemanticProgram,
 )
-from spaghetti_extractor.stage_binary import StageAInputError
+from spaghetti_extractor.pe32.stage_binary import StageAInputError
 
 
 def _program(*, with_nop: bool) -> SemanticProgram:

@@ -9,8 +9,8 @@ from typing import Any, Mapping, Sequence
 
 from ..reference_contract.common import BlockMapping
 from ..reference_contract.reference_semantics import _semantic_transfer_contract
-from ..artifact_formats import MACHINE_IR_FORMAT
-from ..recursive_decode import (
+from ..artifacts.formats import MACHINE_IR_FORMAT
+from ..pe32.recursive_decode import (
     ROOTED_INSTRUCTION_VIEW_FORMAT,
     discover_rooted_instruction_views,
 )
@@ -22,7 +22,7 @@ from ..candidate.state_machine import (
     semantic_direct_targets,
     write_stage_b_state_machine,
 )
-from ..stage_binary import BlockSide, StageAInputError, _parse_stage_a_pe
+from ..pe32.stage_binary import BlockSide, StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 
 

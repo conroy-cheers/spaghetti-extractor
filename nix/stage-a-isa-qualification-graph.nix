@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   name,
@@ -23,6 +24,7 @@ let
       null
     else
       import ./python-module-closure.nix {
+    phaseRole = "authority";
         inherit pkgs;
         source = pythonSource;
         modules = [ "spaghetti_extractor.isa.conformance_shards" ];
@@ -30,12 +32,14 @@ let
         name = "${name}-shard-python-closure";
       };
   qualificationPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.isa.qualification_worker" ];
     name = "${name}-qualification-python-closure";
   };
   isaCliPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit pkgs;
     source = pythonSource;
     modules = [ "spaghetti_extractor.isa.cli" ];

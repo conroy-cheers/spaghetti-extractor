@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, NoReturn
 
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactRecordV3,
     ArtifactV3Error,
     CanonicalValueV3,

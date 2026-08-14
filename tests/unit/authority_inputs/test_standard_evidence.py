@@ -16,12 +16,12 @@ from spaghetti_extractor.authority.root_closure import (
     LaunchRootEvidenceV3,
     launch_root_id_v3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
     CanonicalValueV3,
 )
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 from spaghetti_extractor.authority_inputs.standard_evidence import (
     StandardEvidenceV3Error,
     emit_standard_evidence_v3,

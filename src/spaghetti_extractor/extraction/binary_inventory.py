@@ -13,7 +13,7 @@ from ..reference_contract.map_analysis import (
     _section_gap_code_blocks,
     _section_gaps,
 )
-from ..stage_binary import (
+from ..pe32.stage_binary import (
     BlockSide,
     StageAInputError,
     _parse_linker_map_functions,

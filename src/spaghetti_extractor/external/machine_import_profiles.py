@@ -7,7 +7,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..stage_binary import StageAInputError
+from ..artifacts.formats import (
+    CALLER_MEMORY_FRAME_MODEL as _CALLER_MEMORY_FRAME_MODEL,
+    SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL as SAME_LIBRARY_CALLTHROUGH_EFFECT_MODEL,
+)
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file
 
 
@@ -17,7 +21,6 @@ MACHINE_IMPORT_PROFILE_FORMATS = frozenset({
     "stage-a-static-machine-import-profile-v1",
 })
 NATIVE_DLL_CALLTHROUGH_EFFECT_MODEL = "exact_native_dll_callthrough_v1"
-SAME_LIBRARY_CALLTHROUGH_EFFECT_MODEL = "same-library-call-through-v1"
 NATIVE_DLL_CALLTHROUGH_PREREQUISITES = frozenset({
     "same_pinned_dll_implementation",
     "exact_machine_arguments",
@@ -30,7 +33,6 @@ SAME_LIBRARY_CALLTHROUGH_PREREQUISITES = (
     "candidate_forwards_same_machine_argument_words",
     "candidate_invokes_native_target_exactly_once",
 )
-_CALLER_MEMORY_FRAME_MODEL = "pe32-declared-pointer-arguments-v1"
 _CALLER_MEMORY_FRAME_ASSUMPTIONS = [
     "caller memory is accessed only through declared pointer arguments",
     "non-callback pointer arguments are retained only during the call",

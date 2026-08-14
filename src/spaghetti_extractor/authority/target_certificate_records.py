@@ -6,13 +6,13 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactRecordV3,
     CanonicalValueV3,
     RecordDependencyV3,
     canonical_sha256_v3,
 )
-from ..phase_framework_v3 import RecordCodecV3
+from ..artifacts.phases import RecordCodecV3
 from ._schema import (
     boolean,
     canonical_json_rows,

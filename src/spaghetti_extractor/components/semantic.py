@@ -18,12 +18,13 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
+    MACHINE_IR_FORMAT,
     RECONSTRUCTION_PLAN_FORMAT,
     SEMANTIC_COMPONENT_CATALOG_FORMAT,
     SEMANTIC_COMPONENT_DECLARATIONS_FORMAT,
 )
-from ..linked_library_contracts import (
+from ..libraries.contracts import (
     LinkedLibraryContractError,
     validate_linked_island_manifest,
 )
@@ -36,7 +37,6 @@ from .semantic_model import (
 )
 
 
-MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
 MACHINE_IR_FILENAME = "machine-ir.jsonl"
 MACHINE_IR_MANIFEST_FILENAME = "machine-ir-manifest.json"
 

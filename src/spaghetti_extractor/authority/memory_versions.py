@@ -4,17 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from ..address_expressions import (
+from ..authority_inputs.address_expressions import (
     affine_register_offset,
     affine_special_offset,
     constant_u32,
 )
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     ArtifactRecordV3,
-    ArtifactSetReaderV3,
     canonical_sha256_v3,
 )
-from ..phase_framework_v3 import PhaseContextV3, SccWorkItemV3, map_sccs
+from ..artifacts.io import ArtifactSetReaderV3
+from ..artifacts.phases import PhaseContextV3, SccWorkItemV3, map_sccs
 from ._schema import fail, sorted_records
 from .memory_records import (
     MEMORY_VERSION_CODEC_V3,
@@ -358,7 +358,7 @@ def _version_nodes(
 
 
 def _stable_node_id(prefix: str, payload: object) -> str:
-    from ..artifact_set_v3 import canonical_sha256_v3
+    from ..artifacts.artifact_set import canonical_sha256_v3
 
     return f"{prefix}:{canonical_sha256_v3(payload)[:24]}"
 

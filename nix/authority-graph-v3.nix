@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -8,7 +9,7 @@
   externalArtifacts,
   bindings,
   phasePythonSources ? { },
-  moduleIndexFile ? ./python-module-index.json,
+  moduleIndexFile ? ./generated/python-module-index.json,
   repositoryRoot ? ../.,
   structuralSchedule ? null,
   dependencySchedule ? null,
@@ -36,16 +37,21 @@ let
     );
   graphId = graph.graph_id or "";
   artifactSetPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit
       pkgs
       moduleIndexFile
       repositoryRoot
       ;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.artifact_set_v3" ];
+    modules = [
+      "spaghetti_extractor.artifacts.artifact_set"
+      "spaghetti_extractor.artifacts.io"
+    ];
     name = "authority-graph-v3-artifact-set-python-closure";
   };
   planningPythonSource = import ./python-module-closure.nix {
+    phaseRole = "authority";
     inherit
       pkgs
       moduleIndexFile
@@ -662,6 +668,7 @@ let
       phaseModule spec == "spaghetti_extractor" || lib.hasPrefix "spaghetti_extractor." (phaseModule spec)
     then
       import ./python-module-closure.nix {
+    phaseRole = "authority";
         inherit
           pkgs
           moduleIndexFile

@@ -207,8 +207,8 @@ def plan_phase_scaffold(*, phase_kind: str, name: str) -> ScaffoldPlan:
     source = (
         f'"""{phase_kind} authority phase over typed v3 artifacts."""\n\n'
         "from __future__ import annotations\n\n"
-        "from spaghetti_extractor.artifact_set_v3 import ArtifactRecordV3\n"
-        "from spaghetti_extractor.phase_framework_v3 import (\n"
+        "from spaghetti_extractor.artifacts.artifact_set import ArtifactRecordV3\n"
+        "from spaghetti_extractor.artifacts.phases import (\n"
         "    PhaseContextV3,\n"
         "    SccWorkItemV3,\n"
         f"    {constructor},\n"

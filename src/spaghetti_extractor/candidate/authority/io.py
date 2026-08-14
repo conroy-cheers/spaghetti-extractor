@@ -7,7 +7,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ...artifact_set_v3 import ArtifactV3Error, parse_canonical_json_v3
+from ...artifacts.artifact_set import (
+    ArtifactV3Error,
+    parse_canonical_json_v3,
+)
 from .model import (
     AUTHORITY,
     CHECK_NAMES,

@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..artifact_formats import INTERPRETER_NATIVE_BUILD_FORMAT
+from ..artifacts.formats import INTERPRETER_NATIVE_BUILD_FORMAT
 from . import native_build
 
 

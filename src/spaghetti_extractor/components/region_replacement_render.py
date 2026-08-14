@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from .region_replacement_model import (
     RegionReplacementManifest,
     _json_copy,

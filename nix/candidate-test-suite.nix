@@ -112,7 +112,7 @@ assert lib.assertMsg (builtins.length caseIds == builtins.length (lib.unique cas
   "candidate test case ids must be unique";
 {
   _type = "spaghetti-extractor-candidate-test-suite-v1";
-  inherit id suiteId configurationId caseIds aggregate runner;
+  inherit id suiteId configurationId caseIds aggregate runner suite;
   cases = suiteResult.byName;
   functionalAggregate = suiteResult.aggregate;
 }

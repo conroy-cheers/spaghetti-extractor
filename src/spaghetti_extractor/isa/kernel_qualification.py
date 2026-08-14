@@ -35,11 +35,8 @@ from .conformance import (
 )
 ISA_ORACLE_OBSERVATION_FORMAT = "stage-a-isa-oracle-observation-v1"
 ISA_ORACLE_CONSENSUS_FORMAT = "stage-a-isa-oracle-consensus-v1"
-ISA_FORM_QUALIFICATION_FORMAT_V1 = "stage-a-isa-form-qualification-v1"
 ISA_FORM_QUALIFICATION_FORMAT = "stage-a-isa-form-qualification-v2"
-ISA_KERNEL_QUALIFICATION_FORMAT_V1 = "stage-a-isa-kernel-qualification-v1"
 ISA_KERNEL_QUALIFICATION_FORMAT = "stage-a-isa-kernel-qualification-v2"
-ISA_KERNEL_SELECTION_FORMAT_V1 = "stage-a-isa-kernel-selection-v1"
 ISA_KERNEL_SELECTION_FORMAT = "stage-a-isa-kernel-selection-v2"
 ISA_KERNEL_SELECTION_REQUIREMENTS_FORMAT = (
     "stage-a-isa-kernel-selection-requirements-v1"
@@ -1352,18 +1349,6 @@ from .kernel_qualification_reports import (
 
 
 # Explicit artifact-qualified aliases for callers outside this module.
-parse_isa_oracle_observation = parse_oracle_observation
-serialize_isa_oracle_observation = serialize_oracle_observation
-parse_isa_oracle_consensus = parse_oracle_consensus
-serialize_isa_oracle_consensus = serialize_oracle_consensus
-parse_isa_form_qualification = parse_form_qualification
-serialize_isa_form_qualification = serialize_form_qualification
-parse_isa_kernel_qualification = parse_kernel_qualification
-serialize_isa_kernel_qualification = serialize_kernel_qualification
-parse_isa_kernel_selection = parse_kernel_selection
-serialize_isa_kernel_selection = serialize_kernel_selection
-
-
 __all__ = [
     "BackendBinding",
     "BackendRole",
@@ -1373,12 +1358,9 @@ __all__ = [
     "EvidenceTrust",
     "GeneratorBinding",
     "ISA_FORM_QUALIFICATION_FORMAT",
-    "ISA_FORM_QUALIFICATION_FORMAT_V1",
     "ISA_KERNEL_QUALIFICATION_FORMAT",
-    "ISA_KERNEL_QUALIFICATION_FORMAT_V1",
     "ISA_KERNEL_QUALIFICATION_TRUST_ROLE",
     "ISA_KERNEL_SELECTION_FORMAT",
-    "ISA_KERNEL_SELECTION_FORMAT_V1",
     "ISA_KERNEL_SELECTION_REQUIREMENTS_FORMAT",
     "ISA_ORACLE_CONSENSUS_FORMAT",
     "ISA_ORACLE_OBSERVATION_FORMAT",
@@ -1411,11 +1393,6 @@ __all__ = [
     "observations_from_conformance_report",
     "parse_form_qualification",
     "parse_binary_qualification_requirements",
-    "parse_isa_form_qualification",
-    "parse_isa_kernel_qualification",
-    "parse_isa_kernel_selection",
-    "parse_isa_oracle_consensus",
-    "parse_isa_oracle_observation",
     "parse_kernel_qualification",
     "parse_kernel_selection",
     "parse_oracle_consensus",
@@ -1424,11 +1401,6 @@ __all__ = [
     "select_isa_kernel_qualification_from_requirements",
     "serialize_binary_qualification_requirements",
     "serialize_form_qualification",
-    "serialize_isa_form_qualification",
-    "serialize_isa_kernel_qualification",
-    "serialize_isa_kernel_selection",
-    "serialize_isa_oracle_consensus",
-    "serialize_isa_oracle_observation",
     "serialize_kernel_qualification",
     "serialize_kernel_selection",
     "serialize_oracle_consensus",

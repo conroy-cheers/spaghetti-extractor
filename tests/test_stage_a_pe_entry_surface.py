@@ -7,7 +7,7 @@ from pathlib import Path
 
 from tests.pe_fixtures import pe32_image
 
-from spaghetti_extractor.stage_binary import (
+from spaghetti_extractor.pe32.stage_binary import (
     IMAGE_FILE_DLL,
     StageAExport,
     _parse_stage_a_pe,

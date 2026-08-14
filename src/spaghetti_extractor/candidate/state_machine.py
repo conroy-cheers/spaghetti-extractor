@@ -9,13 +9,13 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import pefile
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     SEMANTIC_IR_FORMAT,
     SEMANTIC_TRANSFER_CONTRACT_FORMAT,
 )
-from ..callback_contracts import parse_callback_abi, parse_callback_source
+from ..external.callbacks import parse_callback_abi, parse_callback_source
 from ..external.machine_import_profiles import load_machine_import_profile_set
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes, sha256_file
 
 
@@ -454,7 +454,6 @@ def _machine_import_contracts(
             callback = parse_callback_abi(contract, context=context)
             contract["callback_source"] = source.as_json()
             contract["callback_abi"] = callback.as_json()
-            contract.pop("world_effect_argument", None)
             callback_lifetime = contract.get("callback_lifetime")
             if not isinstance(callback_lifetime, (str, dict)) or not callback_lifetime:
                 raise StageAInputError(

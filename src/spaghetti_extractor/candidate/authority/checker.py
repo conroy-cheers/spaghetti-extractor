@@ -19,13 +19,13 @@ from ...authority.final_authority import (
     FINAL_AUTHORITY_CODEC_V3,
     FinalAuthorityRecordV3,
 )
-from ...artifact_formats import MACHINE_IR_FORMAT
-from ...artifact_set_v3 import (
-    ArtifactSetReaderV3,
+from ...artifacts.formats import MACHINE_IR_FORMAT
+from ...artifacts.artifact_set import (
     ArtifactV3Error,
     canonical_sha256_v3,
     parse_canonical_json_v3,
 )
+from ...artifacts.io import ArtifactSetReaderV3
 from ...components.formats import (
     COMPONENT_RUNTIME_COMPLETION_V3_FORMAT,
     COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,

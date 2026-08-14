@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: developer
 { pkgs
 , pythonEnv
 , source
@@ -9,12 +10,14 @@
 let
   python = "${pythonEnv}/bin/python3";
   generatorPythonSource = import ./python-module-closure.nix {
+    phaseRole = "developer";
     inherit pkgs;
     source = source;
     modules = [ "spaghetti_extractor.roundtrip_fuzz.generator" ];
     name = "${name}-generator-python-closure";
   };
   runnerPythonSource = import ./python-module-closure.nix {
+    phaseRole = "developer";
     inherit pkgs;
     source = source;
     modules = [ "spaghetti_extractor.roundtrip_fuzz.runner" ];

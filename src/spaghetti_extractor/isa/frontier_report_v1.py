@@ -10,8 +10,8 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..artifact_set_v3 import canonical_json_bytes_v3
-from ..machine_ir_isa_requirements_v2 import (
+from ..artifacts.artifact_set import canonical_json_bytes_v3
+from ..authority_inputs.isa_requirements import (
     parse_machine_ir_isa_requirements_v2,
 )
 from .kernel_selection import ISA_KERNEL_SELECTION_AUTHORITY_FORMAT

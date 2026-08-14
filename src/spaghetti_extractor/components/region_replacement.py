@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_file, write_json
 from .region_replacement_model import (
     REGION_OBSERVATIONS_FORMAT,

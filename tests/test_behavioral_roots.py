@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.behavioral_roots import (
+from spaghetti_extractor.pe32.behavioral_roots import (
     BEHAVIORAL_ROOTS_FORMAT,
     BehavioralRootsError,
     behavioral_roots_sha256,

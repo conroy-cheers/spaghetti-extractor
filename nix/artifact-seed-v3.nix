@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: authority
 {
   pkgs,
   pythonEnv,
@@ -60,7 +61,7 @@ pkgs.runCommand name (
   import pathlib
   import sys
 
-  from spaghetti_extractor.artifact_set_v3 import (
+  from spaghetti_extractor.artifacts.artifact_set import (
       ArtifactBindingV3,
       ArtifactRecordV3,
       ArtifactSetWriterV3,

@@ -16,11 +16,11 @@ from spaghetti_extractor.authority.semantic_index import (
     SEMANTIC_INDEX_CODEC_V3,
     derive_semantic_index_v3,
 )
-from spaghetti_extractor.artifact_set_v3 import (
+from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
-    ArtifactSetReaderV3,
     ArtifactSetWriterV3,
 )
+from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 from spaghetti_extractor.authority_inputs.exception_evidence import (
     emit_exception_evidence_v3,
 )

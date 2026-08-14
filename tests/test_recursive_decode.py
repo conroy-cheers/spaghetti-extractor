@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from dataclasses import dataclass
 
-from spaghetti_extractor.recursive_decode import (
+from spaghetti_extractor.pe32.recursive_decode import (
     ROOTED_INSTRUCTION_VIEW_FORMAT,
     discover_rooted_instruction_views,
 )

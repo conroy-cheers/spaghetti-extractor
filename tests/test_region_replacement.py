@@ -18,7 +18,7 @@ from spaghetti_extractor.components.region_replacement import (
     validate_region_replacement,
     write_region_replacement_manifest,
 )
-from spaghetti_extractor.stage_binary import StageAInputError
+from spaghetti_extractor.pe32.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_file
 
 

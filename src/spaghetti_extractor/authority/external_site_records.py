@@ -6,12 +6,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from ..artifact_set_v3 import (
+from ..artifacts.artifact_set import (
     CanonicalValueV3,
     RecordDependencyV3,
     canonical_sha256_v3,
 )
-from ..phase_framework_v3 import RecordCodecV3
+from ..artifacts.phases import RecordCodecV3
 from ._schema import (
     canonical_strings,
     digest,

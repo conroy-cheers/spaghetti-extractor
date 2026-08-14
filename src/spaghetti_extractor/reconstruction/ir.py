@@ -38,8 +38,8 @@ from .ir_recovery import (
     _newly_eligible_callback_roots,
     _recovery_failure_message,
 )
-from ..recovered_executable_data import RECOVERED_EXECUTABLE_DATA_FILENAME
-from ..static_indirect_replay_v2 import (
+from ..pe32.recovered_executable_data import RECOVERED_EXECUTABLE_DATA_FILENAME
+from ..authority_inputs.static_indirect_replay import (
     bounded_predecessor_instruction_history as _bounded_predecessor_instruction_history,
 )
 

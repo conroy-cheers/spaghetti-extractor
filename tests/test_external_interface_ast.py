@@ -17,7 +17,7 @@ from spaghetti_extractor.external.interface_profiles import (
 from spaghetti_extractor.external.machine_import_profiles import (
     load_machine_import_profile_set,
 )
-from spaghetti_extractor.stage_binary import StageAInputError
+from spaghetti_extractor.pe32.stage_binary import StageAInputError
 from spaghetti_extractor.util import sha256_file
 
 

@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Mapping
 
-from ..artifact_formats import (
+from ..artifacts.formats import (
     MACHINE_IR_FORMAT,
 )
 from .formats import (

@@ -19,7 +19,7 @@ from .catalog_enrichment import (
     _string,
     _uint,
 )
-from ..stage_binary import StageAInputError
+from ..pe32.stage_binary import StageAInputError
 
 def _signed32(value: int) -> int:
     value &= 0xFFFFFFFF

@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Mapping
 
-from ..artifact_formats import COMPONENT_PROPOSAL_SET_FORMAT
+from ..artifacts.formats import COMPONENT_PROPOSAL_SET_FORMAT
 from ..util import write_json
 from .formats import (
     COMPONENT_CONFIGURATION_RESOLUTION_V2_FORMAT,
