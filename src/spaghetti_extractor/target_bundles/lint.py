@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping
 
 from ..util import write_json
+from .metadata import TargetMetadata, TargetMetadataError
 
 
 TARGET_BUNDLE_LINT_FORMAT = "spaghetti-extractor-target-bundle-lint-v1"
@@ -85,6 +86,12 @@ def lint_target_bundle(
         raise TargetBundleLintError("target id must be nonempty")
     if not root.is_dir():
         raise TargetBundleLintError("target root is not a directory")
+    try:
+        metadata = TargetMetadata.load(root / "target.json")
+    except TargetMetadataError as exc:
+        raise TargetBundleLintError(str(exc)) from exc
+    if metadata.identity != target_id:
+        raise TargetBundleLintError("target metadata ID does not match the bundle")
     assets = tuple(
         TargetAsset.parse(value, index=index)
         for index, value in enumerate(declared_assets)

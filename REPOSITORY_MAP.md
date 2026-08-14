@@ -418,7 +418,8 @@ determines invalidation.
 `nix/target-sdk.nix` returns format `spaghetti-extractor-target-sdk-v3` and
 owns the generic consumer boundary: `workflow.pe32`, lower-level `analysis`,
 `candidate`, `lifting`, and `validation` constructors, pinned `profiles`,
-`sources`, `kernels`, `tools`, `fixtures`, and `target.bundle`/`target.registry`.
+`sources`, `kernels`, `tools`, `fixtures`, and
+`target.pe32Bundle`/`target.registry`.
 An external flake obtains it through `flake.lib.mkTargetSdk`; the independent
 in-tree corpus imports this same entrypoint. Individual
 `targets/<id>/default.nix` modules accept only `{ pkgs, sdk }` and may not
@@ -581,7 +582,7 @@ classes, and cache boundaries.
 
 1. Add `targets/<id>/target.json` and authored intent/source/tests.
 2. Add a small `targets/<id>/default.nix` accepting `{ pkgs, sdk }`, and return
-   `sdk.target.bundle { ... }`.
+   `sdk.target.pe32Bundle { ... }`.
 3. Register the directory in `targets/registry.nix`; structured artifacts and
    aggregate checks are exported automatically.
 4. Do not edit the root flake or add target Python, Lean, or private-constructor

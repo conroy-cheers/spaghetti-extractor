@@ -59,6 +59,7 @@
 
       devShells.default = pkgs.mkShell {
         packages = [
+          context.package
           context.pythonEnv
           pkgs.lean4
           pkgs.z3

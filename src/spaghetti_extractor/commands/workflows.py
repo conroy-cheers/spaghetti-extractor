@@ -10,11 +10,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..build_support.nix_invocation import builder_arguments, nix_command
 from .common import Handler
 
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-_NIX_FEATURES = "nix-command flakes ca-derivations"
 
 
 def _identifier(value: str) -> str:
@@ -40,10 +40,22 @@ def _add_target_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="REF",
         help="target corpus flake reference (default: ./targets)",
     )
-
-
-def _nix_command(*arguments: str) -> list[str]:
-    return ["nix", "--extra-experimental-features", _NIX_FEATURES, *arguments]
+    execution = parser.add_mutually_exclusive_group()
+    execution.add_argument(
+        "--builders-file",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "Nix builders inventory; defaults to "
+            "$SPAGHETTI_EXTRACTOR_BUILDERS_FILE or the nearest "
+            "nix/stage-a-builders"
+        ),
+    )
+    execution.add_argument(
+        "--local",
+        action="store_true",
+        help="disable remote Nix builders for this command",
+    )
 
 
 def _flake_installable(args: argparse.Namespace, attribute: str) -> str:
@@ -88,7 +100,7 @@ def _capture(command: Sequence[str], *, stream_stderr: bool = False) -> str:
 
 def _operator_index(args: argparse.Namespace) -> Mapping[str, Any]:
     output = _capture(
-        _nix_command(
+        nix_command(
             "eval",
             "--json",
             _flake_installable(
@@ -108,24 +120,36 @@ def _operator_index(args: argparse.Namespace) -> Mapping[str, Any]:
 
 
 def _build(args: argparse.Namespace, suffix: str, *, no_link: bool = False) -> int:
-    command = _nix_command(
-        "build",
-        _flake_installable(args, _operator_attribute(args, suffix)),
-    )
+    command = nix_command("build")
     if no_link:
-        command.insert(-1, "--no-link")
+        command.append("--no-link")
+    command.extend(
+        builder_arguments(
+            target_flake=str(args.target_flake),
+            builders_file=args.builders_file,
+            local=args.local,
+        )
+    )
+    command.append(_flake_installable(args, _operator_attribute(args, suffix)))
     return _run(command)
 
 
 def _realize_json(args: argparse.Namespace, suffix: str, filename: str) -> dict[str, Any]:
     output = _capture(
-        _nix_command(
-            "build",
-            "--quiet",
-            "--no-link",
-            "--print-out-paths",
+        [
+            *nix_command(
+                "build",
+                "--quiet",
+                "--no-link",
+                "--print-out-paths",
+            ),
+            *builder_arguments(
+                target_flake=str(args.target_flake),
+                builders_file=args.builders_file,
+                local=args.local,
+            ),
             _flake_installable(args, _operator_attribute(args, suffix)),
-        ),
+        ],
         stream_stderr=True,
     )
     paths = [Path(line) for line in output.splitlines() if line.strip()]
@@ -146,9 +170,11 @@ def _project_analyze(args: argparse.Namespace) -> int:
 
 
 def _project_status(args: argparse.Namespace) -> int:
-    payload = _realize_json(
-        args, "project.status", "authority-diagnostics-v3.json"
-    )
+    payload = _realize_json(args, "project.status", "project-progress.json")
+    return _show_progress(args, payload)
+
+
+def _show_progress(args: argparse.Namespace, payload: dict[str, Any]) -> int:
     frontiers = list(payload.get("primary_frontiers", []))
     if args.family:
         frontiers = [row for row in frontiers if row.get("family") == args.family]
@@ -161,9 +187,13 @@ def _project_status(args: argparse.Namespace) -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         counts = payload.get("counts", {})
+        authority = payload.get("authority", {})
+        configuration = payload.get("configuration_id")
         print(
             f"{args.target}: status={payload.get('status')} "
-            f"authorizing={str(payload.get('authorizing')).lower()} "
+            f"static-ready={str(payload.get('static_ready')).lower()} "
+            f"authority={authority.get('status')} "
+            f"configuration={configuration} "
             f"frontiers={counts.get('primary_frontiers', 0)} "
             f"dependent={counts.get('dependent_occurrences', 0)}"
         )
@@ -177,6 +207,8 @@ def _project_status(args: argparse.Namespace) -> int:
                 f" dependents={row.get('dependent_occurrences', 0)}{where}"
             )
             print(f"  next: {row.get('next_action')}")
+        if not frontiers and payload.get("next_action"):
+            print(f"next: {payload.get('next_action')}")
     return 0
 
 
@@ -186,7 +218,11 @@ def _project_check(args: argparse.Namespace) -> int:
 
 
 def _component_index(args: argparse.Namespace) -> Mapping[str, Any]:
-    components = _operator_index(args).get("components")
+    return _components_from_index(_operator_index(args))
+
+
+def _components_from_index(index: Mapping[str, Any]) -> Mapping[str, Any]:
+    components = index.get("components")
     if not isinstance(components, Mapping):
         raise ValueError("target has no component index")
     return components
@@ -197,7 +233,10 @@ def _component_list(args: argparse.Namespace) -> int:
     if args.json:
         print(json.dumps(components, indent=2, sort_keys=True))
         return 0
-    for kind, collection in (("unit", components.get("units", {})), ("configuration", components.get("configurations", {}))):
+    for kind, collection in (
+        ("unit", components.get("units", {})),
+        ("configuration", components.get("configurations", {})),
+    ):
         if not isinstance(collection, Mapping):
             continue
         for identity, row in sorted(collection.items()):
@@ -210,7 +249,8 @@ def _component_list(args: argparse.Namespace) -> int:
 def _component_selection(args: argparse.Namespace) -> tuple[str, str]:
     if args.configuration is not None and args.unit is not None:
         raise ValueError("choose either a component unit or --configuration, not both")
-    components = _component_index(args)
+    index = _operator_index(args)
+    components = _components_from_index(index)
     if args.configuration is not None:
         kind = "configurations"
         identity = args.configuration
@@ -218,13 +258,18 @@ def _component_selection(args: argparse.Namespace) -> tuple[str, str]:
         kind = "units"
         identity = args.unit
     else:
-        index = _operator_index(args)
         kind = "configurations"
         identity = str(index.get("defaultConfiguration"))
     collection = components.get(kind)
     if not isinstance(collection, Mapping) or identity not in collection:
-        available = ", ".join(sorted(collection)) if isinstance(collection, Mapping) else "none"
-        raise ValueError(f"unknown component {kind[:-1]} {identity!r}; available: {available}")
+        available = (
+            ", ".join(sorted(collection))
+            if isinstance(collection, Mapping)
+            else "none"
+        )
+        raise ValueError(
+            f"unknown component {kind[:-1]} {identity!r}; available: {available}"
+        )
     return kind, identity
 
 
@@ -268,13 +313,66 @@ def _component_check(args: argparse.Namespace) -> int:
 def _candidate_build(args: argparse.Namespace) -> int:
     index = _operator_index(args)
     candidate = index.get("candidate")
-    configurations = candidate.get("configurations", []) if isinstance(candidate, Mapping) else []
+    configurations = (
+        candidate.get("configurations", [])
+        if isinstance(candidate, Mapping)
+        else []
+    )
     configuration = args.configuration or index.get("defaultConfiguration")
     if configuration not in configurations:
         raise ValueError(
-            f"unknown candidate configuration {configuration!r}; available: {', '.join(configurations)}"
+            f"unknown candidate configuration {configuration!r}; "
+            f"available: {', '.join(configurations)}"
         )
     return _build(args, f"candidate.builds.{_attr_segment(configuration)}")
+
+
+def _candidate_list(args: argparse.Namespace) -> int:
+    index = _operator_index(args)
+    candidate = index.get("candidate")
+    if not isinstance(candidate, Mapping):
+        raise ValueError("target has no candidate index")
+    if args.json:
+        print(json.dumps(candidate, indent=2, sort_keys=True))
+        return 0
+    default = index.get("defaultConfiguration")
+    configurations = candidate.get("configurations", [])
+    suites = candidate.get("testSuites", {})
+    if not isinstance(configurations, list) or not isinstance(suites, Mapping):
+        raise ValueError("target candidate index is malformed")
+    for configuration in configurations:
+        marker = "default" if configuration == default else ""
+        declared = sorted(
+            identity
+            for identity, row in suites.items()
+            if isinstance(row, Mapping)
+            and row.get("configurationId") == configuration
+        )
+        print(
+            f"configuration {str(configuration):32} {marker:8} "
+            f"tests={','.join(declared) if declared else 'none'}"
+        )
+    return 0
+
+
+def _candidate_status(args: argparse.Namespace) -> int:
+    index = _operator_index(args)
+    candidate = index.get("candidate")
+    configurations = (
+        candidate.get("configurations", []) if isinstance(candidate, Mapping) else []
+    )
+    configuration = args.configuration or index.get("defaultConfiguration")
+    if configuration not in configurations:
+        raise ValueError(
+            f"unknown candidate configuration {configuration!r}; "
+            f"available: {', '.join(configurations)}"
+        )
+    payload = _realize_json(
+        args,
+        f"candidate.statuses.{_attr_segment(configuration)}",
+        "project-progress.json",
+    )
+    return _show_progress(args, payload)
 
 
 def _candidate_test(args: argparse.Namespace) -> int:
@@ -298,16 +396,20 @@ def _add_component_selector(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--configuration", type=_identifier, metavar="ID")
 
 
+def _add_progress_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--limit", type=_positive, default=20)
+    parser.add_argument("--all", action="store_true")
+    parser.add_argument("--family")
+    parser.add_argument("--status", choices=("incomplete", "violated"))
+
+
 def configure_command(name: str, parser: argparse.ArgumentParser) -> Handler:
     _add_target_arguments(parser)
     if name == "project analyze":
         return _project_analyze
     if name == "project status":
-        parser.add_argument("--json", action="store_true")
-        parser.add_argument("--limit", type=_positive, default=20)
-        parser.add_argument("--all", action="store_true")
-        parser.add_argument("--family")
-        parser.add_argument("--status", choices=("incomplete", "violated"))
+        _add_progress_arguments(parser)
         return _project_status
     if name == "project check":
         parser.add_argument("--acceptance", action="store_true")
@@ -321,6 +423,13 @@ def configure_command(name: str, parser: argparse.ArgumentParser) -> Handler:
             parser.add_argument("--json", action="store_true")
             return _component_status
         return _component_build if name == "component build" else _component_check
+    if name == "candidate list":
+        parser.add_argument("--json", action="store_true")
+        return _candidate_list
+    if name == "candidate status":
+        parser.add_argument("--configuration", type=_identifier)
+        _add_progress_arguments(parser)
+        return _candidate_status
     if name == "candidate build":
         parser.add_argument("--configuration", type=_identifier)
         return _candidate_build

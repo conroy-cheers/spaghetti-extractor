@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -83,10 +84,17 @@ def build_static_test_manifest(
     repository: Path,
     *,
     shard_count: int = DEFAULT_SHARD_COUNT,
+    resource_sha256_overrides: Mapping[str, str] | None = None,
+    resource_content_overrides: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Build the content-independent topology consumed during Nix evaluation."""
 
-    index = build_impact_index(repository, shard_count=shard_count)
+    index = build_impact_index(
+        repository,
+        shard_count=shard_count,
+        resource_sha256_overrides=resource_sha256_overrides,
+        resource_content_overrides=resource_content_overrides,
+    )
     plans = {
         mode: build_suite_plan(index, mode=mode)
         for mode in STATIC_MODES
@@ -230,8 +238,20 @@ def _metadata_payloads(
     root = repository.resolve()
     try:
         python_index = render_python_module_index(root)
+        proposed_index_sha256 = hashlib.sha256(
+            python_index.encode("utf-8")
+        ).hexdigest()
         test_manifest = canonical_json(
-            build_static_test_manifest(root, shard_count=shard_count)
+            build_static_test_manifest(
+                root,
+                shard_count=shard_count,
+                resource_sha256_overrides={
+                    PYTHON_MODULE_INDEX_PATH.as_posix(): proposed_index_sha256,
+                },
+                resource_content_overrides={
+                    PYTHON_MODULE_INDEX_PATH.as_posix(): python_index,
+                },
+            )
         )
     except TestkitError:
         raise

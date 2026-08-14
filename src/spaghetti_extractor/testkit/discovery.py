@@ -571,8 +571,12 @@ def _inferred_resources(repository: Path, module: _SourceModule) -> tuple[str, .
 
 
 def _resource_dependency_closure(
-    repository: Path, resources: Iterable[str]
+    repository: Path,
+    resources: Iterable[str],
+    *,
+    content_overrides: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
+    content_overrides = content_overrides or {}
     pending = list(resources)
     observed: set[str] = set()
     while pending:
@@ -584,7 +588,12 @@ def _resource_dependency_closure(
         if not path.is_file() or path.suffix.lower() != ".json":
             continue
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            source = (
+                content_overrides[relative]
+                if relative in content_overrides
+                else path.read_text(encoding="utf-8")
+            )
+            payload = json.loads(source)
         except (OSError, json.JSONDecodeError):
             continue
         strings: list[str] = []
@@ -635,6 +644,8 @@ def build_impact_index(
     *,
     shard_count: int = 32,
     strict_policy: bool = True,
+    resource_sha256_overrides: Mapping[str, str] | None = None,
+    resource_content_overrides: Mapping[str, str] | None = None,
 ) -> ImpactIndex:
     repository = repository.resolve()
     if shard_count < 1 or shard_count > 256:
@@ -661,6 +672,7 @@ def build_impact_index(
     )
     inferred_resource_cache: dict[str, tuple[str, ...]] = {}
     resource_hash_cache: dict[str, str] = {}
+    resource_sha256_overrides = resource_sha256_overrides or {}
 
     def inferred_for(path: str) -> tuple[str, ...]:
         if path not in inferred_resource_cache:
@@ -671,6 +683,8 @@ def build_impact_index(
         return inferred_resource_cache[path]
 
     def resource_sha256(path: str) -> str:
+        if path in resource_sha256_overrides:
+            return resource_sha256_overrides[path]
         if path not in resource_hash_cache:
             resource_hash_cache[path] = _sha256(repository / path)
         return resource_hash_cache[path]
@@ -750,7 +764,9 @@ def build_impact_index(
         for dependency in dependencies:
             inferred_resources.update(inferred_for(dependency))
         resources = _resource_dependency_closure(
-            repository, set(directive.resources) | inferred_resources
+            repository,
+            set(directive.resources) | inferred_resources,
+            content_overrides=resource_content_overrides,
         )
         missing_resources = [resource for resource in resources if not (repository / resource).exists()]
         if missing_resources:

@@ -34,8 +34,6 @@ let
     mkdir -p "$out/runtime"
     cp "$installed/DXBall.exe" "$out/DXBall.exe"
     cp -a "$installed/." "$out/runtime/"
-    test "$(sha256sum "$out/DXBall.exe" | cut -d ' ' -f 1)" = \
-      191c113582e1f31016a158d40372fa21ea68d9348bf847bbfbc8e7c7bdfe195f
   '';
   interfaceProfile = sdk.analysis.externalInterfaceProfile {
     spec = "${sdk.profiles}/pe32-mingw-directx-interface-extraction-v1.json";

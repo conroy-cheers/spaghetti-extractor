@@ -46,6 +46,16 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "require one component unit or configuration to be ready",
     },
     {
+        "name": "candidate list",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "list candidate configurations and declared test suites",
+    },
+    {
+        "name": "candidate status",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "show static readiness for one candidate configuration",
+    },
+    {
         "name": "candidate build",
         "group": "spaghetti_extractor.commands.workflows",
         "help": "build the target's default static candidate",
@@ -217,6 +227,8 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "component status": "operator",
     "component build": "operator",
     "component check": "operator",
+    "candidate list": "operator",
+    "candidate status": "operator",
     "candidate build": "operator",
     "candidate test": "operator",
     "expert stage-a-inventory-binary": "proposal",

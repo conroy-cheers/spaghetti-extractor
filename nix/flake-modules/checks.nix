@@ -133,6 +133,8 @@
           spaghetti-extractor project status --help >/dev/null
           spaghetti-extractor component list --help >/dev/null
           spaghetti-extractor component status --help >/dev/null
+          spaghetti-extractor candidate list --help >/dev/null
+          spaghetti-extractor candidate status --help >/dev/null
           spaghetti-extractor candidate test --help >/dev/null
           spaghetti-extractor expert stage-a-inventory-binary --help >/dev/null
           touch "$out"

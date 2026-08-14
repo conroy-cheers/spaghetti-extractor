@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: operator
 { pkgs }:
 
 let
@@ -27,6 +28,46 @@ let
   structuralDiagnostics = callWith ./structural-diagnostics.nix candidateCommon;
   candidateTestSuite = callWith ./candidate-test-suite.nix candidateCommon;
   targetBundleLint = callWith ./target-bundle-lint.nix analysisCommon;
+  progressPythonSource = import ./python-module-closure.nix {
+    phaseRole = "operator";
+    inherit pkgs;
+    source = context.sources.fullSource;
+    modules = [ "spaghetti_extractor.target_bundles.progress" ];
+    name = "spaghetti-extractor-target-progress-python-closure";
+  };
+  exactAttrs = value: names:
+    builtins.isAttrs value
+    && builtins.attrNames value == builtins.sort builtins.lessThan names;
+  parseTargetMetadata = targetRoot:
+    let
+      metadata = builtins.fromJSON (builtins.readFile (targetRoot + "/target.json"));
+      input = metadata.input or null;
+      paths = metadata.paths or null;
+      workflow = metadata.workflow or null;
+      identifier = value:
+        builtins.isString value && value != ""
+        && builtins.match "[a-z0-9]([a-z0-9._-]*[a-z0-9])?" value != null;
+      relativePath = value:
+        builtins.isString value && value != ""
+        && builtins.substring 0 1 value != "/"
+        && lib.all (part: part != "" && part != "." && part != "..")
+          (lib.splitString "/" value);
+    in
+      assert exactAttrs metadata [ "display_name" "format" "id" "input" "paths" "workflow" ];
+      assert metadata.format == "spaghetti-extractor-target-bundle-v2";
+      assert identifier metadata.id;
+      assert builtins.isString metadata.display_name && metadata.display_name != "";
+      assert exactAttrs input [ "expected_sha256" "kind" ];
+      assert input.kind == "pe32";
+      assert builtins.isString input.expected_sha256
+        && builtins.stringLength input.expected_sha256 == 64
+        && builtins.match "[0-9a-f]*" input.expected_sha256 != null;
+      assert exactAttrs paths [ "components" "nix" ];
+      assert lib.all (name: relativePath paths.${name})
+        (builtins.attrNames paths);
+      assert exactAttrs workflow [ "default_configuration" ];
+      assert identifier workflow.default_configuration;
+      metadata;
   mkBundleRecord = {
     targetRoot,
     artifacts,
@@ -35,7 +76,7 @@ let
     apps ? { },
   }:
     let
-      metadata = builtins.fromJSON (builtins.readFile (targetRoot + "/target.json"));
+      metadata = parseTargetMetadata targetRoot;
       targetId = metadata.id or null;
       metadataFile = pkgs.writeText
         "spaghetti-extractor-${targetId}-metadata.json"
@@ -163,6 +204,8 @@ let
     in {
       inherit analysis authority components interpreter candidateFor
         candidateTestFor configurationIds staticCandidates structuralDiagnostic;
+      originalBinary = original;
+      inherit binaryIdentity;
       componentRuntimeFor = components.runtimeFor;
       componentRuntimes = components.runtimePackages;
       candidates = {
@@ -188,7 +231,7 @@ let
     apps ? { },
   }:
     let
-      metadata = builtins.fromJSON (builtins.readFile (targetRoot + "/target.json"));
+      metadata = parseTargetMetadata targetRoot;
       targetRootString = toString targetRoot;
       relativeTargetPath = path:
         let
@@ -230,7 +273,37 @@ let
       };
       defaultConfiguration = metadata.workflow.default_configuration or null;
       configurationIds = workflow.configurationIds;
+      targetInputIdentity = pkgs.runCommand
+        "spaghetti-extractor-${metadata.id}-target-input-identity-v1"
+        {
+          nativeBuildInputs = [ pkgs.coreutils pkgs.jq ];
+          preferLocalBuild = false;
+          allowSubstitutes = true;
+          __contentAddressed = true;
+        }
+        ''
+          set -euo pipefail
+          actual="$(sha256sum ${lib.escapeShellArg workflow.originalBinary} | cut -d ' ' -f 1)"
+          expected=${lib.escapeShellArg metadata.input.expected_sha256}
+          if [ "$actual" != "$expected" ]; then
+            echo "target ${metadata.id} primary PE hash mismatch" >&2
+            echo "expected: $expected" >&2
+            echo "observed: $actual" >&2
+            exit 1
+          fi
+          mkdir -p "$out"
+          jq -n --arg target ${lib.escapeShellArg metadata.id} \
+            --arg binary ${lib.escapeShellArg workflow.binaryIdentity} \
+            --arg sha256 "$actual" '{
+              format: "spaghetti-extractor-target-input-identity-v1",
+              status: "checked",
+              target_id: $target,
+              binary_identity: $binary,
+              sha256: $sha256
+            }' > "$out/target-input-identity.json"
+        '';
       standardArtifacts = {
+        identity = targetInputIdentity;
         input = inputs;
         inherit profiles;
         analysis = {
@@ -279,6 +352,7 @@ let
       };
       standardChecks = {
         target-bundle-assets = ownership;
+        target-input-identity = targetInputIdentity;
         component-resolution = workflow.components.resolution;
         default-component-configuration =
           workflow.components.activationPlans.${defaultConfiguration};
@@ -297,8 +371,11 @@ let
       };
       projectAnalysis = pkgs.linkFarm
         "spaghetti-extractor-${metadata.id}-project-analysis"
-        (lib.mapAttrsToList (name: path: { inherit name path; })
-          standardArtifacts.analysis);
+        ([ {
+          name = "target-input-identity";
+          path = targetInputIdentity;
+        } ] ++ lib.mapAttrsToList
+          (name: path: { inherit name path; }) standardArtifacts.analysis);
       componentUnits = lib.mapAttrs (id: _index: {
         workPackage = workflow.components.workPackages.${id};
         status = workflow.components.statusReports.${id};
@@ -312,10 +389,84 @@ let
       candidateTestAggregate =
         if candidateTests == { } then null else
         pkgs.linkFarm "spaghetti-extractor-${metadata.id}-candidate-tests"
-          (lib.mapAttrsToList (name: test: {
+          ([ {
+            name = "target-input-identity";
+            path = targetInputIdentity;
+          } ] ++ lib.mapAttrsToList (name: test: {
             inherit name;
             path = test.aggregate;
           }) candidateTests);
+      candidateTestIndex = lib.mapAttrs (_: test: {
+        configurationId = test.configurationId;
+        caseIds = test.caseIds;
+      }) candidateTests;
+      mkProgress = configurationId:
+        pkgs.runCommand
+          "spaghetti-extractor-${metadata.id}-${configurationId}-project-progress-v1"
+          {
+            nativeBuildInputs = [ context.pythonEnv pkgs.jq ];
+            preferLocalBuild = false;
+            allowSubstitutes = true;
+            __contentAddressed = true;
+          }
+          ''
+            set -euo pipefail
+            test -s ${targetInputIdentity}/target-input-identity.json
+            export PYTHONHASHSEED=0
+            export PYTHONDONTWRITEBYTECODE=1
+            export PYTHONPATH=${progressPythonSource}/src
+            mkdir -p "$out"
+            ${context.pythonEnv}/bin/python3 - \
+              ${workflow.authority.diagnostics}/authority-diagnostics-v3.json \
+              ${workflow.components.configurationStatusReports.${configurationId}}/status.json \
+              ${lib.escapeShellArg metadata.id} \
+              ${lib.escapeShellArg configurationId} \
+              ${lib.escapeShellArg (builtins.toJSON candidateTestIndex)} \
+              "$out/project-progress.json" <<'PY'
+            import json
+            import pathlib
+            import sys
+            from spaghetti_extractor.target_bundles.progress import build_project_progress
+
+            build_project_progress(
+                authority_diagnostics=pathlib.Path(sys.argv[1]),
+                configuration_status=pathlib.Path(sys.argv[2]),
+                target_id=sys.argv[3],
+                configuration_id=sys.argv[4],
+                candidate_test_suites=json.loads(sys.argv[5]),
+                out=pathlib.Path(sys.argv[6]),
+            )
+            PY
+            jq -e '
+              .format == "spaghetti-extractor-project-progress-v1" and
+              (.status == "ready" or .status == "incomplete" or .status == "violated") and
+              (.authorizing | not) and
+              .policy.diagnostic_only and
+              (.policy.candidate_gate_bypassed | not) and
+              (.policy.original_binary_executed | not)
+            ' "$out/project-progress.json" >/dev/null
+          '';
+      progressReports = builtins.listToAttrs (map (configurationId: {
+        name = configurationId;
+        value = mkProgress configurationId;
+      }) configurationIds);
+      checkedCandidateBuilds = lib.mapAttrs (configurationId: candidate:
+        pkgs.runCommand
+          "spaghetti-extractor-${metadata.id}-${configurationId}-checked-candidate"
+          { __contentAddressed = true; } ''
+            set -euo pipefail
+            test -s ${targetInputIdentity}/target-input-identity.json
+            mkdir -p "$out"
+            cp -rs ${candidate.candidate}/. "$out/"
+            ln -s ${targetInputIdentity}/target-input-identity.json \
+              "$out/target-input-identity.json"
+          '') workflow.staticCandidates;
+      checkedCandidateTests = lib.mapAttrs (id: test:
+        pkgs.linkFarm
+          "spaghetti-extractor-${metadata.id}-${id}-checked-candidate-test" [
+            { name = "target-input-identity"; path = targetInputIdentity; }
+            { name = "candidate-test"; path = test.aggregate; }
+          ]) candidateTests;
       operatorIndex = {
         targetId = metadata.id;
         inherit defaultConfiguration;
@@ -325,17 +476,15 @@ let
         };
         candidate = {
           configurations = configurationIds;
-          testSuites = lib.mapAttrs (_: test: {
-            configurationId = test.configurationId;
-            caseIds = test.caseIds;
-          }) candidateTests;
+          testSuites = candidateTestIndex;
         };
       };
       operator = {
         index = operatorIndex;
         project = {
           analysis = projectAnalysis;
-          status = workflow.authority.diagnostics;
+          status = progressReports.${defaultConfiguration};
+          authorityStatus = workflow.authority.diagnostics;
           regressionCheck = bundle.defaultCheck;
           acceptanceCheck = bundle.acceptanceCheck;
           structuralDiagnostics = workflow.structuralDiagnostic;
@@ -345,9 +494,9 @@ let
           configurations = componentConfigurations;
         };
         candidate = {
-          builds = lib.mapAttrs (_: candidate: candidate.candidate)
-            workflow.staticCandidates;
-          tests = lib.mapAttrs (_: test: test.aggregate) candidateTests;
+          builds = checkedCandidateBuilds;
+          statuses = progressReports;
+          tests = checkedCandidateTests;
           allTests = candidateTestAggregate;
         };
       };

@@ -4,6 +4,25 @@ let
   sdk = import ../target-sdk.nix { inherit pkgs; };
   artifact = pkgs.writeText "minimal-sdk-consumer-artifact" "checked\n";
   acceptance = pkgs.writeText "minimal-sdk-acceptance-artifact" "accepted\n";
+  authorityDiagnostics = pkgs.writeText "minimal-sdk-authority-diagnostics.json"
+    (builtins.toJSON {
+      format = "spaghetti-extractor-authority-diagnostics-v3";
+      status = "complete";
+      authorizing = true;
+      counts = {
+        primary_frontiers = 0;
+        dependent_occurrences = 0;
+      };
+      primary_frontiers = [ ];
+    });
+  configurationStatus = pkgs.writeText "minimal-sdk-configuration-status.json"
+    (builtins.toJSON {
+      format = "spaghetti-extractor-component-configuration-status-v1";
+      configuration_id = "default";
+      status = "ready";
+      counts.blocked = 0;
+      blockers = [ ];
+    });
   candidate = {
     interpreter = artifact;
     componentRuntime = artifact;
@@ -17,6 +36,8 @@ let
     candidate = artifact;
   };
   workflow = {
+    originalBinary = artifact;
+    binaryIdentity = "fixture.exe";
     configurationIds = [ "default" ];
     analysis = {
       originalInventory = artifact;
@@ -30,12 +51,19 @@ let
     authority = {
       finalAuthority = acceptance;
       finalAuthorityGate = acceptance;
-      diagnostics = artifact;
+      diagnostics = pkgs.runCommand "minimal-sdk-authority-diagnostics" { } ''
+        mkdir -p "$out"
+        cp ${authorityDiagnostics} "$out/authority-diagnostics-v3.json"
+      '';
       graph.metadata = artifact;
       graph.phases.example.derivation = artifact;
     };
     components = {
-      assetInventory = [ ];
+      assetInventory = [ {
+        path = ../../tests/fixtures/minimal-target-bundle/intent/components.json;
+        role = "component_intent";
+        owner = "component-workflow";
+      } ];
       resolution = artifact;
       contracts.example = artifact;
       sourcePackages.example = artifact;
@@ -46,7 +74,11 @@ let
       statusReports.example = artifact;
       workPackages.example = artifact;
       checkGates.example = artifact;
-      configurationStatusReports.default = artifact;
+      configurationStatusReports.default = pkgs.runCommand
+        "minimal-sdk-configuration-status" { } ''
+          mkdir -p "$out"
+          cp ${configurationStatus} "$out/status.json"
+        '';
       configurationCheckGates.default = artifact;
       liftUnitIndex.example = {
         kind = "component";
@@ -94,9 +126,11 @@ assert registry.minimal-sdk-consumer.artifacts.components.runtimes.default == ar
 assert registry.minimal-sdk-consumer.artifacts.candidate.static.default.candidate == artifact;
 assert registry.minimal-sdk-consumer.operator.components.units.example.workPackage == artifact;
 assert registry.minimal-sdk-consumer.operator.components.configurations.default.runtime == artifact;
-assert registry.minimal-sdk-consumer.operator.project.status == artifact;
+assert registry.minimal-sdk-consumer.operator.project.authorityStatus == workflow.authority.diagnostics;
+assert registry.minimal-sdk-consumer.operator.candidate.statuses.default != null;
 assert registry.minimal-sdk-consumer.acceptanceChecks.acceptance != null;
 pkgs.linkFarm "spaghetti-extractor-target-sdk-check" [
   { name = "regression"; path = registry.minimal-sdk-consumer.defaultCheck; }
   { name = "acceptance"; path = registry.minimal-sdk-consumer.acceptanceCheck; }
+  { name = "progress"; path = registry.minimal-sdk-consumer.operator.project.status; }
 ]

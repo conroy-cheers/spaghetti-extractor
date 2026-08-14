@@ -122,6 +122,24 @@ class StaticTestManifestTests(unittest.TestCase):
             )
             self.assertEqual(unchanged, ())
 
+    def test_refresh_uses_proposed_module_index_for_test_resource_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _metadata_repository(Path(temporary))
+            generated = root / "nix/generated"
+            generated.mkdir(parents=True)
+            (generated / "python-module-index.json").write_text(
+                "{}\n", encoding="ascii"
+            )
+            test = root / "tests/unit/core/test_base.py"
+            test.write_text(
+                test.read_text(encoding="ascii")
+                + 'TESTKIT = {"resources": ("nix/generated/python-module-index.json",)}\n',
+                encoding="ascii",
+            )
+
+            refresh_repository_metadata(root)
+            check_repository_metadata(root)
+
     def test_repository_check_reports_all_stale_metadata_with_one_remediation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _metadata_repository(Path(temporary))

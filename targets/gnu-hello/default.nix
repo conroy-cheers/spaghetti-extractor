@@ -25,10 +25,7 @@ let
       LDFLAGS = "${layoutLdflags} -Wl,-Map,hello-original.map";
     };
     postFixup = "";
-    postInstall = (old.postInstall or "") + ''
-      test "$(sha256sum "$out/bin/hello.exe" | cut -d ' ' -f 1)" = \
-        ${target.input.expected_sha256}
-    '';
+    postInstall = old.postInstall or "";
     __contentAddressed = true;
     meta = (old.meta or { }) // {
       platforms = (old.meta.platforms or [ ]) ++ [ "i686-windows" ];

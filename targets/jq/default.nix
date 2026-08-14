@@ -41,14 +41,7 @@ let
       platforms = (old.meta.platforms or [ ]) ++ [ "i686-windows" ];
     };
   });
-  original = pkgs.runCommand "spaghetti-extractor-jq-original" {
-    __contentAddressed = true;
-  } ''
-    mkdir -p "$out/bin"
-    cp ${unverifiedOriginal}/bin/jq.exe "$out/bin/jq.exe"
-    test "$(sha256sum "$out/bin/jq.exe" | cut -d ' ' -f 1)" = \
-      ${target.input.expected_sha256}
-  '';
+  original = unverifiedOriginal;
   originalPe = "${original}/bin/jq.exe";
   profileSource = sdk.profiles;
   workflow = sdk.workflow.pe32 {

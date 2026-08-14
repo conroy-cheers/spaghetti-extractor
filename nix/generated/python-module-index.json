@@ -716,6 +716,14 @@
       "path": "src/spaghetti_extractor/build_support/lean_runner.py",
       "resources": []
     },
+    "spaghetti_extractor.build_support.nix_invocation": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.build_support"
+      ],
+      "path": "src/spaghetti_extractor/build_support/nix_invocation.py",
+      "resources": []
+    },
     "spaghetti_extractor.build_support.nix_support": {
       "dependencies": [
         "spaghetti_extractor",
@@ -1497,6 +1505,7 @@
     "spaghetti_extractor.commands.workflows": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.build_support.nix_invocation",
         "spaghetti_extractor.commands",
         "spaghetti_extractor.commands.common"
       ],
@@ -3417,7 +3426,8 @@
     "spaghetti_extractor.target_bundles": {
       "dependencies": [
         "spaghetti_extractor",
-        "spaghetti_extractor.target_bundles.lint"
+        "spaghetti_extractor.target_bundles.lint",
+        "spaghetti_extractor.target_bundles.metadata"
       ],
       "path": "src/spaghetti_extractor/target_bundles/__init__.py",
       "resources": []
@@ -3426,9 +3436,27 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.target_bundles",
+        "spaghetti_extractor.target_bundles.metadata",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/target_bundles/lint.py",
+      "resources": []
+    },
+    "spaghetti_extractor.target_bundles.metadata": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.target_bundles"
+      ],
+      "path": "src/spaghetti_extractor/target_bundles/metadata.py",
+      "resources": []
+    },
+    "spaghetti_extractor.target_bundles.progress": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.target_bundles",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/target_bundles/progress.py",
       "resources": []
     },
     "spaghetti_extractor.testkit": {
@@ -4030,6 +4058,16 @@
     },
     {
       "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:candidate list",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:candidate status",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
       "owner": "command:candidate test",
       "role": "operator"
     },
@@ -4261,6 +4299,11 @@
     {
       "module": "spaghetti_extractor.target_bundles.lint",
       "owner": "nix/target-bundle-lint.nix",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.target_bundles.progress",
+      "owner": "nix/target-sdk.nix",
       "role": "operator"
     },
     {
@@ -4923,6 +4966,7 @@
       "spaghetti_extractor.__main__",
       "spaghetti_extractor.build_support",
       "spaghetti_extractor.build_support.architecture_manifest",
+      "spaghetti_extractor.build_support.nix_invocation",
       "spaghetti_extractor.build_support.python_module_index",
       "spaghetti_extractor.cli",
       "spaghetti_extractor.commands",
@@ -4931,6 +4975,8 @@
       "spaghetti_extractor.commands.workflows",
       "spaghetti_extractor.target_bundles",
       "spaghetti_extractor.target_bundles.lint",
+      "spaghetti_extractor.target_bundles.metadata",
+      "spaghetti_extractor.target_bundles.progress",
       "spaghetti_extractor.testkit",
       "spaghetti_extractor.testkit.__main__",
       "spaghetti_extractor.testkit.cli",

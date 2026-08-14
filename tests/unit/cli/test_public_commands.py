@@ -44,6 +44,8 @@ OPERATOR_COMMANDS = (
     "component status",
     "component build",
     "component check",
+    "candidate list",
+    "candidate status",
     "candidate build",
     "candidate test",
 )
@@ -264,10 +266,14 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
                 self.assertEqual(called_args[1], suffix)
                 self.assertEqual(called_kwargs.get("no_link", False), no_link)
 
-    def test_project_status_reads_authority_diagnostics_and_is_informational(self) -> None:
+    def test_project_status_reads_unified_progress_and_is_informational(self) -> None:
         report = {
+            "format": "spaghetti-extractor-project-progress-v1",
+            "configuration_id": "whole-project",
             "status": "incomplete",
             "authorizing": False,
+            "static_ready": False,
+            "authority": {"status": "incomplete", "authorizing": False},
             "counts": {"primary_frontiers": 1, "dependent_occurrences": 8},
             "primary_frontiers": [{
                 "status": "incomplete",
@@ -287,6 +293,7 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
             self.assertEqual(main(["project", "status", "gnu-hello"]), 0)
         self.assertIn("frontiers=1", output.getvalue())
         self.assertIn("rva=0x1000", output.getvalue())
+        self.assertIn("configuration=whole-project", output.getvalue())
 
     def test_component_list_is_index_only(self) -> None:
         index = {
@@ -314,6 +321,69 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
             return_value=index,
         ), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(main(["candidate", "test", "gnu-hello"]), 2)
+
+    def test_candidate_list_reports_configurations_and_test_suites(self) -> None:
+        index = {
+            "defaultConfiguration": "default",
+            "candidate": {
+                "configurations": ["default", "minimal"],
+                "testSuites": {
+                    "public": {"configurationId": "default"},
+                },
+            },
+        }
+        output = io.StringIO()
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), contextlib.redirect_stdout(output):
+            self.assertEqual(main(["candidate", "list", "gnu-hello"]), 0)
+        self.assertIn("default", output.getvalue())
+        self.assertIn("tests=public", output.getvalue())
+        self.assertIn("minimal", output.getvalue())
+
+    def test_candidate_status_selects_one_configuration_progress_report(self) -> None:
+        index = {
+            "defaultConfiguration": "default",
+            "candidate": {
+                "configurations": ["default", "minimal"],
+                "testSuites": {},
+            },
+        }
+        report = {
+            "format": "spaghetti-extractor-project-progress-v1",
+            "configuration_id": "minimal",
+            "status": "ready",
+            "static_ready": True,
+            "authority": {"status": "complete", "authorizing": True},
+            "counts": {"primary_frontiers": 0, "dependent_occurrences": 0},
+            "primary_frontiers": [],
+            "next_action": "build candidate configuration minimal",
+        }
+        output = io.StringIO()
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._realize_json",
+            return_value=report,
+        ) as realize, contextlib.redirect_stdout(output):
+            self.assertEqual(
+                main(
+                    [
+                        "candidate",
+                        "status",
+                        "gnu-hello",
+                        "--configuration",
+                        "minimal",
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(
+            realize.call_args.args[1], 'candidate.statuses."minimal"'
+        )
+        self.assertIn("static-ready=true", output.getvalue())
 
     def test_operator_workflow_accepts_an_explicit_target_flake(self) -> None:
         index = {

@@ -20,7 +20,9 @@ A bundle contains:
 `target.json` uses `spaghetti-extractor-target-bundle-v2` and declares
 `workflow.default_configuration`. That configuration must exist in the
 component intent and selects the standard regression configuration, component
-runtime, and strict acceptance candidate.
+runtime, and strict acceptance candidate. The SDK validates this schema
+strictly and verifies the SHA-256 of the workflow's primary PE against
+`input.expected_sha256`; individual targets must not duplicate that check.
 
 Generated reports, downloaded binaries, Nix outputs, traces, and copied toolkit
 code do not belong in a target directory. Generated data stays in Nix outputs
@@ -57,6 +59,22 @@ program closure is incomplete. Acceptance additionally builds the final
 authority gate, static candidate, and every candidate-only suite declared by
 the target; it is expected to fail closed until all authority families are
 complete.
+
+The operator-facing readiness views are non-authorizing checked artifacts:
+
+```sh
+spaghetti-extractor project status gnu-hello
+spaghetti-extractor candidate list gnu-hello
+spaghetti-extractor candidate status gnu-hello \
+  --configuration ascii-to-lower-enabled
+```
+
+They combine final-authority frontiers, component-configuration blockers, and
+declared candidate-only suites. Public realization commands discover the
+nearest `nix/stage-a-builders` inventory by default; `--local` disables remote
+builders and `--builders-file` selects an explicit inventory. If no inventory
+exists, commands select local execution explicitly instead of inheriting
+host-global builders.
 
 Candidate behavior suites are optional, but when declared they may run only
 after their candidate's final-authority gate closes. Wine execution is

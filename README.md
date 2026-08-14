@@ -47,8 +47,17 @@ spaghetti-extractor component list gnu-hello
 spaghetti-extractor component status gnu-hello ascii-to-lower
 spaghetti-extractor component build gnu-hello ascii-to-lower
 spaghetti-extractor component check gnu-hello ascii-to-lower
+spaghetti-extractor candidate list gnu-hello
+spaghetti-extractor candidate status gnu-hello
 spaghetti-extractor project check gnu-hello
 ```
+
+Public realizations automatically use the nearest checked-in
+`nix/stage-a-builders` inventory when one exists. Use `--local` to disable
+remote builders for one command, or `--builders-file FILE` to select an
+explicit CA-capable inventory. This prevents unrelated host-global builder
+configuration from silently taking over an analysis; when no inventory can be
+found, the command explicitly uses the local builder.
 
 Individual pipeline leaves are available only in the explicit expert namespace:
 
@@ -112,6 +121,8 @@ spaghetti-extractor component check gnu-hello ascii-to-lower
 spaghetti-extractor component build gnu-hello --configuration operator-one-leaf
 spaghetti-extractor project check gnu-hello
 spaghetti-extractor project check gnu-hello --acceptance
+spaghetti-extractor candidate list gnu-hello
+spaghetti-extractor candidate status gnu-hello
 spaghetti-extractor candidate build gnu-hello
 spaghetti-extractor candidate test jq
 ```
@@ -122,7 +133,8 @@ building a configuration produces its runtime package. Acceptance and every
 executable candidate stay behind the explicit final-authority gate. Candidate
 tests exist only when a target declares curated expected-output cases, run only
 the generated candidate, and execute Wine through an isolated headless X
-session.
+session. `project status` and `candidate status` combine checked authority and
+component-configuration diagnostics without opening either gate.
 
 ## Public Surfaces
 
