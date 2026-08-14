@@ -114,6 +114,7 @@ let
       mkdir -p "$out"
       export PYTHONPATH=${pythonSource}/src
       python - "$out" <<'PY'
+      import copy
       import hashlib
       import json
       import pathlib
@@ -159,7 +160,12 @@ let
                   "register_writes": register_writes, "flag_writes": [],
               },
           }
-      units = [unit("unit:a", 4096), unit("unit:b", 4112), unit("unit:c", 4128)]
+      units = [
+          unit("unit:a", 4096),
+          unit("unit:b", 4112),
+          unit("unit:c", 4128),
+          unit("unit:d", 4144),
+      ]
       ir = root / "machine-ir.jsonl"
       ir.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in units))
       ir_hash = hashlib.sha256(ir.read_bytes()).hexdigest()
@@ -229,10 +235,22 @@ let
                   "bindings": {"membership_bindings_sha256": canonical([unit_bindings["unit:c"]])},
                   "blockers": [],
               },
+              {
+                  "id": "proposal:d",
+                  "status": "proposed",
+                  "proposal_kinds": ["singleton"],
+                  "membership": {
+                      "unit_ids": ["unit:d"], "unit_count": 1,
+                      "rva_start": 4144, "rva_end": 4145,
+                      "noncontiguous": False,
+                  },
+                  "bindings": {"membership_bindings_sha256": canonical([unit_bindings["unit:d"]])},
+                  "blockers": [],
+              },
           ]
       for proposal in proposal_rows:
           proposal["proposal_sha256"] = canonical(proposal)
-      proposals = {
+      proposal_template = {
           "format": "spaghetti-extractor-component-discovery-result-v2",
           "status": "proposed",
           "authority": {
@@ -255,29 +273,69 @@ let
           },
           "graph_facts": {"nodes": list(unit_bindings.values())},
           "seed_index": [],
-          "proposals": proposal_rows,
           "coverage": {},
           "issues": [],
       }
-      proposals["discovery_result_sha256"] = canonical(proposals)
-      write_component_proposal_package_v2(
-          payload=proposals,
-          out=root / "component-proposals",
+
+      def write_package(name, rows):
+          payload = copy.deepcopy(proposal_template)
+          payload["proposals"] = rows
+          payload["discovery_result_sha256"] = canonical(payload)
+          write_component_proposal_package_v2(
+              payload=payload,
+              out=root / name,
+          )
+
+      write_package("component-proposals", proposal_rows)
+      unrelated_changed = copy.deepcopy(proposal_rows)
+      unrelated_changed[3]["diagnostic_note"] = "unrelated-change"
+      unrelated_changed[3].pop("proposal_sha256")
+      unrelated_changed[3]["proposal_sha256"] = canonical(unrelated_changed[3])
+      write_package("component-proposals-unrelated-changed", unrelated_changed)
+      selected_diagnostic_changed = copy.deepcopy(proposal_rows)
+      selected_diagnostic_changed[0]["diagnostic_note"] = "selected-diagnostic-change"
+      selected_diagnostic_changed[0].pop("proposal_sha256")
+      selected_diagnostic_changed[0]["proposal_sha256"] = canonical(
+          selected_diagnostic_changed[0]
       )
+      write_package(
+          "component-proposals-selected-diagnostic-changed",
+          selected_diagnostic_changed,
+      )
+      selected_changed = copy.deepcopy(proposal_rows)
+      selected_changed[0]["id"] = "proposal:a-changed"
+      selected_changed[0].pop("proposal_sha256")
+      selected_changed[0]["proposal_sha256"] = canonical(selected_changed[0])
+      write_package("component-proposals-selected-changed", selected_changed)
       PY
     '';
-  mkDag = reviewRoot: sourceRoot: import ../stage-b-components.nix {
+  mkDag = reviewRoot: sourceRoot: proposals: import ../stage-b-components.nix {
     inherit pkgs pythonEnv pythonSource intent;
     machineIr = fixture;
     reconstructionPlan = fixture;
-    componentProposals = "${fixture}/component-proposals";
+    componentProposals = proposals;
     inherit reviewRoot sourceRoot;
     namePrefix = "spaghetti-extractor-components-fixture";
     interpreterPackage = interpreter;
   };
-  base = mkDag ./fixtures/components/base ./fixtures/components/source-base;
-  changed = mkDag ./fixtures/components/changed ./fixtures/components/source-base;
-  sourceChanged = mkDag ./fixtures/components/base ./fixtures/components/source-changed;
+  base = mkDag ./fixtures/components/base ./fixtures/components/source-base
+    "${fixture}/component-proposals";
+  changed = mkDag ./fixtures/components/changed ./fixtures/components/source-base
+    "${fixture}/component-proposals";
+  sourceChanged = mkDag ./fixtures/components/base ./fixtures/components/source-changed
+    "${fixture}/component-proposals";
+  unrelatedProposalChanged = mkDag
+    ./fixtures/components/base
+    ./fixtures/components/source-base
+    "${fixture}/component-proposals-unrelated-changed";
+  selectedDiagnosticChanged = mkDag
+    ./fixtures/components/base
+    ./fixtures/components/source-base
+    "${fixture}/component-proposals-selected-diagnostic-changed";
+  selectedProposalChanged = mkDag
+    ./fixtures/components/base
+    ./fixtures/components/source-base
+    "${fixture}/component-proposals-selected-changed";
   interpreter = pkgs.runCommand "spaghetti-extractor-components-interpreter-fixture"
     { nativeBuildInputs = [ pkgs.coreutils ]; __contentAddressed = true; } ''
       mkdir -p "$out"
@@ -320,7 +378,7 @@ let
         .format == "spaghetti-extractor-component-activation-plan-v3" and
         .status == "incomplete" and
         .counts.blocked == 1 and
-        .counts.machine_ir_fallback == 2 and
+        .counts.machine_ir_fallback == 3 and
         (.entries | map(select(.implementation_kind == "blocked")) | length) == 1 and
         (.selections | all(
           if .requested_activation == "enabled"
@@ -338,6 +396,19 @@ assert base.contracts.b.drvPath != changed.contracts.b.drvPath;
 assert base.activationPlans."a-only".drvPath == changed.activationPlans."a-only".drvPath;
 assert base.activationPlans."b-only".drvPath != changed.activationPlans."b-only".drvPath;
 assert base.resolution.drvPath == sourceChanged.resolution.drvPath;
+assert base.proposalInput.preparation.drvPath !=
+  unrelatedProposalChanged.proposalInput.preparation.drvPath;
+assert base.proposalInput.selectedProposals ==
+  unrelatedProposalChanged.proposalInput.selectedProposals;
+assert base.resolution.drvPath == unrelatedProposalChanged.resolution.drvPath;
+assert base.proposalInput.preparation.drvPath !=
+  selectedDiagnosticChanged.proposalInput.preparation.drvPath;
+assert base.proposalInput.selectedProposals ==
+  selectedDiagnosticChanged.proposalInput.selectedProposals;
+assert base.resolution.drvPath == selectedDiagnosticChanged.resolution.drvPath;
+assert base.proposalInput.selectedProposals !=
+  selectedProposalChanged.proposalInput.selectedProposals;
+assert base.resolution.drvPath != selectedProposalChanged.resolution.drvPath;
 assert base.contracts.a.drvPath == sourceChanged.contracts.a.drvPath;
 assert base.sourcePackages.a.drvPath != sourceChanged.sourcePackages.a.drvPath;
 assert base.sourcePackages.b.drvPath == sourceChanged.sourcePackages.b.drvPath;

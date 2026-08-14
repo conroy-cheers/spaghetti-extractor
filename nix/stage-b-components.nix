@@ -65,6 +65,9 @@ let
   statusSource = mkPhaseSource "status" [
     "spaghetti_extractor.components.status"
   ];
+  proposalInput = import ./stage-b-component-proposal-input.nix {
+    inherit pkgs pythonEnv componentProposals intent namePrefix;
+  };
   common = {
     nativeBuildInputs = [ pythonEnv pkgs.jq ];
     preferLocalBuild = false;
@@ -86,15 +89,17 @@ let
     ${environment resolutionSource}
     mkdir -p "$out"
     ${python} - \
-      ${componentProposals} \
+      ${proposalInput.selectedProposals} \
       ${intent} \
       "$out/component-resolution.json" <<'PY'
     import pathlib
     import sys
-    from spaghetti_extractor.components.resolution import resolve_component_catalog
+    from spaghetti_extractor.components.resolution import (
+        resolve_component_catalog_from_selection,
+    )
 
-    resolve_component_catalog(
-        proposals=pathlib.Path(sys.argv[1]),
+    resolve_component_catalog_from_selection(
+        selection=pathlib.Path(sys.argv[1]),
         intent=pathlib.Path(sys.argv[2]),
         out=pathlib.Path(sys.argv[3]),
     )
@@ -589,7 +594,7 @@ let
   );
 in
 {
-  inherit resolution contracts sourcePackages evidences qualifications
+  inherit proposalInput resolution contracts sourcePackages evidences qualifications
     activationPlans sourceBundles runtimeConfigurations mkRuntime runtimeFor
     runtimePackages statusReports workPackages checkGates
     configurationStatusReports configurationCheckGates liftUnitIndex

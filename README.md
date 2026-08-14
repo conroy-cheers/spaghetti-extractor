@@ -55,11 +55,13 @@ spaghetti-extractor project check gnu-hello
 A newly registered target does not need component intent up front. Its analysis
 and authority graph can run first; `component list <target>` then displays
 the compact selector index from a bounded v2 proposal package. Rich proposal
-diagnostics are stored in stable hash buckets and only the selected record is
-read during operator resolution; the producer validates every record once
-before publishing the package. Component build and candidate commands remain
-unavailable until reviewed intent and a default configuration are declared
-together.
+diagnostics are stored in stable hash buckets. A checked preparation resolves
+reviewed selectors once, then re-interns only each selected proposal's exact
+resolution fields as the downstream component input; diagnostic and unrelated
+discovery changes therefore do not invalidate component resolution. The
+producer still validates every complete record before publishing the package.
+Component build and candidate commands remain unavailable until reviewed
+intent and a default configuration are declared together.
 
 Public realizations automatically use the nearest checked-in
 `nix/stage-a-builders` inventory when one exists. Use `--local` to disable

@@ -64,6 +64,18 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("runtimePackages", module)
         self.assertIn("machineIr interpreterPackage", module)
         self.assertIn("implementation=pathlib.Path(sys.argv[2])", module)
+        self.assertIn("proposalInput.selectedProposals", module)
+        resolution_body = module.split(
+            'resolution = pkgs.runCommand', 1
+        )[1].split('mkContract =', 1)[0]
+        self.assertNotIn("${componentProposals}", resolution_body)
+
+        proposal_input = (
+            ROOT / "nix" / "stage-b-component-proposal-input.nix"
+        ).read_text(encoding="utf-8")
+        self.assertIn("builtins.readFile", proposal_input)
+        self.assertIn("builtins.toFile", proposal_input)
+        self.assertIn("__contentAddressed = true;", proposal_input)
 
     def test_component_runtime_is_factored_out_of_candidate_construction(self) -> None:
         candidate = (

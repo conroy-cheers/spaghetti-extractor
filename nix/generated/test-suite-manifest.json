@@ -1,6 +1,6 @@
 {
   "format": "spaghetti-extractor-static-test-manifest-v1",
-  "identity": "96379ab536f2aaf3cbe22f4cd1d868d8b574b611c8ab29a057ff1355bcb51836",
+  "identity": "bbf300894d05b907e94c1fa2b040d15c08ecb92ea8b47e8c95cdbf2c2a4daf71",
   "modes": {
     "benchmark": {
       "identity": "1f88a0a7488610c2826696dfe7dba388aff03050ab8aa1459085154e2e40855b",
@@ -11,8 +11,8 @@
       ]
     },
     "catalog": {
-      "identity": "91d64cadf7ef6761a24cbb675bb7b838dfeb02fe421286bf3d6d12d1c15e8adb",
-      "selected_test_count": 152,
+      "identity": "20dc1af99d12d54646dc01cf9ca06445db143931ab313379e80e39e1fd442654",
+      "selected_test_count": 153,
       "shard_ids": [
         "benchmark-05786cef6afb",
         "benchmark-67776004d586",
@@ -130,6 +130,7 @@
         "pure-c0f73f18670d",
         "pure-c1ce06948e75",
         "pure-c222847c8ded",
+        "pure-c38f398db23c",
         "pure-c4e4e7ad4af6",
         "pure-c72807165493",
         "pure-c8c47f1837f4",
@@ -169,8 +170,8 @@
       ]
     },
     "full": {
-      "identity": "168afa29381130a917211f99e7e18a652ee82c857c80d68b317f8eb73d8d8e4b",
-      "selected_test_count": 150,
+      "identity": "c485ba96b84bf8cba7b5d9cb3da56042dc8656adeb461bf4c082434f0cde1271",
+      "selected_test_count": 151,
       "shard_ids": [
         "bochs-d906802c54f2",
         "compiler-08064018d2ca",
@@ -286,6 +287,7 @@
         "pure-c0f73f18670d",
         "pure-c1ce06948e75",
         "pure-c222847c8ded",
+        "pure-c38f398db23c",
         "pure-c4e4e7ad4af6",
         "pure-c72807165493",
         "pure-c8c47f1837f4",
@@ -325,7 +327,7 @@
       ]
     },
     "smoke": {
-      "identity": "ad56696e6e2ca55b11d179c60d10c7574e5363648e465df99a034ed9059038bf",
+      "identity": "36345cef7b8ac16f4ac288a6f3cce22deb780e6c8dc65b048b173aa911868eaf",
       "selected_test_count": 1,
       "shard_ids": [
         "smoke"
@@ -1471,6 +1473,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/qualification.py",
         "src/spaghetti_extractor/components/region_replacement.py",
         "src/spaghetti_extractor/components/region_replacement_model.py",
@@ -1651,7 +1654,7 @@
         "pe32-minimal-import-call"
       ],
       "id": "native-2efaa480edbd",
-      "input_sha256": "61080a623328ba6c7273e524eab592d52552cd961d308c6283506699415ec1fd",
+      "input_sha256": "8ba896277bc31b868d765064135dbd4a3434603d2ab218598ec081b5827b7020",
       "resource_class": "medium",
       "test_paths": [
         "tests/integration/native/test_minimal_pe_fixture.py"
@@ -2599,6 +2602,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/qualification.py",
         "src/spaghetti_extractor/components/region_replacement.py",
         "src/spaghetti_extractor/components/region_replacement_model.py",
@@ -2718,7 +2722,7 @@
       ],
       "fixtures": [],
       "id": "pure-1d989d892a6a",
-      "input_sha256": "4bc8a2d5b6cb755f611ecc341a46a51fc57bd889a3972298208094e3c5f4a77c",
+      "input_sha256": "a97cd1a5b3000fc744762db5bd6f21b2cf20346274bbbf6986b10581fde0fd3b",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_status.py"
@@ -4079,6 +4083,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/qualification.py",
         "src/spaghetti_extractor/components/region_replacement.py",
         "src/spaghetti_extractor/components/region_replacement_model.py",
@@ -4255,7 +4260,7 @@
       ],
       "fixtures": [],
       "id": "pure-589f18479ad3",
-      "input_sha256": "6789cee901932a9ad92585023921b0ebb95e7251a42de3933b7ab02b14db8c0b",
+      "input_sha256": "1993e4f1a929d611e4cf26b4e68d3117935e1f001107f2ac3b1807d80ad3e3e9",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_planning.py"
@@ -4978,6 +4983,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/resolution.py",
         "src/spaghetti_extractor/components/semantic.py",
         "src/spaghetti_extractor/components/semantic_model.py",
@@ -5041,7 +5047,7 @@
       ],
       "fixtures": [],
       "id": "pure-852686359950",
-      "input_sha256": "e849be6b86681625abb973b3a428a8d757e2a28d4f6e5fbbfb1a08f618cdb03a",
+      "input_sha256": "98ccc777401fa610ed5217bf61fecc7fe263952af20380a65ddb2ad68d285fa6",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_inputs_and_configuration.py"
@@ -5151,6 +5157,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/qualification.py",
         "src/spaghetti_extractor/components/region_replacement.py",
         "src/spaghetti_extractor/components/region_replacement_model.py",
@@ -5328,7 +5335,7 @@
       ],
       "fixtures": [],
       "id": "pure-856944171a2c",
-      "input_sha256": "701a952bb04149506652a8539c9a982914cfcd7a52d8da70bf71310cdf5a1d89",
+      "input_sha256": "cabf486919f2211b60115a6e082cc77975223c4062b455093d519d12611fbb2c",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_analysis_nix.py"
@@ -5927,6 +5934,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/qualification.py",
         "src/spaghetti_extractor/components/region_replacement.py",
         "src/spaghetti_extractor/components/region_replacement_model.py",
@@ -6103,7 +6111,7 @@
       ],
       "fixtures": [],
       "id": "pure-a3511737d3e8",
-      "input_sha256": "acd1da6aa73702de767aac0ac051340ebcd8ccea4220817f5c5c6ab3e32b42ba",
+      "input_sha256": "87dc2fdae970a0c3688fe1f31cd8c00077e0e541eb1e593a6cc6acfcde093275",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_services.py"
@@ -6633,6 +6641,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/qualification.py",
         "src/spaghetti_extractor/components/region_replacement.py",
         "src/spaghetti_extractor/components/region_replacement_model.py",
@@ -6809,7 +6818,7 @@
       ],
       "fixtures": [],
       "id": "pure-c1ce06948e75",
-      "input_sha256": "e200eb00c6db94c033788aede60ddb0a9b7e7b2b4016f9aafd4e8bf986bf1963",
+      "input_sha256": "dc38cc4e8452e730cc88ca1b537cdc3423f1546aa0072f7b30c4e1291c7caf41",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_static_manifest.py"
@@ -6834,6 +6843,33 @@
       ],
       "tests": [
         "tests/test_recursive_decode"
+      ]
+    },
+    {
+      "files": [
+        "src/spaghetti_extractor/__init__.py",
+        "src/spaghetti_extractor/artifacts/__init__.py",
+        "src/spaghetti_extractor/artifacts/artifact_set.py",
+        "src/spaghetti_extractor/artifacts/io.py",
+        "src/spaghetti_extractor/components/__init__.py",
+        "src/spaghetti_extractor/components/formats.py",
+        "src/spaghetti_extractor/components/intent.py",
+        "src/spaghetti_extractor/components/model.py",
+        "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
+        "src/spaghetti_extractor/components/resolution.py",
+        "src/spaghetti_extractor/util.py",
+        "tests/unit/components/test_proposal_selection.py"
+      ],
+      "fixtures": [],
+      "id": "pure-c38f398db23c",
+      "input_sha256": "d937596930574f8d698e664b106a0102203847fbbbd6c5dc43bb591c62f7712c",
+      "resource_class": "small",
+      "test_paths": [
+        "tests/unit/components/test_proposal_selection.py"
+      ],
+      "tests": [
+        "tests/unit/components/test_proposal_selection"
       ]
     },
     {
@@ -7134,6 +7170,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/qualification.py",
         "src/spaghetti_extractor/components/region_replacement.py",
         "src/spaghetti_extractor/components/region_replacement_model.py",
@@ -7310,7 +7347,7 @@
       ],
       "fixtures": [],
       "id": "pure-ce0386c25d6c",
-      "input_sha256": "0ce6e0869f40174a966c537d40414e9ead1afdebdaac28ff11b26760259a4411",
+      "input_sha256": "13e671d8f48003195936fa3af5e4c6dfbfabaa692f249e19589bfcc28ad637f1",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_runner.py"
@@ -7980,6 +8017,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/qualification.py",
         "src/spaghetti_extractor/components/region_replacement.py",
         "src/spaghetti_extractor/components/region_replacement_model.py",
@@ -8156,7 +8194,7 @@
       ],
       "fixtures": [],
       "id": "pure-e4d48e365c2b",
-      "input_sha256": "7523b72f71cbdc0cdf09c394a7ada5defef4a785b796466b194967bc20b82834",
+      "input_sha256": "35432ee93ca08915b93337884014366e3cc8f7b0bbb12adc1eb2a5d42272eb62",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_discovery.py"
@@ -8442,6 +8480,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/qualification.py",
         "src/spaghetti_extractor/components/region_replacement.py",
         "src/spaghetti_extractor/components/region_replacement_model.py",
@@ -8560,7 +8599,7 @@
       ],
       "fixtures": [],
       "id": "pure-ebc7f2610b0b",
-      "input_sha256": "94f3ddb00f4d3d35bbaa6e15b6c041df60c40d416ce8926ddc71d07bce653836",
+      "input_sha256": "4619d3943f12c93309ebe484e78d98fe1e61bf3d66e539e3acdc2aaa6194c2ba",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/cli/test_public_commands.py"
@@ -9130,6 +9169,7 @@
         "src/spaghetti_extractor/components/interface_schema.py",
         "src/spaghetti_extractor/components/model.py",
         "src/spaghetti_extractor/components/proposal_package.py",
+        "src/spaghetti_extractor/components/proposal_selection.py",
         "src/spaghetti_extractor/components/qualification.py",
         "src/spaghetti_extractor/components/region_replacement.py",
         "src/spaghetti_extractor/components/region_replacement_model.py",
@@ -9306,7 +9346,7 @@
       ],
       "fixtures": [],
       "id": "smoke",
-      "input_sha256": "2d29918cab18951bcad0a4ef082cf247d40ce088b02d5f032e32ceff13a3b358",
+      "input_sha256": "8bc240d495368a36fb3a19282ee4c27e85f5591e6b101965a3ff598b46c5bdb4",
       "resource_class": "small",
       "test_paths": [
         "tests/smoke/test_testkit_cli.py"

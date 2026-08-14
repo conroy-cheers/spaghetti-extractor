@@ -273,6 +273,7 @@ content-addressed component workflow DAG.
 |---|---|
 | `components/discovery.py`, `components/discovery_model.py`, `components/discovery_schema.py`, `components/discovery_checker.py`, `components/discovery_render.py` | Proposes coarsened component candidates with isolated models, schemas, checks, and rendering. |
 | `components/proposal_package.py` | Writes and checks the v2 component-proposal package: compact selector index, exact unit-binding sidecar, bounded rich-record packs, selected-record lookup, and a separate complete producer audit. |
+| `components/proposal_selection.py` | Resolves reviewed selectors once, verifies their rich records, and emits a canonical resolution projection whose identity excludes diagnostics and unrelated discovery proposals. |
 | `components/intent.py`, `components/model.py` | Strict authored leaves, overlapping alternative groups, and non-overlapping configurations. |
 | `components/resolution.py` | Binds component selectors and groups to exact machine units. |
 | `components/contracts.py` | Derives and checks one independently liftable machine boundary. |
@@ -375,6 +376,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `toolkit-context.nix` | One reusable per-system source, package, kernel, oracle, and fixture context shared by the root flake and target SDK. |
 | `target-sdk.nix` | Stable v3 target interface and high-level `workflow.pe32` constructor for analysis, authority, components, candidates, and validation. |
 | `stage-b-components.nix` | Content-addressed resolution, contract, source, evidence, qualification, configuration, and runtime-package DAG. |
+| `stage-b-component-proposal-input.nix` | Controlled-IFD boundary that checks the full proposal package once, then re-interns only reviewed selectors and selected resolution fields for downstream component phases. |
 | `stage-b-component-runtime-package.nix` | Generates and cross-compiles the sole executable component runtime package. |
 | `flake-modules/toolkit.nix`, `flake-modules/checks.nix` | Focused `flake-parts` modules for generic packages/apps/shells and checks. |
 | `stage-a-external-interface-profile.nix` | Pinned SDK headers through a checked machine-level interface profile. |

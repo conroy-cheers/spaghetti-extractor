@@ -1684,6 +1684,19 @@
       "path": "src/spaghetti_extractor/components/proposal_package.py",
       "resources": []
     },
+    "spaghetti_extractor.components.proposal_selection": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.intent",
+        "spaghetti_extractor.components.model",
+        "spaghetti_extractor.components.proposal_package",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/proposal_selection.py",
+      "resources": []
+    },
     "spaghetti_extractor.components.qualification": {
       "dependencies": [
         "spaghetti_extractor",
@@ -1749,6 +1762,7 @@
         "spaghetti_extractor.components.intent",
         "spaghetti_extractor.components.model",
         "spaghetti_extractor.components.proposal_package",
+        "spaghetti_extractor.components.proposal_selection",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/components/resolution.py",
@@ -4181,6 +4195,11 @@
       "role": "proposal"
     },
     {
+      "module": "spaghetti_extractor.components.proposal_selection",
+      "owner": "nix/stage-b-component-proposal-input.nix",
+      "role": "proposal"
+    },
+    {
       "module": "spaghetti_extractor.components.qualification",
       "owner": "nix/stage-b-components.nix",
       "role": "candidate"
@@ -4613,6 +4632,7 @@
       "spaghetti_extractor.components.interface_schema",
       "spaghetti_extractor.components.model",
       "spaghetti_extractor.components.proposal_package",
+      "spaghetti_extractor.components.proposal_selection",
       "spaghetti_extractor.components.qualification",
       "spaghetti_extractor.components.region_replacement",
       "spaghetti_extractor.components.region_replacement_model",
@@ -4888,6 +4908,7 @@
       "spaghetti_extractor.components.interface_schema",
       "spaghetti_extractor.components.model",
       "spaghetti_extractor.components.proposal_package",
+      "spaghetti_extractor.components.proposal_selection",
       "spaghetti_extractor.components.qualification",
       "spaghetti_extractor.components.region_replacement",
       "spaghetti_extractor.components.region_replacement_model",
@@ -4970,7 +4991,10 @@
       "spaghetti_extractor.components.discovery_render",
       "spaghetti_extractor.components.discovery_schema",
       "spaghetti_extractor.components.formats",
+      "spaghetti_extractor.components.intent",
+      "spaghetti_extractor.components.model",
       "spaghetti_extractor.components.proposal_package",
+      "spaghetti_extractor.components.proposal_selection",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
       "spaghetti_extractor.external.callbacks",

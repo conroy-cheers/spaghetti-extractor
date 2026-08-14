@@ -16,6 +16,11 @@ from .formats import (
 from .intent import ComponentIntentError, load_component_catalog_intent
 from .model import ComponentCatalogIntent
 from .proposal_package import load_component_proposal_package_v2
+from .proposal_selection import (
+    load_component_proposal_selection_v1,
+    proposal_matches,
+    select_component_proposals,
+)
 
 
 def resolve_component_catalog(
@@ -26,35 +31,49 @@ def resolve_component_catalog(
     except ValueError as exc:
         raise ComponentIntentError(f"cannot read component proposals: {exc}") from exc
     catalog = load_component_catalog_intent(intent, require_references=False)
-    proposals_raw = proposal_package.index.get("proposals")
-    if not isinstance(proposals_raw, list):
-        raise ComponentIntentError("component proposal index has no proposal array")
+    selected = select_component_proposals(package=proposal_package, catalog=catalog)
+    return _resolve_component_catalog(
+        catalog=catalog,
+        selected=selected,
+        bindings=proposal_package.index.get("bindings", {}),
+        out=out,
+    )
+
+
+def resolve_component_catalog_from_selection(
+    *, selection: Path | str, intent: Path | str, out: Path | str
+) -> dict[str, object]:
+    selected_input = load_component_proposal_selection_v1(selection)
+    catalog = load_component_catalog_intent(intent, require_references=False)
+    if selected_input.program_id != catalog.program_id:
+        raise ComponentIntentError("component proposal selection has wrong program ID")
+    expected_ids = {component.identity for component in catalog.components}
+    if set(selected_input.proposals) != expected_ids:
+        raise ComponentIntentError("component proposal selection inventory is stale")
+    for component in catalog.components:
+        proposal = selected_input.proposals[component.identity]
+        if not proposal_matches(proposal, component.selector):
+            raise ComponentIntentError(
+                f"component {component.identity} selected proposal contradicts intent"
+            )
+    return _resolve_component_catalog(
+        catalog=catalog,
+        selected=selected_input.proposals,
+        bindings=selected_input.bindings,
+        out=out,
+    )
+
+
+def _resolve_component_catalog(
+    *,
+    catalog: ComponentCatalogIntent,
+    selected: Mapping[str, Mapping[str, object]],
+    bindings: object,
+    out: Path | str,
+) -> dict[str, object]:
     resolved_components: dict[str, dict[str, object]] = {}
     for component in catalog.components:
-        matches = [
-            row
-            for row in proposals_raw
-            if isinstance(row, Mapping) and _proposal_matches(row, component.selector)
-        ]
-        if len(matches) != 1:
-            raise ComponentIntentError(
-                f"component {component.identity} resolved to {len(matches)} proposals"
-            )
-        proposal_id = matches[0].get("id")
-        if not isinstance(proposal_id, str):
-            raise ComponentIntentError(
-                f"component {component.identity} proposal has no identity"
-            )
-        try:
-            proposal = proposal_package.get_proposal(proposal_id)
-        except ValueError as exc:
-            raise ComponentIntentError(
-                f"component {component.identity} proposal is stale: {exc}"
-            ) from exc
-        if not _proposal_matches(proposal, component.selector):
-            raise ComponentIntentError(
-                f"component {component.identity} selected proposal contradicts its index"
-            )
+        proposal = selected[component.identity]
         membership = proposal.get("membership")
         if not isinstance(membership, Mapping):
             raise ComponentIntentError(
@@ -73,15 +92,15 @@ def resolve_component_catalog(
             raise ComponentIntentError(
                 f"component {component.identity} proposal repeats machine units"
             )
-        bindings = proposal.get("bindings")
+        proposal_bindings = proposal.get("bindings")
         resolved_components[component.identity] = {
             "kind": "component",
             "id": component.identity,
             "label": component.label,
             "proposal_id": proposal.get("id"),
             "proposal_binding_sha256": (
-                bindings.get("membership_bindings_sha256")
-                if isinstance(bindings, Mapping)
+                proposal_bindings.get("membership_bindings_sha256")
+                if isinstance(proposal_bindings, Mapping)
                 else None
             ),
             "unit_ids": sorted(unit_ids),
@@ -109,7 +128,7 @@ def resolve_component_catalog(
         "executes_original_binary": False,
         "permitted_activation_profiles": list(catalog.permitted_activation_profiles),
         "bindings": copy.deepcopy(
-            dict(proposal_package.index.get("bindings", {}))
+            dict(bindings) if isinstance(bindings, Mapping) else {}
         ),
         "components": [resolved_components[key] for key in sorted(resolved_components)],
         "groups": [resolved_groups[key] for key in sorted(resolved_groups)],
@@ -209,40 +228,6 @@ def _resolve_configuration(
         "unit_owners": dict(sorted(owners.items())),
     }
     return {**core, "configuration_sha256": _canonical_sha256(core)}
-
-
-def _proposal_matches(proposal: Mapping[str, object], selector: Mapping[str, object]) -> bool:
-    allowed = {"entry_rva", "end_rva", "proposal_kind", "contains_rva"}
-    unknown = sorted(set(selector) - allowed)
-    if unknown:
-        raise ComponentIntentError(f"unsupported component selector fields: {unknown}")
-    if not selector:
-        raise ComponentIntentError("component selector must not be empty")
-    membership = proposal.get("membership")
-    if not isinstance(membership, Mapping):
-        raise ComponentIntentError("component proposal has no membership object")
-    for key, expected in selector.items():
-        if key == "entry_rva":
-            if membership.get("rva_start") != expected:
-                return False
-        elif key == "end_rva":
-            if membership.get("rva_end") != expected:
-                return False
-        elif key == "proposal_kind":
-            proposal_kinds = proposal.get("proposal_kinds")
-            if not isinstance(proposal_kinds, list) or expected not in proposal_kinds:
-                return False
-        else:
-            start = membership.get("rva_start")
-            end = membership.get("rva_end")
-            if (
-                not isinstance(expected, int)
-                or not isinstance(start, int)
-                or not isinstance(end, int)
-                or not start <= expected < end
-            ):
-                return False
-    return True
 
 
 def _source_payload(value: object) -> dict[str, object] | None:

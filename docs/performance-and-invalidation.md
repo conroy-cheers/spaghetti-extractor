@@ -41,6 +41,13 @@ realize the derivations, so Nix remains the sole build and substitution
 authority. A concurrent source change prevents receipt publication. Inspect
 receipt location, count, and size with `nix run .#dev -- doctor`.
 
+Target component graphs contain controlled IFD boundaries because reviewed
+selectors are resolved against content produced by static analysis. A cold
+target-flake evaluation may therefore realize those CA preparation derivations
+even when invoked with `--no-build`; the option suppresses requested check
+realization, not evaluator dependencies. After preparation, `--no-build` is a
+pure warm graph check and all content-derived paths substitute normally.
+
 ## Artifact DAG
 
 The v3 authority graph has two checked planning boundaries:
@@ -122,9 +129,17 @@ Exact ISA request planning for 21,040 unique instruction locations takes about
 0.33 seconds after replacing pairwise overlap discovery with one canonical sort
 and adjacent-interval check. Rebuilding the real GNU Hello proposal package
 from warm upstream analysis inputs took 97.7 seconds after the package
-migration. Warm `component status` still takes 37.1 seconds because its Nix
-derivation currently retains a dependency on the complete proposal package;
-narrow selected-proposal derivations remain a separate invalidation task.
+migration. The first `component status` after that package identity changed
+took 37.1 seconds; an unchanged warm invocation took 1.17 seconds. Component
+resolution now consumes a controlled-IFD selected-proposal input: changing an
+unselected or diagnostic-only discovery field reruns only the preparation,
+while preserving the selected input and every downstream derivation identity.
+A changed selected membership or identity invalidates resolution and its
+actual descendants. On GNU Hello the resulting selected input is 16,421 bytes,
+down from the 59 MiB complete proposal package. The first status invocation
+after introducing the boundary rebuilt its closure in 51.36 seconds; the
+immediate unchanged invocation took 0.295 seconds. The corresponding selected
+inputs are 21,860 bytes for jq and 3,172 bytes for DX-Ball.
 
 Framework-owned planning for the 9,041-unit DX-Ball structural universe takes
 about 1.70 seconds and 73 MiB RSS. The controlled Nix mutation fixture verifies
