@@ -37,17 +37,24 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn(".coverage.exact.complete", discovery)
         self.assertIn(".coverage.potential.complete", discovery)
 
-    def test_component_workspace_dag_has_granular_phase_inputs(self) -> None:
-        module = (ROOT / "nix" / "stage-b-semantic-component-workspaces.nix").read_text(encoding="utf-8")
+    def test_component_v2_dag_has_granular_phase_inputs(self) -> None:
+        module = (ROOT / "nix" / "stage-b-components-v2.nix").read_text(
+            encoding="utf-8"
+        )
         for declaration in (
-            "componentSelectionPythonSource ? pythonSource",
-            "semanticComponentPythonSource ? pythonSource",
-            "componentInterfacePythonSource ? pythonSource",
-            "componentCatalog component",
-            "componentInterfacesByName",
+            "component-resolution-v2",
+            "component-contract-v2",
+            "component-source-package-v2",
+            "component-qualification-v2",
+            "component-activation-plan-v2",
+            "component-sources-v2",
         ):
             self.assertIn(declaration, module)
         self.assertIn("__contentAddressed = true;", module)
+        self.assertNotIn("component_workspace", module)
+        self.assertNotIn("identity_authorizes_activation", module)
+        self.assertIn("sourcePackages", module)
+        self.assertIn("implementation=pathlib.Path(sys.argv[2])", module)
 
     def test_interpreter_package_is_a_generic_content_addressed_phase(self) -> None:
         module = (ROOT / "nix" / "stage-b-interpreter-package.nix").read_text(encoding="utf-8")
@@ -410,9 +417,12 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("../src", analysis_source)
         self.assertNotIn("../nix", analysis_source)
 
-    def test_flake_exposes_only_generic_v3_static_authority_constructor(self) -> None:
+    def test_stable_sdk_exposes_only_generic_v3_static_authority_constructor(self) -> None:
         flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
-        self.assertIn("mkAnalysisAuthorityV3", flake)
+        sdk = (ROOT / "nix" / "target-sdk-v2.nix").read_text(encoding="utf-8")
+        self.assertIn("mkTargetSdkV2", flake)
+        self.assertIn("authorityV3", sdk)
+        self.assertIn("analysis-v3-authority.nix", sdk)
         self.assertNotIn("dxball-final-authority-v3", flake)
         self.assertNotIn("mkStaticHybridAuthorityV2Graph", flake)
 

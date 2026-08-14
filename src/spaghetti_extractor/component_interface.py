@@ -75,7 +75,23 @@ _IDENTITY_FIELDS = (
     "return_rva",
     "identity",
     "name",
+    "effect_model",
+    "element_width",
+    "address_size",
+    "restart_semantics",
+    "repeat_condition",
+    "comparison_model",
 )
+_STRING_EVENT_ARGUMENT_FIELDS = {
+    "rep_movs": ("destination", "source", "count", "direction_flag"),
+    "rep_stos": ("destination", "value", "count", "direction_flag"),
+    "rep_scas": ("destination", "accumulator", "count", "direction_flag"),
+}
+_STRING_EVENT_MODELS = {
+    "rep_movs": "symbolic_string_copy_v2",
+    "rep_stos": "symbolic_string_fill_v2",
+    "rep_scas": "symbolic_string_scan_v1",
+}
 
 
 class ComponentInterfaceError(ValueError):
@@ -368,7 +384,7 @@ def synthesize_component_interface_spec(
                     "events": [
                         {
                             **reference,
-                            "arguments": copy.deepcopy(event.get("arguments", [])),
+                            "arguments": _event_arguments(event),
                         }
                     ],
                 }
@@ -937,11 +953,11 @@ def _check_service(
                 ref_location + "/arguments",
                 unit_id=effect["unit_id"],
                 rva=effect["rva"],
-                expected=event.get("arguments", []),
+                expected=_event_arguments(event),
                 observed=None,
                 remediation="represent the exact logical argument expressions",
             )
-        elif reference.get("arguments") != event.get("arguments", []):
+        elif reference.get("arguments") != _event_arguments(event):
             _issue(
                 issues,
                 "violated",
@@ -949,7 +965,7 @@ def _check_service(
                 ref_location + "/arguments",
                 unit_id=effect["unit_id"],
                 rva=effect["rva"],
-                expected=event.get("arguments", []),
+                expected=_event_arguments(event),
                 observed=reference.get("arguments"),
                 remediation="correct the service argument projection",
             )
@@ -1390,7 +1406,30 @@ def _identity_complete(identity: Mapping[str, Any]) -> bool:
         )
     if kind == "internal_call":
         return isinstance(identity.get("target_rva"), int)
+    if kind in _STRING_EVENT_MODELS:
+        return (
+            identity.get("effect_model") == _STRING_EVENT_MODELS[kind]
+            and identity.get("element_width") in {1, 2, 4}
+            and identity.get("address_size") == 32
+            and identity.get("restart_semantics") == "element_committed_v1"
+            and (
+                kind != "rep_scas"
+                or (
+                    identity.get("repeat_condition") == "while_not_equal_v1"
+                    and identity.get("comparison_model") == "subtraction_flags_v1"
+                )
+            )
+        )
     return isinstance(kind, str) and len(identity) > 1
+
+
+def _event_arguments(event: Mapping[str, Any]) -> list[Any]:
+    kind = event.get("kind")
+    fields = _STRING_EVENT_ARGUMENT_FIELDS.get(str(kind))
+    if fields is None:
+        value = event.get("arguments", [])
+        return copy.deepcopy(value) if isinstance(value, list) else []
+    return [copy.deepcopy(event.get(field)) for field in fields]
 
 
 def _internal_call_is_member(

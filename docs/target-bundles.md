@@ -7,7 +7,7 @@ of the generic toolkit, not a Python extension point.
 families. `targets/registry.nix` is the explicit, reviewed registry. The root
 flake neither imports nor enumerates validation targets. In-tree target modules
 receive `{ pkgs, sdk }`; out-of-tree consumers construct the same SDK with
-`spaghetti-extractor.lib.mkTargetSdkV1 { inherit pkgs; }`.
+`spaghetti-extractor.lib.mkTargetSdkV2 { inherit pkgs; }`.
 
 Required `target.json` fields identify the target, expected input hash, and
 relative paths consumed by the generic intent resolver. The supported path

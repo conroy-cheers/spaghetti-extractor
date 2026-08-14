@@ -263,7 +263,7 @@ class RepositoryBoundaryTests(unittest.TestCase):
 
     def test_installed_nix_data_covers_every_generic_nix_surface(self) -> None:
         manifest = (self.root / "pyproject.toml").read_text(encoding="utf-8")
-        flake_only = {"target-sdk-v1.nix", "toolkit-context.nix"}
+        flake_only = {"target-sdk-v2.nix", "toolkit-context.nix"}
         missing = sorted(
             path.name
             for path in (self.root / "nix").iterdir()

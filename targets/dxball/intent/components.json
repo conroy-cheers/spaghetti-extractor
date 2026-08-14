@@ -1,0 +1,110 @@
+{
+  "format": "spaghetti-extractor-component-catalog-intent-v2",
+  "program_id": "dxball-pe32-reference-v1",
+  "permitted_activation_profiles": [
+    "bounded-equivalence-v1",
+    "validation-backed-v1"
+  ],
+  "components": [
+    {
+      "id": "startup-1000",
+      "label": "Startup unit 0x1000",
+      "selector": {
+        "entry_rva": 4096,
+        "end_rva": 4101,
+        "proposal_kind": "singleton"
+      },
+      "evidence_profile": "structural-draft-v1"
+    },
+    {
+      "id": "startup-1005",
+      "label": "Startup unit 0x1005",
+      "selector": {
+        "entry_rva": 4101,
+        "end_rva": 4112,
+        "proposal_kind": "singleton"
+      },
+      "evidence_profile": "structural-draft-v1"
+    },
+    {
+      "id": "startup-1010",
+      "label": "Startup unit 0x1010",
+      "selector": {
+        "entry_rva": 4112,
+        "end_rva": 4124,
+        "proposal_kind": "singleton"
+      },
+      "evidence_profile": "structural-draft-v1"
+    },
+    {
+      "id": "startup-101c",
+      "label": "Startup unit 0x101c",
+      "selector": {
+        "entry_rva": 4124,
+        "end_rva": 4134,
+        "proposal_kind": "singleton"
+      },
+      "evidence_profile": "structural-draft-v1"
+    },
+    {
+      "id": "startup-1026",
+      "label": "Startup unit 0x1026",
+      "selector": {
+        "entry_rva": 4134,
+        "end_rva": 4148,
+        "proposal_kind": "singleton"
+      },
+      "evidence_profile": "structural-draft-v1"
+    }
+  ],
+  "groups": [
+    {
+      "id": "startup-prefix",
+      "label": "Three-unit startup prefix",
+      "members": [
+        "startup-1000",
+        "startup-1005",
+        "startup-1010"
+      ],
+      "evidence_profile": "structural-draft-v1"
+    },
+    {
+      "id": "startup-extended",
+      "label": "Five-unit startup prefix",
+      "members": [
+        "startup-prefix",
+        "startup-101c",
+        "startup-1026"
+      ],
+      "evidence_profile": "structural-draft-v1",
+      "interface_review": "reviews/startup-extended.json"
+    }
+  ],
+  "configurations": [
+    {
+      "id": "startup-leaves",
+      "label": "Five independent startup units",
+      "selections": [
+        {"kind": "component", "id": "startup-1000", "activation": "draft"},
+        {"kind": "component", "id": "startup-1005", "activation": "draft"},
+        {"kind": "component", "id": "startup-1010", "activation": "draft"},
+        {"kind": "component", "id": "startup-101c", "activation": "draft"},
+        {"kind": "component", "id": "startup-1026", "activation": "draft"}
+      ]
+    },
+    {
+      "id": "startup-prefix",
+      "label": "Three-unit startup group",
+      "selections": [
+        {"kind": "group", "id": "startup-prefix", "activation": "draft"}
+      ]
+    },
+    {
+      "id": "startup-extended",
+      "label": "Five-unit startup group",
+      "selections": [
+        {"kind": "group", "id": "startup-extended", "activation": "draft"}
+      ]
+    }
+  ]
+}

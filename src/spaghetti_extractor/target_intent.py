@@ -17,10 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from .artifact_formats import (
-    COMPONENT_INTENT_FORMAT,
     COMPONENT_INTERFACE_INTENT_FORMAT,
-    COMPONENT_PROPOSAL_SET_FORMAT,
-    COMPONENT_SELECTION_FORMAT,
     GENERATED_ARTIFACT_PROVENANCE_FORMAT,
     LINKED_ISLAND_INTENT_FORMAT,
     LINKED_ISLAND_REVIEW_FORMAT,
@@ -30,7 +27,6 @@ from .artifact_formats import (
     TARGET_BUNDLE_FORMAT,
 )
 from .component_interface import finalize_component_interface_spec
-from .component_selection import bind_component_selection
 from .linked_libraries import bind_linked_island_review
 from .source_project import (
     bind_source_component_evidence_plan,
@@ -174,85 +170,6 @@ def validate_authored_intent(
     if payload.get("format") != expected_format:
         raise TargetIntentError(f"{context} has unsupported format")
     _reject_generated_fields(payload, context)
-
-
-def resolve_component_intent(
-    *, proposals: Path | str, intent: Path | str, out: Path | str
-) -> dict[str, object]:
-    """Resolve stable component selectors into a generated bound selection."""
-
-    proposal_path = Path(proposals)
-    proposal_set = _read_object(proposal_path, "component proposal set")
-    if proposal_set.get("format") != COMPONENT_PROPOSAL_SET_FORMAT:
-        raise TargetIntentError("unsupported component proposal-set format")
-    intent_payload = _read_object(Path(intent), "component intent")
-    validate_authored_intent(
-        intent_payload,
-        expected_format=COMPONENT_INTENT_FORMAT,
-        context="component intent",
-    )
-    _require_exact_keys(
-        intent_payload,
-        {"format", "program_id", "components"},
-        "component intent",
-    )
-    proposals_by_match = _array(proposal_set.get("proposals"), "component proposals")
-    resolved: list[dict[str, object]] = []
-    seen_ids: set[str] = set()
-    for index, raw in enumerate(_array(intent_payload.get("components"), "component intents")):
-        row = _object(raw, f"component intent {index}")
-        component_id = _string(row.get("id"), f"component intent {index} id")
-        if component_id in seen_ids:
-            raise TargetIntentError(f"duplicate component intent id: {component_id}")
-        seen_ids.add(component_id)
-        selector = _object(row.get("selector"), f"component intent {component_id} selector")
-        matches = [
-            _object(proposal, "component proposal")
-            for proposal in proposals_by_match
-            if _proposal_matches(_object(proposal, "component proposal"), selector)
-        ]
-        if len(matches) != 1:
-            raise TargetIntentError(
-                f"component intent {component_id} resolved to {len(matches)} proposals"
-            )
-        proposal = matches[0]
-        proposal_id = _string(proposal.get("id"), "resolved proposal id")
-        bindings = proposal.get("bindings")
-        binding = (
-            _object(bindings, "resolved proposal bindings").get(
-                "membership_bindings_sha256"
-            )
-            if isinstance(bindings, Mapping)
-            else None
-        )
-        generated = {
-            key: copy.deepcopy(value)
-            for key, value in row.items()
-            if key not in {"selector"}
-        }
-        generated["proposal_id"] = proposal_id
-        if isinstance(binding, str) and _SHA256.fullmatch(binding):
-            generated["proposal_binding_sha256"] = binding
-        resolved.append(generated)
-    selection = bind_component_selection(
-        {
-            "format": COMPONENT_SELECTION_FORMAT,
-            "program_id": _string(intent_payload.get("program_id"), "program id"),
-            "proposal_set_sha256": _string(
-                proposal_set.get("proposal_set_sha256"), "proposal-set SHA-256"
-            ),
-            "components": resolved,
-        }
-    )
-    output = Path(out)
-    write_json(output, selection)
-    _write_provenance(
-        output.with_name("component-selection.provenance.json"),
-        artifact=output,
-        producer="target-intent.resolve-component-intent-v1",
-        inputs=(proposal_path, Path(intent)),
-    )
-    return selection
 
 
 def apply_component_interface_intent(
@@ -577,7 +494,6 @@ __all__ = [
     "TargetIntentError",
     "apply_component_interface_intent",
     "load_target_bundle",
-    "resolve_component_intent",
     "resolve_linked_island_intent",
     "resolve_source_component_evidence_intent",
     "resolve_source_project_intent",

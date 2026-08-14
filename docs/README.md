@@ -2,8 +2,8 @@
 
 - [Architecture and assurance](architecture.md): canonical pipeline, trust
   boundaries, statuses, and completion criteria.
-- [Semantic components](semantic-components.md): component discovery,
-  interfaces, source replacement, and promotion.
+- [Components](components.md): exact ownership, operator-defined groups,
+  derived interfaces, qualification, and fallback-safe activation.
 - [External operations](external-operations.md): imports, COM/vtable calls,
   callbacks, resources, and candidate runtime adapters.
 - [ISA qualification](isa-qualification.md): compact Lean semantics and veto

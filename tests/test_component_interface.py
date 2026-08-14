@@ -222,6 +222,80 @@ class ComponentInterfaceTests(unittest.TestCase):
         self.assertEqual(spec["services"][0]["events"][0]["arguments"], [_reg("eax")])
         self.assertEqual(result["coverage"]["represented_once"], 3)
 
+    def test_restartable_string_operation_has_complete_intrinsic_contract(self) -> None:
+        event = {
+            "kind": "rep_movs",
+            "effect_model": "symbolic_string_copy_v2",
+            "element_width": 4,
+            "address_size": 32,
+            "restart_semantics": "element_committed_v1",
+            "destination": _reg("edi"),
+            "source": _reg("esi"),
+            "count": _reg("ecx"),
+            "direction_flag": {"op": "flag", "name": "df"},
+        }
+        unit = _unit(
+            "unit:string-copy",
+            0x3000,
+            0x3002,
+            semantics={
+                "register_writes": [],
+                "flag_writes": [],
+                "memory_events": [],
+                "external_events": [event],
+                "faults": [],
+                "outcome": {"kind": "fallthrough", "target_rva": 0x3002},
+            },
+        )
+        machine, catalog = self._package([unit])
+
+        spec = synthesize_component_interface_spec(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+        )
+        result = check_component_interface(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            interface_spec=spec,
+        )
+
+        self.assertEqual(result["status"], "checked")
+        self.assertEqual(
+            spec["services"][0]["identity"],
+            {
+                "kind": "rep_movs",
+                "effect_model": "symbolic_string_copy_v2",
+                "element_width": 4,
+                "address_size": 32,
+                "restart_semantics": "element_committed_v1",
+            },
+        )
+        self.assertEqual(
+            spec["services"][0]["events"][0]["arguments"],
+            [
+                _reg("edi"),
+                _reg("esi"),
+                _reg("ecx"),
+                {"op": "flag", "name": "df"},
+            ],
+        )
+
+        spec["services"][0]["events"][0]["arguments"][1] = _reg("eax")
+        spec = finalize_component_interface_spec(spec)
+        violated = check_component_interface(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            interface_spec=spec,
+        )
+        self.assertEqual(violated["status"], "violated")
+        self.assertIn(
+            "service_arguments_mismatch",
+            {issue["code"] for issue in violated["issues"]},
+        )
+
     def test_checked_internal_control_table_read_may_be_adapter_owned(self) -> None:
         address = {
             "op": "add32",

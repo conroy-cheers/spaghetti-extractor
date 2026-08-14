@@ -60,6 +60,14 @@ let
     maxUnits = 512;
     maxCandidatesPerSeed = 12;
   };
+  componentsV2 = sdk.lifting.componentContractsV2 {
+    machineIr = analysis.machineIr;
+    reconstructionPlan = analysis.reconstructionPlan;
+    componentProposals = analysis.componentProposals;
+    intent = ./intent/components.json;
+    reviewRoot = ./intent/reviews;
+    namePrefix = "spaghetti-extractor-dxball-1.09";
+  };
   analysisV3 = sdk.analysis.authorityV3 {
     name = "spaghetti-extractor-dxball-1.09-authority-v3";
     machineIr = "${analysis.machineIr}/machine-ir.jsonl";
@@ -124,6 +132,14 @@ sdk.target.bundle {
       reconstruction-plan = analysis.reconstructionPlan;
       component-proposals = analysis.componentProposals;
     };
+    components = {
+      resolution = componentsV2.resolution;
+      contracts = componentsV2.contracts;
+      source-packages = componentsV2.sourcePackages;
+      contract-bundle = componentsV2.bundle;
+      configurations = componentsV2.activationPlans;
+      source-bundles = componentsV2.sourceBundles;
+    };
     authority = {
       final = analysisV3.finalAuthority;
       gate = analysisV3.finalAuthorityGate;
@@ -148,5 +164,10 @@ sdk.target.bundle {
       run = diagnosticRun;
     };
   };
-  checks.intent = intent.validation;
+  checks = {
+    intent = intent.validation;
+    component-resolution = componentsV2.resolution;
+    component-contract = componentsV2.contracts.startup-extended;
+    component-configuration = componentsV2.activationPlans.startup-extended;
+  };
 }

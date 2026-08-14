@@ -12,14 +12,11 @@ from .analysis.binary_inventory import stage_a_inventory_binary
 from .analysis.isa_inventory import write_binary_isa_inventory
 from .behavioral_roots import generate_behavioral_roots
 from .component_discovery import write_component_proposals
-from .component_selection import materialize_component_declarations
-from .component_workspace import (
-    create_component_workspace,
-    promote_qualified_components,
-    qualify_component,
-    rebind_component_workspace,
-    run_component_source_check,
-)
+from .components.contracts import build_lift_unit_contract_v2
+from .components.configuration import compose_component_configuration_v2
+from .components.qualification import qualify_lift_unit_v2
+from .components.resolution import resolve_component_catalog_v2
+from .components.source import build_component_source_package_v2
 from .contract_tools import (
     REFERENCE_CONTRACT_MODEL_ID,
     stage_a_diff_obligations,
@@ -36,7 +33,6 @@ from .opaque_reconstruction import stage_a_export_opaque_reconstruction
 from .reconstruction_ir import export_machine_ir_package
 from .roundtrip_fuzz.generator import generate_spike_corpus
 from .roundtrip_fuzz.runner import run_roundtrip_corpus
-from .semantic_components import write_semantic_component_catalog
 from .source_operation_catalog import render_source_operations
 from .source_project import bind_source_project
 from .stage_b import (
@@ -364,22 +360,6 @@ def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     _path(native_runtime, "callable_external_contract")
     _path(native_runtime, "out", required=True)
 
-    components = _command(
-        commands,
-        "stage-b-build-component-catalog",
-        "derive semantic component definitions from machine IR",
-        lambda a: write_semantic_component_catalog(
-            machine_ir=a.machine_ir,
-            reconstruction_plan=a.reconstruction_plan,
-            declarations=a.declarations,
-            out=a.out,
-        ),
-    )
-    _path(components, "machine_ir", required=True)
-    _path(components, "reconstruction_plan", required=True)
-    _path(components, "declarations", required=True)
-    _path(components, "out", required=True)
-
     discovery = _command(
         commands,
         "stage-b-discover-components",
@@ -398,78 +378,93 @@ def _build_parser(*, prog: str | None = None) -> argparse.ArgumentParser:
     discovery.add_argument("--max-candidates-per-seed", type=int, default=12)
     _path(discovery, "out", required=True)
 
-    selection = _command(
+    component_resolution_v2 = _command(
         commands,
-        "stage-b-select-components",
-        "materialize reviewed component declarations",
-        lambda a: materialize_component_declarations(
-            proposals=a.proposals, selection=a.selection, out=a.out
+        "stage-b-resolve-component-catalog-v2",
+        "resolve exact leaf, group, and configuration ownership from authored intent",
+        lambda a: resolve_component_catalog_v2(
+            proposals=a.proposals,
+            intent=a.intent,
+            out=a.out,
         ),
     )
-    _path(selection, "proposals", required=True)
-    _path(selection, "selection", required=True)
-    _path(selection, "out", required=True)
+    _path(component_resolution_v2, "proposals", required=True)
+    _path(component_resolution_v2, "intent", required=True)
+    _path(component_resolution_v2, "out", required=True)
 
-    component_create = _command(
+    component_contract_v2 = _command(
         commands,
-        "stage-b-create-component",
-        "create an editable portable-C component workspace",
-        _create_component,
-    )
-    _path(component_create, "catalog")
-    _path(component_create, "plan")
-    _path(component_create, "machine_ir")
-    _path(component_create, "component_slice")
-    _path(component_create, "interpreter_package", required=True)
-    _path(component_create, "interface_refinement", required=True)
-    component_create.add_argument("--component-id", required=True)
-    component_create.add_argument("--profile", required=True)
-    _path(component_create, "out", required=True)
-
-    component_rebind = _command(
-        commands,
-        "stage-b-rebind-component",
-        "refresh hashes after editing portable component source",
-        lambda a: rebind_component_workspace(workspace=a.workspace),
-    )
-    _path(component_rebind, "workspace", required=True)
-
-    component_check = _command(
-        commands,
-        "stage-b-check-component",
-        "run the bounded component contract checker",
-        lambda a: run_component_source_check(
-            workspace=a.workspace, cbmc=a.cbmc, out=a.out, timeout_seconds=a.timeout_seconds
+        "stage-b-build-component-contract-v2",
+        "derive and check one independently liftable leaf or aggregate boundary",
+        lambda a: build_lift_unit_contract_v2(
+            machine_ir=a.machine_ir,
+            reconstruction_plan=a.reconstruction_plan,
+            resolution=a.resolution,
+            lift_unit_id=a.lift_unit_id,
+            review=a.review,
+            out_dir=a.out,
         ),
     )
-    _path(component_check, "workspace", required=True)
-    component_check.add_argument("--cbmc", required=True)
-    component_check.add_argument("--timeout-seconds", type=int, default=120)
-    _path(component_check, "out", required=True)
+    _path(component_contract_v2, "machine_ir", required=True)
+    _path(component_contract_v2, "reconstruction_plan", required=True)
+    _path(component_contract_v2, "resolution", required=True)
+    component_contract_v2.add_argument("--lift-unit-id", required=True)
+    _path(component_contract_v2, "review")
+    _path(component_contract_v2, "out", required=True)
 
-    component_qualify = _command(
+    component_source_v2 = _command(
         commands,
-        "stage-b-qualify-component",
-        "bind source evidence and authorize one component replacement",
-        lambda a: qualify_component(
-            workspace=a.workspace, source_evidence=a.source_evidence, out=a.out
+        "stage-b-package-component-source-v2",
+        "content-bind the exact portable source inputs for one lift unit",
+        lambda a: build_component_source_package_v2(
+            lift_unit_id=a.lift_unit_id,
+            files=_keyed_paths(a.file),
+            shared_inputs=_keyed_paths(a.shared_input),
+            out_dir=a.out,
         ),
     )
-    _path(component_qualify, "workspace", required=True)
-    _path(component_qualify, "source_evidence", required=True)
-    _path(component_qualify, "out", required=True)
+    component_source_v2.add_argument("--lift-unit-id", required=True)
+    component_source_v2.add_argument("--file", action="append", required=True)
+    component_source_v2.add_argument("--shared-input", action="append", default=[])
+    _path(component_source_v2, "out", required=True)
 
-    component_promote = _command(
+    component_qualify_v2 = _command(
         commands,
-        "stage-b-promote-components",
-        "compose qualified components into an override registry",
-        lambda a: promote_qualified_components(
-            workspaces=a.workspace, qualifications=a.qualification, out_dir=a.out
+        "stage-b-qualify-component-v2",
+        "bind generated behavioral evidence to one exact lift-unit contract",
+        lambda a: qualify_lift_unit_v2(
+            contract=a.contract,
+            implementation=a.implementation,
+            evidence=a.evidence,
+            out=a.out,
         ),
     )
-    _many_paths(component_promote, "workspace")
-    _many_paths(component_promote, "qualification")
-    _path(component_promote, "out", required=True)
+    _path(component_qualify_v2, "contract", required=True)
+    _path(component_qualify_v2, "implementation", required=True)
+    _path(component_qualify_v2, "evidence", required=True)
+    _path(component_qualify_v2, "out", required=True)
+
+    component_compose_v2 = _command(
+        commands,
+        "stage-b-compose-components-v2",
+        "compose one non-overlapping configuration with total machine-IR fallback",
+        lambda a: compose_component_configuration_v2(
+            machine_ir=a.machine_ir,
+            resolution=a.resolution,
+            configuration_id=a.configuration_id,
+            contracts=_keyed_paths(a.contract),
+            implementations=_keyed_paths(a.implementation),
+            qualifications=_keyed_paths(a.qualification),
+            out=a.out,
+        ),
+    )
+    _path(component_compose_v2, "machine_ir", required=True)
+    _path(component_compose_v2, "resolution", required=True)
+    component_compose_v2.add_argument("--configuration-id", required=True)
+    component_compose_v2.add_argument("--contract", action="append", default=[])
+    component_compose_v2.add_argument("--implementation", action="append", default=[])
+    component_compose_v2.add_argument("--qualification", action="append", default=[])
+    _path(component_compose_v2, "out", required=True)
 
     source_bind = _command(
         commands,
@@ -638,20 +633,6 @@ def _export_machine_ir(args: argparse.Namespace) -> Any:
     return package.manifest
 
 
-def _create_component(args: argparse.Namespace) -> dict[str, Any]:
-    return create_component_workspace(
-        catalog=args.catalog,
-        plan=args.plan,
-        machine_ir=args.machine_ir,
-        component_slice=args.component_slice,
-        interpreter_package=args.interpreter_package,
-        component_id=args.component_id,
-        proof_profile=args.profile,
-        interface_refinement=args.interface_refinement,
-        out_dir=args.out,
-    )
-
-
 def _bind_source_project(args: argparse.Namespace) -> dict[str, Any]:
     spec = json.loads(args.spec.read_text(encoding="utf-8"))
     return bind_source_project(
@@ -703,6 +684,18 @@ def _exit_status(result: dict[str, Any]) -> int:
         "satisfied",
         "usable-incomplete",
     } else 1
+
+
+def _keyed_paths(values: list[str]) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for value in values:
+        identity, separator, path = value.partition("=")
+        if not separator or not identity or not path:
+            raise ValueError("component artifact arguments must use <id>=<path>")
+        if identity in result:
+            raise ValueError(f"duplicate component artifact argument: {identity}")
+        result[identity] = Path(path)
+    return result
 
 
 def _generated_intermediate(

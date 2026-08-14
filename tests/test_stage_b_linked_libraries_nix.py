@@ -31,13 +31,13 @@ class StageBLinkedLibrariesNixTests(unittest.TestCase):
         self.assertNotIn("wine", module.lower())
         self.assertNotIn("executes_original_binary = true", module.lower())
 
-    def test_component_dags_consume_linked_scope_without_granting_authority(self) -> None:
-        catalog = (ROOT / "nix" / "stage-b-semantic-components.nix").read_text(encoding="utf-8")
-        workspaces = (ROOT / "nix" / "stage-b-semantic-component-workspaces.nix").read_text(encoding="utf-8")
-        self.assertIn("linkedIslands ? null", catalog)
-        self.assertIn("linked_island_identity_authorizes_replacement", catalog)
-        self.assertIn("linkedIslands ? null", workspaces)
-        self.assertIn("identity_authorizes_activation == false", workspaces)
+    def test_component_activation_requires_separate_behavioral_evidence(self) -> None:
+        module = (ROOT / "nix" / "stage-b-components-v2.nix").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("evidenceById ? { }", module)
+        self.assertIn("activation_requires_separate_behavioral_evidence", module)
+        self.assertNotIn("linked_island_identity_authorizes_replacement", module)
 
 
 if __name__ == "__main__":

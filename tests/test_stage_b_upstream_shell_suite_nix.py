@@ -24,11 +24,14 @@ class StageBUpstreamShellSuiteNixTests(unittest.TestCase):
         self.assertIn("script_sha256", source)
         self.assertIn("environment_sha256", source)
 
-    def test_flake_exports_the_generic_runner(self) -> None:
+    def test_stable_target_sdk_exports_the_generic_runner(self) -> None:
         flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
+        sdk = (ROOT / "nix" / "target-sdk-v2.nix").read_text(encoding="utf-8")
         package = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-        self.assertIn("mkUpstreamShellSuite", flake)
+        self.assertIn("mkTargetSdkV2", flake)
+        self.assertIn("upstreamShellSuite", sdk)
+        self.assertIn("stage-b-upstream-shell-suite.nix", sdk)
         self.assertIn('"nix/stage-b-upstream-shell-suite.nix"', package)
 
 

@@ -34,7 +34,7 @@
 
       perSystem = { pkgs, system, ... }:
         let
-          sdk = import ../nix/target-sdk-v1.nix { inherit pkgs; };
+          sdk = import ../nix/target-sdk-v2.nix { inherit pkgs; };
           bundles = sdk.target.registry (builtins.mapAttrs
             (_: path: import path { inherit pkgs sdk; })
             targetPaths);
@@ -53,7 +53,7 @@
                 echo "target modules must consume the public SDK" >&2
                 exit 1
               fi
-              if ! rg -q 'import ../nix/target-sdk-v1[.]nix' ${./flake.nix}; then
+              if ! rg -q 'import ../nix/target-sdk-v2[.]nix' ${./flake.nix}; then
                 echo "consumer flake must use the public target SDK entrypoint" >&2
                 exit 1
               fi

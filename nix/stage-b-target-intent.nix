@@ -3,7 +3,6 @@
   pythonEnv,
   pythonSource,
   target,
-  componentProposals ? null,
 }:
 
 let
@@ -15,7 +14,6 @@ let
     inherit pkgs;
     source = pythonSource;
     modules = [
-      "spaghetti_extractor.component_selection"
       "spaghetti_extractor.target_intent"
       "spaghetti_extractor.util"
     ];
@@ -56,23 +54,6 @@ let
     })
     PY
   '';
-  componentSelection =
-    if componentProposals == null || !(paths ? components) then null else
-    mkGenerated "component-selection" ''
-      ${python} - \
-        ${componentProposals}/component-proposals.json \
-        ${target + "/${paths.components}"} "$out" <<'PY'
-      import pathlib
-      import sys
-      from spaghetti_extractor.target_intent import resolve_component_intent
-
-      resolve_component_intent(
-          proposals=pathlib.Path(sys.argv[1]),
-          intent=pathlib.Path(sys.argv[2]),
-          out=pathlib.Path(sys.argv[3]) / "component-selection.json",
-      )
-      PY
-    '';
   linkedIslandReview =
     if !(paths ? linked_islands) then null else
     mkGenerated "linked-island-review" ''
@@ -138,7 +119,6 @@ in
   inherit
     targetId
     validation
-    componentSelection
     linkedIslandReview
     sourceProjects
     sourceEvidence

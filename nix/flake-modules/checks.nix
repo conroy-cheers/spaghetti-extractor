@@ -73,7 +73,12 @@
         inherit (context) pythonEnv;
         pythonSource = testSource;
       };
-      targetSdkV1Check = import ../tests/target-sdk-v1.nix { inherit pkgs; };
+      targetSdkV2Check = import ../tests/target-sdk-v2.nix { inherit pkgs; };
+      componentsV2Check = import ../tests/components-v2.nix {
+        inherit pkgs;
+        inherit (context) pythonEnv;
+        pythonSource = context.sources.analysisSource;
+      };
     in
     {
       legacyPackages = {
@@ -94,7 +99,9 @@
         } ''
           spaghetti-extractor --help >/dev/null
           spaghetti-extractor stage-a-inventory-binary --help >/dev/null
-          spaghetti-extractor stage-b-create-component --help >/dev/null
+          spaghetti-extractor stage-b-resolve-component-catalog-v2 --help >/dev/null
+          spaghetti-extractor stage-b-build-component-contract-v2 --help >/dev/null
+          spaghetti-extractor stage-b-compose-components-v2 --help >/dev/null
           touch "$out"
         '';
         test-suite = fullGate;
@@ -127,7 +134,8 @@
         isa-kernel = context.kernels.isaConformanceKernel;
         inductive-certificate-kernel = context.kernels.inductiveCertificateKernel;
         roundtrip = roundtrip.qualification;
-        target-sdk-v1 = targetSdkV1Check;
+        target-sdk-v2 = targetSdkV2Check;
+        components-v2 = componentsV2Check;
       };
     };
 }

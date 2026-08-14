@@ -33,7 +33,7 @@ PE bytes
   -> typed v3 authority graph
   -> complete interpreter/native fallback
   -> library/interface/component proposals
-  -> component workspaces and portable source
+  -> component v2 contracts, qualifications, and activation plans
   -> rebuilt candidate
   -> stage_b.py static assurance
   -> stage_b_functional.py candidate-only tests
@@ -189,20 +189,27 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_candidate_modes.py` | Stable fail-closed identifiers for static-closed and structural-diagnostic candidate builds. |
 | `recovered_executable_data.py` | Checked classification of immutable initialized data embedded in executable sections. |
 
-`component_backend.py` contains the low-level component workspace engine.
-`component_workspace.py` is the public component-oriented facade.
+`reconstruction_plan.py` derives deterministic reconstruction clusters and
+component discovery inputs from the checked machine IR.
+
+`components/source.py` packages the exact portable files used by component
+qualification and candidate source bundles. Qualification cannot outlive a
+source-byte change.
+The public component framework is the typed `components/` package and the
+content-addressed `stage-b-components-v2.nix` DAG.
 
 ## Components And Portable Source
 
 | Module | Purpose |
 |---|---|
 | `component_discovery.py` | Proposes coarsened component candidates. |
-| `component_selection.py` | Materializes reviewed selections. |
+| `components/intent.py`, `components/model.py` | Strict authored leaves, overlapping alternative groups, and non-overlapping configurations. |
+| `components/resolution.py` | Binds component selectors and groups to exact machine units. |
+| `components/contracts.py` | Derives and checks one independently liftable machine boundary. |
+| `components/qualification.py` | Binds exact candidate-only or bounded evidence without overstating its scope. |
+| `components/configuration.py` | Produces total, exclusive portable-or-fallback ownership for a selected configuration. |
 | `semantic_components.py` | Validates hierarchical component declarations and machine boundaries. |
 | `component_interface.py` | Declares and checks component interfaces/refinements. |
-| `component_profile.py` | Component checker profiles and finite domains. |
-| `bounded_component_contract.py` | Bounded pairwise component contracts. |
-| `finite_component_contract.py` | Z3/CBMC-oriented finite component checks. |
 | `finite_value_domain.py` | Explicit bounded scalar/pointer domains. |
 | `region_replacement.py` | Region replacement manifests and activation rules. |
 | `source_graph.py` | Source ownership and dependency graph. |
@@ -296,7 +303,8 @@ enforce this with `xvfb-run` where Wine is used.
 | File | Output role |
 |---|---|
 | `toolkit-context.nix` | One reusable per-system source, package, kernel, oracle, and fixture context shared by the root flake and target SDK. |
-| `target-sdk-v1.nix` | Stable configured target interface grouped into analysis, authority, candidate, lifting, validation, and bundle operations. |
+| `target-sdk-v2.nix` | Stable configured target interface grouped into analysis, authority, candidate, component lifting, validation, and bundle operations. |
+| `stage-b-components-v2.nix` | Content-addressed leaf/group contracts, qualifications, activation plans, and source bundles. |
 | `flake-modules/toolkit.nix`, `flake-modules/checks.nix` | Focused `flake-parts` modules for generic packages/apps/shells and checks. |
 | `stage-a-external-interface-profile.nix` | Pinned SDK headers through a checked machine-level interface profile. |
 | `stage-a-isa-conformance.nix` | One cached Lean/Unicorn/Bochs corpus evaluation. |
@@ -309,10 +317,6 @@ enforce this with `xvfb-run` where Wine is used.
 | `machine-import-control-profile.nix` | Content-addressed no-return import projection that isolates machine IR from ordinary API-profile edits. |
 | `stage-b-component-analysis.nix` | Original inventory through component proposals. |
 | `stage-b-component-discovery.nix` | Independent proposal phase. |
-| `stage-b-component-selection.nix` | Authored selection materialization. |
-| `stage-b-component-interfaces.nix` | Interface extraction/refinement phase. |
-| `stage-b-semantic-components.nix` | Component catalog phase. |
-| `stage-b-semantic-component-workspaces.nix` | Per-component workspace/check/qualification DAG. |
 | `stage-b-interpreter-package.nix` | Machine-IR interpreter package. |
 | `stage-b-native-object-graph.nix` | Deterministic native object graph plus a CA compile/assembly realization; avoids evaluation-time reads of CA outputs. |
 | `stage-b-hybrid-candidate.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |
@@ -352,8 +356,8 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-a-builders`, `stage-a-lightweight-ca-builders` | Optional remote builder inventories for full and lightweight jobs. |
 | `stage-a-builder-public-keys` | Trusted cache keys paired with the builder inventories. |
 
-The supported consumer interface is `flake.lib.mkTargetSdkV1`; low-level
-constructors are exposed under `flake.lib.unstable` for toolkit development.
+The supported consumer interface is `flake.lib.mkTargetSdkV2`. Low-level Nix
+constructors are private implementation details rather than a parallel API.
 CA derivations are first-class; dependency granularity, not CA mode alone,
 determines invalidation.
 
@@ -391,7 +395,7 @@ machine-generated catalogs belong in Nix outputs.
 ## Documentation
 
 `docs/README.md` is the documentation index. The active design references are
-`architecture.md`, `semantic-components.md`, `external-operations.md`,
+`architecture.md`, `components.md`, `external-operations.md`,
 `isa-qualification.md`, `static-roundtrip-qualification.md`, and
 `target-bundles.md`, and `performance-and-invalidation.md`. Historical plans and experiment reports remain in Git
 history rather than competing with the current design.

@@ -105,9 +105,11 @@ runtime outputs stay behind the explicit final-authority gate.
 - `nix run ./targets#test`: validation for one explicitly registered consumer.
 - `nix run .#dev`: scaffolding, fixture discovery, environment diagnosis, and
   rebuild explanations.
-- `flake.lib.mkTargetSdkV1`: the stable configured Nix interface for analysis,
+- `flake.lib.mkTargetSdkV2`: the stable configured Nix interface for analysis,
   authority, candidate, lifting, validation, and target-bundle construction.
-- `flake.lib.unstable`: low-level constructors for toolkit development only.
+- [Composable component lifting](docs/components.md): exact leaf/group
+  boundaries, qualification profiles, fallback ownership, and incremental Nix
+  artifacts.
 - `targets/`: a separate in-tree consumer flake containing authored validation
   intent and source, never generic Python implementation code.
 

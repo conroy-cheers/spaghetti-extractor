@@ -54,6 +54,15 @@ let
     launchProfileTemplate =
       "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
   };
+  componentsV2 = sdk.lifting.componentContractsV2 {
+    machineIr = analysis.machineIr;
+    reconstructionPlan = analysis.reconstructionPlan;
+    componentProposals = analysis.componentProposals;
+    intent = ./intent/components.json;
+    reviewRoot = ./intent/reviews;
+    sourceRoot = ./source;
+    namePrefix = "spaghetti-extractor-gnu-hello-2.12.3";
+  };
   intent = sdk.analysis.targetIntent {
     target = ./.;
   };
@@ -303,6 +312,14 @@ sdk.target.bundle {
       machine-ir = analysis.machineIr;
       component-proposals = analysis.componentProposals;
     };
+    components = {
+      resolution = componentsV2.resolution;
+      contracts = componentsV2.contracts;
+      source-packages = componentsV2.sourcePackages;
+      contract-bundle = componentsV2.bundle;
+      configurations = componentsV2.activationPlans;
+      source-bundles = componentsV2.sourceBundles;
+    };
     authority = {
       final = analysisV3.finalAuthority;
       gate = analysisV3.finalAuthorityGate;
@@ -358,5 +375,10 @@ sdk.target.bundle {
       workflow = liftWorkflow;
     };
   };
-  checks.intent = intent.validation;
+  checks = {
+    intent = intent.validation;
+    component-resolution = componentsV2.resolution;
+    component-contract = componentsV2.contracts.operator-whole;
+    component-configuration = componentsV2.activationPlans.operator-whole;
+  };
 }

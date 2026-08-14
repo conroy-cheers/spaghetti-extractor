@@ -7,6 +7,7 @@
     "expected_sha256": "191c113582e1f31016a158d40372fa21ea68d9348bf847bbfbc8e7c7bdfe195f"
   },
   "paths": {
-    "nix": "default.nix"
+    "nix": "default.nix",
+    "components": "intent/components.json"
   }
 }

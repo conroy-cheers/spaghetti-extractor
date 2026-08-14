@@ -62,7 +62,7 @@ let
       "spaghetti_extractor.stage_binary"
     ];
   reconstructionPlanPythonSource = mkPythonClosure planningPythonSource "reconstruction-plan" [
-    "spaghetti_extractor.component_backend"
+    "spaghetti_extractor.reconstruction_plan"
   ];
   machineImportProfiles =
     [ externalProfile ]
@@ -424,7 +424,7 @@ let
         "$out/reconstruction-plan.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.component_backend import (
+      from spaghetti_extractor.reconstruction_plan import (
           write_reconstruction_plan,
       )
 
