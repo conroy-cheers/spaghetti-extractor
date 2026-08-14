@@ -51,6 +51,7 @@ from .util import sha256_bytes, sha256_file, write_json
 
 NATIVE_RUNTIME_HEADER_FILENAME = "native-runtime.h"
 NATIVE_RUNTIME_SOURCE_FILENAME = "native-runtime.c"
+NATIVE_RUNTIME_BINDINGS_FILENAME = "native-runtime-bindings.c"
 NATIVE_RUNTIME_MANIFEST_FILENAME = "native-runtime-package.json"
 NATIVE_RUNTIME_EXTERNAL_PROFILE_FILENAME = "external-environment-profile.json"
 NATIVE_RUNTIME_CALLABLE_CONTRACT_FILENAME = "callable-external-runtime.json"
@@ -65,7 +66,7 @@ _CALLBACK_ADAPTER_RECEIPT_FORMAT = (
     "stage-b-native-callback-adapter-receipt-v1"
 )
 _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
-    "stage-b-native-implementation-dispatch-receipt-v2"
+    "stage-b-native-implementation-dispatch-receipt-v3"
 )
 
 
@@ -86,12 +87,14 @@ class NativeImplementationDispatch:
     implementation_class: str
     replacement_id: str | None
     cluster_id: str | None
+    component_entry_rva: int | None
 
     @property
     def class_code(self) -> int:
         return {
             "machine_ir_fallback": 0,
             "selected_portable_component": 1,
+            "selected_portable_component_member": 2,
         }[self.implementation_class]
 
 
@@ -674,8 +677,10 @@ def write_stage_b_native_runtime_package(
     out_path.mkdir(parents=True, exist_ok=True)
     header_path = out_path / NATIVE_RUNTIME_HEADER_FILENAME
     source_path = out_path / NATIVE_RUNTIME_SOURCE_FILENAME
+    bindings_path = out_path / NATIVE_RUNTIME_BINDINGS_FILENAME
     header_path.write_text(_native_runtime_header(), encoding="ascii")
     source_path.write_text(_native_runtime_source(plan), encoding="ascii")
+    bindings_path.write_text(_native_runtime_bindings_source(plan), encoding="ascii")
     profile_source: dict[str, Any] | None = None
     callable_source: dict[str, Any] | None = None
     profile_dependencies: list[dict[str, Any]] = []
@@ -759,6 +764,11 @@ def write_stage_b_native_runtime_package(
                 "role": "native_runtime_source",
                 "path": source_path.name,
                 "sha256": sha256_file(source_path),
+            },
+            {
+                "role": "native_runtime_bindings_source",
+                "path": bindings_path.name,
+                "sha256": sha256_file(bindings_path),
             },
         ] + ([] if profile_source is None else [profile_source]) + (
             [] if callable_source is None else [callable_source]
@@ -1621,6 +1631,7 @@ def _validate_implementation_dispatch_receipt(
         "replacement_id",
         "cluster_id",
         "component_manifest_sha256",
+        "component_entry_rva",
         "fallback_on_unimplemented",
         "entry_sha256",
     }
@@ -1685,6 +1696,7 @@ def _validate_implementation_dispatch_receipt(
         replacement_id = entry.get("replacement_id")
         cluster_id = entry.get("cluster_id")
         component_sha256 = entry.get("component_manifest_sha256")
+        component_entry_rva = entry.get("component_entry_rva")
         if entry.get("fallback_on_unimplemented") is not False:
             raise StageBNativeRuntimeError(
                 "implementation dispatch permits a second fallback class"
@@ -1695,6 +1707,7 @@ def _validate_implementation_dispatch_receipt(
                 or replacement_id is not None
                 or cluster_id is not None
                 or component_sha256 is not None
+                or component_entry_rva is not None
             ):
                 raise StageBNativeRuntimeError(
                     "machine-IR fallback dispatch carries portable metadata"
@@ -1713,6 +1726,31 @@ def _validate_implementation_dispatch_receipt(
             _required_sha256(
                 component_sha256, "portable component manifest SHA-256"
             )
+            if component_entry_rva != rva:
+                raise StageBNativeRuntimeError(
+                    "portable component entry does not bind its own RVA"
+                )
+        elif implementation_class == "selected_portable_component_member":
+            if entry.get("dispatch_lookup") != "component_entry_subsumed":
+                raise StageBNativeRuntimeError(
+                    "portable component member uses the wrong dispatch class"
+                )
+            replacement_id = _required_portable_identity(
+                replacement_id, "portable component member replacement id"
+            )
+            cluster_id = _required_portable_identity(
+                cluster_id, "portable component member cluster id"
+            )
+            _required_sha256(
+                component_sha256, "portable component member manifest SHA-256"
+            )
+            component_entry_rva = _required_u32(
+                component_entry_rva, "portable component member entry RVA"
+            )
+            if component_entry_rva == rva:
+                raise StageBNativeRuntimeError(
+                    "portable component member aliases its boundary entry"
+                )
         else:
             raise StageBNativeRuntimeError(
                 "implementation dispatch has an unsupported implementation class"
@@ -1723,6 +1761,9 @@ def _validate_implementation_dispatch_receipt(
             implementation_class=str(implementation_class),
             replacement_id=replacement_id,
             cluster_id=cluster_id,
+            component_entry_rva=(
+                component_entry_rva if isinstance(component_entry_rva, int) else None
+            ),
         )
         entry_by_id[unit_id] = dispatch
         dispatches.append(dispatch)
@@ -1821,6 +1862,11 @@ def _validate_implementation_dispatch_receipt(
         ),
         "selected_portable_component": sum(
             dispatch.implementation_class == "selected_portable_component"
+            for dispatch in dispatches
+        ),
+        "selected_portable_component_member": sum(
+            dispatch.implementation_class
+            == "selected_portable_component_member"
             for dispatch in dispatches
         ),
         "blockers": 0,
@@ -2605,6 +2651,22 @@ def _external_range_rules(
                 raise StageBNativeRuntimeError(
                     f"legacy external site {site_index} has invalid disposition"
                 )
+            argument_words = selected.contract.get("argument_words")
+            if (
+                not isinstance(argument_words, int)
+                or isinstance(argument_words, bool)
+                or not 0 <= argument_words <= 256
+            ):
+                block_site(
+                    site_index=site_index,
+                    site=site,
+                    category="external_argument_words_missing",
+                    detail=(
+                        f"legacy external site {site_index} has no exact "
+                        "call-site argument inventory"
+                    ),
+                )
+                continue
             expanded_sites.append((
                 dict(site),
                 target_iat_rva,
@@ -3179,9 +3241,14 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
         f"  0x{rva:08x}U," for rva in plan.transfer_rvas
     )
     implementation_rows = "\n".join(
-        "  {{ 0x{rva:08x}U, {class_code}U, {replacement}, {cluster} }},".format(
+        "  {{ 0x{rva:08x}U, {class_code}U, {entry_rva}, {replacement}, {cluster} }},".format(
             rva=dispatch.rva,
             class_code=dispatch.class_code,
+            entry_rva=(
+                "0U"
+                if dispatch.component_entry_rva is None
+                else f"0x{dispatch.component_entry_rva:08x}U"
+            ),
             replacement=(
                 "0"
                 if dispatch.replacement_id is None
@@ -3416,13 +3483,6 @@ extern const uint32_t stage_b_program_transfer_count __attribute__((weak));
 
 _Static_assert(sizeof(uintptr_t) == 4U, "native runtime requires i686 pointers");
 
-const char stage_b_native_interpreter_manifest_sha256[65] =
-    "{plan.interpreter_manifest_sha256}";
-const char stage_b_native_engine_manifest_sha256[65] =
-    "{plan.native_engine_manifest_sha256}";
-const char stage_b_native_state_machine_sha256[65] =
-    "{plan.state_machine_sha256}";
-
 volatile stage_b_native_terminal_kind stage_b_native_terminal_status =
     STAGE_B_NATIVE_TERMINAL_UNIMPLEMENTED;
 volatile stage_b_call_status stage_b_native_terminal_call_status =
@@ -3436,6 +3496,7 @@ static const uint32_t stage_b_native_transfer_count = {len(plan.transfer_rvas)}U
 
 typedef struct stage_b_native_implementation_dispatch {{
   uint32_t rva, implementation_class;
+  uint32_t component_entry_rva;
   const char *replacement_id, *cluster_id;
 }} stage_b_native_implementation_dispatch;
 static const stage_b_native_implementation_dispatch
@@ -3953,11 +4014,29 @@ static uint32_t stage_b_native_transfer_table_valid(void) {{
           !stage_b_native_string_equal(
               override->cluster_id, expected->cluster_id))
         return 0U;
+    }} else if (expected->implementation_class == 2U) {{
+      if (override != 0 || expected->replacement_id == 0 ||
+          expected->cluster_id == 0 || expected->component_entry_rva == 0U ||
+          expected->component_entry_rva == rva)
+        return 0U;
     }} else {{
       return 0U;
     }}
   }}
   return stage_b_program_lookup(0x{plan.entry_rva:08x}U) != 0;
+}}
+
+uint32_t stage_b_native_machine_fallback_allowed(uint32_t rva) {{
+  uint32_t low = 0U, high = stage_b_native_implementation_dispatch_count;
+  while (low < high) {{
+    uint32_t middle = low + (high - low) / 2U;
+    uint32_t observed = stage_b_native_implementation_dispatches[middle].rva;
+    if (observed < rva) low = middle + 1U;
+    else high = middle;
+  }}
+  return low < stage_b_native_implementation_dispatch_count &&
+      stage_b_native_implementation_dispatches[low].rva == rva &&
+      stage_b_native_implementation_dispatches[low].implementation_class == 0U;
 }}
 
 static uint32_t stage_b_native_write_allowed(uint32_t address, uint32_t width) {{
@@ -5177,6 +5256,18 @@ void stage_b_native_runtime_coordinate(
 '''
 
 
+def _native_runtime_bindings_source(plan: NativeRuntimePlan) -> str:
+    return f'''#include "native-runtime.h"
+
+const char stage_b_native_interpreter_manifest_sha256[65] =
+    "{plan.interpreter_manifest_sha256}";
+const char stage_b_native_engine_manifest_sha256[65] =
+    "{plan.native_engine_manifest_sha256}";
+const char stage_b_native_state_machine_sha256[65] =
+    "{plan.state_machine_sha256}";
+'''
+
+
 def _manifest_path(
     value: Path | str, filename: str, label: str
 ) -> Path:
@@ -5290,6 +5381,7 @@ def _required_count(value: Any, field: str) -> int:
 
 __all__ = [
     "DEFINEDNESS_USE_FORMAT",
+    "NATIVE_RUNTIME_BINDINGS_FILENAME",
     "NATIVE_RUNTIME_HEADER_FILENAME",
     "NATIVE_RUNTIME_MANIFEST_FILENAME",
     "NATIVE_RUNTIME_PACKAGE_FORMAT",

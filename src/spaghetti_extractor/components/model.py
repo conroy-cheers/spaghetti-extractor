@@ -22,6 +22,14 @@ LIFT_UNIT_KINDS = frozenset({"component", "group"})
 class SourceInputV2:
     files: tuple[PurePosixPath, ...]
     shared_inputs: tuple[PurePosixPath, ...] = ()
+    entry_abi: str = "logical-c-v1"
+    entry_symbol: str = ""
+
+
+@dataclass(frozen=True)
+class ComponentEvidencePlanV3:
+    producer: str
+    parameter_domains: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -32,6 +40,7 @@ class ComponentIntentV2:
     evidence_profile: str
     interface_review: PurePosixPath | None
     source: SourceInputV2 | None
+    verification: ComponentEvidencePlanV3 | None
 
 
 @dataclass(frozen=True)
@@ -42,6 +51,7 @@ class ComponentGroupIntentV2:
     evidence_profile: str
     interface_review: PurePosixPath | None
     source: SourceInputV2 | None
+    verification: ComponentEvidencePlanV3 | None
 
 
 @dataclass(frozen=True)

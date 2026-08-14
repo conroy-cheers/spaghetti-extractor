@@ -51,52 +51,44 @@ let
   '';
   originalPe = "${original}/bin/jq.exe";
   profileSource = sdk.profiles;
-  analysis = sdk.analysis.component {
+  workflow = sdk.workflow.pe32 {
     original = originalPe;
+    binaryIdentity = "jq.exe";
     externalProfile =
       "${profileSource}/pe32-msvcrt-machine-runtime-v1.json";
-    namePrefix = "spaghetti-extractor-jq-1.8.1";
-  };
-  analysisV3 = sdk.analysis.authorityV3 {
-    name = "spaghetti-extractor-jq-1.8.1-authority-v3";
-    machineIr = "${analysis.machineIr}/machine-ir.jsonl";
-    binary = originalPe;
-    binaryIdentity = "jq.exe";
     machineImportProfiles = [
       "${profileSource}/pe32-msvcrt-machine-runtime-v1.json"
     ];
     launchProfileTemplate =
       "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
-  };
-  componentsV2 = sdk.lifting.componentContractsV2 {
-    machineIr = analysis.machineIr;
-    reconstructionPlan = analysis.reconstructionPlan;
-    componentProposals = analysis.componentProposals;
-    intent = ./intent/components.json;
-    reviewRoot = ./intent/reviews;
-    sourceRoot = ./source;
+    componentIntent = ./intent/components.json;
+    componentReviewRoot = ./intent/reviews;
+    componentSourceRoot = ./source;
     namePrefix = "spaghetti-extractor-jq-1.8.1";
   };
-  intent = sdk.analysis.targetIntent {
-    target = ./.;
+  inherit (workflow) analysis components;
+  analysisV3 = workflow.authority;
+  staticCandidate = workflow.candidateFor {
+    configurationId = "operator-whole";
   };
 in
 sdk.target.bundle {
   targetRoot = ./.;
   artifacts = {
     input.original = original;
-    intent = intent.validation;
     analysis = {
       machine-ir = analysis.machineIr;
       component-proposals = analysis.componentProposals;
     };
     components = {
-      resolution = componentsV2.resolution;
-      contracts = componentsV2.contracts;
-      source-packages = componentsV2.sourcePackages;
-      contract-bundle = componentsV2.bundle;
-      configurations = componentsV2.activationPlans;
-      source-bundles = componentsV2.sourceBundles;
+      resolution = components.resolution;
+      contracts = components.contracts;
+      source-packages = components.sourcePackages;
+      evidence = components.evidences;
+      qualifications = components.qualifications;
+      contract-bundle = components.bundle;
+      configurations = components.activationPlans;
+      source-bundles = components.sourceBundles;
     };
     authority = {
       final = analysisV3.finalAuthority;
@@ -104,11 +96,15 @@ sdk.target.bundle {
       graph-metadata = analysisV3.graph.metadata;
       diagnostics = analysisV3.diagnostics;
     };
+    candidate.static = staticCandidate.candidate;
   };
   checks = {
-    intent = intent.validation;
-    component-resolution = componentsV2.resolution;
-    component-contract = componentsV2.contracts.operator-whole;
-    component-configuration = componentsV2.activationPlans.operator-whole;
+    component-resolution = components.resolution;
+    component-contract = components.contracts.operator-whole;
+    component-configuration = components.activationPlans.operator-whole;
+  };
+  acceptanceChecks = {
+    final-authority = analysisV3.finalAuthorityGate;
+    static-candidate = staticCandidate.candidate;
   };
 }

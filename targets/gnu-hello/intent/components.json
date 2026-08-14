@@ -124,7 +124,28 @@
         "end_rva": 37714,
         "proposal_kind": "call_target_return_closure"
       },
-      "evidence_profile": "structural-draft-v1"
+      "evidence_profile": "bounded-equivalence-v1",
+      "interface_review": "reviews/ascii-to-lower.json",
+      "source": {
+        "files": [
+          "source/components/ascii-to-lower.c"
+        ],
+        "entry": {
+          "abi": "logical-c-v1",
+          "symbol": "gnu_hello_ascii_to_lower"
+        }
+      },
+      "verification": {
+        "producer": "exhaustive-finite-domain-v1",
+        "parameter_domains": [
+          {
+            "parameter_id": "value",
+            "kind": "integer-range",
+            "minimum": 0,
+            "maximum": 255
+          }
+        ]
+      }
     },
     {
       "id": "ascii-string-compare",
@@ -288,6 +309,17 @@
           "kind": "group",
           "id": "operator-whole",
           "activation": "draft"
+        }
+      ]
+    },
+    {
+      "id": "ascii-to-lower-enabled",
+      "label": "Verified ASCII case conversion with machine fallback",
+      "selections": [
+        {
+          "kind": "component",
+          "id": "ascii-to-lower",
+          "activation": "enabled"
         }
       ]
     }

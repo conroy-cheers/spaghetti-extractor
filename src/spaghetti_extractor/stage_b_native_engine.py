@@ -99,7 +99,7 @@ _CALLBACK_ADAPTER_RECEIPT_FORMAT = (
     "stage-b-native-callback-adapter-receipt-v1"
 )
 _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
-    "stage-b-native-implementation-dispatch-receipt-v2"
+    "stage-b-native-implementation-dispatch-receipt-v3"
 )
 _RAW_INSTRUCTION_FIELDS = frozenset({
     "bytes", "instruction_bytes", "opcode_bytes", "raw_bytes",
@@ -431,6 +431,7 @@ class NativeImplementationEntry:
     replacement_id: str | None = None
     cluster_id: str | None = None
     component_manifest_sha256: str | None = None
+    component_entry_rva: int | None = None
 
     def _body(self) -> dict[str, Any]:
         return {
@@ -443,6 +444,7 @@ class NativeImplementationEntry:
             "replacement_id": self.replacement_id,
             "cluster_id": self.cluster_id,
             "component_manifest_sha256": self.component_manifest_sha256,
+            "component_entry_rva": self.component_entry_rva,
             "fallback_on_unimplemented": False,
         }
 
@@ -539,6 +541,11 @@ class NativeImplementationDispatchReceipt:
                 ),
                 "selected_portable_component": sum(
                     entry.implementation_class == "selected_portable_component"
+                    for entry in self.entries
+                ),
+                "selected_portable_component_member": sum(
+                    entry.implementation_class
+                    == "selected_portable_component_member"
                     for entry in self.entries
                 ),
                 "blockers": len(self.blockers),
@@ -1782,10 +1789,12 @@ def _portable_component_selections(
         "component_manifest_sha256",
         "fallback_on_unimplemented",
     }
+    expected_fields_v2 = expected_fields | {"dispatch_role", "entry_rva"}
     result: dict[str, dict[str, Any]] = {}
     seen_rvas: set[int] = set()
     for index, raw in enumerate(values):
-        if not isinstance(raw, Mapping) or set(raw) != expected_fields:
+        v2 = isinstance(raw, Mapping) and set(raw) == expected_fields_v2
+        if not isinstance(raw, Mapping) or (not v2 and set(raw) != expected_fields):
             raise StageAInputError(
                 f"portable component selection {index} fields are not canonical"
             )
@@ -1820,8 +1829,40 @@ def _portable_component_selections(
                 raw.get("component_manifest_sha256"),
                 f"portable component selection {index} manifest SHA-256",
             ),
+            "dispatch_role": (
+                _required_string(
+                    raw.get("dispatch_role"),
+                    f"portable component selection {index} dispatch role",
+                )
+                if v2
+                else "entry"
+            ),
+            "entry_rva": (
+                _required_u32(
+                    raw.get("entry_rva"),
+                    f"portable component selection {index} entry RVA",
+                )
+                if v2
+                else rva
+            ),
         }
+        if result[unit_id]["dispatch_role"] not in {"entry", "subsumed_member"}:
+            raise StageAInputError("portable component dispatch role is unsupported")
+        if result[unit_id]["dispatch_role"] == "entry" and result[unit_id]["entry_rva"] != rva:
+            raise StageAInputError("portable component entry must dispatch at its own RVA")
         seen_rvas.add(rva)
+    entry_keys = {
+        (value["entry_rva"], value["cluster_id"], value["component_manifest_sha256"])
+        for value in result.values()
+        if value["dispatch_role"] == "entry"
+    }
+    if any(
+        value["dispatch_role"] == "subsumed_member"
+        and (value["entry_rva"], value["cluster_id"], value["component_manifest_sha256"])
+        not in entry_keys
+        for value in result.values()
+    ):
+        raise StageAInputError("portable component member has no selected boundary entry")
     return result
 
 
@@ -1974,11 +2015,15 @@ def _build_implementation_dispatch_receipt(
             reachability=reachability_classes[unit_id],
             implementation_class=(
                 "selected_portable_component"
+                if unit_id in selections and selections[unit_id]["dispatch_role"] == "entry"
+                else "selected_portable_component_member"
                 if unit_id in selections
                 else "machine_ir_fallback"
             ),
             dispatch_lookup=(
                 "stage_b_region_override_lookup"
+                if unit_id in selections and selections[unit_id]["dispatch_role"] == "entry"
+                else "component_entry_subsumed"
                 if unit_id in selections
                 else "stage_b_program_lookup"
             ),
@@ -1994,6 +2039,11 @@ def _build_implementation_dispatch_receipt(
             ),
             component_manifest_sha256=(
                 selections[unit_id]["component_manifest_sha256"]
+                if unit_id in selections
+                else None
+            ),
+            component_entry_rva=(
+                selections[unit_id]["entry_rva"]
                 if unit_id in selections
                 else None
             ),
@@ -2280,6 +2330,35 @@ def _build_implementation_dispatch_receipt(
                             source_event_index=None,
                             target_unit_id=target_unit_id,
                         )
+
+    for unit_id in roots:
+        selection = selections.get(unit_id)
+        if selection is not None and selection["dispatch_role"] == "subsumed_member":
+            receipt_blockers.append(_blocker(
+                "portable_component_root_is_not_boundary_entry",
+                target_unit_id=unit_id,
+                target_rva=transfer_by_id[unit_id][0],
+                next_action="split the component or expose this root as a checked entry",
+            ))
+    for target in targets:
+        target_selection = selections.get(target.target_unit_id)
+        if target_selection is None or target_selection["dispatch_role"] != "subsumed_member":
+            continue
+        source_selection = selections.get(target.source_unit_id)
+        if (
+            source_selection is None
+            or source_selection["cluster_id"] != target_selection["cluster_id"]
+            or source_selection["component_manifest_sha256"]
+            != target_selection["component_manifest_sha256"]
+        ):
+            receipt_blockers.append(_blocker(
+                "portable_component_internal_member_has_external_incoming_edge",
+                source_unit_id=target.source_unit_id,
+                source_rva=target.source_rva,
+                target_unit_id=target.target_unit_id,
+                target_rva=target.target_rva,
+                next_action="split the component or add the target as a checked boundary entry",
+            ))
 
     targets_tuple = tuple(sorted(
         targets,

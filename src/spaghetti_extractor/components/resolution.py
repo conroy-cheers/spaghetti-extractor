@@ -82,6 +82,7 @@ def resolve_component_catalog_v2(
                 None if component.interface_review is None else component.interface_review.as_posix()
             ),
             "source": _source_payload(component.source),
+            "verification": _verification_payload(component.verification),
         }
     resolved_groups = _resolve_groups(catalog, resolved_components)
     configurations = [
@@ -142,6 +143,7 @@ def _resolve_groups(
                 None if group.interface_review is None else group.interface_review.as_posix()
             ),
             "source": _source_payload(group.source),
+            "verification": _verification_payload(group.verification),
         }
         result[identity] = row
         return row
@@ -239,6 +241,19 @@ def _source_payload(value: object) -> dict[str, object] | None:
     return {
         "files": [path.as_posix() for path in value.files],
         "shared_inputs": [path.as_posix() for path in value.shared_inputs],
+        "entry": {
+            "abi": value.entry_abi,
+            "symbol": value.entry_symbol,
+        },
+    }
+
+
+def _verification_payload(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    return {
+        "producer": value.producer,
+        "parameter_domains": [copy.deepcopy(dict(row)) for row in value.parameter_domains],
     }
 
 

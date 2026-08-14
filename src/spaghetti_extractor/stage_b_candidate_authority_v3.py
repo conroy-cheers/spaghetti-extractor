@@ -29,6 +29,10 @@ from .artifact_set_v3 import (
     parse_canonical_json_v3,
 )
 from .stage_b_fallback_coverage import FALLBACK_COVERAGE_RECEIPT_FORMAT
+from .components.formats import (
+    COMPONENT_RUNTIME_COMPLETION_V3_FORMAT,
+    COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
+)
 
 
 STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT = (
@@ -43,6 +47,7 @@ _POLICY = {
     "candidate_generation_fails_closed": True,
     "candidate_generation_only": True,
     "complete_fallback_coverage_required": True,
+    "component_runtime_package_required": True,
     "exact_machine_ir_binding_required": True,
     "final_authority_v3_required": True,
     "original_execution_forbidden": True,
@@ -54,6 +59,8 @@ _CHECK_NAMES = frozenset({
     "exact_universe_agrees",
     "fallback_coverage_complete",
     "fallback_exact_inputs_agree",
+    "component_runtime_complete",
+    "component_runtime_exact_inputs_agree",
     "final_artifact_complete",
     "final_artifact_kind",
     "final_record_authorizing",
@@ -205,6 +212,7 @@ def build_stage_b_candidate_authority_v3(
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
     fallback_coverage_receipt: Path | str,
+    component_runtime_package: Path | str,
 ) -> CandidateAuthorityV3Receipt:
     """Recompute candidate authority from exact v3/static input artifacts."""
 
@@ -222,6 +230,12 @@ def build_stage_b_candidate_authority_v3(
         Path(fallback_coverage_receipt),
         machine=machine,
         manifest=manifest,
+        decision=decision,
+    )
+    component_runtime_binding = _check_component_runtime(
+        Path(component_runtime_package),
+        machine=machine,
+        fallback_binding=fallback_binding,
         decision=decision,
     )
 
@@ -283,6 +297,7 @@ def build_stage_b_candidate_authority_v3(
             "pe_sha256": None if manifest is None else manifest.pe_sha256,
         },
         "fallback_coverage_receipt": fallback_binding,
+        "component_runtime_package": component_runtime_binding,
     }
 
     issues = tuple(sorted(set(decision.issues), key=_issue_key))
@@ -349,6 +364,7 @@ def parse_stage_b_candidate_authority_v3(
         {
             "final_authority", "machine_ir", "machine_ir_manifest",
             "fallback_coverage_receipt",
+            "component_runtime_package",
         },
         "candidate inputs",
     )
@@ -387,6 +403,7 @@ def validate_stage_b_candidate_authority_v3(
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
     fallback_coverage_receipt: Path | str,
+    component_runtime_package: Path | str,
     require_authorized: bool = True,
 ) -> CandidateAuthorityV3Receipt:
     """Reject a receipt unless it exactly equals a fresh input recomputation."""
@@ -405,6 +422,7 @@ def validate_stage_b_candidate_authority_v3(
         machine_ir=machine_ir,
         machine_ir_manifest=machine_ir_manifest,
         fallback_coverage_receipt=fallback_coverage_receipt,
+        component_runtime_package=component_runtime_package,
     )
     if actual.to_payload() != expected.to_payload():
         raise CandidateAuthorityV3Error(
@@ -642,6 +660,7 @@ def _check_fallback_coverage(
         "format": None,
         "artifact_sha256": None,
         "receipt_sha256": None,
+        "portable_selection_artifact_sha256": None,
     }
     if not path.is_file():
         decision.incomplete(
@@ -686,6 +705,11 @@ def _check_fallback_coverage(
                 "fallback receipt does not preserve fail-closed candidate-only policy",
             )
         inputs = _mapping(receipt.get("inputs"), "fallback inputs")
+        portable = inputs.get("portable_replacements")
+        if isinstance(portable, Mapping):
+            artifact = portable.get("artifact")
+            if isinstance(artifact, Mapping):
+                binding["portable_selection_artifact_sha256"] = artifact.get("sha256")
         machine_binding = _mapping(inputs.get("machine_ir"), "fallback machine IR")
         manifest_binding = _mapping(
             inputs.get("machine_ir_manifest"), "fallback machine-IR manifest"
@@ -736,6 +760,139 @@ def _check_fallback_coverage(
         return binding
 
 
+def _check_component_runtime(
+    path: Path,
+    *,
+    machine: _MachineIR | None,
+    fallback_binding: Mapping[str, Any],
+    decision: _Decision,
+) -> dict[str, Any]:
+    manifest_path = path / "component-runtime-package.json" if path.is_dir() else path
+    binding: dict[str, Any] = {
+        "format": None,
+        "artifact_sha256": None,
+        "runtime_package_sha256": None,
+        "completion_sha256": None,
+        "portable_selection_artifact_sha256": None,
+    }
+    if not manifest_path.is_file():
+        decision.incomplete(
+            "component_runtime_missing", "component runtime package is missing"
+        )
+        return binding
+    try:
+        data = manifest_path.read_bytes()
+        payload = _read_json_object(data, "component runtime package")
+        binding["format"] = payload.get("format")
+        binding["artifact_sha256"] = hashlib.sha256(data).hexdigest()
+        binding["runtime_package_sha256"] = payload.get("runtime_package_sha256")
+        if payload.get("format") != COMPONENT_RUNTIME_PACKAGE_V3_FORMAT:
+            raise CandidateAuthorityV3Error("component runtime format is wrong")
+        body = dict(payload)
+        declared = _digest(
+            body.pop("runtime_package_sha256", None),
+            "component runtime package SHA-256",
+        )
+        identity_ok = declared == canonical_sha256_v3(body)
+        if not identity_ok:
+            decision.violated(
+                "component_runtime_identity_stale",
+                "component runtime identity does not bind its canonical payload",
+            )
+        policy = _mapping(payload.get("policy"), "component runtime policy")
+        policy_ok = (
+            policy.get("runtime_package_is_sole_candidate_authority") is True
+            and policy.get("enabled_components_must_be_qualified") is True
+            and policy.get("subsumed_members_may_not_fallback") is True
+            and policy.get("fallback_on_unimplemented") is False
+            and policy.get("original_execution_forbidden") is True
+            and payload.get("executes_original_binary") is False
+        )
+        if not policy_ok:
+            decision.violated(
+                "component_runtime_policy_unsafe",
+                "component runtime does not preserve fail-closed activation policy",
+            )
+        inputs = _mapping(payload.get("bindings"), "component runtime bindings")
+        exact_machine = machine is not None and inputs.get("machine_ir_sha256") == machine.sha256
+        artifacts = _mapping(payload.get("artifacts"), "component runtime artifacts")
+        selection = _mapping(
+            artifacts.get("portable_selection"), "portable component selection"
+        )
+        selection_name = selection.get("path")
+        if (
+            not isinstance(selection_name, str)
+            or not selection_name
+            or Path(selection_name).name != selection_name
+        ):
+            raise CandidateAuthorityV3Error(
+                "portable component selection path is not local"
+            )
+        selection_path = manifest_path.parent / selection_name
+        selection_sha256 = hashlib.sha256(selection_path.read_bytes()).hexdigest()
+        binding["portable_selection_artifact_sha256"] = selection_sha256
+        fallback_selection_sha256 = fallback_binding.get(
+            "portable_selection_artifact_sha256"
+        )
+        selection_ok = (
+            selection.get("sha256") == selection_sha256
+            and fallback_selection_sha256 == selection_sha256
+        )
+        if fallback_binding.get("artifact_sha256") is None:
+            decision.incomplete(
+                "component_runtime_fallback_binding_missing",
+                "component runtime cannot be joined until fallback coverage exists",
+            )
+        completion_path = manifest_path.parent / "component-runtime-completion.json"
+        completion = _read_json_object(
+            completion_path.read_bytes(), "component runtime completion"
+        )
+        if completion.get("format") != COMPONENT_RUNTIME_COMPLETION_V3_FORMAT:
+            raise CandidateAuthorityV3Error("component runtime completion format is wrong")
+        completion_body = dict(completion)
+        completion_sha256 = _digest(
+            completion_body.pop("completion_sha256", None),
+            "component runtime completion SHA-256",
+        )
+        binding["completion_sha256"] = completion_sha256
+        completion_ok = (
+            completion_sha256 == canonical_sha256_v3(completion_body)
+            and completion.get("status") == "complete"
+            and completion.get("runtime_package_sha256") == declared
+            and completion.get("ownership_complete") is True
+            and completion.get("ownership_exclusive") is True
+            and completion.get("executes_original_binary") is False
+        )
+        exact_inputs = exact_machine and selection_ok
+        complete = (
+            payload.get("status") == "ready"
+            and identity_ok
+            and policy_ok
+            and exact_inputs
+            and completion_ok
+        )
+        decision.checks["component_runtime_exact_inputs_agree"] = exact_inputs
+        decision.checks["component_runtime_complete"] = complete
+        if (
+            machine is not None
+            and fallback_binding.get("artifact_sha256") is not None
+            and not exact_inputs
+        ):
+            decision.violated(
+                "component_runtime_input_mismatch",
+                "component runtime and fallback coverage bind different exact inputs",
+            )
+        if not completion_ok:
+            decision.violated(
+                "component_runtime_completion_invalid",
+                "component runtime completion is stale or incomplete",
+            )
+        return binding
+    except (OSError, UnicodeError, json.JSONDecodeError, CandidateAuthorityV3Error) as exc:
+        decision.violated("component_runtime_corrupt", str(exc))
+        return binding
+
+
 def _fallback_entries_match(entries: list[Any], machine: _MachineIR) -> bool:
     by_id: dict[str, Mapping[str, Any]] = {}
     for value in entries:
@@ -759,7 +916,11 @@ def _fallback_entries_match(entries: list[Any], machine: _MachineIR) -> bool:
             and entry.get("source_span_sha256") == unit.instruction_bytes_sha256
             and entry.get("machine_ir_record_sha256") == unit.unit_ir_sha256
             and _DIGEST_RE.fullmatch(str(entry.get("lowering_transfer_sha256")))
-            and kind in {"machine_ir_fallback", "portable_replacement"}
+            and kind in {
+                "machine_ir_fallback",
+                "portable_replacement",
+                "portable_component_member",
+            }
         ):
             return False
         if kind == "machine_ir_fallback" and (
@@ -773,6 +934,13 @@ def _fallback_entries_match(entries: list[Any], machine: _MachineIR) -> bool:
             or entry["portable_replacement"].get("fallback_on_unimplemented") is not False
         ):
             return False
+        if kind == "portable_component_member" and (
+            entry.get("dispatch_lookup") != "component_entry_subsumed"
+            or not isinstance(entry.get("portable_replacement"), Mapping)
+            or entry["portable_replacement"].get("dispatch_role") != "subsumed_member"
+            or entry["portable_replacement"].get("fallback_on_unimplemented") is not False
+        ):
+            return False
     return True
 
 
@@ -781,6 +949,7 @@ def _fallback_counts_match(
 ) -> bool:
     fallback = counts.get("machine_ir_fallback")
     portable = counts.get("portable_replacement")
+    portable_member = counts.get("portable_component_member", 0)
     return (
         counts.get("structural_units") == unit_count
         and counts.get("implementation_entries") == len(entries)
@@ -789,7 +958,9 @@ def _fallback_counts_match(
         and not isinstance(fallback, bool)
         and isinstance(portable, int)
         and not isinstance(portable, bool)
-        and fallback + portable == len(entries)
+        and isinstance(portable_member, int)
+        and not isinstance(portable_member, bool)
+        and fallback + portable + portable_member == len(entries)
     )
 
 

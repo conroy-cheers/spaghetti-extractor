@@ -247,6 +247,7 @@ class ComponentIntentV2Tests(unittest.TestCase):
             lift_unit_id="all",
             files={"a.c": self.root / "a.c", "b.c": self.root / "b.c"},
             shared_inputs={},
+            entry={"abi": "logical-c-v1", "symbol": "a"},
             out_dir=self.root / "source-package",
         )
         evidence = bind_component_evidence_v2(
@@ -316,6 +317,7 @@ class ComponentIntentV2Tests(unittest.TestCase):
             lift_unit_id="all",
             files={"a.c": self.root / "a.c", "b.c": self.root / "b.c"},
             shared_inputs={},
+            entry={"abi": "logical-c-v1", "symbol": "a"},
             out_dir=self.root / "source-original",
         )
         evidence = bind_component_evidence_v2(
@@ -343,6 +345,7 @@ class ComponentIntentV2Tests(unittest.TestCase):
             lift_unit_id="all",
             files={"a.c": self.root / "a.c", "b.c": self.root / "b.c"},
             shared_inputs={},
+            entry={"abi": "logical-c-v1", "symbol": "a"},
             out_dir=self.root / "source-changed",
         )
         qualification = qualify_lift_unit_v2(
@@ -375,6 +378,7 @@ class ComponentIntentV2Tests(unittest.TestCase):
             lift_unit_id="a",
             files={"a.c": self.root / "a.c"},
             shared_inputs={},
+            entry={"abi": "logical-c-v1", "symbol": "a"},
             out_dir=package,
         )
         (package / "sources" / "a.c").write_text(
@@ -387,6 +391,7 @@ class ComponentIntentV2Tests(unittest.TestCase):
             lift_unit_id="a",
             files={"a.c": self.root / "a.c"},
             shared_inputs={},
+            entry={"abi": "logical-c-v1", "symbol": "a"},
             out_dir=package,
         )
         (package / "sources" / "extra.h").write_text("#define EXTRA 1\n")
@@ -445,14 +450,20 @@ class ComponentIntentV2Tests(unittest.TestCase):
                             "label": "A",
                             "selector": {"entry_rva": 0x1000},
                             "evidence_profile": "bounded-equivalence-v1",
-                            "source": {"files": ["a.c"]},
+                            "source": {
+                                "files": ["a.c"],
+                                "entry": {"abi": "logical-c-v1", "symbol": "a"},
+                            },
                         },
                         {
                             "id": "b",
                             "label": "B",
                             "selector": {"entry_rva": 0x1010},
                             "evidence_profile": "bounded-equivalence-v1",
-                            "source": {"files": ["b.c"]},
+                            "source": {
+                                "files": ["b.c"],
+                                "entry": {"abi": "logical-c-v1", "symbol": "b"},
+                            },
                         },
                     ],
                     "groups": [
@@ -461,7 +472,21 @@ class ComponentIntentV2Tests(unittest.TestCase):
                             "label": "All",
                             "members": ["a", "b"],
                             "evidence_profile": "bounded-equivalence-v1",
-                            "source": {"files": ["a.c", "b.c"]},
+                            "source": {
+                                "files": ["a.c", "b.c"],
+                                "entry": {"abi": "logical-c-v1", "symbol": "a"},
+                            },
+                            "verification": {
+                                "producer": "exhaustive-finite-domain-v1",
+                                "parameter_domains": [
+                                    {
+                                        "parameter_id": "input_eax",
+                                        "kind": "integer-range",
+                                        "minimum": 0,
+                                        "maximum": 1,
+                                    }
+                                ],
+                            },
                         }
                     ],
                     "configurations": [

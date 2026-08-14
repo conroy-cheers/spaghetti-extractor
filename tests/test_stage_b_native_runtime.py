@@ -1131,6 +1131,55 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertIn("stage_b_native_diagnostic_reason = 0x2009U", source)
             self.assertIn("stage_b_native_diagnostic_reason = 0x200aU", source)
 
+    def test_variadic_legacy_site_is_a_diagnostic_frontier(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter, engine = _packages(
+                root,
+                rows=_machine_ir_indirect_external_result_rows(),
+                import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
+                machine_ir=True,
+            )
+            profile = root / "external-profile.json"
+            profile.write_text(
+                json.dumps({
+                    "format": "stage-a-external-environment-profile-v1",
+                    "id": "fixture-variadic-profile-v1",
+                    "machine_import_signatures": [{
+                        "import": {
+                            "dll": "msvcrt.dll",
+                            "symbol": "__p__commode",
+                        },
+                        "abi_template": "pe32-cdecl-v1",
+                        "arity": {
+                            "kind": "variadic",
+                            "minimum_words": 1,
+                            "format_argument": 0,
+                            "format_unit_bytes": 1,
+                        },
+                        "memory_effect": "relationalState",
+                        "memory_footprints": [],
+                        "world_effect": "none",
+                    }],
+                }, sort_keys=True),
+                encoding="utf-8",
+            )
+
+            package = write_stage_b_native_runtime_package(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                external_profile=profile,
+                out=root / "runtime",
+            )
+
+            dispatch = package["inputs"]["external_dispatch"]
+            self.assertEqual(dispatch["authorized_instruction_rvas"], [])
+            self.assertEqual(len(dispatch["blocked_sites"]), 1)
+            self.assertEqual(
+                dispatch["blocked_sites"][0]["category"],
+                "external_argument_words_missing",
+            )
+
     def test_external_range_size_can_be_read_from_checked_call_stack(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -1233,7 +1282,11 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(first["inputs"]["entry_rva"], 0x1000)
             self.assertEqual(first["inputs"]["transfer_rvas"], [0x1000])
-            for name in ("native-runtime.h", "native-runtime.c"):
+            for name in (
+                "native-runtime.h",
+                "native-runtime.c",
+                "native-runtime-bindings.c",
+            ):
                 self.assertEqual(
                     (root / "first" / name).read_bytes(),
                     (root / "second" / name).read_bytes(),
@@ -1249,7 +1302,13 @@ class StageBNativeRuntimeTests(unittest.TestCase):
                 out=root / "runtime",
             )
             source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
+            bindings = (
+                root / "runtime/native-runtime-bindings.c"
+            ).read_text(encoding="ascii")
             header = (root / "runtime/native-runtime.h").read_text(encoding="ascii")
+
+            self.assertNotIn("stage_b_native_engine_manifest_sha256[65] =", source)
+            self.assertIn("stage_b_native_engine_manifest_sha256[65] =", bindings)
 
             self.assertIn("stage_b_native_flat_read", source)
             self.assertIn("stage_b_native_flat_write", source)

@@ -4,10 +4,12 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from spaghetti_extractor.testkit.runner import (
     _canonical_json,
+    _evaluate_derivations,
     _filtered_source_sha256,
     _read_evaluation_receipt,
     _receipt_core,
@@ -18,6 +20,39 @@ from spaghetti_extractor.testkit.runner import (
 
 
 class TestNixFirstRunner(unittest.TestCase):
+    def test_evaluator_materializes_large_expressions_in_a_file(self) -> None:
+        expression = "[ " + " ".join("value" for _ in range(500_000)) + " ]"
+        observed: dict[str, object] = {}
+
+        def run(command: tuple[str, ...], **kwargs: object) -> SimpleNamespace:
+            observed["command"] = command
+            expression_path = Path(command[-1])
+            observed["expression"] = expression_path.read_text(encoding="utf-8")
+            return SimpleNamespace(
+                returncode=0,
+                stdout='["/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv"]',
+                stderr="",
+            )
+
+        with patch("spaghetti_extractor.testkit.runner.subprocess.run", side_effect=run):
+            with patch("pathlib.Path.is_file", return_value=True):
+                result = _evaluate_derivations(
+                    expression,
+                    repository=Path("/work/repo"),
+                    environment={},
+                )
+
+        self.assertEqual(
+            result,
+            ("/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-example.drv",),
+        )
+        command = observed["command"]
+        self.assertIsInstance(command, tuple)
+        self.assertIn("--file", command)
+        self.assertNotIn("--expr", command)
+        self.assertNotIn(expression, command)
+        self.assertIn(expression, observed["expression"])
+
     def test_static_modes_build_canonical_cached_aggregate(self) -> None:
         command = build_commands(Path("/work/repo"), mode="smoke")
 
@@ -52,10 +87,9 @@ class TestNixFirstRunner(unittest.TestCase):
                 rendered[0][4],
             )
             self.assertNotIn("test-shard-smoke", rendered[1][4])
-            self.assertIn(
-                'flake.legacyPackages.x86_64-linux.test-shards."pure-',
-                rendered[1][4],
-            )
+            self.assertIn('import (source + "/nix/test-suite.nix")', rendered[1][4])
+            self.assertIn("planPayload = builtins.fromJSON", rendered[1][4])
+            self.assertNotIn("legacyPackages.x86_64-linux.test-shards", rendered[1][4])
             self.assertEqual(rendered[1][-1:], ("--no-link",))
             self.assertNotIn("--keep-going", rendered[1])
 
@@ -99,7 +133,8 @@ class TestNixFirstRunner(unittest.TestCase):
                 'flake.checks.x86_64-linux."analysis-v3-machine-ir-input"',
                 rendered[1][4],
             )
-            self.assertNotIn("test-shard-pure", rendered[1][4])
+            self.assertIn('import (source + "/nix/test-suite.nix")', rendered[1][4])
+            self.assertNotIn("legacyPackages.x86_64-linux.test-shards", rendered[1][4])
 
     def test_evaluation_fingerprint_ignores_only_declared_source_exclusions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

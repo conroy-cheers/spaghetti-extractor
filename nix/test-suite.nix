@@ -3,11 +3,11 @@
   pythonEnv,
   repositoryRoot ? ../.,
   mode ? "full",
-  changedPaths ? [ ],
-  shardCount ? 32,
+  manifest ? ./test-suite-manifest.json,
+  planPayload ? null,
   # This is the reviewed post-legacy-cleanup inventory baseline. Lower it only
   # when a change deliberately removes or consolidates tests.
-  minimumTests ? if mode == "full" then 1483 else if mode == "affected" then 0 else 1,
+  minimumTests ? if mode == "full" then 1395 else if mode == "affected" then 0 else 1,
   fixtures ? { },
   environment ? { },
 }:
@@ -17,19 +17,8 @@ let
   fixtureSet = import ./test-suite-fixtures.nix {
     inherit pkgs fixtures environment;
   };
-  plan = import ./test-suite-plan.nix {
-    inherit
-      pkgs
-      pythonEnv
-      repositoryRoot
-      mode
-      changedPaths
-      shardCount
-      ;
-  };
-  planPayload = builtins.fromJSON (
-    builtins.unsafeDiscardStringContext (builtins.readFile "${plan}/suite-plan.json")
-  );
+  staticPlan = import ./test-suite-plan.nix { inherit mode manifest; };
+  selectedPlan = if planPayload == null then staticPlan.planPayload else planPayload;
   shards = builtins.listToAttrs (map
     (shard: {
       name = shard.id;
@@ -37,7 +26,7 @@ let
         inherit pkgs pythonEnv repositoryRoot shard fixtureSet;
       };
     })
-    planPayload.shards);
+    selectedPlan.shards);
   shardRows = lib.mapAttrsToList (id: path: {
     inherit id;
     path = toString path;
@@ -52,7 +41,7 @@ let
     mkdir -p "$out"
     python - "$out/test-suite-report.json" \
       ${lib.escapeShellArg (builtins.toJSON shardRows)} \
-      ${lib.escapeShellArg planPayload.identity} <<'PY'
+      ${lib.escapeShellArg selectedPlan.identity} <<'PY'
     import json
     import pathlib
     import sys
@@ -95,7 +84,9 @@ let
   '';
 in
 {
-  inherit aggregate fixtureSet plan planPayload shards;
-  index = "${plan}/impact-index.json";
-  suitePlan = "${plan}/suite-plan.json";
+  inherit aggregate fixtureSet shards;
+  plan = staticPlan;
+  planPayload = selectedPlan;
+  index = manifest;
+  suitePlan = manifest;
 }

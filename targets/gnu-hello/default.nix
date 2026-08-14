@@ -2,7 +2,6 @@
 
 let
   mingw = pkgs.pkgsCross.mingw32;
-  aarch64 = pkgs.pkgsCross.aarch64-multiplatform;
   target = builtins.fromJSON (builtins.readFile ./target.json);
   commonCflags = "-g0 -fno-asynchronous-unwind-tables -fno-ident -fno-inline -fno-inline-functions -fno-inline-small-functions -fno-ipa-cp -fno-ipa-sra -fno-ipa-icf";
   originalCflags = "-O2 -fno-align-functions -fno-align-labels -fno-align-loops -fno-align-jumps ${commonCflags}";
@@ -36,349 +35,72 @@ let
     };
   });
   originalPe = "${original}/bin/hello.exe";
-  profileSource = sdk.profiles;
-  analysis = sdk.analysis.component {
+  runtimeProfile = "${sdk.profiles}/pe32-msvcrt-machine-runtime-v1.json";
+  workflow = sdk.workflow.pe32 {
     original = originalPe;
-    externalProfile =
-      "${profileSource}/pe32-msvcrt-machine-runtime-v1.json";
-    namePrefix = "spaghetti-extractor-gnu-hello-2.12.3";
-  };
-  analysisV3 = sdk.analysis.authorityV3 {
-    name = "spaghetti-extractor-gnu-hello-2.12.3-authority-v3";
-    machineIr = "${analysis.machineIr}/machine-ir.jsonl";
-    binary = originalPe;
     binaryIdentity = "hello.exe";
-    machineImportProfiles = [
-      "${profileSource}/pe32-msvcrt-machine-runtime-v1.json"
-    ];
+    externalProfile = runtimeProfile;
+    machineImportProfiles = [ runtimeProfile ];
     launchProfileTemplate =
-      "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
-  };
-  componentsV2 = sdk.lifting.componentContractsV2 {
-    machineIr = analysis.machineIr;
-    reconstructionPlan = analysis.reconstructionPlan;
-    componentProposals = analysis.componentProposals;
-    intent = ./intent/components.json;
-    reviewRoot = ./intent/reviews;
-    sourceRoot = ./source;
+      "${sdk.profiles}/pe32-win32-console-launch-assumptions-v1.json";
+    componentIntent = ./intent/components.json;
+    componentReviewRoot = ./intent/reviews;
+    componentSourceRoot = ./source;
     namePrefix = "spaghetti-extractor-gnu-hello-2.12.3";
   };
-  intent = sdk.analysis.targetIntent {
-    target = ./.;
+  inherit (workflow) analysis authority components;
+  componentRuntime = workflow.componentRuntimeFor "ascii-to-lower-enabled";
+  staticCandidate = workflow.candidateFor {
+    configurationId = "ascii-to-lower-enabled";
   };
-  idiomaticSourceSpecification = builtins.elemAt intent.sourceProjects 0;
-  idiomaticSourceEvidencePlan = builtins.elemAt intent.sourceEvidence 0;
-  linkedLibraries = sdk.lifting.linkedLibraries {
-    original = originalPe;
-    machineIr = "${analysis.machineIr}/machine-ir.jsonl";
-    namePrefix = "spaghetti-extractor-gnu-hello-2.12.3";
-    review = "${intent.linkedIslandReview}/linked-island-review.json";
+  diagnosticCandidate = workflow.diagnosticFor {
+    configurationId = "ascii-to-lower-enabled";
   };
-  runtimeLock = sdk.lifting.runtimeLock {
-    namePrefix = "stage-b-gnu-hello-2.12.3";
-    dependencies = [
-      {
-        kind = "toolchain";
-        identity = "nixpkgs-mingw32-stdenv";
-        path = mingw.stdenv.cc;
-      }
-      {
-        kind = "toolchain";
-        identity = "nixpkgs-aarch64-multiplatform-stdenv";
-        path = aarch64.stdenv.cc;
-      }
-      {
-        kind = "external-profile";
-        identity = "pe32-msvcrt-machine-runtime-v1";
-        path = "${profileSource}/pe32-msvcrt-machine-runtime-v1.json";
-      }
-      {
-        kind = "launch-profile";
-        identity = "pe32-win32-console-launch-v1";
-        path = "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
-      }
-      {
-        kind = "reviewed-runtime-imports";
-        identity = "gnu-hello-2.12.3-idiomatic-mingw32-v1";
-        path = ./intent/runtime-imports.json;
-      }
-    ];
-  };
-  idiomatic = import ./idiomatic.nix {
-    inherit pkgs sdk;
-    mingw32 = mingw;
-    aarch64Stdenv = aarch64.stdenv;
-    machineIr = analysis.machineIr;
-    authorityGate = analysisV3.finalAuthorityGate;
-    specification = "${idiomaticSourceSpecification}/source-project.json";
-    inherit runtimeLock;
-    sourceRoot = ./source/idiomatic;
-    linkedIslands = "${linkedLibraries.linkedIslands}/linked-islands.json";
-  };
-  sourceIterationAudit = sdk.lifting.sourceIterationAudit {
-    namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
-    machineIr = analysis.machineIr;
-    sourceBinding = idiomatic.sourceBinding;
-    sourceEvidencePlan = idiomaticSourceEvidencePlan;
-    candidate = idiomatic.candidate;
-  };
-  sourceLiftAudit = sdk.lifting.sourceLiftAudit {
-    inherit sourceIterationAudit;
-    namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
-    authorityDiagnostics = analysisV3.diagnostics;
-  };
-  sourceAst = sdk.lifting.clangAstBundle {
-    namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
-    source = idiomatic.source;
-    sourceFiles = [ "hello.c" "hello.h" ];
-    compileSources = [ "hello.c" ];
-  };
-  sourceCalls = sdk.lifting.sourceCallSubstitutions {
-    namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
-    sourceBinding =
-      "${idiomatic.sourceBinding}/source-project-binding.json";
-    linkedIslands =
-      "${linkedLibraries.linkedIslands}/linked-islands.json";
-    dynamicRequirements =
-      "${linkedLibraries.dynamicRequirements}/dynamic-library-requirements.json";
-    original = originalPe;
-    machineIr = analysis.machineIr;
-    clangAst = "${sourceAst}/clang-ast-bundle.json";
-    sourceRoot = idiomatic.source;
-    candidate = "${idiomatic.candidate}/bin/hello.exe";
-    allowedRuntimeImports = ./intent/runtime-imports.json;
-    proposeSourceComponents = true;
-  };
-  sourceComponentAssurance = sdk.lifting.sourceComponentAssurance {
-    namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
-    binding = idiomatic.sourceBinding;
-    sourceInventory = "${sourceCalls.sourceInventory}/source-call-inventory.json";
-    sourceCallReport = "${sourceCalls.sourceBindingReport}/source-call-binding-report.json";
-    functionalReport = "${idiomatic.functionalSuite}/functional-report.json";
-    evidencePlan = "${idiomaticSourceEvidencePlan}/source-component-evidence.json";
-  };
-  sourceQualification = sdk.lifting.sourceQualification {
-    namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
-    sourceBinding = idiomatic.sourceBinding;
-    componentAssurance = sourceComponentAssurance;
-    sourceCallReport = sourceCalls.sourceBindingReport;
-    candidateDependencyAudit = sourceCalls.candidateAudit;
-  };
-  runtimeQualification = sdk.lifting.runtimeQualification {
-    inherit runtimeLock;
-    namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
-    linkedIslands = linkedLibraries.linkedIslands;
-    candidateDependencyAudit = sourceCalls.candidateAudit;
-    componentAssurance = sourceComponentAssurance;
-    substitutionPlan = ./intent/runtime-substitution.json;
-  };
-  candidateValidation = sdk.candidate.validation {
-    namePrefix = "stage-b-gnu-hello-2.12.3-idiomatic";
-    pe32Report = idiomatic.functionalSuite;
-    nonX86Report = idiomatic.nativeFunctionalSuite;
-  };
-  staticImplementationLedger = sdk.lifting.implementationLedger {
-    namePrefix = "stage-b-gnu-hello-2.12.3";
-    machineIr = analysis.machineIr;
-    profile = "static-baseline-v1";
-    fallbackCoverage =
-      analysisV3.graph.phases."fallback-coverage-v3".artifact;
-  };
-  portableImplementationLedger = sdk.lifting.implementationLedger {
-    namePrefix = "stage-b-gnu-hello-2.12.3";
-    machineIr = analysis.machineIr;
-    profile = "validation-qualified-v1";
-    sourceBinding = idiomatic.sourceBinding;
-    sourceQualification = sourceQualification;
-    linkedIslands = linkedLibraries.linkedIslands;
-    libraryQualifications = [ runtimeQualification ];
-  };
-  staticCompletionReceipt = sdk.lifting.completionReceipt {
-    inherit runtimeLock;
-    namePrefix = "stage-b-gnu-hello-2.12.3";
-    profile = "static-baseline-v1";
-    finalAuthority = analysisV3.finalAuthority;
-    fallbackCoverage =
-      analysisV3.graph.phases."fallback-coverage-v3".artifact;
-    implementationLedger = staticImplementationLedger;
-    authorityDiagnostics = analysisV3.diagnostics;
-  };
-  portableCompletionReceipt = sdk.lifting.completionReceipt {
-    inherit runtimeLock;
-    namePrefix = "stage-b-gnu-hello-2.12.3";
-    profile = "validation-qualified-v1";
-    finalAuthority = analysisV3.finalAuthority;
-    fallbackCoverage =
-      analysisV3.graph.phases."fallback-coverage-v3".artifact;
-    implementationLedger = portableImplementationLedger;
-    authorityDiagnostics = analysisV3.diagnostics;
-    pe32Candidate = idiomatic.candidate;
-    nonX86Candidate = idiomatic.nativeCandidate;
-    sourceQualifications = [ sourceQualification ];
-    libraryQualifications = [ runtimeQualification ];
-    validation = candidateValidation;
-  };
-  liftWorkbench = pkgs.runCommand
-    "spaghetti-extractor-gnu-hello-2.12.3-lift-workbench-v1"
-    { __contentAddressed = true; } ''
-      set -euo pipefail
-      mkdir -p "$out"
-      ln -s ${analysisV3.finalAuthority} "$out/final-authority-v3"
-      ln -s ${analysisV3.diagnostics} "$out/authority-diagnostics-v3"
-      ln -s ${analysisV3.generatedExternalSiteEvidence} \
-        "$out/external-site-evidence-v3"
-      ln -s ${analysisV3.generatedIndexedTargetEvidence} \
-        "$out/indexed-target-evidence-v3"
-      ln -s ${analysisV3.fallbackInterpreter} "$out/fallback-interpreter-v3"
-      ln -s ${analysisV3.fallbackCoverageReceipt} \
-        "$out/fallback-coverage-receipt-v3"
-      ln -s ${analysisV3.generatedImplementationCapabilities} \
-        "$out/implementation-capabilities-v3"
-      ln -s ${analysisV3.generatedISAEvidence.frontiers} \
-        "$out/isa-frontiers-v1"
-      ln -s ${analysis.machineIr} "$out/machine-ir-v2"
-      ln -s ${linkedLibraries.linkedIslands} "$out/linked-islands"
-      ln -s ${idiomatic.sourceBinding} "$out/source-project-binding"
-      ln -s ${sourceAst} "$out/source-ast"
-      ln -s ${sourceCalls.sourceBindingReport} "$out/source-call-report"
-      ln -s ${sourceCalls.candidateAudit} "$out/candidate-dependency-audit"
-      ln -s ${sourceIterationAudit} "$out/source-iteration-audit"
-      ln -s ${sourceLiftAudit} "$out/source-lift-audit"
-      ln -s ${staticImplementationLedger} "$out/static-implementation-ledger-v2"
-      ln -s ${staticCompletionReceipt} "$out/static-completion-receipt-v2"
-      ln -s ${runtimeLock} "$out/runtime-lock-v1"
-      ln -s ${idiomatic.candidate} "$out/candidate-pe32"
-      ln -s ${idiomatic.nativeCandidate} "$out/candidate-aarch64"
-      cat > "$out/workbench.json" <<'EOF'
-      {
-        "format": "spaghetti-extractor-target-lift-workbench-v1",
-        "target": "gnu-hello",
-        "iteration_entrypoint": "source-iteration-audit/source-iteration-audit.json",
-        "authority_entrypoint": "authority-diagnostics-v3/authority-diagnostics-v3.json",
-        "acceptance_gate": "gnu-hello-final-authority-v3-gate",
-        "release_workflow": "gnu-hello-lift-workflow",
-        "runtime_execution_permitted_only_after_authority": true,
-        "executes_original_binary": false
-      }
-      EOF
-    '';
-  liftWorkflow = pkgs.runCommand
-    "spaghetti-extractor-gnu-hello-2.12.3-lift-workflow-v1"
-    { __contentAddressed = true; } ''
-      set -euo pipefail
-      mkdir -p "$out"
-      ln -s ${analysisV3.finalAuthority} "$out/final-authority-v3"
-      ln -s ${analysisV3.diagnostics} "$out/authority-diagnostics-v3"
-      ln -s ${analysisV3.generatedExternalSiteEvidence} \
-        "$out/external-site-evidence-v3"
-      ln -s ${analysisV3.generatedIndexedTargetEvidence} \
-        "$out/indexed-target-evidence-v3"
-      ln -s ${analysisV3.fallbackInterpreter} "$out/fallback-interpreter-v3"
-      ln -s ${analysisV3.fallbackCoverageReceipt} \
-        "$out/fallback-coverage-receipt-v3"
-      ln -s ${analysisV3.generatedImplementationCapabilities} \
-        "$out/implementation-capabilities-v3"
-      ln -s ${analysisV3.generatedISAEvidence.frontiers} \
-        "$out/isa-frontiers-v1"
-      ln -s ${analysis.machineIr} "$out/machine-ir-v2"
-      ln -s ${linkedLibraries.linkedIslands} "$out/linked-islands"
-      ln -s ${idiomatic.sourceBinding} "$out/source-project-binding"
-      ln -s ${sourceIterationAudit} "$out/source-iteration-audit"
-      ln -s ${sourceLiftAudit} "$out/source-lift-audit"
-      ln -s ${sourceQualification} "$out/source-qualification-v1"
-      ln -s ${portableImplementationLedger} "$out/implementation-ledger-v2"
-      ln -s ${runtimeLock} "$out/runtime-lock-v1"
-      ln -s ${idiomatic.candidate} "$out/candidate-pe32"
-      ln -s ${idiomatic.nativeCandidate} "$out/candidate-aarch64"
-      ln -s ${portableCompletionReceipt} "$out/completion-receipt-v2"
-      cat > "$out/workflow.json" <<'EOF'
-      {
-        "format": "spaghetti-extractor-target-lift-workflow-v1",
-        "target": "gnu-hello",
-        "profile": "validation-qualified-v1",
-        "entrypoint": "completion-receipt-v2/lift-completion-report-v2.json",
-        "runtime_execution_permitted_only_after_authority": true,
-        "executes_original_binary": false
-      }
-      EOF
-    '';
 in
 sdk.target.bundle {
   targetRoot = ./.;
   artifacts = {
     input.original = original;
-    intent = intent.validation;
     analysis = {
+      static-export = analysis.staticExport;
       machine-ir = analysis.machineIr;
+      reconstruction-plan = analysis.reconstructionPlan;
       component-proposals = analysis.componentProposals;
     };
     components = {
-      resolution = componentsV2.resolution;
-      contracts = componentsV2.contracts;
-      source-packages = componentsV2.sourcePackages;
-      contract-bundle = componentsV2.bundle;
-      configurations = componentsV2.activationPlans;
-      source-bundles = componentsV2.sourceBundles;
+      resolution = components.resolution;
+      contracts = components.contracts;
+      source-packages = components.sourcePackages;
+      evidence = components.evidences;
+      qualifications = components.qualifications;
+      configurations = components.activationPlans;
+      inherit componentRuntime;
+      bundle = components.bundle;
     };
     authority = {
-      final = analysisV3.finalAuthority;
-      gate = analysisV3.finalAuthorityGate;
-      graph-metadata = analysisV3.graph.metadata;
-      diagnostics = analysisV3.diagnostics;
-      external-site-evidence = analysisV3.generatedExternalSiteEvidence;
-      indexed-target-evidence = analysisV3.generatedIndexedTargetEvidence;
-      isa-evidence = analysisV3.generatedISAEvidence.projection;
-      isa-requirements = analysisV3.generatedISAEvidence.requirements;
-      isa-selection =
-        analysisV3.generatedISAEvidence.qualification.selectionAuthority.derivation;
-      isa-frontiers = analysisV3.generatedISAEvidence.frontiers;
-      fallback-interpreter = analysisV3.fallbackInterpreter;
-      fallback-coverage = analysisV3.fallbackCoverageReceipt;
-      implementation-capabilities = analysisV3.generatedImplementationCapabilities;
-    };
-    source = {
-      specification = idiomaticSourceSpecification;
-      evidence-plan = idiomaticSourceEvidencePlan;
-      binding = idiomatic.sourceBinding;
-      ast = sourceAst;
-      call-inventory = sourceCalls.sourceInventory;
-      call-frontier = sourceCalls.callFrontier;
-      call-substitution-plan = sourceCalls.callPlan;
-      static-indirect-targets = sourceCalls.generatedIndirectTargets;
-      call-report = sourceCalls.sourceBindingReport;
-      dependency-audit = sourceCalls.candidateAudit;
-      component-assurance = sourceComponentAssurance;
-      iteration-audit = sourceIterationAudit;
-      lift-audit = sourceLiftAudit;
-      qualification = sourceQualification;
-    };
-    runtime = {
-      lock = runtimeLock;
-      linked-islands = linkedLibraries.linkedIslands;
-      qualification = runtimeQualification;
+      final = authority.finalAuthority;
+      gate = authority.finalAuthorityGate;
+      diagnostics = authority.diagnostics;
+      graph-metadata = authority.graph.metadata;
     };
     candidate = {
-      pe32 = idiomatic.candidate;
-      native = idiomatic.nativeCandidate;
-      runner = idiomatic.runner;
-      functional-suite-spec = idiomatic.functionalSuiteSpec;
-      functional-suite = idiomatic.functionalSuite;
-      native-functional-suite = idiomatic.nativeFunctionalSuite;
-      validation = candidateValidation;
-    };
-    completion = {
-      static-ledger = staticImplementationLedger;
-      portable-ledger = portableImplementationLedger;
-      static-receipt = staticCompletionReceipt;
-      portable-receipt = portableCompletionReceipt;
-      workbench = liftWorkbench;
-      workflow = liftWorkflow;
+      static = staticCandidate.candidate;
+      diagnostic = diagnosticCandidate.candidate;
+      native-objects = diagnosticCandidate.nativeObjects.package;
     };
   };
   checks = {
-    intent = intent.validation;
-    component-resolution = componentsV2.resolution;
-    component-contract = componentsV2.contracts.operator-whole;
-    component-configuration = componentsV2.activationPlans.operator-whole;
+    component-resolution = components.resolution;
+    ascii-to-lower-contract = components.contracts.ascii-to-lower;
+    ascii-to-lower-evidence = components.evidences.ascii-to-lower;
+    ascii-to-lower-qualification = components.qualifications.ascii-to-lower;
+    ascii-to-lower-activation =
+      components.activationPlans.ascii-to-lower-enabled;
+    ascii-to-lower-runtime = componentRuntime;
+    native-object-package = diagnosticCandidate.nativeObjects.package;
+  };
+  acceptanceChecks = {
+    final-authority = authority.finalAuthorityGate;
+    static-candidate = staticCandidate.candidate;
   };
 }

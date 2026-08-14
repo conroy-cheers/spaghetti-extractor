@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from spaghetti_extractor.cli import _run_isa_conformance_worker
+from spaghetti_extractor.commands.isa import _run_isa_conformance_worker
 from spaghetti_extractor.isa_conformance import (
     BackendKind,
     ObservationStatus,

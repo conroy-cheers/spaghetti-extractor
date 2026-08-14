@@ -85,17 +85,18 @@ nix run .#dev -- explain-rebuild --before before.json --after after.json
 Scaffolding creates convention-wired files and refuses overwrites; add
 `--dry-run` to inspect the generated files without changing the worktree.
 
-Portable-source iteration is also Nix-native. The GNU Hello validation target
-exposes the canonical workbench shape:
+Portable-source iteration is also Nix-native. GNU Hello exposes the canonical
+component and target-gate workflow:
 
 ```console
-nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.completion.workbench' --no-link
-nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.source.iteration-audit' --no-link
-nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.authority.diagnostics' --no-link
+nix run ./targets#test -- gnu-hello
+nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.components.componentRuntime' --no-link
+nix run ./targets#test -- --acceptance gnu-hello
 ```
 
-The workbench remains buildable while authority is incomplete. Executable and
-runtime outputs stay behind the explicit final-authority gate.
+Regression remains buildable while whole-program authority is incomplete.
+Acceptance and the static candidate stay behind the explicit final-authority
+gate.
 
 ## Public Surfaces
 
@@ -105,7 +106,7 @@ runtime outputs stay behind the explicit final-authority gate.
 - `nix run ./targets#test`: validation for one explicitly registered consumer.
 - `nix run .#dev`: scaffolding, fixture discovery, environment diagnosis, and
   rebuild explanations.
-- `flake.lib.mkTargetSdkV2`: the stable configured Nix interface for analysis,
+- `flake.lib.mkTargetSdk`: the stable configured Nix interface for analysis,
   authority, candidate, lifting, validation, and target-bundle construction.
 - [Composable component lifting](docs/components.md): exact leaf/group
   boundaries, qualification profiles, fallback ownership, and incremental Nix

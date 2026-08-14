@@ -37,23 +37,26 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn(".coverage.exact.complete", discovery)
         self.assertIn(".coverage.potential.complete", discovery)
 
-    def test_component_v2_dag_has_granular_phase_inputs(self) -> None:
-        module = (ROOT / "nix" / "stage-b-components-v2.nix").read_text(
+    def test_component_v3_dag_has_granular_phase_inputs(self) -> None:
+        module = (ROOT / "nix" / "stage-b-components-v3.nix").read_text(
             encoding="utf-8"
         )
         for declaration in (
             "component-resolution-v2",
             "component-contract-v2",
             "component-source-package-v2",
-            "component-qualification-v2",
-            "component-activation-plan-v2",
-            "component-sources-v2",
+            "component-evidence-v3",
+            "component-qualification-v3",
+            "component-activation-plan-v3",
+            "component-sources-v3",
         ):
             self.assertIn(declaration, module)
         self.assertIn("__contentAddressed = true;", module)
         self.assertNotIn("component_workspace", module)
         self.assertNotIn("identity_authorizes_activation", module)
         self.assertIn("sourcePackages", module)
+        self.assertIn("evidences", module)
+        self.assertIn("runtimeConfigurations", module)
         self.assertIn("implementation=pathlib.Path(sys.argv[2])", module)
 
     def test_interpreter_package_is_a_generic_content_addressed_phase(self) -> None:
@@ -64,17 +67,25 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("stage-b-jq", module.lower())
         self.assertNotIn("wine", module.lower())
 
-    def test_native_object_graph_avoids_ca_import_from_derivation(self) -> None:
+    def test_native_object_graph_normalizes_ifd_inputs_into_ca_units(self) -> None:
         module = (ROOT / "nix" / "stage-b-native-object-graph.nix").read_text(
             encoding="utf-8"
         )
-        self.assertNotIn("builtins.readFile", module)
+        self.assertIn("builtins.readFile", module)
+        self.assertNotIn("builtins.path", module)
         self.assertNotIn("unsafeDiscardStringContext", module)
-        self.assertIn("compile_stage_b_interpreter_native_object", module)
+        self.assertIn("native-source-bundle-v1", module)
+        self.assertIn(
+            "compile_stage_b_interpreter_native_source_bundle", module
+        )
         self.assertIn("assemble_stage_b_interpreter_native_objects", module)
         self.assertIn("__contentAddressed = true;", module)
         self.assertIn("compiledObjects", module)
         self.assertIn("stage-b-interpreter-native-object-graph-v2", module)
+        graph_declaration = module[
+            module.index('graph = pkgs.runCommand') : module.index("graphPayload =")
+        ]
+        self.assertNotIn("__contentAddressed = true;", graph_declaration)
 
     def test_machine_ir_preparation_is_a_distinct_reusable_phase(self) -> None:
         module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
@@ -333,6 +344,8 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("stage-b-final-candidate-generation-authorization-v1", module)
         self.assertIn("externalSiteProposals ? null", module)
         self.assertIn("external_site_proposals=", module)
+        self.assertIn("region_override_package=optional_path", module)
+        self.assertIn("if ${if staticClosed then", module)
         self.assertIn(
             "proposal-only external-site evidence is diagnostic-only", module
         )
@@ -419,9 +432,10 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
 
     def test_stable_sdk_exposes_only_generic_v3_static_authority_constructor(self) -> None:
         flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
-        sdk = (ROOT / "nix" / "target-sdk-v2.nix").read_text(encoding="utf-8")
-        self.assertIn("mkTargetSdkV2", flake)
+        sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
+        self.assertIn("mkTargetSdk", flake)
         self.assertIn("authorityV3", sdk)
+        self.assertIn("workflow.pe32", sdk)
         self.assertIn("analysis-v3-authority.nix", sdk)
         self.assertNotIn("dxball-final-authority-v3", flake)
         self.assertNotIn("mkStaticHybridAuthorityV2Graph", flake)

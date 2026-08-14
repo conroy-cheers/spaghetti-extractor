@@ -47,56 +47,34 @@ let
     "${sdk.profiles}/pe32-win32-windowing-runtime-v1.json"
     "${sdk.profiles}/pe32-winmm-runtime-v1.json"
   ];
-  analysis = sdk.analysis.component {
+  workflow = sdk.workflow.pe32 {
     original = "${original}/DXBall.exe";
+    binaryIdentity = "DXBall.exe";
     externalProfile = builtins.head runtimeMachineImportProfiles;
-    additionalMachineImportProfiles = builtins.tail runtimeMachineImportProfiles;
+    machineImportProfiles = runtimeMachineImportProfiles;
     externalInterfaceProfiles = [
       "${interfaceProfile}/interface-profile.json"
     ];
     launchProfileTemplate =
       "${sdk.profiles}/pe32-win32-gui-launch-assumptions-v1.json";
+    componentIntent = ./intent/components.json;
+    componentReviewRoot = ./intent/reviews;
     namePrefix = "spaghetti-extractor-dxball-1.09";
     maxUnits = 512;
     maxCandidatesPerSeed = 12;
   };
-  componentsV2 = sdk.lifting.componentContractsV2 {
-    machineIr = analysis.machineIr;
-    reconstructionPlan = analysis.reconstructionPlan;
-    componentProposals = analysis.componentProposals;
-    intent = ./intent/components.json;
-    reviewRoot = ./intent/reviews;
-    namePrefix = "spaghetti-extractor-dxball-1.09";
-  };
-  analysisV3 = sdk.analysis.authorityV3 {
-    name = "spaghetti-extractor-dxball-1.09-authority-v3";
-    machineIr = "${analysis.machineIr}/machine-ir.jsonl";
-    binary = "${original}/DXBall.exe";
-    binaryIdentity = "DXBall.exe";
-    machineImportProfiles = runtimeMachineImportProfiles;
-    launchProfileTemplate =
-      "${sdk.profiles}/pe32-win32-gui-launch-assumptions-v1.json";
-  };
-  hybrid = sdk.candidate.hybrid {
-    machineIr = analysis.machineIr;
-    staticExport = analysis.staticExport;
-    staticAuthorityV3 = analysisV3;
-    machineImportProfiles = runtimeMachineImportProfiles ++ [
+  inherit (workflow) analysis components;
+  analysisV3 = workflow.authority;
+  hybrid = workflow.candidateFor {
+    configurationId = "startup-extended";
+    extraMachineImportProfiles = [
       "${interfaceProfile}/interface-profile.json"
     ];
-    namePrefix = "spaghetti-extractor-dxball-1.09";
-    allowDeferredPotentialTransfers = false;
   };
-  hybridDiagnostic = sdk.candidate.hybrid {
-    machineIr = analysis.machineIr;
-    staticExport = analysis.staticExport;
-    machineImportProfiles = runtimeMachineImportProfiles ++ [
+  hybridDiagnostic = workflow.diagnosticFor {
+    extraMachineImportProfiles = [
       "${interfaceProfile}/interface-profile.json"
     ];
-    namePrefix = "spaghetti-extractor-dxball-1.09-diagnostic";
-    candidateMode = "structural-diagnostic";
-    allowDeferredPotentialTransfers = true;
-    diagnosticFailureTrap = true;
   };
   diagnosticRun = sdk.candidate.headlessDiagnostic {
     namePrefix = "spaghetti-extractor-dxball-1.09";
@@ -109,9 +87,6 @@ let
     inputKeys = [ "Return" ];
     screenshotAfterSeconds = 15;
   };
-  intent = sdk.analysis.targetIntent {
-    target = ./.;
-  };
 in
 sdk.target.bundle {
   targetRoot = ./.;
@@ -121,7 +96,6 @@ sdk.target.bundle {
       installer = installer;
       original = original;
     };
-    intent = intent.validation;
     profiles.interface = interfaceProfile;
     analysis = {
       inventory = analysis.originalInventory;
@@ -133,12 +107,14 @@ sdk.target.bundle {
       component-proposals = analysis.componentProposals;
     };
     components = {
-      resolution = componentsV2.resolution;
-      contracts = componentsV2.contracts;
-      source-packages = componentsV2.sourcePackages;
-      contract-bundle = componentsV2.bundle;
-      configurations = componentsV2.activationPlans;
-      source-bundles = componentsV2.sourceBundles;
+      resolution = components.resolution;
+      contracts = components.contracts;
+      source-packages = components.sourcePackages;
+      evidence = components.evidences;
+      qualifications = components.qualifications;
+      contract-bundle = components.bundle;
+      configurations = components.activationPlans;
+      source-bundles = components.sourceBundles;
     };
     authority = {
       final = analysisV3.finalAuthority;
@@ -165,9 +141,12 @@ sdk.target.bundle {
     };
   };
   checks = {
-    intent = intent.validation;
-    component-resolution = componentsV2.resolution;
-    component-contract = componentsV2.contracts.startup-extended;
-    component-configuration = componentsV2.activationPlans.startup-extended;
+    component-resolution = components.resolution;
+    component-contract = components.contracts.startup-extended;
+    component-configuration = components.activationPlans.startup-extended;
+  };
+  acceptanceChecks = {
+    final-authority = analysisV3.finalAuthorityGate;
+    static-candidate = hybrid.candidate;
   };
 }

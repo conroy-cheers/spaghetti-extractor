@@ -32,10 +32,11 @@ class StageBLinkedLibrariesNixTests(unittest.TestCase):
         self.assertNotIn("executes_original_binary = true", module.lower())
 
     def test_component_activation_requires_separate_behavioral_evidence(self) -> None:
-        module = (ROOT / "nix" / "stage-b-components-v2.nix").read_text(
+        module = (ROOT / "nix" / "stage-b-components-v3.nix").read_text(
             encoding="utf-8"
         )
-        self.assertIn("evidenceById ? { }", module)
+        self.assertIn("produce_component_evidence_v3", module)
+        self.assertIn("qualify_lift_unit_v3", module)
         self.assertIn("activation_requires_separate_behavioral_evidence", module)
         self.assertNotIn("linked_island_identity_authorizes_replacement", module)
 

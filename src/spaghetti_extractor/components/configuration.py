@@ -13,9 +13,11 @@ from ..artifact_formats import (
 )
 from .formats import (
     COMPONENT_ACTIVATION_PLAN_V2_FORMAT,
+    COMPONENT_ACTIVATION_PLAN_V3_FORMAT,
     COMPONENT_CONFIGURATION_RESOLUTION_V2_FORMAT,
     COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
     COMPONENT_QUALIFICATION_V2_FORMAT,
+    COMPONENT_QUALIFICATION_V3_FORMAT,
     COMPONENT_RESOLUTION_V2_FORMAT,
 )
 from ..util import sha256_file, write_json
@@ -259,6 +261,57 @@ def compose_component_configuration_v2(
     return result
 
 
+def compose_component_configuration_v3(
+    *,
+    machine_ir: Path | str,
+    resolution: Path | str | Mapping[str, object],
+    configuration_id: str,
+    contracts: Mapping[str, Path | str | Mapping[str, object]],
+    implementations: Mapping[str, Path | str] | None,
+    qualifications: Mapping[str, Path | str | Mapping[str, object]] | None,
+    out: Path | str,
+) -> dict[str, object]:
+    """Produce the sole executable activation authority.
+
+    Unlike the diagnostic v2 plan, an enabled but unqualified component is a
+    hard candidate-generation blocker. Draft selections still use total
+    machine-IR fallback and remain executable.
+    """
+
+    diagnostic = compose_component_configuration_v2(
+        machine_ir=machine_ir,
+        resolution=resolution,
+        configuration_id=configuration_id,
+        contracts=contracts,
+        implementations=implementations,
+        qualifications=qualifications,
+        out=out,
+    )
+    core = copy.deepcopy(diagnostic)
+    core.pop("activation_plan_sha256", None)
+    core["format"] = COMPONENT_ACTIVATION_PLAN_V3_FORMAT
+    status = str(core.get("status"))
+    core["policy"] = {
+        **_object(core.get("policy"), "component activation policy"),
+        "enabled_components_must_activate": True,
+        "enabled_components_may_silently_fallback": False,
+        "runtime_package_is_sole_candidate_authority": True,
+    }
+    core["ownership"] = {
+        **_object(core.get("ownership"), "component ownership"),
+        "enabled_units_never_receive_fallback_ownership": status == "checked",
+    }
+    core["hybrid"] = {
+        **_object(core.get("hybrid"), "component hybrid state"),
+        "structurally_executable": status == "checked",
+        "release_ready": False,
+        "readiness_authority": "checked_component_runtime_package_v3_required",
+    }
+    result = {**core, "activation_plan_sha256": _canonical_sha256(core)}
+    write_json(Path(out), result)
+    return result
+
+
 def _load_machine_ir(path: Path) -> dict[str, object]:
     manifest_path = path / "machine-ir-manifest.json" if path.is_dir() else path
     manifest = _load(manifest_path, "machine-IR manifest")
@@ -332,9 +385,15 @@ def _load_contract(value: Path | str | Mapping[str, object]) -> dict[str, object
 
 def _load_qualification(value: Path | str | Mapping[str, object]) -> dict[str, object]:
     payload = _load_local(value, "qualification.json", "component qualification")
+    format_name = payload.get("format")
+    if format_name not in {
+        COMPONENT_QUALIFICATION_V2_FORMAT,
+        COMPONENT_QUALIFICATION_V3_FORMAT,
+    }:
+        raise ComponentIntentError("unsupported component qualification format")
     _self_hash(
         payload,
-        format_name=COMPONENT_QUALIFICATION_V2_FORMAT,
+        format_name=str(format_name),
         field="qualification_sha256",
         description="component qualification",
     )

@@ -38,6 +38,11 @@ V3_LEGACY_IMPORT_REMEDIATION = (
     "Comparison tests must construct native fixture records rather than importing "
     "a legacy analyzer."
 )
+RETAINED_NON_PRODUCTION_BACKENDS = (
+    "spaghetti_extractor.ghidra",
+    "spaghetti_extractor.stage_b",
+    "spaghetti_extractor.stage_b_provenance",
+)
 
 
 def _module_name(root: Path, path: Path) -> str:
@@ -106,8 +111,11 @@ class RepositoryBoundaryTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [])
 
-    def test_every_package_module_has_a_production_consumer(self) -> None:
-        self.assertEqual(production_unreachable_modules(self.root), ())
+    def test_only_explicitly_retained_backends_lack_a_production_consumer(self) -> None:
+        self.assertEqual(
+            production_unreachable_modules(self.root),
+            RETAINED_NON_PRODUCTION_BACKENDS,
+        )
 
     def test_generic_python_contains_no_validation_target_policy(self) -> None:
         package = self.root / "src/spaghetti_extractor"
@@ -239,9 +247,7 @@ class RepositoryBoundaryTests(unittest.TestCase):
         self.assertEqual(sorted(set(missing)), [])
 
     def test_removed_workflows_are_absent_from_public_surfaces(self) -> None:
-        public = "\n".join(
-            path.read_text(encoding="utf-8")
-            for path in (
+        public_paths = [
                 self.root / "README.md",
                 self.root / "REPOSITORY_MAP.md",
                 self.root / "docs" / "architecture.md",
@@ -249,7 +255,14 @@ class RepositoryBoundaryTests(unittest.TestCase):
                 self.root / "pyproject.toml",
                 self.root / "flake.nix",
                 self.root / "src" / "spaghetti_extractor" / "cli.py",
-            )
+                *sorted(
+                    (self.root / "src" / "spaghetti_extractor" / "commands").glob(
+                        "*.py"
+                    )
+                ),
+        ]
+        public = "\n".join(
+            path.read_text(encoding="utf-8") for path in public_paths
         )
         for removed in (
             "spaghetti-extractor-slice",
@@ -257,13 +270,16 @@ class RepositoryBoundaryTests(unittest.TestCase):
             "stage-b-generate-semantic-c",
             "stage-a-jq-fixtures-check",
             "stage-b-jq-skeleton",
+            "stage-b-record-candidate",
+            '"stage-b-validate-candidate"',
+            "stage-b-explain-delta",
         ):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, public)
 
     def test_installed_nix_data_covers_every_generic_nix_surface(self) -> None:
         manifest = (self.root / "pyproject.toml").read_text(encoding="utf-8")
-        flake_only = {"target-sdk-v2.nix", "toolkit-context.nix"}
+        flake_only = {"target-sdk.nix", "toolkit-context.nix"}
         missing = sorted(
             path.name
             for path in (self.root / "nix").iterdir()

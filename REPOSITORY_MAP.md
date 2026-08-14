@@ -33,7 +33,7 @@ PE bytes
   -> typed v3 authority graph
   -> complete interpreter/native fallback
   -> library/interface/component proposals
-  -> component v2 contracts, qualifications, and activation plans
+  -> component v3 contracts, evidence, qualifications, and activation plans
   -> rebuilt candidate
   -> stage_b.py static assurance
   -> stage_b_functional.py candidate-only tests
@@ -162,7 +162,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_interpreter_backend.py` | Portable machine-IR interpreter generation. |
 | `stage_b_interpreter_native_build.py` | Freestanding PE32 build from interpreter, engine, and runtime packages. |
 | `stage_b_fallback_coverage.py` | Replays exact interpreter lowerings and portable selections and proves one implementation kind per unit in the complete structural universe; it has no rooted-reachability authority. |
-| `source_lift_audit.py` | Two-level source-lift diagnostics: a cheap source/interface iteration audit independent of v3 authority, plus a final non-authorizing join to authority diagnostics before release/runtime gates. |
+| `components/source.py`, `components/evidence.py`, `components/qualification.py`, `components/runtime.py` | Content-bind logical C, produce candidate-only behavioral evidence, qualify exact replacements, and generate the sole executable component runtime package. |
 | `stage_a_standard_evidence_v3.py` | Emits exact launch-root, callback, target-hint, and inductive-input proposals for native v3 checking. |
 | `stage_a_exception_evidence_v3.py` | Generates instruction-bound exception classifications under a checked launch profile; terminal faults remain explicit observable outcomes. |
 | `stage_a_external_site_evidence_v3.py` | Generates exact-bound machine-level external-site evidence for downstream native-v3 checking. |
@@ -170,11 +170,6 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_a_isa_evidence_v3.py` | Projects binary-specific oracle and Lean qualification into exact native-v3 ISA evidence. |
 | `isa_frontier_report_v1.py` | Replays exact ISA requirements and selection authority into compact form-, field-, and RVA-level repair diagnostics without sharing an output identity with authority evidence. |
 | `stage_a_implementation_capabilities_v3.py` | Binds fallback implementation capability IDs to the exact selected ISA forms. |
-| `lift_qualification_v1.py`, `stage_b_source_qualification_v1.py`, `stage_b_runtime_qualification_v1.py` | Typed assurance-class-aware portable-lift qualification records, validation-backed source qualification, and pinned linked-runtime qualification. |
-| `candidate_validation_v1.py` | Joins exact candidate-only PE32 and non-x86 behavior reports without claiming equivalence. |
-| `implementation_ledger_v2.py`, `stage_b_ownership_ledger_v2.py` | Exact unit-ownership and implementation-kind ledgers for static fallback and portable replacements. |
-| `lift_completion_receipt_v2.py`, `stage_b_lift_completion_v2.py` | Final completion receipts joining authority, implementation coverage, source qualification, and candidate identities. |
-| `runtime_lock_v1.py` | Content-addressed toolchain, runtime, profile, and launch-assumption lock used by portable build receipts. |
 | `stage_b_machine_ir_scope.py` | Fail-closed partition of executable and deferred machine-IR transfers for candidate generation. |
 | `stage_b_engine_layout.py` | Structural engine layout tables. |
 | `stage_b_native_engine.py` | IA-32 ABI bridge and typed x87 native operations. |
@@ -196,7 +191,7 @@ component discovery inputs from the checked machine IR.
 qualification and candidate source bundles. Qualification cannot outlive a
 source-byte change.
 The public component framework is the typed `components/` package and the
-content-addressed `stage-b-components-v2.nix` DAG.
+content-addressed `stage-b-components-v3.nix` DAG.
 
 ## Components And Portable Source
 
@@ -206,16 +201,16 @@ content-addressed `stage-b-components-v2.nix` DAG.
 | `components/intent.py`, `components/model.py` | Strict authored leaves, overlapping alternative groups, and non-overlapping configurations. |
 | `components/resolution.py` | Binds component selectors and groups to exact machine units. |
 | `components/contracts.py` | Derives and checks one independently liftable machine boundary. |
+| `components/source.py` | Packages exact portable source plus its `logical-c-v1` entry. |
+| `components/evidence.py` | Runs candidate-only exhaustive finite-domain comparison against exact machine IR and localizes violations. |
 | `components/qualification.py` | Binds exact candidate-only or bounded evidence without overstating its scope. |
 | `components/configuration.py` | Produces total, exclusive portable-or-fallback ownership for a selected configuration. |
+| `components/runtime.py` | Generates machine adapters, portable/member dispatch, and the hash-bound runtime completion package. |
 | `semantic_components.py` | Validates hierarchical component declarations and machine boundaries. |
 | `component_interface.py` | Declares and checks component interfaces/refinements. |
 | `finite_value_domain.py` | Explicit bounded scalar/pointer domains. |
 | `region_replacement.py` | Region replacement manifests and activation rules. |
-| `source_graph.py` | Source ownership and dependency graph. |
-| `source_project.py` | Binds portable source projects to components and validation evidence. |
 | `source_operation_catalog.py` | Non-authoritative rendering of recovered operations as C. |
-| `source_call_substitution.py` | Call-frontier recognition and source-level substitution planning. |
 
 Component checks are local and scope-bounded. Promotion requires exact hashes
 and interfaces; it does not erase unresolved whole-program reconstruction gaps.
@@ -292,7 +287,6 @@ The corpus is an untrusted regression system, not a candidate equivalence claim.
 | Module | Purpose |
 |---|---|
 | `stage_b_functional.py` | Curated expected-output cases and sharded candidate execution. |
-| `target_intent.py` | Strict authored-intent validation and generated provenance separation. |
 | `ghidra.py` | Optional headless decompiler proposal exporter. |
 
 Wine execution is candidate-only and must run headlessly. Nix constructors
@@ -303,8 +297,9 @@ enforce this with `xvfb-run` where Wine is used.
 | File | Output role |
 |---|---|
 | `toolkit-context.nix` | One reusable per-system source, package, kernel, oracle, and fixture context shared by the root flake and target SDK. |
-| `target-sdk-v2.nix` | Stable configured target interface grouped into analysis, authority, candidate, component lifting, validation, and bundle operations. |
-| `stage-b-components-v2.nix` | Content-addressed leaf/group contracts, qualifications, activation plans, and source bundles. |
+| `target-sdk.nix` | Stable v3 target interface and high-level `workflow.pe32` constructor for analysis, authority, components, candidates, and validation. |
+| `stage-b-components-v3.nix` | Content-addressed resolution, contract, source, evidence, qualification, activation, and runtime-configuration DAG. |
+| `stage-b-component-runtime-package.nix` | Generates and cross-compiles the sole executable component runtime package. |
 | `flake-modules/toolkit.nix`, `flake-modules/checks.nix` | Focused `flake-parts` modules for generic packages/apps/shells and checks. |
 | `stage-a-external-interface-profile.nix` | Pinned SDK headers through a checked machine-level interface profile. |
 | `stage-a-isa-conformance.nix` | One cached Lean/Unicorn/Bochs corpus evaluation. |
@@ -318,7 +313,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-b-component-analysis.nix` | Original inventory through component proposals. |
 | `stage-b-component-discovery.nix` | Independent proposal phase. |
 | `stage-b-interpreter-package.nix` | Machine-IR interpreter package. |
-| `stage-b-native-object-graph.nix` | Deterministic native object graph plus a CA compile/assembly realization; avoids evaluation-time reads of CA outputs. |
+| `stage-b-native-object-graph.nix` | Controlled-IFD source normalization plus independently content-addressed native objects and assembly; a changed compile bundle invalidates only its object and final package. |
 | `stage-b-hybrid-candidate.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |
 | `ca-python-json-phase.nix` | Generic CA phase constructor with explicit store dependencies, schema/status checking, and phase manifests. |
 | `artifact-seed-v3.nix`, `artifact-set-v3.nix`, `artifact-phase-v3.nix` | Strict source-byte-bound artifact ingestion, typed streaming validation, complete checker-source provenance, and framework-owned map/reduce/SCC phase execution over bounded CA packs. |
@@ -331,32 +326,19 @@ enforce this with `xvfb-run` where Wine is used.
 | `analysis-v3-external-inputs.nix` | Content-addressed ingestion of exact machine-import profiles and PE/load-image roots into native-v3 input artifact sets. |
 | `analysis-v3-final-authority-gate.nix` | Strict final-authority record gate used by candidate generation, target validation, and runtime suites. |
 | `authority-graph-v3.nix`, `authority-graph-v3-boundaries.nix`, `authority-graph-v3-packs.nix`, `authority-resource-classes-v3.nix` | Manifest-driven v3 authority DAG, independently checked structural/dependency planning boundaries, stable schedule packs, and one shared resource policy used by dynamic preparation and standalone fixtures. |
-| `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix` | Convention-discovered stable test shards and shared heavy fixtures; the aggregate never reruns an unchanged shard. |
+| `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix`, `test-suite-manifest.json` | Static, checked stable test shards and shared heavy fixtures; Nix evaluates no dynamic test discovery and unchanged shards substitute. |
 | `stage-b-headless-diagnostic-run.nix` | Runs only a statically closed candidate in an isolated headless Wine session. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure for phase-specific invalidation. |
 | `python-module-index.json` | Generated checked local-import graph consumed by phase-specific Python closures. |
 | `stage-b-linked-libraries.nix` | Library constellation and replacement-plan DAG. With no catalog it still classifies reviewed application ranges, import thunks, and unknown ownership without granting replacement authority. |
-| `stage-b-source-call-substitutions.nix` | Call-frontier through source-binding DAG. |
-| `stage-b-clang-ast-bundle.nix` | Deterministic per-translation-unit Clang AST bundle for complete source-call inventory. |
-| `stage-b-source-component-assurance.nix` | Source component evidence aggregation. |
-| `stage-b-source-project.nix` | Generic reviewed-source project, evidence-plan, and exact machine-unit binding constructor. |
-| `stage-b-source-iteration-audit.nix` | Cheap content-addressed source/interface audit over machine IR, source bindings, linked-island coverage, candidate identity, and static import-surface drift; deliberately excludes the full authority DAG. |
-| `stage-b-source-lift-audit.nix` | Final content-addressed diagnostic join between the cheap source-iteration audit and v3 authority diagnostics; remains non-authorizing and cannot replace the final authority gate. |
 | `stage-b-fallback-coverage-receipt.nix` | Checks one implementation kind for every structural machine-IR unit without claiming rooted reachability. |
-| `stage-b-implementation-ledger.nix`, `stage-b-lift-completion-receipt.nix` | Build exact implementation ownership ledgers and final lift-completion receipts. |
-| `stage-b-portable-c-project.nix` | Reproducible PE32 and cross-architecture builds of reviewed portable C source. |
-| `stage-b-runtime-lock.nix` | Materializes the exact toolchain, runtime, profile, and launch dependency lock. |
-| `stage-b-source-qualification.nix` | Builds an explicit validation-backed source qualification from exact source binding, component assurance, source-call coverage, and candidate dependency evidence; it never infers semantic proof from a diagnostic audit. |
-| `stage-b-runtime-qualification.nix` | Qualifies a validation-backed pinned-runtime substitution over the exact non-application unit universe. |
-| `stage-b-candidate-validation.nix` | Joins exact PE32 and non-x86 candidate-only reports for the validation-qualified completion profile. |
 | `stage-b-functional-suite.nix` | Candidate-only expected-output suite. |
 | `stage-b-upstream-shell-suite.nix` | Candidate-only upstream shell tests under headless Wine. |
-| `stage-b-target-intent.nix` | Validated authored target intent. |
 | `callable-external-runtime-contract.py` | Deterministic runtime-contract builder invoked inside Nix. |
 | `stage-a-builders`, `stage-a-lightweight-ca-builders` | Optional remote builder inventories for full and lightweight jobs. |
 | `stage-a-builder-public-keys` | Trusted cache keys paired with the builder inventories. |
 
-The supported consumer interface is `flake.lib.mkTargetSdkV2`. Low-level Nix
+The supported consumer interface is `flake.lib.mkTargetSdk`. Low-level Nix
 constructors are private implementation details rather than a parallel API.
 CA derivations are first-class; dependency granularity, not CA mode alone,
 determines invalidation.

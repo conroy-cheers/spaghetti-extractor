@@ -34,12 +34,14 @@
 
       perSystem = { pkgs, system, ... }:
         let
-          sdk = import ../nix/target-sdk-v2.nix { inherit pkgs; };
+          sdk = import ../nix/target-sdk.nix { inherit pkgs; };
           bundles = sdk.target.registry (builtins.mapAttrs
             (_: path: import path { inherit pkgs sdk; })
             targetPaths);
           artifacts = builtins.mapAttrs (_: target: target.artifacts) bundles;
           targetChecks = builtins.mapAttrs (_: target: target.defaultCheck) bundles;
+          targetAcceptanceChecks = builtins.mapAttrs
+            (_: target: target.acceptanceCheck) bundles;
           checkAttrs = pkgs.lib.mapAttrs'
             (id: target: pkgs.lib.nameValuePair "target-${id}" target.defaultCheck)
             bundles;
@@ -53,7 +55,7 @@
                 echo "target modules must consume the public SDK" >&2
                 exit 1
               fi
-              if ! rg -q 'import ../nix/target-sdk-v2[.]nix' ${./flake.nix}; then
+              if ! rg -q 'import ../nix/target-sdk[.]nix' ${./flake.nix}; then
                 echo "consumer flake must use the public target SDK entrypoint" >&2
                 exit 1
               fi
@@ -76,8 +78,13 @@
             runtimeInputs = [ ];
             text = ''
               set -euo pipefail
+              mode=regression
+              if [ "''${1-}" = "--acceptance" ]; then
+                mode=acceptance
+                shift
+              fi
               if [ "$#" -ne 1 ]; then
-                echo "usage: spaghetti-extractor-target-test <target-id>" >&2
+                echo "usage: spaghetti-extractor-target-test [--acceptance] <target-id>" >&2
                 echo "available targets: ${pkgs.lib.concatStringsSep ", " targetIds}" >&2
                 exit 2
               fi
@@ -109,9 +116,13 @@
                   --option builders-use-substitutes true
                 )
               fi
+              check_set=targetChecks
+              if [ "$mode" = acceptance ]; then
+                check_set=targetAcceptanceChecks
+              fi
               nix --extra-experimental-features "nix-command flakes ca-derivations" \
                 build --no-link \
-                "path:${consumerSource}?dir=targets#legacyPackages.${system}.targetChecks.$target" \
+                "path:${consumerSource}?dir=targets#legacyPackages.${system}.$check_set.$target" \
                 "''${builder_flags[@]}"
             '';
           };
@@ -119,14 +130,14 @@
         {
           legacyPackages = {
             targets = artifacts;
-            inherit targetChecks;
+            inherit targetChecks targetAcceptanceChecks;
           };
           checks = checkAttrs // { corpus-boundary = corpusBoundary; };
           packages.target-test-runner = testRunner;
           apps.test = {
             type = "app";
             program = "${testRunner}/bin/spaghetti-extractor-target-test";
-            meta.description = "Run generic smoke validation followed by one target bundle check";
+            meta.description = "Run one target regression gate, or its strict acceptance gate";
           };
         };
     };

@@ -1,4 +1,4 @@
-"""Strict parser for operator-authored component v2 intent."""
+"""Strict parser for operator-authored component-v3 intent."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from .model import (
     LIFT_UNIT_KINDS,
     ComponentCatalogIntentV2,
     ComponentConfigurationV2,
+    ComponentEvidencePlanV3,
     ComponentGroupIntentV2,
     ComponentIntentV2,
     ConfigurationSelectionV2,
@@ -22,6 +23,10 @@ from .model import (
 
 
 _IDENTIFIER = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\Z")
+_C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+_EVIDENCE_PRODUCERS = frozenset(
+    {"exhaustive-finite-domain-v1", "candidate-only-functional-suite-v1"}
+)
 _FORBIDDEN_GENERATED_KEYS = frozenset(
     {
         "artifact_sha256",
@@ -153,6 +158,11 @@ def load_component_catalog_intent_v2(
                     f"configuration {configuration.identity} enables "
                     f"{selection.identity} without portable source"
                 )
+            if selection.activation == "enabled" and selected.verification is None:
+                raise ComponentIntentError(
+                    f"configuration {configuration.identity} enables "
+                    f"{selection.identity} without an evidence producer"
+                )
     return ComponentCatalogIntentV2(
         program_id=program_id,
         permitted_activation_profiles=permitted,
@@ -178,9 +188,10 @@ def _component(
             "evidence_profile",
             "interface_review",
             "source",
+            "verification",
         },
         f"component {index}",
-        optional={"interface_review", "source"},
+        optional={"interface_review", "source", "verification"},
     )
     return ComponentIntentV2(
         identity=_identifier(row.get("id"), f"component {index} id"),
@@ -201,6 +212,9 @@ def _component(
             f"component {index} source",
             require_references=require_references,
         ),
+        verification=_verification(
+            row.get("verification"), f"component {index} verification"
+        ),
     )
 
 
@@ -220,9 +234,10 @@ def _group(
             "evidence_profile",
             "interface_review",
             "source",
+            "verification",
         },
         f"group {index}",
-        optional={"interface_review", "source"},
+        optional={"interface_review", "source", "verification"},
     )
     members = tuple(
         _identifier(value, f"group {index} member")
@@ -248,6 +263,9 @@ def _group(
             root,
             f"group {index} source",
             require_references=require_references,
+        ),
+        verification=_verification(
+            row.get("verification"), f"group {index} verification"
         ),
     )
 
@@ -295,7 +313,12 @@ def _source(
     if value is None:
         return None
     row = _object(value, context)
-    _exact_keys(row, {"files", "shared_inputs"}, context, optional={"shared_inputs"})
+    _exact_keys(
+        row,
+        {"files", "shared_inputs", "entry"},
+        context,
+        optional={"shared_inputs"},
+    )
     files = tuple(
         _path(item, root, f"{context} file", require_exists=require_references)
         for item in _array(row.get("files"), f"{context} files")
@@ -313,7 +336,80 @@ def _source(
         raise ComponentIntentError(f"{context} has no files")
     if len(set((*files, *shared))) != len((*files, *shared)):
         raise ComponentIntentError(f"{context} paths are duplicated")
-    return SourceInputV2(files=files, shared_inputs=shared)
+    entry = _object(row.get("entry"), f"{context} entry")
+    _exact_keys(entry, {"abi", "symbol"}, f"{context} entry")
+    abi = _string(entry.get("abi"), f"{context} entry ABI")
+    if abi != "logical-c-v1":
+        raise ComponentIntentError(f"{context} entry ABI is unsupported: {abi}")
+    symbol = _string(entry.get("symbol"), f"{context} entry symbol")
+    if _C_IDENTIFIER.fullmatch(symbol) is None:
+        raise ComponentIntentError(f"{context} entry symbol is not a C identifier")
+    return SourceInputV2(
+        files=files,
+        shared_inputs=shared,
+        entry_abi=abi,
+        entry_symbol=symbol,
+    )
+
+
+def _verification(value: object, context: str) -> ComponentEvidencePlanV3 | None:
+    if value is None:
+        return None
+    row = _object(value, context)
+    _exact_keys(
+        row,
+        {"producer", "parameter_domains"},
+        context,
+        optional={"parameter_domains"},
+    )
+    producer = _string(row.get("producer"), f"{context} producer")
+    if producer not in _EVIDENCE_PRODUCERS:
+        raise ComponentIntentError(f"{context} producer is unsupported: {producer}")
+    domains: list[Mapping[str, object]] = []
+    for index, raw in enumerate(
+        _array(row.get("parameter_domains", []), f"{context} parameter domains")
+    ):
+        domain = _object(raw, f"{context} parameter domain {index}")
+        _exact_keys(
+            domain,
+            {"parameter_id", "kind", "minimum", "maximum"},
+            f"{context} parameter domain {index}",
+        )
+        parameter_id = _identifier(
+            domain.get("parameter_id"),
+            f"{context} parameter domain {index} parameter id",
+        )
+        kind = _string(domain.get("kind"), f"{context} parameter domain {index} kind")
+        minimum = domain.get("minimum")
+        maximum = domain.get("maximum")
+        if (
+            kind != "integer-range"
+            or not isinstance(minimum, int)
+            or isinstance(minimum, bool)
+            or not isinstance(maximum, int)
+            or isinstance(maximum, bool)
+            or minimum > maximum
+        ):
+            raise ComponentIntentError(
+                f"{context} parameter domain {index} must be a finite integer range"
+            )
+        domains.append(
+            {
+                "parameter_id": parameter_id,
+                "kind": kind,
+                "minimum": minimum,
+                "maximum": maximum,
+            }
+        )
+    if producer == "exhaustive-finite-domain-v1" and not domains:
+        raise ComponentIntentError(f"{context} exhaustive producer has no domains")
+    ids = [str(domain["parameter_id"]) for domain in domains]
+    if len(ids) != len(set(ids)):
+        raise ComponentIntentError(f"{context} parameter domains are duplicated")
+    return ComponentEvidencePlanV3(
+        producer=producer,
+        parameter_domains=tuple(domains),
+    )
 
 
 def _check_group_cycles(groups: Sequence[ComponentGroupIntentV2]) -> None:

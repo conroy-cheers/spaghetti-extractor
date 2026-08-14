@@ -30,6 +30,19 @@
       fullSuite = mkTestSuite "full";
       catalogSuite = mkTestSuite "catalog";
       benchmarkSuite = mkTestSuite "benchmark";
+      testManifestFreshness = pkgs.runCommand "spaghetti-extractor-test-manifest-freshness" {
+        nativeBuildInputs = [ context.pythonEnv ];
+        preferLocalBuild = true;
+        allowSubstitutes = true;
+        __contentAddressed = true;
+      } ''
+        export PYTHONPATH=${testSource}/src
+        python -m spaghetti_extractor.testkit.static_manifest \
+          --repository ${testSource} \
+          --manifest ${testSource}/nix/test-suite-manifest.json \
+          --check
+        touch "$out"
+      '';
       roundtrip = import ../stage-a-roundtrip-corpus.nix {
         inherit pkgs;
         inherit (context) pythonEnv;
@@ -50,11 +63,20 @@
         pythonSource = context.sources.analysisSource;
       };
       fullGate = pkgs.linkFarm "spaghetti-extractor-test-full" [
+        { name = "test-manifest-freshness"; path = testManifestFreshness; }
         { name = "python-suite"; path = fullSuite.aggregate; }
         { name = "analysis-v3-machine-ir-input"; path = analysisV3MachineIrInputCheck; }
         { name = "authority-graph-v3"; path = authorityGraphV3Check; }
         { name = "artifact-seed-v3"; path = artifactSeedV3Check; }
         { name = "roundtrip-qualification"; path = roundtrip.qualification; }
+      ];
+      smokeGate = pkgs.linkFarm "spaghetti-extractor-test-smoke" [
+        { name = "test-manifest-freshness"; path = testManifestFreshness; }
+        { name = "python-suite"; path = smokeSuite.aggregate; }
+      ];
+      benchmarkGate = pkgs.linkFarm "spaghetti-extractor-test-benchmark" [
+        { name = "test-manifest-freshness"; path = testManifestFreshness; }
+        { name = "python-suite"; path = benchmarkSuite.aggregate; }
       ];
       interpreterPythonClosure = import ../python-module-closure.nix {
         inherit pkgs;
@@ -73,8 +95,8 @@
         inherit (context) pythonEnv;
         pythonSource = testSource;
       };
-      targetSdkV2Check = import ../tests/target-sdk-v2.nix { inherit pkgs; };
-      componentsV2Check = import ../tests/components-v2.nix {
+      targetSdkCheck = import ../tests/target-sdk.nix { inherit pkgs; };
+      componentsV3Check = import ../tests/components-v3.nix {
         inherit pkgs;
         inherit (context) pythonEnv;
         pythonSource = context.sources.analysisSource;
@@ -82,9 +104,9 @@
     in
     {
       legacyPackages = {
-        test-smoke = smokeSuite.aggregate;
+        test-smoke = smokeGate;
         test-full = fullGate;
-        test-benchmark = benchmarkSuite.aggregate;
+        test-benchmark = benchmarkGate;
         test-shards = catalogSuite.shards;
         authority-graph-v3-check = authorityGraphV3Check;
         artifact-seed-v3-check = artifactSeedV3Check;
@@ -99,12 +121,13 @@
         } ''
           spaghetti-extractor --help >/dev/null
           spaghetti-extractor stage-a-inventory-binary --help >/dev/null
-          spaghetti-extractor stage-b-resolve-component-catalog-v2 --help >/dev/null
-          spaghetti-extractor stage-b-build-component-contract-v2 --help >/dev/null
-          spaghetti-extractor stage-b-compose-components-v2 --help >/dev/null
+          spaghetti-extractor stage-b-resolve-components --help >/dev/null
+          spaghetti-extractor stage-b-build-component-contract --help >/dev/null
+          spaghetti-extractor stage-b-build-component-runtime --help >/dev/null
           touch "$out"
         '';
         test-suite = fullGate;
+        test-manifest = testManifestFreshness;
         python-module-closure = pkgs.runCommand
           "spaghetti-extractor-python-module-closure-check"
           { nativeBuildInputs = [ context.pythonEnv ]; }
@@ -134,8 +157,8 @@
         isa-kernel = context.kernels.isaConformanceKernel;
         inductive-certificate-kernel = context.kernels.inductiveCertificateKernel;
         roundtrip = roundtrip.qualification;
-        target-sdk-v2 = targetSdkV2Check;
-        components-v2 = componentsV2Check;
+        target-sdk = targetSdkCheck;
+        components-v3 = componentsV3Check;
       };
     };
 }

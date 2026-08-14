@@ -1,95 +1,91 @@
 # Composable Component Lifting
 
-The component framework is the supported unit of Stage B work. It separates
-the exact structural program from operator choices about how much code to lift
-at once.
+Components are the supported unit of Stage B work. They let an operator replace
+one exact machine region, a procedure-sized group, or a larger subsystem while
+every other structural unit remains owned by the machine-IR fallback.
 
-## Two Different Graphs
+## Two Graphs
 
-The machine-IR graph is canonical and target-independent. It contains every
-statically discovered executable unit and its machine effects. Component
-boundaries never alter this graph.
+The machine-IR graph is canonical. Component boundaries do not alter it. The
+authored component catalog is a work graph over exact machine-unit membership.
+Alternative groups may overlap, but one selected configuration may not: every
+structural unit has exactly one implementation owner.
 
-The authored component catalog is a work graph. A leaf selects one exact
-discovery proposal. A group is the union of leaves or other groups. Different
-groups may overlap because they are alternative ways to organize work. A
-selected configuration may not overlap: every selected machine unit has one
-owner.
+This is what makes local work possible without a complete understanding of the
+target. Selecting one component does not require lifting its callers, callees,
+or unrelated regions first.
 
-This permits an operator to lift one block-sized component, a procedure, or a
-large subsystem without first understanding the rest of the target. Unselected
-and unqualified units continue to use the complete machine-IR fallback.
+## V3 Lifecycle
 
-## Contract Pipeline
+The component DAG produces these independently cached artifacts:
 
-For every leaf and group, the Nix graph independently produces:
+1. `resolution`: selectors and groups bound to exact machine units.
+2. `contracts.<id>`: a machine boundary and reviewed logical interface.
+3. `sourcePackages.<id>`: exact portable source bytes plus a `logical-c-v1`
+   entry symbol.
+4. `evidences.<id>`: candidate-only exhaustive or functional evidence bound to
+   the contract, source, machine IR, domain, and producer.
+5. `qualifications.<id>`: a fail-closed activation decision.
+6. `activationPlans.<configuration>`: total, exclusive portable-or-fallback
+   ownership.
+7. `runtimeConfigurations.<configuration>`: the only input accepted by the
+   executable component runtime package.
 
-1. exact unit membership bound to the machine IR and reconstruction plan;
-2. a machine boundary derived from the union of those units;
-3. a conservative machine-shaped logical interface;
-4. an optional operator-reviewed interface;
-5. a checker result proving every machine effect is represented exactly once.
+The runtime package generates the machine-state adapter, copies exact authored
+source, cross-compiles it as a PE32 translation unit, marks internal component
+members as subsumed, and forbids silent fallback inside an enabled component.
+The same portable-selection artifact is consumed by fallback coverage, native
+dispatch, candidate authority, and completion checks.
 
-Edges and calls between members of a group are internal and disappear from the
-group boundary. Entries, exits, memory effects, external calls, and faults that
-cross the group boundary remain explicit. A review may rename or coarsen the
-logical interface, but omitting or duplicating a machine effect makes the
-contract `incomplete` or `violated`.
+## Evidence
 
-Contract derivations are independent. Changing one review rebuilds that
-contract and configurations that consume it, not machine extraction or other
-component contracts.
+`structural-draft-v1` organizes work but never authorizes replacement.
 
-## Qualification Profiles
+`bounded-equivalence-v1` uses a declared finite input domain. The current
+`exhaustive-finite-domain-v1` producer compiles the portable C and compares it
+against concrete evaluation of the exact machine IR for every case. It never
+executes the original binary. A concrete mismatch is `violated` and includes
+the source-level arguments, expected value, and observed value. Unsupported
+semantics, an excessive domain, or compiler failure is `incomplete`.
 
-`structural-draft-v1` is for discovery and scaffolding. It never authorizes a
-portable replacement.
-
-`bounded-equivalence-v1` accepts generated exhaustive or CBMC evidence for the
-declared finite domain. It does not claim equivalence outside that domain.
-
-`validation-backed-v1` accepts candidate-only functional evidence. It records
-that assurance is limited to the tested scope. The original binary must not be
-executed to produce this evidence.
-
-Every evidence artifact binds the exact contract and implementation hashes.
-Qualification and ownership are separate checks: qualified overlapping
-components still cannot be activated together.
-
-The implementation hash is derived from a component source-package artifact,
-not copied from the evidence report. Source packages preserve relative paths,
-classify source and shared inputs, and hash every byte. Editing any source or
-header therefore invalidates qualification before a portable replacement can
-remain active.
+Candidate-only functional evidence is appropriate for stateful or larger
+components, but its tested scope must remain explicit. No evidence report may
+authorize a component unless all exact hashes and the source entry ABI match.
 
 ## Configuration Safety
 
-The activation plan covers every structural machine unit exactly once:
+- Enabled, checked, qualified components use portable source.
+- Draft, missing, or incomplete components retain machine-IR fallback.
+- Every unselected structural unit retains machine-IR fallback.
+- Overlapping ownership is rejected.
+- Enabled component members may not fall back individually.
+- Whole-program candidate generation still requires final Stage A authority.
 
-- an enabled, checked, qualified component selects a portable replacement;
-- a draft or unqualified component retains machine-IR fallback;
-- every unselected unit retains machine-IR fallback.
+## Public Interface
 
-An enabled component with missing evidence produces a localized `incomplete`
-issue while retaining complete fallback ownership. The component artifact does
-not claim that the fallback is executable or release-ready: those properties
-are established later by the fallback-coverage and candidate-authority gates.
-Portable implementations never silently fall back after activation, because
-that would give one unit two runtime meanings.
+Targets normally use `sdk.workflow.pe32`, then inspect
+`workflow.components`. Low-level construction remains available as
+`sdk.lifting.components` for tooling tests.
 
-## Nix Interface
+```nix
+workflow = sdk.workflow.pe32 {
+  original = originalExe;
+  binaryIdentity = "program.exe";
+  externalProfile = runtimeProfile;
+  machineImportProfiles = [ runtimeProfile ];
+  launchProfileTemplate = launchProfile;
+  componentIntent = ./intent/components.json;
+  componentReviewRoot = ./intent/reviews;
+  componentSourceRoot = ./source;
+  namePrefix = "program";
+};
 
-Targets consume `flake.lib.mkTargetSdkV2`. The component DAG is available as
-`sdk.lifting.componentContractsV2` and exposes:
+runtime = workflow.componentRuntimeFor "one-enabled-component";
+candidate = workflow.candidateFor {
+  configurationId = "one-enabled-component";
+};
+```
 
-- `resolution` for exact leaves, groups, and configurations;
-- `contracts.<id>` for independently cached boundary contracts;
-- `sourcePackages.<id>` for exact content-bound portable inputs;
-- `qualifications.<id>` for supplied evidence;
-- `activationPlans.<configuration>` for total implementation ownership;
-- `sourceBundles.<configuration>` for the sources of active replacements.
-
-Target bundles contain only declarative intent and target source. Adding a new
-target does not require new toolkit code. Generic machinery should be extended
-only when a target exposes a reusable missing capability, with a small generic
-fixture added before relying on it for that target.
+Adding a target should not require generic Python or Nix changes. A reusable
+capability gap must be implemented in the toolkit and covered by a small
+target-independent fixture before a validation target relies on it.

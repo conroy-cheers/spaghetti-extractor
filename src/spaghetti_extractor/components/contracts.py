@@ -26,7 +26,15 @@ from .model import ComponentBoundaryReviewV2
 
 
 _INTERFACE_OVERRIDE_FIELDS = frozenset(
-    {"parameters", "results", "objects", "services", "claims", "policy"}
+    {
+        "parameters",
+        "results",
+        "objects",
+        "services",
+        "adapter_effects",
+        "claims",
+        "policy",
+    }
 )
 
 

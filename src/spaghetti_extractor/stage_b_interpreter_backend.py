@@ -2305,6 +2305,8 @@ typedef struct stage_b_region_override {
 
 const stage_b_program_transfer *stage_b_program_lookup(uint32_t source_rva);
 const stage_b_region_override *stage_b_region_override_lookup(uint32_t entry_rva);
+uint32_t stage_b_native_machine_fallback_allowed(uint32_t source_rva)
+    __attribute__((weak));
 stage_b_step_result stage_b_interpreter_step(
     stage_b_runtime *runtime, stage_b_machine_state *state, uint32_t source_rva);
 stage_b_call_status stage_b_run_function(
@@ -2783,6 +2785,9 @@ stage_b_step_result stage_b_interpreter_step(
       return result;
     }
   }
+  if(stage_b_native_machine_fallback_allowed!=0&&
+      !stage_b_native_machine_fallback_allowed(source_rva))
+    return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
   t=stage_b_program_lookup(source_rva);
   if(!t||t->word_count>STAGE_B_MAX_WORD_NODES||t->x87_count!=0U)
     return (stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};

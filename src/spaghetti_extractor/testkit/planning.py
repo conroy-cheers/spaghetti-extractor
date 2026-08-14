@@ -116,6 +116,7 @@ def _select_affected(
             matched = True
         if changed.startswith("src/spaghetti_extractor/testkit/") or changed in {
             "nix/test-suite-fixtures.nix",
+            "nix/test-suite-manifest.json",
             "nix/test-suite-plan.nix",
             "nix/test-suite-shard.nix",
             "nix/test-suite.nix",

@@ -43,6 +43,7 @@ from spaghetti_extractor.stage_b_interpreter_native_build import (
     assemble_stage_b_interpreter_native_objects,
     build_stage_b_interpreter_native_candidate,
     compile_stage_b_interpreter_native_object,
+    compile_stage_b_interpreter_native_source_bundle,
     prepare_stage_b_interpreter_native_object_graph,
 )
 from spaghetti_extractor.stage_b_native_engine import (
@@ -64,6 +65,10 @@ from spaghetti_extractor.stage_b_candidate_modes import (
 )
 from spaghetti_extractor.stage_b_fallback_coverage import (
     FALLBACK_COVERAGE_RECEIPT_FORMAT,
+)
+from spaghetti_extractor.components.formats import (
+    COMPONENT_RUNTIME_COMPLETION_V3_FORMAT,
+    COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
 )
 from spaghetti_extractor.util import sha256_bytes, sha256_file
 
@@ -193,6 +198,7 @@ class _ReleaseInputs(TypedDict):
     machine_ir: Path
     machine_ir_manifest: Path
     fallback_coverage_receipt: Path
+    component_runtime_package: Path
     load_image_contract: Path
 
 
@@ -423,17 +429,70 @@ class _Packages:
                 "machine_ir_manifest": {
                     "sha256": sha256_file(self.machine_ir_manifest)
                 },
+                "portable_replacements": {
+                    "artifact": {
+                        "path": "portable-component-selection.json",
+                        "sha256": "0" * 64,
+                    }
+                },
             },
             "counts": {
                 "structural_units": 1,
                 "implementation_entries": 1,
                 "machine_ir_fallback": 1,
                 "portable_replacement": 0,
+                "portable_component_member": 0,
                 "blockers": 0,
             },
             "entries": [fallback_entry],
             "blockers": [],
         }
+        self.component_runtime = self.root / "component-runtime"
+        self.component_runtime.mkdir()
+        selection = self.component_runtime / "portable-component-selection.json"
+        _write_json(selection, {"format": "fixture-selection", "entries": []})
+        selection_sha256 = sha256_file(selection)
+        fallback_body["inputs"]["portable_replacements"]["artifact"]["sha256"] = selection_sha256
+        runtime_core = {
+            "format": COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
+            "status": "ready",
+            "executes_original_binary": False,
+            "bindings": {"machine_ir_sha256": machine_ir_sha256},
+            "policy": {
+                "runtime_package_is_sole_candidate_authority": True,
+                "enabled_components_must_be_qualified": True,
+                "subsumed_members_may_not_fallback": True,
+                "fallback_on_unimplemented": False,
+                "original_execution_forbidden": True,
+            },
+            "components": [],
+            "counts": {"portable_components": 0, "portable_units": 0, "override_entries": 0},
+            "artifacts": {
+                "portable_selection": {"path": selection.name, "sha256": selection_sha256},
+                "region_overrides": None,
+            },
+        }
+        runtime_sha256 = _canonical_sha256(runtime_core)
+        _write_json(
+            self.component_runtime / "component-runtime-package.json",
+            {**runtime_core, "runtime_package_sha256": runtime_sha256},
+        )
+        completion_core = {
+            "format": COMPONENT_RUNTIME_COMPLETION_V3_FORMAT,
+            "status": "complete",
+            "runtime_package_sha256": runtime_sha256,
+            "activation_plan_sha256": "0" * 64,
+            "structural_units": 1,
+            "portable_units": 0,
+            "fallback_units": 1,
+            "ownership_complete": True,
+            "ownership_exclusive": True,
+            "executes_original_binary": False,
+        }
+        _write_json(
+            self.component_runtime / "component-runtime-completion.json",
+            {**completion_core, "completion_sha256": _canonical_sha256(completion_core)},
+        )
         _write_json(
             self.fallback_receipt,
             {
@@ -446,6 +505,7 @@ class _Packages:
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.machine_ir_manifest,
             fallback_coverage_receipt=self.fallback_receipt,
+            component_runtime_package=self.component_runtime,
         )
         if not candidate_authority.authorizes:
             raise AssertionError(candidate_authority.to_payload())
@@ -480,6 +540,7 @@ class _Packages:
             "machine_ir": self.machine_ir,
             "machine_ir_manifest": self.machine_ir_manifest,
             "fallback_coverage_receipt": self.fallback_receipt,
+            "component_runtime_package": self.component_runtime,
             "load_image_contract": self.contract,
         }
 
@@ -503,6 +564,7 @@ class StageBInterpreterNativeBuildValidationTests(unittest.TestCase):
                     machine_ir=packages.machine_ir,
                     machine_ir_manifest=packages.machine_ir_manifest,
                     fallback_coverage_receipt=None,
+                    component_runtime_package=None,
                     load_image_contract=packages.contract,
                     candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
                     out_dir=Path(temporary) / "candidate",
@@ -645,6 +707,7 @@ class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
                 machine_ir=packages.machine_ir,
                 machine_ir_manifest=packages.machine_ir_manifest,
                 fallback_coverage_receipt=None,
+                component_runtime_package=None,
                 load_image_contract=packages.contract,
                 candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
                 diagnostic_failure_trap=True,
@@ -703,6 +766,86 @@ class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
                 if baseline_keys[unit_id] != changed_keys[unit_id]
             }
             self.assertEqual(changed_ids, {"native_runtime-native_runtime_source"})
+            baseline_bundles = {
+                row["unit_id"]: row["bundle_sha256"]
+                for row in baseline["bundles"]
+            }
+            changed_bundles = {
+                row["unit_id"]: row["bundle_sha256"]
+                for row in changed["bundles"]
+            }
+            self.assertEqual(
+                {
+                    unit_id
+                    for unit_id in baseline_bundles
+                    if baseline_bundles[unit_id] != changed_bundles[unit_id]
+                },
+                {"native_runtime-native_runtime_source"},
+            )
+
+    def test_normalized_source_bundle_compiles_the_same_object(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packages = _Packages(root / "inputs")
+            graph_root = root / "graph"
+            graph = prepare_stage_b_interpreter_native_object_graph(
+                interpreter_package=packages.interpreter,
+                native_engine_package=packages.engine,
+                native_runtime_package=packages.runtime,
+                out_dir=graph_root,
+            )
+            bundle_index = json.loads(
+                (graph_root / "native-object-bundles.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(bundle_index["bundles"], graph["bundles"])
+            self.assertNotIn("/nix/store/", json.dumps(bundle_index))
+            binding = graph["bundles"][0]
+            direct = compile_stage_b_interpreter_native_object(
+                graph=graph_root,
+                unit_id=binding["unit_id"],
+                out_dir=root / "direct",
+            )
+            bundled = compile_stage_b_interpreter_native_source_bundle(
+                source_bundle=graph_root / binding["path"],
+                compiler="i686-w64-mingw32-gcc",
+                out_dir=root / "bundled",
+            )
+            self.assertEqual(
+                direct["compile_key_sha256"], bundled["compile_key_sha256"]
+            )
+            self.assertEqual(
+                (root / "direct" / "object.o").read_bytes(),
+                (root / "bundled" / "object.o").read_bytes(),
+            )
+
+    def test_normalized_source_bundle_fails_closed_on_changed_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            packages = _Packages(root / "inputs")
+            graph_root = root / "graph"
+            graph = prepare_stage_b_interpreter_native_object_graph(
+                interpreter_package=packages.interpreter,
+                native_engine_package=packages.engine,
+                native_runtime_package=packages.runtime,
+                out_dir=graph_root,
+            )
+            binding = graph["bundles"][0]
+            bundle = graph_root / binding["path"]
+            payload = json.loads(
+                (bundle / "native-source-bundle.json").read_text(encoding="utf-8")
+            )
+            source = bundle / payload["source"]["bundle_path"]
+            source.write_text(source.read_text(encoding="ascii") + "\n", encoding="ascii")
+            with self.assertRaisesRegex(
+                StageBInterpreterNativeBuildError, "source.*binding is stale"
+            ):
+                compile_stage_b_interpreter_native_source_bundle(
+                    source_bundle=bundle,
+                    compiler="i686-w64-mingw32-gcc",
+                    out_dir=root / "object",
+                )
 
     def test_diagnostic_mode_invalidates_only_macro_consumers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

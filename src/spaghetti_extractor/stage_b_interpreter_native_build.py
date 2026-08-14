@@ -57,6 +57,12 @@ INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME = "interpreter-native-build-manifest.
 INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT = "stage-b-interpreter-native-object-graph-v2"
 INTERPRETER_NATIVE_OBJECT_FORMAT = "stage-b-interpreter-native-object-v2"
 INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT = "stage-b-interpreter-native-object-package-v2"
+INTERPRETER_NATIVE_SOURCE_BUNDLE_FORMAT = (
+    "stage-b-interpreter-native-source-bundle-v1"
+)
+INTERPRETER_NATIVE_BUNDLE_INDEX_FORMAT = (
+    "stage-b-interpreter-native-bundle-index-v1"
+)
 
 _INTERPRETER_MANIFEST_FILENAME = "state-machine-interpreter-package.json"
 _ENGINE_MANIFEST_FILENAME = "native-engine-package.json"
@@ -210,6 +216,21 @@ def prepare_stage_b_interpreter_native_object_graph(
             region_overrides=region_overrides is not None,
         )
     )
+    bundles = []
+    for row in rows:
+        artifacts = (
+            (relocation_artifact,)
+            if row["id"]
+            == relocation_artifact.owner + "-" + relocation_artifact.role
+            else _native_row_artifacts(row=row, packages=packages)
+        )
+        bundles.append(
+            _write_native_source_bundle(
+                output=output,
+                row=row,
+                artifacts=artifacts,
+            )
+        )
     core = {
         "format": INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT,
         "status": "ready",
@@ -226,10 +247,25 @@ def prepare_stage_b_interpreter_native_object_graph(
             ),
         },
         "units": rows,
+        "bundles": bundles,
         "counts": {"compile_units": len(rows)},
     }
     payload = {**core, "graph_sha256": native_build._canonical_sha256(core)}
     native_build._write_json(output / "native-object-graph.json", payload)
+    bundle_index_core = {
+        "format": INTERPRETER_NATIVE_BUNDLE_INDEX_FORMAT,
+        "status": "ready",
+        "executes_original_binary": False,
+        "bundles": bundles,
+        "counts": {"compile_units": len(bundles)},
+    }
+    native_build._write_json(
+        output / "native-object-bundles.json",
+        {
+            **bundle_index_core,
+            "index_sha256": native_build._canonical_sha256(bundle_index_core),
+        },
+    )
     return payload
 
 
@@ -287,6 +323,90 @@ def compile_stage_b_interpreter_native_object(
     payload = {**core, "object_receipt_sha256": native_build._canonical_sha256(core)}
     native_build._write_json(output / "native-object.json", payload)
     return payload
+
+
+def compile_stage_b_interpreter_native_source_bundle(
+    *,
+    source_bundle: Path | str,
+    compiler: Path | str,
+    out_dir: Path | str,
+) -> dict[str, Any]:
+    """Compile one normalized source bundle without depending on its parent graph."""
+
+    bundle_root, payload = _load_native_source_bundle(source_bundle)
+    source = _bound_bundle_artifact(
+        bundle_root, payload["source"], "native source bundle source"
+    )
+    for index, dependency in enumerate(payload["dependencies"]):
+        _bound_bundle_artifact(
+            bundle_root,
+            dependency,
+            f"native source bundle dependency {index}",
+        )
+    compiler_value = str(compiler)
+    compiler_path = _file(
+        shutil.which(compiler_value) or compiler_value,
+        "native object compiler",
+    )
+    compiler_binding = _native_compiler_binding(compiler_path)
+    if {
+        key: value for key, value in compiler_binding.items() if key != "path"
+    } != payload["compiler"]:
+        raise StageBInterpreterNativeBuildError(
+            "native source bundle compiler binding is stale"
+        )
+    roots = [
+        bundle_root / "roots" / mapping["owner"]
+        for mapping in payload["root_mappings"]
+    ]
+    diagnostic_active = bool(payload["diagnostic_active"])
+    arguments = [
+        "-x",
+        payload["language"],
+        "-c",
+        str(source),
+        *sum((["-I", str(root)] for root in roots), []),
+        *_compile_flags(
+            payload["source"]["sha256"],
+            roots,
+            diagnostic_failure_trap=diagnostic_active,
+        ),
+    ]
+    output = Path(out_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    object_path = output / "object.o"
+    try:
+        native_build._run(
+            [str(compiler_path), *arguments, "-o", str(object_path)],
+            phase=f"compile cached source bundle {payload['unit_id']}",
+            env=native_build._deterministic_environment(),
+            cwd=bundle_root,
+        )
+    except native_build.StageBNativeBuildError as exc:
+        raise StageBInterpreterNativeBuildError(str(exc)) from exc
+    if not object_path.is_file():
+        raise StageBInterpreterNativeBuildError(
+            "compiler omitted bundled native object"
+        )
+    core = {
+        "format": INTERPRETER_NATIVE_OBJECT_FORMAT,
+        "status": "compiled",
+        "executes_original_binary": False,
+        "unit_id": payload["unit_id"],
+        "compile_key_sha256": payload["compile_key_sha256"],
+        "source_bundle_sha256": payload["bundle_sha256"],
+        "object": {
+            "path": object_path.name,
+            "sha256": sha256_file(object_path),
+            "size": object_path.stat().st_size,
+        },
+    }
+    result = {
+        **core,
+        "object_receipt_sha256": native_build._canonical_sha256(core),
+    }
+    native_build._write_json(output / "native-object.json", result)
+    return result
 
 
 def assemble_stage_b_interpreter_native_objects(
@@ -376,6 +496,7 @@ def build_stage_b_interpreter_native_candidate(
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
     fallback_coverage_receipt: Path | str | None,
+    component_runtime_package: Path | str | None,
     region_override_package: Path | str | None = None,
     load_image_contract: Path | str,
     recovered_executable_data: Path | str | None = None,
@@ -416,6 +537,7 @@ def build_stage_b_interpreter_native_candidate(
             candidate_authority,
             final_authority,
             fallback_coverage_receipt,
+            component_runtime_package,
         )):
             raise StageBInterpreterNativeBuildError(
                 "static-closed candidates require complete v3 authority inputs"
@@ -426,11 +548,13 @@ def build_stage_b_interpreter_native_candidate(
             machine_ir=machine_ir,
             machine_ir_manifest=machine_ir_manifest,
             fallback_coverage_receipt=fallback_coverage_receipt,
+            component_runtime_package=component_runtime_package,
         )
     elif any(value is not None for value in (
         candidate_authority,
         final_authority,
         fallback_coverage_receipt,
+        component_runtime_package,
     )):
         raise StageBInterpreterNativeBuildError(
             "structural-diagnostic candidates must not consume acceptance authority"
@@ -815,12 +939,14 @@ def build_stage_b_interpreter_native_candidate(
         assert candidate_authority is not None
         assert final_authority is not None
         assert fallback_coverage_receipt is not None
+        assert component_runtime_package is not None
         repeated_receipt = _validate_candidate_authority_v3(
             receipt=candidate_authority,
             final_authority=final_authority,
             machine_ir=machine_ir,
             machine_ir_manifest=machine_ir_manifest,
             fallback_coverage_receipt=fallback_coverage_receipt,
+            component_runtime_package=component_runtime_package,
         )
         if repeated_receipt != receipt:
             raise StageBInterpreterNativeBuildError(
@@ -1005,6 +1131,7 @@ def _validate_candidate_authority_v3(
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
     fallback_coverage_receipt: Path | str,
+    component_runtime_package: Path | str,
 ) -> CandidateAuthorityV3Receipt:
     try:
         return validate_stage_b_candidate_authority_v3(
@@ -1013,6 +1140,7 @@ def _validate_candidate_authority_v3(
             machine_ir=machine_ir,
             machine_ir_manifest=machine_ir_manifest,
             fallback_coverage_receipt=fallback_coverage_receipt,
+            component_runtime_package=component_runtime_package,
             require_authorized=True,
         )
     except CandidateAuthorityV3Error as exc:
@@ -1738,6 +1866,136 @@ def _native_bundle_path(artifact: _Artifact) -> str:
     return (Path("roots") / artifact.owner / relative).as_posix()
 
 
+def _native_row_artifacts(
+    *, row: Mapping[str, Any], packages: Sequence[_Package]
+) -> tuple[_Artifact, ...]:
+    by_binding = {
+        (artifact.owner, artifact.role, artifact.relative_path): artifact
+        for package in packages
+        for artifact in package.artifacts
+    }
+    raw = [row["source"], *row["dependencies"]]
+    result: list[_Artifact] = []
+    for binding in raw:
+        key = (
+            str(binding["owner"]),
+            str(binding["role"]),
+            str(binding["path"]),
+        )
+        artifact = by_binding.get(key)
+        if artifact is None:
+            raise StageBInterpreterNativeBuildError(
+                "native object row references an unknown package artifact"
+            )
+        result.append(artifact)
+    return tuple(result)
+
+
+def _write_native_source_bundle(
+    *, output: Path, row: Mapping[str, Any], artifacts: Sequence[_Artifact]
+) -> dict[str, Any]:
+    if not artifacts:
+        raise StageBInterpreterNativeBuildError(
+            "native source bundle has no source artifact"
+        )
+    unit_id = str(row["id"])
+    if _C_IDENTIFIER.fullmatch(unit_id.replace("-", "_")) is None:
+        raise StageBInterpreterNativeBuildError(
+            "native source bundle unit ID is not path-safe"
+        )
+    bundle_path = Path("bundles") / unit_id
+    bundle_root = output / bundle_path
+    bundle_root.mkdir(parents=True, exist_ok=True)
+    for artifact in artifacts:
+        target = bundle_root / _native_bundle_path(artifact)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(artifact.path, target)
+
+    def normalized(binding: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "owner": str(binding["owner"]),
+            "role": str(binding["role"]),
+            "path": str(binding["path"]),
+            "sha256": str(binding["sha256"]),
+            "bundle_path": str(binding["bundle_path"]),
+        }
+
+    core = {
+        "format": INTERPRETER_NATIVE_SOURCE_BUNDLE_FORMAT,
+        "status": "ready",
+        "executes_original_binary": False,
+        "unit_id": unit_id,
+        "compile_key_sha256": str(row["compile_key_sha256"]),
+        "source": normalized(row["source"]),
+        "dependencies": [normalized(item) for item in row["dependencies"]],
+        "language": str(row["language"]),
+        "compiler": {
+            key: value for key, value in row["compiler"].items() if key != "path"
+        },
+        "root_mappings": [dict(item) for item in row["root_mappings"]],
+        "diagnostic_active": bool(row["diagnostic_active"]),
+    }
+    payload = {**core, "bundle_sha256": native_build._canonical_sha256(core)}
+    manifest = bundle_root / "native-source-bundle.json"
+    native_build._write_json(manifest, payload)
+    return {
+        "unit_id": unit_id,
+        "compile_key_sha256": str(row["compile_key_sha256"]),
+        "path": bundle_path.as_posix(),
+        "manifest": manifest.name,
+        "manifest_sha256": sha256_file(manifest),
+        "bundle_sha256": payload["bundle_sha256"],
+    }
+
+
+def _load_native_source_bundle(
+    value: Path | str,
+) -> tuple[Path, dict[str, Any]]:
+    path = Path(value)
+    if path.is_dir():
+        path = path / "native-source-bundle.json"
+    payload = _read_json_object(path, "native source bundle")
+    if payload.get("format") != INTERPRETER_NATIVE_SOURCE_BUNDLE_FORMAT:
+        raise StageBInterpreterNativeBuildError(
+            "unsupported native source bundle format"
+        )
+    core = dict(payload)
+    expected = core.pop("bundle_sha256", None)
+    if expected != native_build._canonical_sha256(core):
+        raise StageBInterpreterNativeBuildError(
+            "native source bundle self-hash is stale"
+        )
+    if payload.get("status") != "ready" or payload.get("executes_original_binary") is not False:
+        raise StageBInterpreterNativeBuildError(
+            "native source bundle is not ready"
+        )
+    dependencies = payload.get("dependencies")
+    roots = payload.get("root_mappings")
+    if not isinstance(dependencies, list) or not isinstance(roots, list) or not roots:
+        raise StageBInterpreterNativeBuildError(
+            "native source bundle inventories are malformed"
+        )
+    return path.parent, payload
+
+
+def _bound_bundle_artifact(
+    bundle_root: Path, binding: Mapping[str, Any], label: str
+) -> Path:
+    relative = _relative_path(binding.get("bundle_path"), f"{label} path")
+    path = bundle_root / relative
+    if not path.is_file():
+        raise StageBInterpreterNativeBuildError(f"{label} is missing")
+    try:
+        path.resolve().relative_to(bundle_root.resolve())
+    except ValueError as exc:
+        raise StageBInterpreterNativeBuildError(
+            f"{label} escapes its source bundle"
+        ) from exc
+    if sha256_file(path) != binding.get("sha256"):
+        raise StageBInterpreterNativeBuildError(f"{label} binding is stale")
+    return path
+
+
 def _native_source_dependency_closure(
     source: _Artifact, packages: Sequence[_Package]
 ) -> tuple[_Artifact, ...]:
@@ -1900,6 +2158,7 @@ def _native_object_graph_row(
         "compile_flags": compile_flags,
         "root_mappings": root_mappings,
         "diagnostic_sensitive": diagnostic_sensitive,
+        "diagnostic_active": diagnostic_active,
         "compile_key_sha256": native_build._canonical_sha256(compile_key_core),
         "canonical_flags": _canonical_compile_flags(
             artifact.sha256,
@@ -1936,6 +2195,49 @@ def _load_native_object_graph(value: Path | str) -> tuple[Path, dict[str, Any]]:
         unit_expected = unit_core.pop("unit_sha256", None)
         if unit_expected != native_build._canonical_sha256(unit_core):
             raise StageBInterpreterNativeBuildError("native object graph unit self-hash is stale")
+    bundles = payload.get("bundles")
+    if not isinstance(bundles, list) or len(bundles) != len(units):
+        raise StageBInterpreterNativeBuildError(
+            "native object graph source-bundle inventory is incomplete"
+        )
+    bundle_ids: set[str] = set()
+    by_id = {str(row["id"]): row for row in units}
+    for binding in bundles:
+        if not isinstance(binding, Mapping):
+            raise StageBInterpreterNativeBuildError(
+                "native object graph source-bundle binding is malformed"
+            )
+        unit_id = str(binding.get("unit_id"))
+        if unit_id in bundle_ids or unit_id not in by_id:
+            raise StageBInterpreterNativeBuildError(
+                "native object graph source-bundle unit binding is invalid"
+            )
+        bundle_ids.add(unit_id)
+        if binding.get("compile_key_sha256") != by_id[unit_id]["compile_key_sha256"]:
+            raise StageBInterpreterNativeBuildError(
+                "native object graph source-bundle compile key is stale"
+            )
+        bundle_root = path.parent / _relative_path(
+            binding.get("path"), "native source bundle graph path"
+        )
+        manifest = bundle_root / str(binding.get("manifest"))
+        if (
+            not manifest.is_file()
+            or sha256_file(manifest) != binding.get("manifest_sha256")
+        ):
+            raise StageBInterpreterNativeBuildError(
+                "native object graph source-bundle manifest is stale"
+            )
+        _, bundle = _load_native_source_bundle(manifest)
+        if (
+            bundle.get("unit_id") != unit_id
+            or bundle.get("compile_key_sha256")
+            != binding.get("compile_key_sha256")
+            or bundle.get("bundle_sha256") != binding.get("bundle_sha256")
+        ):
+            raise StageBInterpreterNativeBuildError(
+                "native object graph source-bundle content binding is stale"
+            )
     return path, payload
 
 
@@ -2374,5 +2676,6 @@ __all__ = [
     "assemble_stage_b_interpreter_native_objects",
     "build_stage_b_interpreter_native_candidate",
     "compile_stage_b_interpreter_native_object",
+    "compile_stage_b_interpreter_native_source_bundle",
     "prepare_stage_b_interpreter_native_object_graph",
 ]

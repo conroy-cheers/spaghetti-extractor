@@ -127,6 +127,7 @@ let
     compiler = {
       path = pkgs.pkgsCross.mingw32.stdenv.cc;
       nativeBuildInputs = [
+        pkgs.stdenv.cc
         pkgs.pkgsCross.mingw32.stdenv.cc
         pkgs.pkgsCross.mingw32.buildPackages.binutils
       ];

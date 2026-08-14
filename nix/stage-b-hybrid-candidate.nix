@@ -11,7 +11,7 @@
   candidateMode ? "static-closed",
   allowDeferredPotentialTransfers ? candidateMode == "structural-diagnostic",
   diagnosticFailureTrap ? false,
-  portableReplacements ? null,
+  componentConfiguration ? null,
   callableExternalRuntimeContract ? null,
   externalSiteProposals ? null,
 }:
@@ -32,6 +32,9 @@ assert pkgs.lib.assertMsg
 assert pkgs.lib.assertMsg
   (externalSiteProposals == null || candidateMode == "structural-diagnostic")
   "proposal-only external-site evidence is diagnostic-only";
+assert pkgs.lib.assertMsg
+  (candidateMode != "static-closed" || componentConfiguration != null)
+  "static-closed candidates require a component runtime configuration";
 
 let
   lib = pkgs.lib;
@@ -71,18 +74,24 @@ let
   ];
   profileArgs = lib.concatMapStringsSep " "
     (profile: lib.escapeShellArg (toString profile)) machineImportProfiles;
+  componentRuntime =
+    if componentConfiguration == null then null
+    else import ./stage-b-component-runtime-package.nix {
+      inherit pkgs pythonEnv pythonSource machineIr namePrefix compiler;
+      interpreterPackage = interpreter;
+      inherit componentConfiguration;
+    };
   portableReplacementSelection =
-    if portableReplacements == null then null
-    else if builtins.isList portableReplacements then
-      pkgs.writeText "${namePrefix}-portable-replacements-v1.json"
-        (builtins.toJSON {
-          format = "stage-b-portable-replacement-selection-v1";
-          replacements = portableReplacements;
-        })
-    else portableReplacements;
+    if componentRuntime == null then null
+    else "${componentRuntime}/portable-component-selection.json";
+  hasPortableComponents =
+    componentConfiguration != null && componentConfiguration.enabledIds != [ ];
   portableReplacementArg = lib.escapeShellArg (
     if portableReplacementSelection == null then ""
     else toString portableReplacementSelection
+  );
+  componentRuntimeArg = lib.escapeShellArg (
+    if componentRuntime == null then "" else toString componentRuntime
   );
   callableExternalRuntimeArg = lib.escapeShellArg (
     if callableExternalRuntimeContract == null then ""
@@ -167,6 +176,7 @@ let
         ${machineIr}/machine-ir.jsonl \
         ${machineIr}/machine-ir-manifest.json \
         ${fallbackCoverageReceipt}/fallback-coverage-receipt.json \
+        ${componentRuntime} \
         "$out/candidate-authority.json" <<'PY'
       import pathlib
       import sys
@@ -180,6 +190,7 @@ let
           machine_ir,
           manifest,
           fallback_receipt,
+          component_runtime,
           output,
       ) = sys.argv[1:]
       receipt = build_stage_b_candidate_authority_v3(
@@ -187,6 +198,7 @@ let
           machine_ir=pathlib.Path(machine_ir),
           machine_ir_manifest=pathlib.Path(manifest),
           fallback_coverage_receipt=pathlib.Path(fallback_receipt),
+          component_runtime_package=pathlib.Path(component_runtime),
       )
       pathlib.Path(output).write_text(receipt.to_json(), encoding="ascii")
       PY
@@ -283,7 +295,7 @@ let
             pathlib.Path(portable_path).read_text(encoding="utf-8")
         )
         selected_portable_components = (
-            portable_payload["replacements"]
+            portable_payload["entries"]
             if isinstance(portable_payload, dict)
             else portable_payload
         )
@@ -393,6 +405,7 @@ let
     nativeEnginePackage = nativeEngine;
     nativeRuntimePackage = nativeRuntime;
     inherit compiler namePrefix diagnosticFailureTrap;
+    regionOverridePackage = if hasPortableComponents then componentRuntime else null;
   };
 
   candidate = pkgs.runCommand "${namePrefix}-hybrid-candidate-v1" {
@@ -419,6 +432,7 @@ let
       ${machineIr}/machine-ir.jsonl \
       ${machineIr}/machine-ir-manifest.json \
       ${fallbackCoverageArg} \
+      ${componentRuntimeArg} \
       ${loadImageContract} \
       ${machineIr}/recovered-executable-data.json \
       ${nativeObjects.package} \
@@ -441,13 +455,19 @@ let
         machine_ir=pathlib.Path(sys.argv[6]),
         machine_ir_manifest=pathlib.Path(sys.argv[7]),
         fallback_coverage_receipt=optional_path(sys.argv[8]),
-        load_image_contract=pathlib.Path(sys.argv[9]),
-        recovered_executable_data=pathlib.Path(sys.argv[10]),
-        precompiled_objects=pathlib.Path(sys.argv[11]),
-        compiler=pathlib.Path(sys.argv[12]),
+        component_runtime_package=(
+            optional_path(sys.argv[9])
+            if ${if staticClosed then "True" else "False"}
+            else None
+        ),
+        region_override_package=optional_path(sys.argv[9]),
+        load_image_contract=pathlib.Path(sys.argv[10]),
+        recovered_executable_data=pathlib.Path(sys.argv[11]),
+        precompiled_objects=pathlib.Path(sys.argv[12]),
+        compiler=pathlib.Path(sys.argv[13]),
         diagnostic_failure_trap=${if diagnosticFailureTrap then "True" else "False"},
         candidate_mode=${builtins.toJSON candidateMode},
-        out_dir=pathlib.Path(sys.argv[13]),
+        out_dir=pathlib.Path(sys.argv[14]),
       )
     PY
     jq -e '
@@ -465,6 +485,7 @@ in
 {
   inherit
     interpreter
+    componentRuntime
     machineImportProfileBundle
     fallbackCoverageReceipt
     candidateAuthorityReport

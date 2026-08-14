@@ -26,10 +26,10 @@ class StageBUpstreamShellSuiteNixTests(unittest.TestCase):
 
     def test_stable_target_sdk_exports_the_generic_runner(self) -> None:
         flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
-        sdk = (ROOT / "nix" / "target-sdk-v2.nix").read_text(encoding="utf-8")
+        sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
         package = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-        self.assertIn("mkTargetSdkV2", flake)
+        self.assertIn("mkTargetSdk", flake)
         self.assertIn("upstreamShellSuite", sdk)
         self.assertIn("stage-b-upstream-shell-suite.nix", sdk)
         self.assertIn('"nix/stage-b-upstream-shell-suite.nix"', package)

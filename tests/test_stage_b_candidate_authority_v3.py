@@ -34,6 +34,10 @@ from spaghetti_extractor.stage_b_candidate_authority_v3 import (
 from spaghetti_extractor.stage_b_fallback_coverage import (
     FALLBACK_COVERAGE_RECEIPT_FORMAT,
 )
+from spaghetti_extractor.components.formats import (
+    COMPONENT_RUNTIME_COMPLETION_V3_FORMAT,
+    COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
+)
 
 
 PE_SHA256 = "a" * 64
@@ -98,6 +102,8 @@ class CandidateAuthorityV3Tests(unittest.TestCase):
         })
         self.final = self.root / "final"
         self._write_final(self.final)
+        self.component_runtime = self.root / "component-runtime"
+        self._write_component_runtime(self.component_runtime)
         self.fallback = self.root / "fallback.json"
         self._write_fallback(self.fallback)
 
@@ -194,12 +200,21 @@ class CandidateAuthorityV3Tests(unittest.TestCase):
                 "machine_ir_manifest": {
                     "sha256": hashlib.sha256(self.manifest.read_bytes()).hexdigest()
                 },
+                "portable_replacements": {
+                    "artifact": {
+                        "path": "portable-component-selection.json",
+                        "sha256": hashlib.sha256(
+                            (self.component_runtime / "portable-component-selection.json").read_bytes()
+                        ).hexdigest(),
+                    }
+                },
             },
             "counts": {
                 "structural_units": 1,
                 "implementation_entries": 1,
                 "machine_ir_fallback": 1,
                 "portable_replacement": 0,
+                "portable_component_member": 0,
                 "blockers": 0,
             },
             "entries": [entry],
@@ -216,6 +231,7 @@ class CandidateAuthorityV3Tests(unittest.TestCase):
             "machine_ir": self.machine_ir,
             "machine_ir_manifest": self.manifest,
             "fallback_coverage_receipt": self.fallback,
+            "component_runtime_package": self.component_runtime,
         }
         arguments.update(overrides)
         return build_stage_b_candidate_authority_v3(**arguments)
@@ -246,7 +262,63 @@ class CandidateAuthorityV3Tests(unittest.TestCase):
                 machine_ir=self.machine_ir,
                 machine_ir_manifest=self.manifest,
                 fallback_coverage_receipt=self.fallback,
+                component_runtime_package=self.component_runtime,
             )
+
+    def _write_component_runtime(self, path: Path) -> None:
+        path.mkdir(parents=True, exist_ok=True)
+        selection = path / "portable-component-selection.json"
+        _write_json(selection, {"format": "fixture-selection", "entries": []})
+        core = {
+            "format": COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
+            "status": "ready",
+            "executes_original_binary": False,
+            "bindings": {"machine_ir_sha256": self.machine_ir_sha256},
+            "policy": {
+                "runtime_package_is_sole_candidate_authority": True,
+                "enabled_components_must_be_qualified": True,
+                "subsumed_members_may_not_fallback": True,
+                "fallback_on_unimplemented": False,
+                "original_execution_forbidden": True,
+            },
+            "components": [],
+            "counts": {
+                "portable_components": 0,
+                "portable_units": 0,
+                "override_entries": 0,
+            },
+            "artifacts": {
+                "portable_selection": {
+                    "path": selection.name,
+                    "sha256": hashlib.sha256(selection.read_bytes()).hexdigest(),
+                },
+                "region_overrides": None,
+            },
+        }
+        runtime_sha256 = canonical_sha256_v3(core)
+        _write_json(
+            path / "component-runtime-package.json",
+            {**core, "runtime_package_sha256": runtime_sha256},
+        )
+        completion_core = {
+            "format": COMPONENT_RUNTIME_COMPLETION_V3_FORMAT,
+            "status": "complete",
+            "runtime_package_sha256": runtime_sha256,
+            "activation_plan_sha256": "0" * 64,
+            "structural_units": 1,
+            "portable_units": 0,
+            "fallback_units": 1,
+            "ownership_complete": True,
+            "ownership_exclusive": True,
+            "executes_original_binary": False,
+        }
+        _write_json(
+            path / "component-runtime-completion.json",
+            {
+                **completion_core,
+                "completion_sha256": canonical_sha256_v3(completion_core),
+            },
+        )
 
     def test_wrong_final_pe_count_or_inventory_is_violated(self) -> None:
         cases = (

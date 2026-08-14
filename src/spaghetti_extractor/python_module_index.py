@@ -13,8 +13,14 @@ from pathlib import Path, PurePosixPath
 FORMAT = "spaghetti-extractor-python-module-index-v2"
 PACKAGE = "spaghetti_extractor"
 RESOURCE_DECLARATION = "PYTHON_RESOURCES"
+COMMAND_MANIFEST_DECLARATION = "SUPPORTED_COMMAND_MANIFEST"
+COMMAND_MANIFEST_PATH = Path("src/spaghetti_extractor/commands/manifest.py")
 _MODULE_REFERENCE = re.compile(
     r'["\'](spaghetti_extractor(?:\.[A-Za-z0-9_]+)+)["\']'
+)
+_NIX_PYTHON_INVOCATION = re.compile(
+    r"(?:(?:\bfrom|\bimport)\s+|(?:^|\s)-m\s+(?:\\\s*)?)"
+    r"(spaghetti_extractor(?:\.[A-Za-z0-9_]+)+)"
 )
 
 
@@ -126,6 +132,71 @@ def declared_python_resources(
     return tuple(sorted(set(result)))
 
 
+def declared_public_command_modules(repository: Path) -> tuple[str, ...]:
+    """Read the literal public-command roots without loading command backends."""
+
+    path = repository / COMMAND_MANIFEST_PATH
+    if not path.is_file():
+        raise ValueError(f"public command manifest is missing: {COMMAND_MANIFEST_PATH}")
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    value: object | None = None
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(
+            isinstance(target, ast.Name)
+            and target.id == COMMAND_MANIFEST_DECLARATION
+            for target in targets
+        ):
+            continue
+        try:
+            value = ast.literal_eval(node.value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{COMMAND_MANIFEST_DECLARATION} in {path} must be literal data"
+            ) from exc
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(
+            f"{COMMAND_MANIFEST_DECLARATION} in {path} must be a list or tuple"
+        )
+    modules: list[str] = []
+    command_names: set[str] = set()
+    for row in value:
+        if not isinstance(row, dict) or set(row) != {"name", "group", "help"}:
+            raise ValueError(f"public command manifest has a malformed row: {row!r}")
+        name = row.get("name")
+        group = row.get("group")
+        help_text = row.get("help")
+        if not all(isinstance(item, str) and item for item in (name, group, help_text)):
+            raise ValueError(f"public command manifest has an invalid row: {row!r}")
+        assert isinstance(name, str) and isinstance(group, str)
+        if name in command_names:
+            raise ValueError(f"public command manifest duplicates command {name!r}")
+        if not group.startswith(f"{PACKAGE}.commands."):
+            raise ValueError(f"public command group escapes commands package: {group!r}")
+        command_names.add(name)
+        modules.append(group)
+    return tuple(sorted(set(modules)))
+
+
+def nix_phase_module_roots(repository: Path) -> tuple[str, ...]:
+    """Return package modules named by checked Nix phase definitions."""
+
+    nix_paths = [repository / "flake.nix"]
+    nix_paths.extend(sorted((repository / "nix").glob("**/*.nix")))
+    nix_paths.extend(sorted((repository / "targets").glob("**/*.nix")))
+    roots: set[str] = set()
+    for path in nix_paths:
+        if path.is_file():
+            source = path.read_text(encoding="utf-8")
+            roots.update(match.group(1) for match in _MODULE_REFERENCE.finditer(source))
+            roots.update(
+                match.group(1) for match in _NIX_PYTHON_INVOCATION.finditer(source)
+            )
+    return tuple(sorted(roots))
+
+
 def build_python_module_index(repository: Path) -> dict[str, object]:
     source_root = repository / "src"
     modules = _candidate_paths(source_root)
@@ -137,6 +208,18 @@ def build_python_module_index(repository: Path) -> dict[str, object]:
         }
         for module, path in sorted(modules.items())
     }
+    cli_row = rows.get(f"{PACKAGE}.cli")
+    if cli_row is not None:
+        # The CLI loads exactly one command group through importlib.  Treat the
+        # literal command manifest as the dynamic-import authority so Nix
+        # closures remain complete without importing every backend at startup
+        # or maintaining a second dependency inventory.
+        cli_row["dependencies"] = sorted(
+            {
+                *cli_row["dependencies"],
+                *declared_public_command_modules(repository),
+            }
+        )
     missing = sorted(
         {
             dependency
@@ -176,17 +259,8 @@ def production_module_roots(
             raise ValueError(f"installed script {command!r} has no module:function target")
         roots.add(reference.split(":", 1)[0])
 
-    nix_paths = [repository / "flake.nix"]
-    nix_paths.extend(sorted((repository / "nix").glob("*.nix")))
-    nix_paths.extend(sorted((repository / "targets").glob("**/*.nix")))
-    for path in nix_paths:
-        if path.is_file():
-            roots.update(
-                match.group(1)
-                for match in _MODULE_REFERENCE.finditer(
-                    path.read_text(encoding="utf-8")
-                )
-            )
+    roots.update(declared_public_command_modules(repository))
+    roots.update(nix_phase_module_roots(repository))
     missing = sorted(roots - set(modules))
     if missing:
         raise ValueError(f"production roots name missing modules: {missing!r}")
@@ -230,9 +304,12 @@ def production_unreachable_modules(
 
 
 def render_python_module_index(repository: Path) -> str:
-    return json.dumps(
-        build_python_module_index(repository.resolve()), indent=2, sort_keys=True
-    ) + "\n"
+    resolved = repository.resolve()
+    index = build_python_module_index(resolved)
+    # A fresh import graph is not sufficient if a public command or Nix phase
+    # names a missing module. Validate all production roots before publishing it.
+    production_module_roots(resolved, index)
+    return json.dumps(index, indent=2, sort_keys=True) + "\n"
 
 
 def refresh_python_module_index(repository: Path, output: Path) -> bool:
@@ -250,7 +327,9 @@ def refresh_python_module_index(repository: Path, output: Path) -> bool:
 __all__ = [
     "FORMAT",
     "build_python_module_index",
+    "declared_public_command_modules",
     "declared_python_resources",
+    "nix_phase_module_roots",
     "production_module_closure",
     "production_module_roots",
     "production_unreachable_modules",

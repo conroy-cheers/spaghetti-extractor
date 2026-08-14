@@ -1,0 +1,242 @@
+{
+  "format": "spaghetti-extractor-component-boundary-review-v2",
+  "lift_unit_id": "ascii-to-lower",
+  "accept_derived_machine_boundary": true,
+  "overrides": {
+    "parameters": [
+      {
+        "id": "value",
+        "type": "uint32_t",
+        "machine_source": {
+          "kind": "expression",
+          "expression": {
+            "op": "load",
+            "width": 4,
+            "address": {
+              "op": "add32",
+              "args": [
+                {
+                  "op": "const",
+                  "value": 4,
+                  "width": 32
+                },
+                {
+                  "op": "reg",
+                  "name": "esp",
+                  "width": 32
+                }
+              ]
+            }
+          },
+          "evidence": {
+            "unit_id": "semantic-transfer:original-cutpoint-0000933d-0000934a",
+            "json_pointer": "/semantics/register_writes/0/value"
+          }
+        }
+      }
+    ],
+    "results": [
+      {
+        "id": "result",
+        "kind": "return",
+        "type": "uint32_t",
+        "machine_source": {
+          "kind": "expression",
+          "expression": {
+            "op": "ite",
+            "args": [
+              {
+                "op": "flag",
+                "name": "cf"
+              },
+              {
+                "op": "reg",
+                "name": "edx",
+                "width": 32
+              },
+              {
+                "op": "reg",
+                "name": "eax",
+                "width": 32
+              }
+            ]
+          },
+          "evidence": {
+            "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352",
+            "json_pointer": "/semantics/register_writes/0/value"
+          }
+        },
+        "effect_refs": [
+          {
+            "family": "register_write",
+            "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352",
+            "index": 0
+          }
+        ]
+      },
+      {
+        "id": "control",
+        "kind": "control",
+        "control": {
+          "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352",
+          "outcome_kind": "return",
+          "return_target": {
+            "op": "load",
+            "width": 4,
+            "address": {
+              "op": "reg",
+              "name": "esp",
+              "width": 32
+            }
+          }
+        }
+      }
+    ],
+    "adapter_effects": [
+      {
+        "effect": {
+          "family": "register_write",
+          "index": 0,
+          "unit_id": "semantic-transfer:original-cutpoint-0000933d-0000934a"
+        },
+        "reason": "machine_register_projection"
+      },
+      {
+        "effect": {
+          "family": "register_write",
+          "index": 1,
+          "unit_id": "semantic-transfer:original-cutpoint-0000933d-0000934a"
+        },
+        "reason": "machine_register_projection"
+      },
+      {
+        "effect": {
+          "family": "register_write",
+          "index": 2,
+          "unit_id": "semantic-transfer:original-cutpoint-0000933d-0000934a"
+        },
+        "reason": "machine_register_projection"
+      },
+      {
+        "effect": {
+          "family": "flag_write",
+          "index": 0,
+          "unit_id": "semantic-transfer:original-cutpoint-0000933d-0000934a"
+        },
+        "reason": "machine_flag_projection"
+      },
+      {
+        "effect": {
+          "family": "flag_write",
+          "index": 1,
+          "unit_id": "semantic-transfer:original-cutpoint-0000933d-0000934a"
+        },
+        "reason": "machine_flag_projection"
+      },
+      {
+        "effect": {
+          "family": "flag_write",
+          "index": 2,
+          "unit_id": "semantic-transfer:original-cutpoint-0000933d-0000934a"
+        },
+        "reason": "machine_flag_projection"
+      },
+      {
+        "effect": {
+          "family": "flag_write",
+          "index": 3,
+          "unit_id": "semantic-transfer:original-cutpoint-0000933d-0000934a"
+        },
+        "reason": "machine_flag_projection"
+      },
+      {
+        "effect": {
+          "family": "flag_write",
+          "index": 4,
+          "unit_id": "semantic-transfer:original-cutpoint-0000933d-0000934a"
+        },
+        "reason": "machine_flag_projection"
+      },
+      {
+        "effect": {
+          "family": "memory_event",
+          "index": 0,
+          "unit_id": "semantic-transfer:original-cutpoint-0000933d-0000934a"
+        },
+        "reason": "stack_frame_projection"
+      },
+      {
+        "effect": {
+          "family": "register_write",
+          "index": 1,
+          "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352"
+        },
+        "reason": "machine_register_projection"
+      },
+      {
+        "effect": {
+          "family": "register_write",
+          "index": 2,
+          "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352"
+        },
+        "reason": "machine_register_projection"
+      },
+      {
+        "effect": {
+          "family": "register_write",
+          "index": 3,
+          "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352"
+        },
+        "reason": "machine_register_projection"
+      },
+      {
+        "effect": {
+          "family": "flag_write",
+          "index": 0,
+          "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352"
+        },
+        "reason": "machine_flag_projection"
+      },
+      {
+        "effect": {
+          "family": "flag_write",
+          "index": 1,
+          "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352"
+        },
+        "reason": "machine_flag_projection"
+      },
+      {
+        "effect": {
+          "family": "flag_write",
+          "index": 2,
+          "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352"
+        },
+        "reason": "machine_flag_projection"
+      },
+      {
+        "effect": {
+          "family": "flag_write",
+          "index": 3,
+          "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352"
+        },
+        "reason": "machine_flag_projection"
+      },
+      {
+        "effect": {
+          "family": "flag_write",
+          "index": 4,
+          "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352"
+        },
+        "reason": "machine_flag_projection"
+      },
+      {
+        "effect": {
+          "family": "memory_event",
+          "index": 0,
+          "unit_id": "semantic-transfer:original-cutpoint-0000934a-00009352"
+        },
+        "reason": "stack_frame_projection"
+      }
+    ]
+  }
+}

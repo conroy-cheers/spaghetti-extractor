@@ -28,6 +28,9 @@ FALLBACK_COVERAGE_CHECKER_VERSION = 3
 PORTABLE_REPLACEMENT_SELECTION_FORMAT = (
     "stage-b-portable-replacement-selection-v1"
 )
+PORTABLE_COMPONENT_SELECTION_V2_FORMAT = (
+    "spaghetti-extractor-portable-component-selection-v2"
+)
 
 _PORTABLE_SELECTION_FIELDS = frozenset({
     "unit_id",
@@ -37,6 +40,9 @@ _PORTABLE_SELECTION_FIELDS = frozenset({
     "component_manifest_sha256",
     "fallback_on_unimplemented",
 })
+_PORTABLE_SELECTION_FIELDS_V2 = _PORTABLE_SELECTION_FIELDS | frozenset(
+    {"dispatch_role", "entry_rva"}
+)
 
 
 class FallbackCoverageReceiptError(ValueError):
@@ -191,9 +197,11 @@ def _expected_fallback_coverage_payload(
         lowering = lowering_by_id[unit_id]
         replacement = replacements.get(unit_id)
         implementation_kind = (
-            "portable_replacement"
-            if replacement is not None
-            else "machine_ir_fallback"
+            "machine_ir_fallback"
+            if replacement is None
+            else "portable_replacement"
+            if replacement["dispatch_role"] == "entry"
+            else "portable_component_member"
         )
         body: dict[str, Any] = {
             "unit_id": unit_id,
@@ -205,7 +213,9 @@ def _expected_fallback_coverage_payload(
             "implementation_kind": implementation_kind,
             "dispatch_lookup": (
                 "stage_b_region_override_lookup"
-                if replacement is not None
+                if implementation_kind == "portable_replacement"
+                else "component_entry_subsumed"
+                if implementation_kind == "portable_component_member"
                 else "stage_b_program_lookup"
             ),
             "portable_replacement": replacement,
@@ -262,6 +272,10 @@ def _expected_fallback_coverage_payload(
             ),
             "portable_replacement": sum(
                 row["implementation_kind"] == "portable_replacement"
+                for row in entries
+            ),
+            "portable_component_member": sum(
+                row["implementation_kind"] == "portable_component_member"
                 for row in entries
             ),
             "blockers": 0,
@@ -592,12 +606,21 @@ def _portable_replacement_selections(
         path = _file(Path(value), "portable-replacement selection")
         payload = _read_json(path, "portable-replacement selection")
         if isinstance(payload, Mapping):
-            if payload.get("format") != PORTABLE_REPLACEMENT_SELECTION_FORMAT:
+            selection_format = payload.get("format")
+            if selection_format not in {
+                PORTABLE_REPLACEMENT_SELECTION_FORMAT,
+                PORTABLE_COMPONENT_SELECTION_V2_FORMAT,
+            }:
                 raise FallbackCoverageReceiptError(
                     "portable-replacement selection has an unsupported format"
                 )
             raw_values = _list(
-                payload.get("replacements"), "portable-replacement selections"
+                payload.get(
+                    "entries"
+                    if selection_format == PORTABLE_COMPONENT_SELECTION_V2_FORMAT
+                    else "replacements"
+                ),
+                "portable-replacement selections",
             )
         else:
             raw_values = _list(payload, "portable-replacement selections")
@@ -613,7 +636,8 @@ def _portable_replacement_selections(
     seen_rvas: set[int] = set()
     for index, raw in enumerate(raw_values):
         row = _object(raw, f"portable replacement {index}")
-        if set(row) != _PORTABLE_SELECTION_FIELDS:
+        v2 = set(row) == _PORTABLE_SELECTION_FIELDS_V2
+        if not v2 and set(row) != _PORTABLE_SELECTION_FIELDS:
             raise FallbackCoverageReceiptError(
                 f"portable replacement {index} fields are not canonical"
             )
@@ -648,9 +672,51 @@ def _portable_replacement_selections(
                 f"portable replacement {index} component manifest SHA-256",
             ),
             "fallback_on_unimplemented": False,
+            "dispatch_role": (
+                _identity(
+                    row.get("dispatch_role"),
+                    f"portable replacement {index} dispatch role",
+                )
+                if v2
+                else "entry"
+            ),
+            "entry_rva": (
+                _u32(
+                    row.get("entry_rva"),
+                    f"portable replacement {index} entry RVA",
+                )
+                if v2
+                else rva
+            ),
         }
+        if normalized["dispatch_role"] not in {"entry", "subsumed_member"}:
+            raise FallbackCoverageReceiptError(
+                "portable component dispatch role is unsupported"
+            )
+        if normalized["dispatch_role"] == "entry" and normalized["entry_rva"] != rva:
+            raise FallbackCoverageReceiptError(
+                "portable component entry does not dispatch at its own RVA"
+            )
         result[identity] = normalized
         seen_rvas.add(rva)
+    entry_keys = {
+        (
+            value["entry_rva"],
+            value["cluster_id"],
+            value["component_manifest_sha256"],
+        )
+        for value in result.values()
+        if value["dispatch_role"] == "entry"
+    }
+    for value in result.values():
+        if value["dispatch_role"] == "subsumed_member" and (
+            value["entry_rva"],
+            value["cluster_id"],
+            value["component_manifest_sha256"],
+        ) not in entry_keys:
+            raise FallbackCoverageReceiptError(
+                "portable component member has no selected boundary entry"
+            )
     selections = [
         {"unit_id": unit_id, "rva": units[unit_id]["rva"], **result[unit_id]}
         for unit_id in sorted(result, key=lambda item: (units[item]["rva"], item))
@@ -659,7 +725,11 @@ def _portable_replacement_selections(
         None
         if not selections and artifact_binding is None
         else {
-            "format": PORTABLE_REPLACEMENT_SELECTION_FORMAT,
+            "format": (
+                PORTABLE_COMPONENT_SELECTION_V2_FORMAT
+                if any(value["dispatch_role"] != "entry" for value in result.values())
+                else PORTABLE_REPLACEMENT_SELECTION_FORMAT
+            ),
             "artifact": artifact_binding,
             "selection_sha256": _canonical_sha256(selections),
             "count": len(selections),
@@ -765,6 +835,7 @@ __all__ = [
     "FALLBACK_COVERAGE_CHECKER_VERSION",
     "FALLBACK_COVERAGE_RECEIPT_FORMAT",
     "PORTABLE_REPLACEMENT_SELECTION_FORMAT",
+    "PORTABLE_COMPONENT_SELECTION_V2_FORMAT",
     "FallbackCoverageReceipt",
     "FallbackCoverageReceiptError",
     "validate_fallback_coverage_receipt",

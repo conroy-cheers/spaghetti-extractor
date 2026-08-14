@@ -1,8 +1,0 @@
-{
-  "format": "spaghetti-extractor-runtime-substitution-plan-v1",
-  "runtime_id": "gnu-hello-2.12.3-pinned-mingw-runtime-v1",
-  "accepted_assumptions": [
-    "candidate_validation_is_not_exhaustive",
-    "linked_runtime_machine_to_source_equivalence_not_proven"
-  ]
-}

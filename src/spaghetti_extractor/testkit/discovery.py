@@ -9,7 +9,7 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 
-from ..python_module_index import declared_python_resources
+from ..python_module_index import build_python_module_index, declared_python_resources
 
 from .diagnostics import Diagnostic, TestkitError, fail_on_errors
 from .model import (
@@ -25,6 +25,7 @@ HEAVY_CAPABILITIES = frozenset({"bochs", "compiler", "isa", "lean", "native", "n
 ALLOWED_DIRECTIVE_KEYS = frozenset({"capabilities", "dependencies", "fixtures", "resources", "subsystem"})
 HEAVY_COMMANDS = {
     "bochs": "bochs-conformance",
+    "cc": "compiler",
     "clang": "compiler",
     "clang-cl": "compiler",
     "gcc": "compiler",
@@ -338,6 +339,19 @@ def _scan_modules(repository: Path) -> tuple[dict[str, _SourceModule], dict[str,
             if previous != relative.as_posix():
                 raise TestkitError(Diagnostic("error", "ambiguous_module_alias", f"module alias {alias!r} names both {previous} and {relative.as_posix()}"))
     known = dict(alias_paths)
+    try:
+        production_index = build_python_module_index(repository)
+    except ValueError as exc:
+        raise TestkitError(
+            Diagnostic(
+                "error",
+                "python_module_index_invalid",
+                str(exc),
+                remediation="Repair the production module graph before planning tests.",
+            )
+        ) from exc
+    production_modules = production_index["modules"]
+    assert isinstance(production_modules, dict)
     by_path: dict[str, _SourceModule] = {}
     for path, module, aliases, tree in rows:
         relative = path.relative_to(repository).as_posix()
@@ -349,6 +363,21 @@ def _scan_modules(repository: Path) -> tuple[dict[str, _SourceModule], dict[str,
                     dependencies.add(known[probe])
                     break
                 probe = probe.rpartition(".")[0]
+        production_row = production_modules.get(module)
+        if isinstance(production_row, dict):
+            for candidate in production_row.get("dependencies", ()):
+                dependency = known.get(str(candidate))
+                if dependency is None:
+                    raise TestkitError(
+                        Diagnostic(
+                            "error",
+                            "python_module_dependency_missing",
+                            f"production dependency {candidate!r} has no testkit module",
+                            location=relative,
+                            remediation="Regenerate the Python module index after repairing the source graph.",
+                        )
+                    )
+                dependencies.add(dependency)
         parent = module.rpartition(".")[0]
         while parent:
             parent_path = known.get(parent)

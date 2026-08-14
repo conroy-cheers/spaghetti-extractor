@@ -15,7 +15,7 @@
       ];
 
       flake.lib = {
-        mkTargetSdkV2 = import ./nix/target-sdk-v2.nix;
+        mkTargetSdk = import ./nix/target-sdk.nix;
       };
     };
 }

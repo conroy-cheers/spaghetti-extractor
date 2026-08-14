@@ -8,9 +8,6 @@
   },
   "paths": {
     "nix": "default.nix",
-    "components": "intent/components.json",
-    "linked_islands": "intent/linked-islands.json",
-    "source_projects": ["intent/source/project.json"],
-    "source_evidence": ["intent/source/evidence.json"]
+    "components": "intent/components.json"
   }
 }

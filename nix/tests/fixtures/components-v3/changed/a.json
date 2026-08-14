@@ -1,0 +1,40 @@
+{
+  "format": "spaghetti-extractor-component-boundary-review-v2",
+  "lift_unit_id": "a",
+  "accept_derived_machine_boundary": true,
+  "overrides": {
+    "adapter_effects": [],
+    "results": [
+      {
+        "id": "result",
+        "kind": "return",
+        "type": "uint32_t",
+        "machine_source": {
+          "kind": "register",
+          "name": "eax",
+          "width": 32,
+          "evidence": {
+            "unit_id": "unit:a",
+            "json_pointer": "/semantics/register_writes/0/value"
+          }
+        },
+        "effect_refs": [
+          {"family": "register_write", "unit_id": "unit:a", "index": 0}
+        ]
+      },
+      {
+        "id": "control",
+        "kind": "control",
+        "control": {
+          "unit_id": "unit:a",
+          "outcome_kind": "return",
+          "return_target": {
+            "op": "load",
+            "width": 4,
+            "address": {"op": "reg", "name": "esp", "width": 32}
+          }
+        }
+      }
+    ]
+  }
+}

@@ -24,9 +24,9 @@ original PE bytes
   -> final-authority-v3
   -> candidate-authority-v3 plus complete fallback receipt
   -> interpreter/native fallback candidate
-  -> component proposals and reviewed source replacements
-  -> source qualification and implementation ownership ledger
-  -> lift completion receipt
+  -> component contracts and logical-c-v1 source packages
+  -> candidate-only evidence and component qualification
+  -> one total component runtime package
   -> candidate-only tests in headless Wine
 ```
 
@@ -141,17 +141,19 @@ an exact projection back to machine ranges and events.
 
 A source replacement must provide:
 
-- an exact source-project binding and translation-unit inventory;
-- complete ownership of its selected machine units;
-- source-call and linked-library coverage;
-- a checked component assurance record for the declared scope;
-- a reproducible candidate identity and dependency audit;
-- no loss of fallback coverage outside the replacement.
+- a reviewed logical interface with an exact projection to machine effects;
+- an exact content-bound source package and `logical-c-v1` entry;
+- candidate-only evidence bound to the contract, source, machine IR, producer,
+  and declared domain;
+- qualification for the exact selected configuration;
+- complete, exclusive ownership of its selected machine units;
+- no loss of machine-IR fallback coverage outside the replacement.
 
-The source iteration audit is deliberately cheap and non-authorizing. It gives
-source-mapped repair feedback without rebuilding the full authority graph. The
-lift completion receipt is the release join and cannot substitute source tests
-for missing static authority.
+The component runtime package is the sole executable source authority. It
+generates ABI adapters, cross-compiles portable source, and supplies one
+portable-selection artifact to dispatch, fallback coverage, candidate
+authority, and completion checks. Diagnostic contracts and source bundles
+cannot authorize candidate code independently.
 
 ## Nix And Invalidation
 
@@ -169,11 +171,12 @@ PE inventory
   -> dependent SCC and target certificates
   -> rooted/final authority
   -> fallback and candidate receipts
-  -> source qualification and release receipts
+  -> component evidence, qualification, and runtime package
 ```
 
-A candidate source edit should rebuild source audits, the candidate, and
-dependent qualification receipts. It must not regenerate original extraction,
+A candidate source edit should rebuild its source package, evidence,
+qualification, runtime adapter, affected native object pack, and candidate. It
+must not regenerate original extraction,
 ISA oracle corpora, or unrelated authority packs. Diagnostic formatting must
 not invalidate authority evidence.
 
@@ -196,8 +199,9 @@ A target is fully reconstructed only when:
 1. `final-authority-v3` passes for the complete declared PE and environment
    profile;
 2. fallback coverage and implementation ownership are complete;
-3. every selected portable component is source-qualified;
-4. the lift completion receipt passes;
+3. every selected portable component has exact satisfied evidence and is
+   qualified in the active runtime package;
+4. the candidate-authority receipt passes;
 5. candidate-only smoke, functional, and upstream suites pass where available;
 6. all artifacts are reproducible through the checked Nix graph.
 

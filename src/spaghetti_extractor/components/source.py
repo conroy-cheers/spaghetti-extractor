@@ -23,6 +23,7 @@ def build_component_source_package_v2(
     lift_unit_id: str,
     files: Mapping[str, Path | str],
     shared_inputs: Mapping[str, Path | str] | None,
+    entry: Mapping[str, object],
     out_dir: Path | str,
 ) -> dict[str, object]:
     """Copy and hash the exact source tree consumed by qualification/builds."""
@@ -38,6 +39,7 @@ def build_component_source_package_v2(
         )
     if not regular:
         raise ComponentIntentError("component source package has no source files")
+    entry_payload = _normalize_entry(entry)
 
     output = Path(out_dir)
     source_root = output / "sources"
@@ -51,6 +53,7 @@ def build_component_source_package_v2(
         "lift_unit_id": lift_unit_id,
         "files": file_rows,
         "shared_inputs": shared_rows,
+        "entry": entry_payload,
     }
     result = {**core, "implementation_sha256": _canonical_sha256(core)}
     write_json(output / "source-package.json", result)
@@ -76,6 +79,7 @@ def load_component_source_package_v2(value: Path | str) -> dict[str, object]:
     core.pop("implementation_sha256", None)
     if expected != _canonical_sha256(core):
         raise ComponentIntentError("component source-package self-hash is stale")
+    _normalize_entry(_mapping(payload.get("entry"), "component source entry"))
 
     source_root = manifest_path.parent / "sources"
     listed: set[str] = set()
@@ -111,6 +115,24 @@ def load_component_source_package_v2(value: Path | str) -> dict[str, object]:
             f"missing={sorted(listed - actual)}, unlisted={sorted(actual - listed)}"
         )
     return payload
+
+
+def _normalize_entry(value: Mapping[str, object]) -> dict[str, str]:
+    if set(value) != {"abi", "symbol"}:
+        raise ComponentIntentError("component source entry fields are not canonical")
+    abi = value.get("abi")
+    symbol = value.get("symbol")
+    if abi != "logical-c-v1":
+        raise ComponentIntentError("component source entry ABI is unsupported")
+    if not isinstance(symbol, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol) is None:
+        raise ComponentIntentError("component source entry symbol is not a C identifier")
+    return {"abi": abi, "symbol": symbol}
+
+
+def _mapping(value: object, description: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise ComponentIntentError(f"{description} must be an object")
+    return value
 
 
 def _normalize_inputs(

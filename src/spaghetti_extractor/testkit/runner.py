@@ -18,7 +18,9 @@ from typing import Callable, Sequence
 from .diagnostics import Diagnostic, TestkitError
 from .discovery import build_impact_index
 from .evaluation_receipts import evaluation_receipt_directory
+from .model import SuitePlan
 from .planning import build_suite_plan, changed_paths_from_git
+from .static_manifest import nix_execution_plan_payload
 
 
 Run = Callable[[Sequence[str], Path], int]
@@ -215,14 +217,26 @@ def _evaluate_derivations(
         "values = if builtins.isList value then value else [ value ]; "
         "in map (item: item.drvPath) values"
     )
-    result = subprocess.run(
-        ("nix", "eval", "--impure", "--json", "--expr", wrapped),
-        cwd=repository,
-        env=environment,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    # A comprehensive affected-suite plan can exceed ARG_MAX when embedded in
+    # ``--expr``.  A file also keeps the process boundary constant-size as the
+    # static test manifest grows; the expression content remains part of the
+    # checked evaluation-receipt identity above.
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix="spaghetti-nix-eval-",
+        suffix=".nix",
+    ) as stream:
+        stream.write(wrapped)
+        stream.flush()
+        result = subprocess.run(
+            ("nix", "eval", "--impure", "--json", "--file", stream.name),
+            cwd=repository,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
         return None
@@ -399,25 +413,17 @@ def build_commands(
                 remediation="Choose smoke, affected, full, or benchmark.",
             )
         )
-    selected_shards = tuple(
-        shard for shard in plan.shards if shard.id != "smoke"
-    )
-    attributes = " ".join((
-        *(
-            f'flake.legacyPackages.x86_64-linux.test-shards."{shard.id}"'
-            for shard in selected_shards
-        ),
-        *(
-            f'flake.checks.x86_64-linux."{check}"'
-            for check in plan.nix_checks
-        ),
-    ))
-    if not attributes:
+    selected_shards = tuple(shard for shard in plan.shards if shard.id != "smoke")
+    if not selected_shards and not plan.nix_checks:
         smoke = _flake_selection(
             source_expression, 'legacyPackages.x86_64-linux."test-smoke"'
         )
         return (("nix", "build", "--impure", "--expr", smoke, "--builders", "", "--no-link"),)
-    expression = _flake_expression(source_expression, f"[ {attributes} ]")
+    expression = _affected_suite_expression(
+        source_expression,
+        plan=plan,
+        nix_checks=plan.nix_checks,
+    )
     builder_arguments = _builder_arguments(
         repository,
         remote=(
@@ -470,6 +476,37 @@ def _flake_expression(source_expression: str, result: str) -> str:
 
 def _flake_selection(source_expression: str, attribute: str) -> str:
     return _flake_expression(source_expression, f"flake.{attribute}")
+
+
+def _affected_suite_expression(
+    source_expression: str,
+    *,
+    plan: SuitePlan,
+    nix_checks: tuple[str, ...],
+) -> str:
+    plan_json = json.dumps(
+        nix_execution_plan_payload(plan, excluded_shards=frozenset({"smoke"})),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    encoded_plan = json.dumps(plan_json)
+    checks = " ".join(
+        f'flake.checks.x86_64-linux."{check}"' for check in nix_checks
+    )
+    check_expression = f"[ {checks} ]" if checks else "[ ]"
+    return f'''let
+      source = {source_expression};
+      flake = builtins.getFlake (builtins.unsafeDiscardStringContext "path:${{source}}");
+      pkgs = flake.inputs.nixpkgs.legacyPackages.x86_64-linux;
+      context = import (source + "/nix/toolkit-context.nix") {{ inherit pkgs; }};
+      suite = import (source + "/nix/test-suite.nix") {{
+        inherit pkgs;
+        inherit (context) pythonEnv fixtures;
+        repositoryRoot = source;
+        mode = "affected";
+        planPayload = builtins.fromJSON {encoded_plan};
+      }};
+    in (builtins.attrValues suite.shards) ++ {check_expression}'''
 
 
 def _parser() -> argparse.ArgumentParser:

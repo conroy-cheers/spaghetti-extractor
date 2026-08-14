@@ -22,6 +22,53 @@ def _write(root: Path, relative: str, content: str) -> None:
 
 
 class TestDiscoveryTests(unittest.TestCase):
+    def test_command_manifest_dynamic_imports_enter_test_closures(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            _write(root, "src/spaghetti_extractor/commands/__init__.py", "")
+            _write(
+                root,
+                "src/spaghetti_extractor/commands/manifest.py",
+                """
+SUPPORTED_COMMAND_MANIFEST = (
+    {
+        "name": "example",
+        "group": "spaghetti_extractor.commands.example",
+        "help": "exercise dynamic command closure",
+    },
+)
+""".lstrip(),
+            )
+            _write(
+                root,
+                "src/spaghetti_extractor/commands/example.py",
+                "from spaghetti_extractor.support import VALUE\n",
+            )
+            _write(root, "src/spaghetti_extractor/support.py", "VALUE = 1\n")
+            _write(
+                root,
+                "src/spaghetti_extractor/cli.py",
+                "import importlib\n"
+                "from .commands.manifest import SUPPORTED_COMMAND_MANIFEST\n"
+                "def load(group): return importlib.import_module(group)\n",
+            )
+            _write(
+                root,
+                "tests/unit/cli/test_cli.py",
+                "from spaghetti_extractor.cli import load\n",
+            )
+
+            row = build_impact_index(root).tests[0]
+
+            self.assertIn(
+                "src/spaghetti_extractor/commands/example.py",
+                row.dependency_paths,
+            )
+            self.assertIn(
+                "src/spaghetti_extractor/support.py",
+                row.dependency_paths,
+            )
+
     def test_conventions_supply_classification_and_import_closure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _repository(Path(temporary))
@@ -86,7 +133,7 @@ class TestDiscoveryTests(unittest.TestCase):
             _write(
                 root,
                 "tests/test_compile.py",
-                'import shutil\nCOMPILER = shutil.which("i686-w64-mingw32-gcc")\n',
+                'import shutil\nHOST = shutil.which("cc")\nCROSS = shutil.which("i686-w64-mingw32-gcc")\n',
             )
 
             row = build_impact_index(root).tests[0]
