@@ -155,6 +155,10 @@ def plan_stage_b_native_runtime(
     )
     native_plan = _read_json_object(native_plan_path, "native-engine plan")
     candidate_mode = require_candidate_mode(native_plan.get("candidate_mode"))
+    if candidate_mode != STATIC_CLOSED_CANDIDATE_MODE:
+        raise StageBNativeRuntimeError(
+            "native runtime packages require a static-closed engine plan"
+        )
     native_policy = _required_object(native.get("policy"), "native-engine policy")
     if native_policy.get("candidate_mode") != candidate_mode:
         raise StageBNativeRuntimeError(

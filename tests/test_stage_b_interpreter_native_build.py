@@ -51,6 +51,7 @@ from spaghetti_extractor.candidate.engine import (
     write_stage_b_native_engine_package,
 )
 from spaghetti_extractor.candidate.runtime import (
+    StageBNativeRuntimeError,
     write_stage_b_native_runtime_package,
 )
 from spaghetti_extractor.candidate.pe import (
@@ -546,50 +547,29 @@ class _Packages:
 
 
 class StageBInterpreterNativeBuildValidationTests(unittest.TestCase):
-    def test_structural_mode_requires_failure_trap_before_compilation(self) -> None:
+    def test_structural_mode_cannot_construct_a_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            packages = _Packages(
-                Path(temporary) / "inputs",
-                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-            )
             with self.assertRaisesRegex(
-                StageBInterpreterNativeBuildError, "require the failure trap"
+                StageBNativeRuntimeError, "require a static-closed engine plan"
             ):
-                build_stage_b_interpreter_native_candidate(
-                    interpreter_package=packages.interpreter,
-                    native_engine_package=packages.engine,
-                    native_runtime_package=packages.runtime,
-                    candidate_authority=None,
-                    final_authority=None,
-                    machine_ir=packages.machine_ir,
-                    machine_ir_manifest=packages.machine_ir_manifest,
-                    fallback_coverage_receipt=None,
-                    component_runtime_package=None,
-                    load_image_contract=packages.contract,
+                _Packages(
+                    Path(temporary) / "inputs",
                     candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-                    out_dir=Path(temporary) / "candidate",
-                    compiler="compiler-must-not-be-consulted",
                 )
 
-    def test_structural_mode_rejects_acceptance_authority_before_compilation(self) -> None:
+    def test_diagnostic_trap_cannot_prepare_an_object_graph(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            packages = _Packages(
-                Path(temporary) / "inputs",
-                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-            )
+            packages = _Packages(Path(temporary) / "inputs")
             with self.assertRaisesRegex(
                 StageBInterpreterNativeBuildError,
-                "must not consume acceptance authority",
+                "cannot prepare native object graphs",
             ):
-                build_stage_b_interpreter_native_candidate(
+                prepare_stage_b_interpreter_native_object_graph(
                     interpreter_package=packages.interpreter,
                     native_engine_package=packages.engine,
                     native_runtime_package=packages.runtime,
-                    **packages.release_inputs(),
-                    candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
                     diagnostic_failure_trap=True,
-                    out_dir=Path(temporary) / "candidate",
-                    compiler="compiler-must-not-be-consulted",
+                    out_dir=Path(temporary) / "object-graph",
                 )
 
     def test_rejects_v1_receipt_before_compilation(self) -> None:
@@ -691,43 +671,15 @@ class StageBInterpreterNativeBuildValidationTests(unittest.TestCase):
     shutil.which("i686-w64-mingw32-gcc"), "i686 MinGW compiler unavailable"
 )
 class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
-    def test_builds_non_authorizing_structural_diagnostic_candidate(self) -> None:
+    def test_structural_mode_fails_before_candidate_compilation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            packages = _Packages(
-                root / "inputs",
-                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-            )
-            manifest = build_stage_b_interpreter_native_candidate(
-                interpreter_package=packages.interpreter,
-                native_engine_package=packages.engine,
-                native_runtime_package=packages.runtime,
-                candidate_authority=None,
-                final_authority=None,
-                machine_ir=packages.machine_ir,
-                machine_ir_manifest=packages.machine_ir_manifest,
-                fallback_coverage_receipt=None,
-                component_runtime_package=None,
-                load_image_contract=packages.contract,
-                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-                diagnostic_failure_trap=True,
-                out_dir=root / "candidate",
-            )
-
-            self.assertIsNone(manifest["inputs"]["candidate_authority"])
-            scope = manifest["inputs"]["execution_scope"]
-            self.assertEqual(scope["candidate_mode"], "structural-diagnostic")
-            self.assertEqual(scope["acceptance_authority"], "none")
-            self.assertEqual(
-                scope["runtime_unknown_target_disposition"],
-                "fail-closed-as-unimplemented",
-            )
-            self.assertEqual(
-                manifest["policy"]["candidate_class"],
-                "structural-diagnostic",
-            )
-            self.assertTrue(manifest["policy"]["diagnostic_failure_trap"])
-            self.assertTrue((root / "candidate" / "candidate.exe").is_file())
+            with self.assertRaisesRegex(
+                StageBNativeRuntimeError, "require a static-closed engine plan"
+            ):
+                _Packages(
+                    Path(temporary) / "inputs",
+                    candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
+                )
 
     def test_compile_keys_track_only_transitive_source_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -847,38 +799,21 @@ class StageBInterpreterNativeBuildIntegrationTests(unittest.TestCase):
                     out_dir=root / "object",
                 )
 
-    def test_diagnostic_mode_invalidates_only_macro_consumers(self) -> None:
+    def test_diagnostic_mode_cannot_create_compile_bundles(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             packages = _Packages(root / "inputs")
-            normal = prepare_stage_b_interpreter_native_object_graph(
-                interpreter_package=packages.interpreter,
-                native_engine_package=packages.engine,
-                native_runtime_package=packages.runtime,
-                out_dir=root / "normal-graph",
-            )
-            diagnostic = prepare_stage_b_interpreter_native_object_graph(
-                interpreter_package=packages.interpreter,
-                native_engine_package=packages.engine,
-                native_runtime_package=packages.runtime,
-                diagnostic_failure_trap=True,
-                out_dir=root / "diagnostic-graph",
-            )
-
-            normal_rows = {row["id"]: row for row in normal["units"]}
-            diagnostic_rows = {row["id"]: row for row in diagnostic["units"]}
-            changed_ids = {
-                unit_id
-                for unit_id, row in normal_rows.items()
-                if row["compile_key_sha256"]
-                != diagnostic_rows[unit_id]["compile_key_sha256"]
-            }
-            sensitive_ids = {
-                row["id"] for row in diagnostic["units"] if row["diagnostic_sensitive"]
-            }
-            self.assertEqual(changed_ids, sensitive_ids)
-            self.assertTrue(sensitive_ids)
-            self.assertLess(len(sensitive_ids), len(diagnostic["units"]))
+            with self.assertRaisesRegex(
+                StageBInterpreterNativeBuildError,
+                "cannot prepare native object graphs",
+            ):
+                prepare_stage_b_interpreter_native_object_graph(
+                    interpreter_package=packages.interpreter,
+                    native_engine_package=packages.engine,
+                    native_runtime_package=packages.runtime,
+                    diagnostic_failure_trap=True,
+                    out_dir=root / "diagnostic-graph",
+                )
 
     def test_compile_graph_records_exact_quoted_include_closures(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

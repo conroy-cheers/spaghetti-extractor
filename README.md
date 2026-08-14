@@ -43,7 +43,10 @@ nix develop
 spaghetti-extractor --help
 spaghetti-extractor project status gnu-hello
 spaghetti-extractor project analyze gnu-hello
-spaghetti-extractor component build gnu-hello
+spaghetti-extractor component list gnu-hello
+spaghetti-extractor component status gnu-hello ascii-to-lower
+spaghetti-extractor component build gnu-hello ascii-to-lower
+spaghetti-extractor component check gnu-hello ascii-to-lower
 spaghetti-extractor project check gnu-hello
 ```
 
@@ -102,16 +105,24 @@ Portable-source iteration is also Nix-native. GNU Hello exposes the canonical
 component and target-gate workflow:
 
 ```console
+spaghetti-extractor component list gnu-hello
+spaghetti-extractor component status gnu-hello ascii-to-lower
+spaghetti-extractor component build gnu-hello ascii-to-lower
+spaghetti-extractor component check gnu-hello ascii-to-lower
+spaghetti-extractor component build gnu-hello --configuration operator-one-leaf
 spaghetti-extractor project check gnu-hello
-spaghetti-extractor component build gnu-hello
 spaghetti-extractor project check gnu-hello --acceptance
 spaghetti-extractor candidate build gnu-hello
-spaghetti-extractor candidate test gnu-hello
+spaghetti-extractor candidate test jq
 ```
 
 Regression remains buildable while whole-program authority is incomplete.
-Acceptance and the static candidate stay behind the explicit final-authority
-gate.
+Building one component or group produces a non-authorizing static work package;
+building a configuration produces its runtime package. Acceptance and every
+executable candidate stay behind the explicit final-authority gate. Candidate
+tests exist only when a target declares curated expected-output cases, run only
+the generated candidate, and execute Wine through an isolated headless X
+session.
 
 ## Public Surfaces
 

@@ -178,8 +178,14 @@ def _canonical_external_sites(
     identity: dict,
     contract,
     callback_target_rvas: tuple[int, ...] = (),
+    event: dict | None = None,
+    unit_sha256: str | None = None,
 ) -> Path:
-    event = unit["semantics"]["external_events"][event_index]
+    event = (
+        unit["semantics"]["external_events"][event_index]
+        if event is None
+        else event
+    )
     target_sha256 = canonical_sha256_v3(identity)
     site_id = external_site_id_v3(
         unit["id"], event_index, 0, identity
@@ -251,7 +257,7 @@ def _canonical_external_sites(
     )
     record = CanonicalExternalSiteRecordV3(
         record_id=unit["id"],
-        unit_sha256=canonical_sha256_v3(unit),
+        unit_sha256=(canonical_sha256_v3(unit) if unit_sha256 is None else unit_sha256),
         status="complete",
         authorizing=True,
         sites=(site,),

@@ -69,7 +69,8 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
 
         self.assertIn("interpreterPackage,", candidate)
-        self.assertIn("componentRuntimePackage ? null", candidate)
+        self.assertIn("componentRuntimePackage,", candidate)
+        self.assertIn("static-closed candidates require a component runtime", candidate)
         self.assertNotIn("import ./stage-b-interpreter-package.nix", candidate)
         self.assertNotIn("import ./stage-b-component-runtime-package.nix", candidate)
         self.assertIn("componentRuntimeFor = components.runtimeFor", sdk)
@@ -84,7 +85,8 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("metadata.workflow.default_configuration", sdk)
         self.assertIn("runtimes = workflow.componentRuntimes", sdk)
         self.assertIn("static = lib.mapAttrs", sdk)
-        self.assertIn("diagnostic = lib.mapAttrs", sdk)
+        self.assertIn("diagnostics.structural = workflow.structuralDiagnostic", sdk)
+        self.assertNotIn("diagnostic = lib.mapAttrs", sdk)
         self.assertNotIn("target = {\n    bundle =", sdk)
 
     def test_interpreter_package_is_a_generic_content_addressed_phase(self) -> None:
@@ -344,16 +346,29 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn('package = module.split(".", 1)[0]', closure)
         self.assertIn("run `nix run .#dev -- refresh`", closure)
 
-    def test_headless_diagnostic_run_decodes_candidate_failure_evidence(self) -> None:
+    def test_structural_diagnostics_cannot_emit_or_execute_a_candidate(self) -> None:
         module = (
-            ROOT / "nix" / "stage-b-headless-diagnostic-run.nix"
+            ROOT / "nix" / "structural-diagnostics.nix"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("spaghetti_extractor.candidate.diagnostic", module)
-        self.assertIn("decode_stage_b_native_diagnostic_file", module)
-        self.assertIn("diagnostic-decoded.json", module)
-        self.assertIn("original_runtime_observations: $original_runtime_observations", module)
-        self.assertIn("no behavioral acceptance authority", module)
+        self.assertIn('"static_only": True', module)
+        self.assertIn('"executable": False', module)
+        self.assertIn('"object_code_emitted": False', module)
+        self.assertIn('"wine_execution_permitted": False', module)
+        self.assertIn('test ! -e "$out/candidate.exe"', module)
+        self.assertNotIn("wine ", module.lower())
+
+    def test_candidate_suites_require_authority_and_headless_wine(self) -> None:
+        module = (
+            ROOT / "nix" / "candidate-test-suite.nix"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("spaghetti-extractor-final-authority-gate-v3", module)
+        self.assertIn(".status == \"complete\" and .authorizing", module)
+        self.assertIn("xvfb-run -a", module)
+        self.assertIn("WINEDEBUG=-all", module)
+        self.assertIn("candidate_only: true", module)
+        self.assertIn("original_binary_executed: false", module)
 
     def test_candidate_generation_has_only_v3_authority(self) -> None:
         module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
@@ -367,17 +382,16 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("final_authority=", module)
         self.assertNotIn("final_static_hybrid_audit", module)
         self.assertNotIn("authority_bundle", module)
-        self.assertIn('candidateMode ? "static-closed"', module)
-        self.assertIn('"structural-diagnostic"', module)
+        self.assertNotIn("candidateMode ?", module)
+        self.assertNotIn('"structural-diagnostic"', module)
         self.assertIn("candidate_authority=optional_path", module)
-        self.assertIn("if staticClosed then", module)
+        self.assertIn('candidate_mode="static-closed"', module)
         self.assertNotIn("write_static_hybrid_closure_receipt", module)
         self.assertNotIn("write_final_candidate_authorization", module)
         self.assertNotIn("stage-b-final-candidate-generation-authorization-v1", module)
         self.assertNotIn("externalSiteProposals", module)
         self.assertNotIn("external_site_proposals=", module)
         self.assertIn("region_override_package=optional_path", module)
-        self.assertIn("if ${if staticClosed then", module)
         self.assertNotIn("proposal-only external-site evidence", module)
 
     def test_checked_external_sites_and_callbacks_are_native_v3_phases(self) -> None:

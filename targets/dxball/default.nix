@@ -67,18 +67,6 @@ let
     maxCandidatesPerSeed = 12;
   };
   components = workflow.components;
-  hybridDiagnostic = workflow.diagnosticFor { };
-  diagnosticRun = sdk.candidate.headlessDiagnostic {
-    namePrefix = "spaghetti-extractor-dxball-1.09";
-    candidateBinary = "${hybridDiagnostic.candidate}/candidate.exe";
-    nativeEnginePlan =
-      "${hybridDiagnostic.nativeEngine}/native-engine-plan.json";
-    nativeRuntimePackage = hybridDiagnostic.nativeRuntime;
-    runtimeAssets = "${original}/runtime";
-    executableName = "DXBall.exe";
-    inputKeys = [ "Return" ];
-    screenshotAfterSeconds = 15;
-  };
 in
 sdk.target.pe32Bundle {
   targetRoot = ./.;
@@ -87,14 +75,6 @@ sdk.target.pe32Bundle {
     inherit archive installer original;
   };
   profiles.interface = interfaceProfile;
-  extraArtifacts = {
-    unconfigured-diagnostic = {
-      native-engine = hybridDiagnostic.nativeEngine;
-      native-runtime = hybridDiagnostic.nativeRuntime;
-      candidate = hybridDiagnostic.candidate;
-      run = diagnosticRun;
-    };
-  };
   checks = {
     component-contract = components.contracts.startup-extended;
   };

@@ -29,7 +29,7 @@ def _configure_command(
 
 _NAMESPACE_HELP = {
     "project": "analyze and validate a registered target project",
-    "component": "build the selected target's portable component runtime",
+    "component": "inspect and build independent component work units",
     "candidate": "build and test an authorized candidate",
     "expert": "invoke an individual pipeline leaf command",
 }

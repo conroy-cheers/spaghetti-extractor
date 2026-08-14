@@ -10,7 +10,6 @@ from ..external.contracts import (
     CheckedExternalSiteContractError,
     ExternalSiteIdentity,
     parse_checked_external_site_contract,
-    require_profile_match,
 )
 from ..external.machine_import_profiles import (
     MachineImportIdentity,
@@ -369,9 +368,24 @@ def _external_range_rules(
     tuple[int, ...],
     tuple[dict[str, Any], ...],
 ]:
-    if profile_path is None:
-        profile_set = None
+    external_sites = _required_list(
+        native_plan.get("external_sites"), "native-engine external sites"
+    )
+    has_external_site = any(
+        isinstance(site, Mapping)
+        and (
+            isinstance(site.get("import"), Mapping)
+            or site.get("site_kind") in {"external_call", "external_jump"}
+            or isinstance(site.get("external_protocol"), Mapping)
+        )
+        for site in external_sites
+    )
+    if not has_external_site:
         selected_contracts = {}
+    elif profile_path is None:
+        raise StageBNativeRuntimeError(
+            "native runtime requires the canonical machine-import profile bundle"
+        )
     else:
         try:
             profile_set = load_machine_import_profile_set([profile_path])
@@ -438,9 +452,7 @@ def _external_range_rules(
             "runtime_disposition": "fail-closed-as-unimplemented-before-call",
         })
 
-    for site_index, raw_site in enumerate(
-        _required_list(native_plan.get("external_sites"), "native-engine external sites")
-    ):
+    for site_index, raw_site in enumerate(external_sites):
         site = _required_object(raw_site, f"native-engine external site {site_index}")
         is_external = (
             isinstance(site.get("import"), Mapping)
@@ -458,121 +470,30 @@ def _external_range_rules(
             )
             continue
         raw_contract = site.get("checked_external_contract")
+        resolution = site.get("target_resolution_evidence")
         if not isinstance(raw_contract, Mapping):
-            required = site.get("checked_external_contract_required", False)
-            if not isinstance(required, bool):
-                raise StageBNativeRuntimeError(
-                    f"native-engine external site {site_index} has invalid contract policy"
-                )
-            if required or isinstance(site.get("external_protocol"), Mapping):
-                block_site(
-                    site_index=site_index,
-                    site=site,
-                    category="checked_external_contract_missing",
-                    detail=(
-                        f"native-engine external site {site_index} has no checked "
-                        "external contract"
-                    ),
-                )
-                continue
-            imported = site.get("import")
-            if not isinstance(imported, Mapping) or profile_set is None:
-                block_site(
-                    site_index=site_index,
-                    site=site,
-                    category="external_profile_missing",
-                    detail=(
-                        f"legacy external site {site_index} has no selected exact profile"
-                    ),
-                )
-                continue
-            try:
-                outer_identity = ExternalSiteIdentity.imported(
-                    imported,
-                    context=f"native-engine external site {site_index}",
-                )
-            except CheckedExternalSiteContractError as exc:
-                raise StageBNativeRuntimeError(str(exc)) from exc
-            profile_identity = MachineImportIdentity(
-                dll=str(outer_identity.dll),
-                kind="symbol" if outer_identity.symbol is not None else "ordinal",
-                value=(
-                    str(outer_identity.symbol)
-                    if outer_identity.symbol is not None
-                    else int(outer_identity.ordinal)
+            block_site(
+                site_index=site_index,
+                site=site,
+                category="checked_external_contract_missing",
+                detail=(
+                    f"native-engine external site {site_index} has no checked "
+                    "external contract"
                 ),
             )
-            selected = selected_contracts.get(profile_identity)
-            if selected is None:
-                block_site(
-                    site_index=site_index,
-                    site=site,
-                    category="external_profile_missing",
-                    detail=(
-                        f"legacy external site {site_index} has no selected exact profile"
-                    ),
-                )
-                continue
-            callback_effect = selected.contract.get("callback_effect")
-            if (
-                callback_effect not in {None, "none"}
-                or selected.contract.get("world_effect") == "callbackRegistration"
-            ):
-                block_site(
-                    site_index=site_index,
-                    site=site,
-                    category="callback_adapter_contract_missing",
-                    detail=(
-                        f"legacy external site {site_index} may register or invoke a "
-                        "callback without a checked adapter"
-                    ),
-                )
-                continue
-            binding_identity = (
-                profile_identity.dll,
-                profile_identity.kind,
-                profile_identity.value,
-            )
-            binding = bindings.get(binding_identity)
-            if binding is None and site.get("site_kind") == "dynamic_target":
-                raise StageBNativeRuntimeError(
-                    f"legacy external site {site_index} has no exact import binding"
-                )
-            target_iat_rva = (
-                _required_u32(binding.get("iat_rva"), "import binding IAT RVA")
-                if site.get("site_kind") == "dynamic_target" and binding is not None
-                else None
-            )
-            disposition = site.get("disposition")
-            if disposition not in {"returns_here", "tail_jump"}:
-                raise StageBNativeRuntimeError(
-                    f"legacy external site {site_index} has invalid disposition"
-                )
-            argument_words = selected.contract.get("argument_words")
-            if (
-                not isinstance(argument_words, int)
-                or isinstance(argument_words, bool)
-                or not 0 <= argument_words <= 256
-            ):
-                block_site(
-                    site_index=site_index,
-                    site=site,
-                    category="external_argument_words_missing",
-                    detail=(
-                        f"legacy external site {site_index} has no exact "
-                        "call-site argument inventory"
-                    ),
-                )
-                continue
-            expanded_sites.append((
-                dict(site),
-                target_iat_rva,
-                dict(selected.contract),
-                4 if disposition == "tail_jump" else 0,
-                str(selected.contract.get("id")),
-            ))
-            authorized_sites.add(
-                _required_u32(site.get("instruction_rva"), "external site RVA")
+            continue
+        if (
+            not isinstance(resolution, Mapping)
+            or resolution.get("kind") != "canonical-external-sites-v3"
+        ):
+            block_site(
+                site_index=site_index,
+                site=site,
+                category="canonical_external_site_missing",
+                detail=(
+                    f"native-engine external site {site_index} is not bound to "
+                    "canonical-external-sites-v3"
+                ),
             )
             continue
         try:
@@ -613,34 +534,15 @@ def _external_range_rules(
                 raise StageBNativeRuntimeError(
                     f"native-engine external site {site_index} has no selected exact profile"
                 )
-            resolution = site.get("target_resolution_evidence")
             if (
-                isinstance(resolution, Mapping)
-                and resolution.get("kind") == "canonical-external-sites-v3"
+                checked.profile_binding.get("profile_id") != selected.profile_id
+                or checked.profile_binding.get("profile_sha256")
+                != selected.profile_sha256
             ):
-                if (
-                    checked.profile_binding.get("profile_id")
-                    != selected.profile_id
-                    or checked.profile_binding.get("profile_sha256")
-                    != selected.profile_sha256
-                ):
-                    raise StageBNativeRuntimeError(
-                        f"native-engine external site {site_index} binds a "
-                        "different canonical profile"
-                    )
-            else:
-                try:
-                    require_profile_match(
-                        checked,
-                        profile_contract=selected.contract,
-                        profile_id=selected.profile_id,
-                        profile_sha256=selected.profile_sha256,
-                        entry_key=selected.entry_key,
-                        entry_index=selected.entry_index,
-                        context=f"native-engine external site {site_index}",
-                    )
-                except CheckedExternalSiteContractError as exc:
-                    raise StageBNativeRuntimeError(str(exc)) from exc
+                raise StageBNativeRuntimeError(
+                    f"native-engine external site {site_index} binds a "
+                    "different canonical profile"
+                )
             binding_identity = (
                 profile_identity.dll,
                 profile_identity.kind,
@@ -721,7 +623,7 @@ def _external_range_rules(
             termination_max_units = 0
             if kind == "fixed":
                 size_value = _required_count(
-                    size.get("bytes"), "fixed dynamic-range size"
+                    size.get("byte_count"), "fixed dynamic-range size"
                 )
             elif kind == "argument":
                 size_argument = _required_count(

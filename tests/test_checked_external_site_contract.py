@@ -598,6 +598,9 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
                 "disposition": "returns_here",
                 "import": {"dll": "fixture.dll", "symbol": "Exact", "ordinal": None},
                 "checked_external_contract": checked.payload(),
+                "target_resolution_evidence": {
+                    "kind": "canonical-external-sites-v3"
+                },
             }
             native_plan = {
                 "implementation_dispatch_receipt": {

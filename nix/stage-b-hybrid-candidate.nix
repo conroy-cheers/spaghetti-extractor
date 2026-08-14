@@ -8,54 +8,29 @@
   machineImportProfiles,
   namePrefix,
   compiler ? pkgs.pkgsCross.mingw32.stdenv.cc,
-  candidateMode ? "static-closed",
-  allowDeferredPotentialTransfers ? candidateMode == "structural-diagnostic",
-  diagnosticFailureTrap ? false,
   interpreterPackage,
-  componentRuntimePackage ? null,
+  componentRuntimePackage,
 }:
 
 assert pkgs.lib.assertMsg
-  (builtins.elem candidateMode [ "static-closed" "structural-diagnostic" ])
-  "candidateMode must be static-closed or structural-diagnostic";
-assert pkgs.lib.assertMsg
-  ((candidateMode == "static-closed") == (!allowDeferredPotentialTransfers))
-  "only structural-diagnostic candidates may defer potential transfers";
-assert pkgs.lib.assertMsg
-  (candidateMode != "structural-diagnostic" || diagnosticFailureTrap)
-  "structural-diagnostic candidates require diagnosticFailureTrap = true";
-assert pkgs.lib.assertMsg
-  (candidateMode != "static-closed" ||
-    staticAuthority != null)
+  (staticAuthority != null)
   "static-closed candidates require v3 final authority";
 assert pkgs.lib.assertMsg
-  (candidateMode != "static-closed" || componentRuntimePackage != null)
+  (componentRuntimePackage != null)
   "static-closed candidates require a component runtime package";
 
 let
   lib = pkgs.lib;
-  staticClosed = candidateMode == "static-closed";
-  candidateAuthorityArg = lib.escapeShellArg (
-    if staticClosed then
-      "${candidateAuthorityGate}/candidate-authority.json"
-    else ""
-  );
-  finalAuthorityArg = lib.escapeShellArg (
-    if staticClosed then toString staticAuthority.finalAuthorityArtifact else ""
-  );
+  candidateAuthorityArg = lib.escapeShellArg
+    "${candidateAuthorityGate}/candidate-authority.json";
+  finalAuthorityArg = lib.escapeShellArg
+    (toString staticAuthority.finalAuthorityArtifact);
   canonicalExternalSites =
-    if staticClosed then
-      staticAuthority.graph.outputs."canonical-external-sites-v3"
-        or (throw "static authority omitted canonical-external-sites-v3")
-    else null;
-  canonicalExternalSitesArg = lib.escapeShellArg (
-    if canonicalExternalSites == null then "" else toString canonicalExternalSites
-  );
-  fallbackCoverageArg = lib.escapeShellArg (
-    if staticClosed then
-      "${fallbackCoverageReceipt}/fallback-coverage-receipt.json"
-    else ""
-  );
+    staticAuthority.graph.outputs."canonical-external-sites-v3"
+      or (throw "static authority omitted canonical-external-sites-v3");
+  canonicalExternalSitesArg = lib.escapeShellArg (toString canonicalExternalSites);
+  fallbackCoverageArg = lib.escapeShellArg
+    "${fallbackCoverageReceipt}/fallback-coverage-receipt.json";
   python = "${pythonEnv}/bin/python3";
   loadImageContract = "${staticExport}/load-image-contract.json";
   mkPythonClosure = suffix: modules: import ./python-module-closure.nix {
@@ -81,15 +56,10 @@ let
   interpreter = interpreterPackage;
   componentRuntime = componentRuntimePackage;
   portableReplacementSelection =
-    if componentRuntime == null then null
-    else "${componentRuntime}/portable-component-selection.json";
-  portableReplacementArg = lib.escapeShellArg (
-    if portableReplacementSelection == null then ""
-    else toString portableReplacementSelection
-  );
-  componentRuntimeArg = lib.escapeShellArg (
-    if componentRuntime == null then "" else toString componentRuntime
-  );
+    "${componentRuntime}/portable-component-selection.json";
+  portableReplacementArg = lib.escapeShellArg
+    (toString portableReplacementSelection);
+  componentRuntimeArg = lib.escapeShellArg (toString componentRuntime);
   machineImportProfileBundle = pkgs.runCommand
     "${namePrefix}-machine-import-profile-bundle-v1"
     {
@@ -139,7 +109,7 @@ let
     portableReplacements = portableReplacementSelection;
   };
 
-  candidateAuthorityReport = if !staticClosed then null else pkgs.runCommand
+  candidateAuthorityReport = pkgs.runCommand
     "${namePrefix}-candidate-authority-v3"
     {
       nativeBuildInputs = [ pythonEnv pkgs.jq ];
@@ -193,7 +163,7 @@ let
       ' "$out/candidate-authority.json" >/dev/null
     '';
 
-  candidateAuthorityGate = if !staticClosed then null else pkgs.runCommand
+  candidateAuthorityGate = pkgs.runCommand
     "${namePrefix}-candidate-authority-gate-v3"
     {
       nativeBuildInputs = [ pythonEnv pkgs.jq ];
@@ -234,12 +204,10 @@ let
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${nativeEnginePythonSource}/src
-    ${lib.optionalString staticClosed ''
-      jq -e '
-        .format == "spaghetti-extractor-stage-b-candidate-authority-receipt-v3" and
-        .status == "authorized"
-      ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
-    ''}
+    jq -e '
+      .format == "spaghetti-extractor-stage-b-candidate-authority-receipt-v3" and
+      .status == "authorized"
+    ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
     ${python} - \
       ${machineIr}/machine-ir.jsonl \
       ${machineIr}/machine-ir-manifest.json \
@@ -315,8 +283,8 @@ let
             pathlib.Path(canonical_external_sites_path)
             if canonical_external_sites_path else None
         ),
-        candidate_mode=${builtins.toJSON candidateMode},
-        allow_deferred_potential_transfers=${if allowDeferredPotentialTransfers then "True" else "False"},
+        candidate_mode="static-closed",
+        allow_deferred_potential_transfers=False,
         out=output,
         initial_zero_ranges=inputs.initial_zero_ranges,
         selected_portable_components=selected_portable_components,
@@ -327,10 +295,10 @@ let
       .status == "ready" and
       .counts.input_transfers > 0 and
       .counts.transfers + .counts.deferred_transfers == .counts.input_transfers and
-      ${if staticClosed then ".counts.deferred_transfers == 0" else ".counts.deferred_transfers >= 0"} and
+      .counts.deferred_transfers == 0 and
       .counts.blockers == 0 and
-      .policy.candidate_mode == "${candidateMode}" and
-      .policy.static_hybrid_closure_receipt_required == ${if staticClosed then "true" else "false"} and
+      .policy.candidate_mode == "static-closed" and
+      .policy.static_hybrid_closure_receipt_required and
       (.authority | contains("candidate generation only"))
     ' "$out/native-engine-package.json" >/dev/null
   '';
@@ -365,8 +333,8 @@ let
     jq -e '
       .format == "stage-b-native-runtime-package-v1" and
       .status == "ready" and
-      .policy.candidate_mode == "${candidateMode}" and
-      .policy.static_hybrid_closure_receipt_required == ${if staticClosed then "true" else "false"} and
+      .policy.candidate_mode == "static-closed" and
+      .policy.static_hybrid_closure_receipt_required and
       (.acceptance_authority | not)
     ' "$out/native-runtime-package.json" >/dev/null
   '';
@@ -377,7 +345,8 @@ let
     interpreterPackage = interpreter;
     nativeEnginePackage = nativeEngine;
     nativeRuntimePackage = nativeRuntime;
-    inherit compiler namePrefix diagnosticFailureTrap;
+    inherit compiler namePrefix;
+    diagnosticFailureTrap = false;
     regionOverridePackage = componentRuntime;
   };
 
@@ -392,12 +361,10 @@ let
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${nativeBuildPythonSource}/src
-    ${lib.optionalString staticClosed ''
-      jq -e '
-        .format == "spaghetti-extractor-stage-b-candidate-authority-receipt-v3" and
-        .status == "authorized"
-      ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
-    ''}
+    jq -e '
+      .format == "spaghetti-extractor-stage-b-candidate-authority-receipt-v3" and
+      .status == "authorized"
+    ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
     ${python} - \
       ${interpreter} ${nativeEngine} ${nativeRuntime} \
       ${candidateAuthorityArg} \
@@ -428,18 +395,14 @@ let
         machine_ir=pathlib.Path(sys.argv[6]),
         machine_ir_manifest=pathlib.Path(sys.argv[7]),
         fallback_coverage_receipt=optional_path(sys.argv[8]),
-        component_runtime_package=(
-            optional_path(sys.argv[9])
-            if ${if staticClosed then "True" else "False"}
-            else None
-        ),
+        component_runtime_package=pathlib.Path(sys.argv[9]),
         region_override_package=optional_path(sys.argv[9]),
         load_image_contract=pathlib.Path(sys.argv[10]),
         recovered_executable_data=pathlib.Path(sys.argv[11]),
         precompiled_objects=pathlib.Path(sys.argv[12]),
         compiler=pathlib.Path(sys.argv[13]),
-        diagnostic_failure_trap=${if diagnosticFailureTrap then "True" else "False"},
-        candidate_mode=${builtins.toJSON candidateMode},
+        diagnostic_failure_trap=False,
+        candidate_mode="static-closed",
         out_dir=pathlib.Path(sys.argv[14]),
       )
     PY
@@ -447,10 +410,10 @@ let
       .format == "stage-b-interpreter-native-build-v1" and
       .status == "candidate-generated" and
       .acceptance_authority == "none" and
-      ${if staticClosed then ".inputs.candidate_authority.status == \"authorized\"" else ".inputs.candidate_authority == null"} and
-      .inputs.execution_scope.candidate_mode == "${candidateMode}" and
+      .inputs.candidate_authority.status == "authorized" and
+      .inputs.execution_scope.candidate_mode == "static-closed" and
       .inputs.execution_scope.acceptance_authority == "none" and
-      .policy.candidate_class == "${if staticClosed then (if diagnosticFailureTrap then "diagnostic-static-closed" else "release-static-closed") else "structural-diagnostic"}"
+      .policy.candidate_class == "release-static-closed"
     ' "$out/interpreter-native-build-manifest.json" >/dev/null
     test -s "$out/candidate.exe"
   '';

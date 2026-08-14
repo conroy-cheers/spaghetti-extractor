@@ -82,7 +82,8 @@ spaghetti_extractor = [ "lean/**/*.lean", "resources/ghidra/*.java" ]
   "nix/stage-b-linked-libraries.nix",
   "nix/stage-b-native-object-graph.nix",
   "nix/stage-b-functional-suite.nix",
-  "nix/stage-b-headless-diagnostic-run.nix",
+  "nix/candidate-test-suite.nix",
+  "nix/structural-diagnostics.nix",
   "nix/stage-b-hybrid-candidate.nix",
   "nix/stage-b-upstream-shell-suite.nix",
 ]

@@ -24,6 +24,8 @@ let
   authorityWorkflow = callWith ./authority-workflow.nix authorityCommon;
   componentWorkflow = callWith ./stage-b-components.nix analysisCommon;
   hybridCandidate = callWith ./stage-b-hybrid-candidate.nix candidateCommon;
+  structuralDiagnostics = callWith ./structural-diagnostics.nix candidateCommon;
+  candidateTestSuite = callWith ./candidate-test-suite.nix candidateCommon;
   mkBundleRecord = {
     targetRoot,
     artifacts,
@@ -132,48 +134,38 @@ let
           inherit configurationId;
           runtimeCompiler = compiler;
         };
-        allowDeferredPotentialTransfers = false;
       };
-      diagnosticFor = {
-        configurationId ? null,
-        extraMachineImportProfiles ? [ ],
-        compiler ? pkgs.pkgsCross.mingw32.stdenv.cc,
-      }: hybridCandidate {
+      structuralDiagnostic = structuralDiagnostics {
         machineIr = analysis.machineIr;
         staticExport = analysis.staticExport;
         machineImportProfiles = machineImportProfiles
-          ++ candidateMachineImportProfiles
-          ++ extraMachineImportProfiles;
-        namePrefix = "${namePrefix}-${if configurationId == null then "fallback" else configurationId}-diagnostic";
-        inherit compiler;
-        interpreterPackage = interpreter;
-        candidateMode = "structural-diagnostic";
-        allowDeferredPotentialTransfers = true;
-        diagnosticFailureTrap = true;
-        componentRuntimePackage =
-          if configurationId == null then null
-          else components.mkRuntime {
-            inherit configurationId;
-            runtimeCompiler = compiler;
-          };
+          ++ candidateMachineImportProfiles;
+        namePrefix = "${namePrefix}-structural";
       };
       configurationIds = builtins.attrNames components.runtimeConfigurations;
       staticCandidates = builtins.listToAttrs (map (configurationId: {
         name = configurationId;
         value = candidateFor { inherit configurationId; };
       }) configurationIds);
-      diagnosticCandidates = builtins.listToAttrs (map (configurationId: {
-        name = configurationId;
-        value = diagnosticFor { inherit configurationId; };
-      }) configurationIds);
+      candidateTestFor = {
+        id,
+        configurationId,
+        suite,
+        timeoutSeconds ? 30,
+        stripStderrLineRegexes ? [ ],
+      }: candidateTestSuite {
+        inherit id configurationId suite timeoutSeconds stripStderrLineRegexes;
+        namePrefix = "${namePrefix}-${configurationId}";
+        candidateBinary = "${staticCandidates.${configurationId}.candidate}/candidate.exe";
+        authorityGate = authority.finalAuthorityGate;
+      };
     in {
-      inherit analysis authority components interpreter candidateFor diagnosticFor
-        configurationIds staticCandidates diagnosticCandidates;
+      inherit analysis authority components interpreter candidateFor
+        candidateTestFor configurationIds staticCandidates structuralDiagnostic;
       componentRuntimeFor = components.runtimeFor;
       componentRuntimes = components.runtimePackages;
       candidates = {
         static = staticCandidates;
-        diagnostic = diagnosticCandidates;
       };
     };
   projectCandidate = candidate: lib.filterAttrs (_name: value: value != null) {
@@ -190,6 +182,7 @@ let
     extraArtifacts ? { },
     checks ? { },
     acceptanceChecks ? { },
+    candidateTests ? { },
     apps ? { },
   }:
     let
@@ -222,16 +215,20 @@ let
           source-packages = workflow.components.sourcePackages;
           evidence = workflow.components.evidences;
           qualifications = workflow.components.qualifications;
+          statuses = workflow.components.statusReports;
+          work-packages = workflow.components.workPackages;
           configurations = workflow.components.activationPlans;
+          configuration-statuses =
+            workflow.components.configurationStatusReports;
           source-bundles = workflow.components.sourceBundles;
           runtimes = workflow.componentRuntimes;
           bundle = workflow.components.bundle;
         };
+        diagnostics.structural = workflow.structuralDiagnostic;
         candidate = {
           static = lib.mapAttrs (_: candidate: projectCandidate candidate)
             workflow.staticCandidates;
-          diagnostic = lib.mapAttrs (_: candidate: projectCandidate candidate)
-            workflow.diagnosticCandidates;
+          tests = lib.mapAttrs (_: test: test.aggregate) candidateTests;
         };
       } // lib.optionalAttrs (builtins.attrNames extraArtifacts != [ ]) {
         target = extraArtifacts;
@@ -245,23 +242,85 @@ let
         final-authority = workflow.authority.finalAuthorityGate;
         default-static-candidate =
           workflow.staticCandidates.${defaultConfiguration}.candidate;
-      };
+      } // lib.mapAttrs' (id: test:
+        lib.nameValuePair "candidate-test-${id}" test.aggregate) candidateTests;
       bundle = mkBundleRecord {
         inherit targetRoot apps;
         artifacts = standardArtifacts;
         checks = standardChecks // checks;
         acceptanceChecks = standardAcceptanceChecks // acceptanceChecks;
       };
+      projectAnalysis = pkgs.linkFarm
+        "spaghetti-extractor-${metadata.id}-project-analysis"
+        (lib.mapAttrsToList (name: path: { inherit name path; })
+          standardArtifacts.analysis);
+      componentUnits = lib.mapAttrs (id: _index: {
+        workPackage = workflow.components.workPackages.${id};
+        status = workflow.components.statusReports.${id};
+        check = workflow.components.checkGates.${id};
+      }) workflow.components.liftUnitIndex;
+      componentConfigurations = lib.mapAttrs (id: _index: {
+        runtime = workflow.componentRuntimes.${id};
+        status = workflow.components.configurationStatusReports.${id};
+        check = workflow.components.configurationCheckGates.${id};
+      }) workflow.components.configurationIndex;
+      candidateTestAggregate =
+        if candidateTests == { } then null else
+        pkgs.linkFarm "spaghetti-extractor-${metadata.id}-candidate-tests"
+          (lib.mapAttrsToList (name: test: {
+            inherit name;
+            path = test.aggregate;
+          }) candidateTests);
+      operatorIndex = {
+        targetId = metadata.id;
+        inherit defaultConfiguration;
+        components = {
+          units = workflow.components.liftUnitIndex;
+          configurations = workflow.components.configurationIndex;
+        };
+        candidate = {
+          configurations = configurationIds;
+          testSuites = lib.mapAttrs (_: test: {
+            configurationId = test.configurationId;
+            caseIds = test.caseIds;
+          }) candidateTests;
+        };
+      };
+      operator = {
+        index = operatorIndex;
+        project = {
+          analysis = projectAnalysis;
+          status = workflow.authority.diagnostics;
+          regressionCheck = bundle.defaultCheck;
+          acceptanceCheck = bundle.acceptanceCheck;
+          structuralDiagnostics = workflow.structuralDiagnostic;
+        };
+        components = {
+          units = componentUnits;
+          configurations = componentConfigurations;
+        };
+        candidate = {
+          builds = lib.mapAttrs (_: candidate: candidate.candidate)
+            workflow.staticCandidates;
+          tests = lib.mapAttrs (_: test: test.aggregate) candidateTests;
+          allTests = candidateTestAggregate;
+        };
+      };
     in
       assert metadata.format or null == "spaghetti-extractor-target-bundle-v2";
       assert builtins.isString defaultConfiguration
         && builtins.elem defaultConfiguration configurationIds;
+      assert builtins.all
+        (test:
+          test._type or null == "spaghetti-extractor-candidate-test-suite-v1"
+          && builtins.elem test.configurationId configurationIds)
+        (builtins.attrValues candidateTests);
       bundle // {
-        inherit defaultConfiguration;
+        inherit defaultConfiguration candidateTests operator operatorIndex;
         default = {
           componentRuntime = workflow.componentRuntimes.${defaultConfiguration};
           staticCandidate = workflow.staticCandidates.${defaultConfiguration};
-          diagnosticCandidate = workflow.diagnosticCandidates.${defaultConfiguration};
+          structuralDiagnostic = workflow.structuralDiagnostic;
         };
       };
 in
@@ -280,8 +339,8 @@ in
   };
   candidate = {
     hybrid = hybridCandidate;
-    headlessDiagnostic = callWith
-      ./stage-b-headless-diagnostic-run.nix candidateCommon;
+    structuralDiagnostics = structuralDiagnostics;
+    testSuite = candidateTestSuite;
   };
   lifting = {
     linkedLibraries = callWith ./stage-b-linked-libraries.nix analysisCommon;

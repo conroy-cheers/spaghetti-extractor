@@ -12,6 +12,10 @@ from spaghetti_extractor.external.contracts import (
     ExternalSiteIdentity,
     checked_external_site_contract_from_event,
 )
+from spaghetti_extractor.external.machine_import_profiles import (
+    load_machine_import_profile_set,
+)
+from spaghetti_extractor.artifact_set_v3 import canonical_sha256_v3
 from spaghetti_extractor.candidate.interpreter import (
     write_stage_b_interpreter_package,
 )
@@ -66,6 +70,7 @@ def _packages(
     machine_ir: bool = False,
     modeled_termination: bool = False,
     selected_portable_components: list[dict[str, object]] | None = None,
+    external_profile: Path | None = None,
 ) -> tuple[Path, Path]:
     semantic_input = root / (
         "machine-ir.jsonl" if machine_ir else "state-machine.jsonl"
@@ -84,6 +89,84 @@ def _packages(
         if machine_ir
         else {"state_machine": semantic_input}
     )
+    canonical_external_sites = None
+    profiles: tuple[Path, ...] = ()
+    if external_profile is not None:
+        profiles = (external_profile,)
+        selected = load_machine_import_profile_set(profiles)
+        if len(selected.contracts) != 1:
+            raise AssertionError("runtime fixture requires one selected import contract")
+        selected_contract = selected.contracts[0]
+        if selected_contract.argument_words is None:
+            raise AssertionError("runtime fixture requires one fixed-arity import contract")
+        fixture_units = rows or [_transfer()]
+        event_candidates = [
+            (unit, event)
+            for unit in fixture_units
+            for event in (
+                unit["semantics"]["external_events"]
+                if machine_ir
+                else unit["ordered_events"]
+            )
+            if event.get("kind") in {
+                "external_call", "external_jump", "indirect_call"
+            }
+        ]
+        preferred = [pair for pair in event_candidates if pair[1].get("dll")]
+        unit, event = (preferred or event_candidates)[0]
+        imported = event if event.get("dll") else {
+            "dll": selected_contract.identity.dll,
+            (
+                "symbol"
+                if selected_contract.identity.kind == "symbol"
+                else "ordinal"
+            ): selected_contract.identity.value,
+        }
+        identity = ExternalSiteIdentity.imported(
+            imported, context="native runtime fixture"
+        )
+        identity_payload = {
+            "kind": "import",
+            "dll": identity.dll,
+            "symbol": identity.symbol,
+            "ordinal": identity.ordinal,
+        }
+        resolved = dict(selected_contract.contract)
+        resolved.update({
+            "abi_template": resolved.get("abi_template", "pe32-cdecl-v1"),
+            "arity": {
+                "kind": "fixed",
+                "words": selected_contract.argument_words,
+            },
+            "disposition": resolved.get("disposition", "returns"),
+            "memory_effect": resolved.get("memory_effect", "relationalState"),
+            "memory_footprints": resolved.get("memory_footprints", []),
+            "world_effect": resolved.get("world_effect", "none"),
+            "callback_effect": resolved.get("callback_effect", "none"),
+            "profile_binding": {
+                "profile_id": selected_contract.profile_id,
+                "profile_sha256": selected_contract.profile_sha256,
+                "entry_key": selected_contract.entry_key,
+                "entry_index": selected_contract.entry_index,
+            },
+        })
+        contract = checked_external_site_contract_from_event(
+            event=event,
+            identity=identity,
+            transfer_kind=("jump" if event.get("kind") == "external_jump" else "call"),
+            disposition=("tail_jump" if event.get("kind") == "external_jump" else "returns_here"),
+            resolved_machine_contract=resolved,
+            context="native runtime fixture",
+        )
+        canonical_external_sites = _canonical_external_sites(
+            root,
+            unit=unit,
+            event_index=0,
+            identity=identity_payload,
+            contract=contract,
+            event=event,
+            unit_sha256=canonical_sha256_v3(unit),
+        )
     write_stage_b_native_engine_package(
         **engine_input,
         entry_rva=0x1000,
@@ -106,6 +189,8 @@ def _packages(
             else None
         ),
         selected_portable_components=selected_portable_components or [],
+        machine_import_profiles=profiles,
+        canonical_external_sites=canonical_external_sites,
         out=engine,
     )
     return interpreter, engine
@@ -387,6 +472,25 @@ def _write_out_interface_profile(path: Path) -> None:
                 "success_condition": "hresult_succeeded_eax",
             }],
             "world_effect": "opaqueResources",
+        }],
+    }, sort_keys=True), encoding="utf-8")
+
+
+def _write_sleep_profile(path: Path) -> None:
+    path.write_text(json.dumps({
+        "format": "stage-a-external-environment-profile-v1",
+        "id": "fixture-kernel32-sleep-profile-v1",
+        "machine_import_call_contracts": [{
+            "id": "fixture-kernel32-sleep",
+            "import": {"dll": "kernel32.dll", "symbol": "Sleep"},
+            "abi_template": "pe32-stdcall-v1",
+            "arity": {"kind": "fixed", "words": 0},
+            "disposition": "returns",
+            "result_register_relations": [],
+            "memory_effect": "readOnly",
+            "memory_footprints": [],
+            "world_effect": "none",
+            "callback_effect": "none",
         }],
     }, sort_keys=True), encoding="utf-8")
 
@@ -970,9 +1074,11 @@ class StageBNativeRuntimeTests(unittest.TestCase):
                 {"op": "const", "value": 0, "width": 32},
                 {"op": "const", "value": 0x500000, "width": 32},
             ]
-            interpreter, engine = _packages(root, rows=rows)
             profile = root / "external-profile.json"
             _write_out_interface_profile(profile)
+            interpreter, engine = _packages(
+                root, rows=rows, external_profile=profile
+            )
 
             package = write_stage_b_native_runtime_package(
                 interpreter_package=interpreter,
@@ -994,9 +1100,11 @@ class StageBNativeRuntimeTests(unittest.TestCase):
     def test_external_result_ranges_are_profile_bound_and_generic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            interpreter, engine = _packages(root, rows=_external_result_rows())
             profile = root / "external-profile.json"
             _write_external_profile(profile)
+            interpreter, engine = _packages(
+                root, rows=_external_result_rows(), external_profile=profile
+            )
             package = write_stage_b_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
@@ -1068,14 +1176,15 @@ class StageBNativeRuntimeTests(unittest.TestCase):
     def test_iat_loaded_dynamic_call_uses_the_same_result_range_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            profile = root / "external-profile.json"
+            _write_external_profile(profile)
             interpreter, engine = _packages(
                 root,
                 rows=_machine_ir_indirect_external_result_rows(),
                 import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
                 machine_ir=True,
+                external_profile=profile,
             )
-            profile = root / "external-profile.json"
-            _write_external_profile(profile)
 
             package = write_stage_b_native_runtime_package(
                 interpreter_package=interpreter,
@@ -1206,20 +1315,21 @@ class StageBNativeRuntimeTests(unittest.TestCase):
             self.assertEqual(len(dispatch["blocked_sites"]), 1)
             self.assertEqual(
                 dispatch["blocked_sites"][0]["category"],
-                "external_argument_words_missing",
+                "checked_external_contract_missing",
             )
 
     def test_external_range_size_can_be_read_from_checked_call_stack(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            profile = root / "external-profile.json"
+            _write_external_profile(profile, size_kind="argument")
             interpreter, engine = _packages(
                 root,
                 rows=_machine_ir_indirect_external_result_rows(),
                 import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
                 machine_ir=True,
+                external_profile=profile,
             )
-            profile = root / "external-profile.json"
-            _write_external_profile(profile, size_kind="argument")
 
             package = write_stage_b_native_runtime_package(
                 interpreter_package=interpreter,
@@ -1246,9 +1356,11 @@ class StageBNativeRuntimeTests(unittest.TestCase):
     def test_external_result_range_rejects_unknown_size_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            interpreter, engine = _packages(root, rows=_external_result_rows())
             profile = root / "external-profile.json"
             _write_external_profile(profile, size_kind="unknown")
+            interpreter, engine = _packages(
+                root, rows=_external_result_rows(), external_profile=profile
+            )
             with self.assertRaisesRegex(
                 StageBNativeRuntimeError, "unsupported range size"
             ):
@@ -1261,9 +1373,11 @@ class StageBNativeRuntimeTests(unittest.TestCase):
     def test_external_result_range_supports_bounded_zero_run_extent(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            interpreter, engine = _packages(root, rows=_external_result_rows())
             profile = root / "external-profile.json"
             _write_external_profile(profile, size_kind="bounded_zero_run")
+            interpreter, engine = _packages(
+                root, rows=_external_result_rows(), external_profile=profile
+            )
 
             package = write_stage_b_native_runtime_package(
                 interpreter_package=interpreter,
@@ -1916,11 +2030,18 @@ class StageBNativeRuntimeTests(unittest.TestCase):
         assert compiler is not None
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            interpreter, engine = _packages(root, _internal_tail_import_rows())
+            profile = root / "external-profile.json"
+            _write_sleep_profile(profile)
+            interpreter, engine = _packages(
+                root,
+                _internal_tail_import_rows(),
+                external_profile=profile,
+            )
             runtime = root / "runtime"
             write_stage_b_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
+                external_profile=profile,
                 out=runtime,
             )
             plan = json.loads(

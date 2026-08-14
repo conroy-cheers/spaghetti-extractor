@@ -245,6 +245,9 @@ assert base.sourcePackages.b.drvPath == sourceChanged.sourcePackages.b.drvPath;
 assert base.qualifications.a.drvPath != sourceChanged.qualifications.a.drvPath;
 assert base.activationPlans."a-only".drvPath != sourceChanged.activationPlans."a-only".drvPath;
 assert runtime.drvPath == base.runtimePackages."a-only".drvPath;
+assert builtins.attrNames base.workPackages == [ "a" "b" ];
+assert builtins.attrNames base.statusReports == [ "a" "b" ];
+assert builtins.attrNames base.configurationStatusReports == [ "a-only" "b-enabled" "b-only" ];
 pkgs.linkFarm "spaghetti-extractor-components-check" [
   { name = "resolution"; path = base.resolution; }
   { name = "contract-a"; path = base.contracts.a; }
@@ -253,9 +256,14 @@ pkgs.linkFarm "spaghetti-extractor-components-check" [
   { name = "source-b"; path = base.sourcePackages.b; }
   { name = "evidence-a"; path = base.evidences.a; }
   { name = "qualification-a"; path = base.qualifications.a; }
+  { name = "status-a"; path = base.statusReports.a; }
+  { name = "work-package-a"; path = base.workPackages.a; }
+  { name = "check-a"; path = base.checkGates.a; }
   { name = "activation-a-stale-source"; path = sourceChanged.activationPlans."a-only"; }
   { name = "activation-a"; path = base.activationPlans."a-only"; }
   { name = "activation-b"; path = base.activationPlans."b-only"; }
   { name = "activation-b-blocked"; path = blocked; }
+  { name = "configuration-status-a"; path = base.configurationStatusReports."a-only"; }
+  { name = "configuration-check-a"; path = base.configurationCheckGates."a-only"; }
   { name = "runtime-a"; path = runtime; }
 ]

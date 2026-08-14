@@ -58,12 +58,16 @@
         inherit (context) pythonEnv;
         pythonSource = context.sources.staticSource;
       };
+      candidateTestSuiteCheck = import ../tests/candidate-test-suite.nix {
+        inherit pkgs;
+      };
       fullGate = pkgs.linkFarm "spaghetti-extractor-test-full" [
         { name = "repository-metadata-freshness"; path = repositoryMetadataFreshness; }
         { name = "python-suite"; path = fullSuite.aggregate; }
         { name = "authority-machine-ir-input"; path = authorityMachineIrInputCheck; }
         { name = "authority-graph-v3"; path = authorityGraphV3Check; }
         { name = "artifact-seed-v3"; path = artifactSeedV3Check; }
+        { name = "candidate-test-suite"; path = candidateTestSuiteCheck; }
         { name = "roundtrip-qualification"; path = roundtrip.qualification; }
       ];
       smokeGate = pkgs.linkFarm "spaghetti-extractor-test-smoke" [
@@ -116,10 +120,11 @@
           nativeBuildInputs = [ config.packages.spaghetti-extractor ];
         } ''
           spaghetti-extractor --help >/dev/null
-          spaghetti-extractor stage-a-inventory-binary --help >/dev/null
-          spaghetti-extractor stage-b-resolve-components --help >/dev/null
-          spaghetti-extractor stage-b-build-component-contract --help >/dev/null
-          spaghetti-extractor stage-b-build-component-runtime --help >/dev/null
+          spaghetti-extractor project status --help >/dev/null
+          spaghetti-extractor component list --help >/dev/null
+          spaghetti-extractor component status --help >/dev/null
+          spaghetti-extractor candidate test --help >/dev/null
+          spaghetti-extractor expert stage-a-inventory-binary --help >/dev/null
           touch "$out"
         '';
         test-suite = fullGate;
@@ -145,6 +150,7 @@
         roundtrip = roundtrip.qualification;
         target-sdk = targetSdkCheck;
         components = componentsCheck;
+        candidate-test-suite = candidateTestSuiteCheck;
       };
     };
 }

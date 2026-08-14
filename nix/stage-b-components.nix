@@ -17,7 +17,9 @@ let
   lib = pkgs.lib;
   python = "${pythonEnv}/bin/python3";
   intentPayload = builtins.fromJSON (builtins.readFile intent);
-  liftUnits = intentPayload.components ++ (intentPayload.groups or [ ]);
+  liftUnits =
+    (map (row: row // { kind = "component"; }) intentPayload.components)
+    ++ (map (row: row // { kind = "group"; }) (intentPayload.groups or [ ]));
   mkPhaseSource = phase: modules: import ./python-module-closure.nix {
     inherit pkgs modules;
     source = pythonSource;
@@ -40,6 +42,9 @@ let
   ];
   configurationSource = mkPhaseSource "configuration" [
     "spaghetti_extractor.components.configuration"
+  ];
+  statusSource = mkPhaseSource "status" [
+    "spaghetti_extractor.components.status"
   ];
   common = {
     nativeBuildInputs = [ pythonEnv pkgs.jq ];
@@ -400,6 +405,158 @@ let
     if interpreterPackage == null then { }
     else lib.mapAttrs (configurationId: _configuration:
       runtimeFor configurationId) runtimeConfigurations;
+  mkLiftUnitStatus = liftUnit:
+    let
+      source = if builtins.hasAttr liftUnit.id sourcePackages
+        then toString sourcePackages.${liftUnit.id} else "-";
+      evidence = if builtins.hasAttr liftUnit.id evidences
+        then toString evidences.${liftUnit.id} else "-";
+      qualification = if builtins.hasAttr liftUnit.id qualifications
+        then toString qualifications.${liftUnit.id} else "-";
+    in pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-work-status-v1" common ''
+      set -euo pipefail
+      ${environment statusSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${contracts.${liftUnit.id}} \
+        ${lib.escapeShellArg source} \
+        ${lib.escapeShellArg evidence} \
+        ${lib.escapeShellArg qualification} \
+        "$out/status.json" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.components.status import build_lift_unit_status
+
+      optional = lambda value: None if value == "-" else pathlib.Path(value)
+      build_lift_unit_status(
+          contract=pathlib.Path(sys.argv[1]),
+          source=optional(sys.argv[2]),
+          evidence=optional(sys.argv[3]),
+          qualification=optional(sys.argv[4]),
+          out=pathlib.Path(sys.argv[5]),
+      )
+      PY
+      jq -e --arg id ${lib.escapeShellArg liftUnit.id} '
+        .format == "spaghetti-extractor-component-work-status-v1" and
+        .lift_unit_id == $id and
+        (.status == "qualified" or .status == "incomplete" or .status == "violated") and
+        (.policy.authorizes_runtime | not) and
+        (.policy.executes_original_binary | not)
+      ' "$out/status.json" >/dev/null
+    '';
+  statusReports = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkLiftUnitStatus liftUnit;
+  }) liftUnits);
+  mkWorkPackage = liftUnit:
+    let
+      optionalLink = values: name:
+        lib.optionalString (builtins.hasAttr liftUnit.id values) ''
+          ln -s ${values.${liftUnit.id}} "$out/${name}"
+        '';
+      manifest = pkgs.writeText "${namePrefix}-${liftUnit.id}-work-package.json"
+        (builtins.toJSON {
+          format = "spaghetti-extractor-component-work-package-v1";
+          kind = liftUnit.kind;
+          lift_unit_id = liftUnit.id;
+          label = liftUnit.label;
+          contents = {
+            resolution = "resolution";
+            contract = "contract";
+            status = "status";
+            source = if builtins.hasAttr liftUnit.id sourcePackages then "source" else null;
+            evidence = if builtins.hasAttr liftUnit.id evidences then "evidence" else null;
+            qualification = if builtins.hasAttr liftUnit.id qualifications then "qualification" else null;
+          };
+          policy = {
+            authorizes_runtime = false;
+            executes_original_binary = false;
+            independently_buildable = true;
+          };
+        });
+    in pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-work-package-v1"
+      (common // { nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.coreutils ]; }) ''
+        set -euo pipefail
+        mkdir -p "$out"
+        ln -s ${resolution} "$out/resolution"
+        ln -s ${contracts.${liftUnit.id}} "$out/contract"
+        ln -s ${statusReports.${liftUnit.id}} "$out/status"
+        ${optionalLink sourcePackages "source"}
+        ${optionalLink evidences "evidence"}
+        ${optionalLink qualifications "qualification"}
+        cp ${manifest} "$out/work-package.json"
+      '';
+  workPackages = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkWorkPackage liftUnit;
+  }) liftUnits);
+  checkGates = lib.mapAttrs (liftUnitId: statusReport:
+    pkgs.runCommand "${namePrefix}-${liftUnitId}-component-check-v1" common ''
+      set -euo pipefail
+      jq -e '.status == "qualified"' ${statusReport}/status.json >/dev/null || {
+        jq '{status, lift_unit_id, next_action, blockers}' ${statusReport}/status.json >&2
+        exit 1
+      }
+      mkdir -p "$out"
+      cp ${statusReport}/status.json "$out/status.json"
+    '') statusReports;
+  mkConfigurationStatus = configuration:
+    pkgs.runCommand "${namePrefix}-${configuration.id}-configuration-status-v1" common ''
+      set -euo pipefail
+      ${environment statusSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${activationPlans.${configuration.id}} \
+        "$out/status.json" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.components.status import build_configuration_status
+
+      build_configuration_status(
+          activation_plan=pathlib.Path(sys.argv[1]),
+          out=pathlib.Path(sys.argv[2]),
+      )
+      PY
+      jq -e --arg id ${lib.escapeShellArg configuration.id} '
+        .format == "spaghetti-extractor-component-configuration-status-v1" and
+        .configuration_id == $id and
+        (.status == "ready" or .status == "incomplete" or .status == "violated")
+      ' "$out/status.json" >/dev/null
+    '';
+  configurationStatusReports = builtins.listToAttrs (map (configuration: {
+    name = configuration.id;
+    value = mkConfigurationStatus configuration;
+  }) intentPayload.configurations);
+  configurationCheckGates = lib.mapAttrs (configurationId: statusReport:
+    pkgs.runCommand "${namePrefix}-${configurationId}-configuration-check-v1" common ''
+      set -euo pipefail
+      jq -e '.status == "ready"' ${statusReport}/status.json >/dev/null || {
+        jq '{status, configuration_id, next_action, blockers}' ${statusReport}/status.json >&2
+        exit 1
+      }
+      mkdir -p "$out"
+      cp ${statusReport}/status.json "$out/status.json"
+    '') configurationStatusReports;
+  liftUnitIndex = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = {
+      kind = liftUnit.kind;
+      label = liftUnit.label;
+      members = liftUnit.members or [ ];
+      hasSource = builtins.hasAttr liftUnit.id sourcePackages;
+      hasEvidence = builtins.hasAttr liftUnit.id evidences;
+      hasQualification = builtins.hasAttr liftUnit.id qualifications;
+    };
+  }) liftUnits);
+  configurationIndex = builtins.listToAttrs (map (configuration: {
+    name = configuration.id;
+    value = {
+      kind = "configuration";
+      label = configuration.label;
+      selections = configuration.selections;
+      hasRuntime = builtins.hasAttr configuration.id runtimePackages;
+    };
+  }) intentPayload.configurations);
   bundle = pkgs.linkFarm "${namePrefix}-component-contracts-v3" (
     [ { name = "resolution"; path = resolution; } ]
     ++ lib.mapAttrsToList (name: path: { inherit name path; }) contracts
@@ -412,7 +569,9 @@ in
 {
   inherit resolution contracts sourcePackages evidences qualifications
     activationPlans sourceBundles runtimeConfigurations mkRuntime runtimeFor
-    runtimePackages bundle;
+    runtimePackages statusReports workPackages checkGates
+    configurationStatusReports configurationCheckGates liftUnitIndex
+    configurationIndex bundle;
   contractIds = map (row: row.id) liftUnits;
   format = "spaghetti-extractor-component-dag-v3";
 }

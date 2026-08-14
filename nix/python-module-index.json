@@ -754,15 +754,6 @@
       "path": "src/spaghetti_extractor/candidate/c_render.py",
       "resources": []
     },
-    "spaghetti_extractor.candidate.diagnostic": {
-      "dependencies": [
-        "spaghetti_extractor",
-        "spaghetti_extractor.candidate",
-        "spaghetti_extractor.util"
-      ],
-      "path": "src/spaghetti_extractor/candidate/diagnostic.py",
-      "resources": []
-    },
     "spaghetti_extractor.candidate.engine": {
       "dependencies": [
         "spaghetti_extractor",
@@ -1580,6 +1571,18 @@
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/components/source.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.status": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.intent",
+        "spaghetti_extractor.components.source",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/status.py",
       "resources": []
     },
     "spaghetti_extractor.control_disposition_profile": {
@@ -3581,14 +3584,14 @@
       "role": "candidate"
     },
     {
-      "module": "spaghetti_extractor.candidate.diagnostic",
-      "owner": "nix/stage-b-headless-diagnostic-run.nix",
-      "role": "diagnostic"
-    },
-    {
       "module": "spaghetti_extractor.candidate.engine",
       "owner": "nix/stage-b-hybrid-candidate.nix",
       "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.candidate.engine",
+      "owner": "nix/structural-diagnostics.nix",
+      "role": "diagnostic"
     },
     {
       "module": "spaghetti_extractor.candidate.functional",
@@ -3599,6 +3602,11 @@
       "module": "spaghetti_extractor.candidate.image",
       "owner": "nix/stage-b-hybrid-candidate.nix",
       "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.candidate.image",
+      "owner": "nix/structural-diagnostics.nix",
+      "role": "diagnostic"
     },
     {
       "module": "spaghetti_extractor.candidate.interpreter",
@@ -3792,6 +3800,21 @@
     },
     {
       "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:component check",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:component list",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:component status",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
       "owner": "command:project analyze",
       "role": "operator"
     },
@@ -3846,6 +3869,11 @@
       "role": "candidate"
     },
     {
+      "module": "spaghetti_extractor.components.status",
+      "owner": "nix/stage-b-components.nix",
+      "role": "candidate"
+    },
+    {
       "module": "spaghetti_extractor.control_disposition_profile",
       "owner": "nix/machine-import-control-profile.nix",
       "role": "authority"
@@ -3859,6 +3887,11 @@
       "module": "spaghetti_extractor.external.machine_import_profiles",
       "owner": "nix/stage-b-hybrid-candidate.nix",
       "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.external.machine_import_profiles",
+      "owner": "nix/structural-diagnostics.nix",
+      "role": "diagnostic"
     },
     {
       "module": "spaghetti_extractor.extraction.binary_inventory",
@@ -4034,6 +4067,11 @@
       "module": "spaghetti_extractor.util",
       "owner": "nix/stage-b-hybrid-candidate.nix",
       "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.util",
+      "owner": "nix/structural-diagnostics.nix",
+      "role": "diagnostic"
     },
     {
       "module": "spaghetti_extractor.util",
@@ -4281,6 +4319,7 @@
       "spaghetti_extractor.components.semantic",
       "spaghetti_extractor.components.semantic_model",
       "spaghetti_extractor.components.source",
+      "spaghetti_extractor.components.status",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
       "spaghetti_extractor.external.contracts",
@@ -4374,9 +4413,20 @@
       "spaghetti_extractor.behavioral_roots",
       "spaghetti_extractor.callback_contracts",
       "spaghetti_extractor.candidate",
-      "spaghetti_extractor.candidate.diagnostic",
+      "spaghetti_extractor.candidate.engine",
+      "spaghetti_extractor.candidate.engine_analysis",
+      "spaghetti_extractor.candidate.engine_components",
+      "spaghetti_extractor.candidate.engine_layout",
+      "spaghetti_extractor.candidate.engine_model",
+      "spaghetti_extractor.candidate.engine_package",
+      "spaghetti_extractor.candidate.engine_render",
+      "spaghetti_extractor.candidate.engine_x87",
       "spaghetti_extractor.candidate.functional",
+      "spaghetti_extractor.candidate.image",
+      "spaghetti_extractor.candidate.machine_ir_scope",
+      "spaghetti_extractor.candidate.modes",
       "spaghetti_extractor.candidate.state_machine",
+      "spaghetti_extractor.candidate.x87",
       "spaghetti_extractor.commands",
       "spaghetti_extractor.commands.common",
       "spaghetti_extractor.commands.manifest",
@@ -4392,6 +4442,7 @@
       "spaghetti_extractor.external.machine_import_profiles",
       "spaghetti_extractor.external.operation_model",
       "spaghetti_extractor.external.operation_profiles",
+      "spaghetti_extractor.external.runtime_projection",
       "spaghetti_extractor.extraction",
       "spaghetti_extractor.extraction.binary_inventory",
       "spaghetti_extractor.extraction.cutpoints",
@@ -4412,6 +4463,7 @@
       "spaghetti_extractor.phase_framework_v3",
       "spaghetti_extractor.reconstruction",
       "spaghetti_extractor.reconstruction.opaque",
+      "spaghetti_extractor.recovered_executable_data",
       "spaghetti_extractor.reference_contract",
       "spaghetti_extractor.reference_contract.abi",
       "spaghetti_extractor.reference_contract.abi_arguments",

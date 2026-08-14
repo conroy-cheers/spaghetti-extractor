@@ -40,7 +40,10 @@ OPERATOR_COMMANDS = (
     "project analyze",
     "project status",
     "project check",
+    "component list",
+    "component status",
     "component build",
+    "component check",
     "candidate build",
     "candidate test",
 )
@@ -225,83 +228,137 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
             with self.assertRaisesRegex(SystemExit, "2"):
                 main(["expert", "stage-a-smoke-contract"])
 
-    def test_operator_workflows_dispatch_only_to_stable_nix_surfaces(self) -> None:
+    def test_operator_workflows_select_explicit_products(self) -> None:
+        index = {
+            "defaultConfiguration": "default",
+            "components": {
+                "units": {"leaf": {"kind": "component", "label": "Leaf"}},
+                "configurations": {"default": {"kind": "configuration"}},
+            },
+            "candidate": {
+                "configurations": ["default"],
+                "testSuites": {"public": {"configurationId": "default"}},
+            },
+        }
         cases = (
-            (
-                ["project", "analyze", "jq"],
-                ["build", "./targets#project-analyze-jq"],
-            ),
-            (
-                ["project", "status", "gnu-hello"],
-                ["eval", "--json", "./targets#lib.targetMetadata.gnu-hello"],
-            ),
-            (
-                ["project", "check", "dxball"],
-                ["run", "./targets#test", "--", "dxball"],
-            ),
-            (
-                ["project", "check", "jq", "--acceptance"],
-                ["run", "./targets#test", "--", "--acceptance", "jq"],
-            ),
-            (
-                ["component", "build", "gnu-hello"],
-                ["build", "./targets#component-build-gnu-hello"],
-            ),
-            (
-                ["candidate", "build", "jq"],
-                [
-                    "build",
-                    "./targets#legacyPackages.x86_64-linux.candidateBuilds.jq",
-                ],
-            ),
-            (
-                ["candidate", "test", "jq"],
-                [
-                    "build",
-                    "./targets#legacyPackages.x86_64-linux.candidateTests.jq",
-                ],
-            ),
+            (["project", "analyze", "jq"], "project.analysis", False),
+            (["project", "check", "dxball"], "project.regressionCheck", True),
+            (["project", "check", "jq", "--acceptance"], "project.acceptanceCheck", True),
+            (["component", "build", "gnu-hello", "leaf"], 'components.units."leaf".workPackage', False),
+            (["component", "build", "gnu-hello"], 'components.configurations."default".runtime', False),
+            (["component", "check", "gnu-hello", "leaf"], 'components.units."leaf".check', True),
+            (["candidate", "build", "jq"], 'candidate.builds."default"', False),
+            (["candidate", "test", "jq"], "candidate.allTests", True),
+            (["candidate", "test", "jq", "--suite", "public"], 'candidate.tests."public"', True),
         )
-        prefix = [
-            "nix",
-            "--extra-experimental-features",
-            "nix-command flakes ca-derivations",
-        ]
-        for arguments, suffix in cases:
-            with self.subTest(arguments=arguments):
-                with patch(
-                    "spaghetti_extractor.commands.workflows.subprocess.run"
-                ) as run:
-                    run.return_value.returncode = 0
-                    self.assertEqual(main(arguments), 0)
-                run.assert_called_once_with(prefix + suffix, check=False)
+        for arguments, suffix, no_link in cases:
+            with self.subTest(arguments=arguments), patch(
+                "spaghetti_extractor.commands.workflows._operator_index",
+                return_value=index,
+            ), patch(
+                "spaghetti_extractor.commands.workflows._build", return_value=0
+            ) as build:
+                self.assertEqual(main(arguments), 0)
+                build.assert_called_once()
+                called_args, called_kwargs = build.call_args
+                self.assertEqual(called_args[1], suffix)
+                self.assertEqual(called_kwargs.get("no_link", False), no_link)
+
+    def test_project_status_reads_authority_diagnostics_and_is_informational(self) -> None:
+        report = {
+            "status": "incomplete",
+            "authorizing": False,
+            "counts": {"primary_frontiers": 1, "dependent_occurrences": 8},
+            "primary_frontiers": [{
+                "status": "incomplete",
+                "family": "isa-qualification-v3",
+                "code": "isa_qualification_evidence_missing",
+                "record_id": "unit:1",
+                "dependent_occurrences": 8,
+                "source_location": {"rva_start": 0x1000},
+                "next_action": "qualify the form",
+            }],
+        }
+        output = io.StringIO()
+        with patch(
+            "spaghetti_extractor.commands.workflows._realize_json",
+            return_value=report,
+        ), contextlib.redirect_stdout(output):
+            self.assertEqual(main(["project", "status", "gnu-hello"]), 0)
+        self.assertIn("frontiers=1", output.getvalue())
+        self.assertIn("rva=0x1000", output.getvalue())
+
+    def test_component_list_is_index_only(self) -> None:
+        index = {
+            "components": {
+                "units": {"leaf": {"kind": "component", "label": "Leaf"}},
+                "configurations": {"default": {"kind": "configuration", "label": "Default"}},
+            }
+        }
+        output = io.StringIO()
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), contextlib.redirect_stdout(output):
+            self.assertEqual(main(["component", "list", "gnu-hello"]), 0)
+        self.assertIn("leaf", output.getvalue())
+        self.assertIn("default", output.getvalue())
+
+    def test_candidate_test_without_declared_suites_is_a_usage_error(self) -> None:
+        index = {
+            "defaultConfiguration": "default",
+            "candidate": {"configurations": ["default"], "testSuites": {}},
+        }
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(main(["candidate", "test", "gnu-hello"]), 2)
 
     def test_operator_workflow_accepts_an_explicit_target_flake(self) -> None:
+        index = {
+            "defaultConfiguration": "default",
+            "components": {
+                "units": {"leaf": {}},
+                "configurations": {"default": {}},
+            },
+        }
         with patch(
-            "spaghetti_extractor.commands.workflows.subprocess.run"
-        ) as run:
-            run.return_value.returncode = 0
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._build", return_value=0
+        ) as build:
             self.assertEqual(
                 main(
                     [
                         "component",
                         "build",
                         "gnu-hello",
+                        "leaf",
                         "--target-flake",
                         "path:/tmp/consumer",
                     ]
                 ),
                 0,
             )
-        run.assert_called_once_with(
-            [
-                "nix",
-                "--extra-experimental-features",
-                "nix-command flakes ca-derivations",
-                "build",
-                "path:/tmp/consumer#component-build-gnu-hello",
-            ],
-            check=False,
+        args = build.call_args.args[0]
+        self.assertEqual(args.target_flake, "path:/tmp/consumer")
+        self.assertEqual(
+            build.call_args.args[1], 'components.units."leaf".workPackage'
+        )
+
+    def test_operator_installables_quote_dotted_dynamic_identifiers(self) -> None:
+        from spaghetti_extractor.commands.workflows import _operator_attribute
+
+        args = argparse.Namespace(target="target.with.dots")
+        self.assertEqual(
+            _operator_attribute(
+                args,
+                'candidate.tests."suite.with.dots"',
+            ),
+            'legacyPackages.x86_64-linux.operatorTargets.'
+            '"target.with.dots".candidate.tests."suite.with.dots"',
         )
 
 

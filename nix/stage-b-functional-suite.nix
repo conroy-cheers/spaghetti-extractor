@@ -45,7 +45,10 @@ let
         export SOURCE_DATE_EPOCH=1
         export PYTHONPATH=${phasePythonSource}/src
         ${lib.optionalString (authorityGate != null) ''
-          test -f ${authorityGate}/authority-gate.json
+          ${pkgs.jq}/bin/jq -e '
+            .format == "spaghetti-extractor-final-authority-gate-v3" and
+            .status == "complete" and .authorizing
+          ' ${authorityGate}/authority-gate.json >/dev/null
         ''}
         mkdir -p "$out"
         ${pythonEnv}/bin/python3 - \

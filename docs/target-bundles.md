@@ -20,7 +20,7 @@ A bundle contains:
 `target.json` uses `spaghetti-extractor-target-bundle-v2` and declares
 `workflow.default_configuration`. That configuration must exist in the
 component intent and selects the standard regression configuration, component
-runtime, diagnostic candidate, and strict acceptance candidate.
+runtime, and strict acceptance candidate.
 
 Generated reports, downloaded binaries, Nix outputs, traces, and copied toolkit
 code do not belong in a target directory. Generated data stays in Nix outputs
@@ -38,9 +38,11 @@ The authority family includes the final gate, diagnostics, graph metadata, and
 all phase derivations under `authority.phases`.
 
 Component runtimes are available under `components.runtimes.<configuration>`.
-Static and diagnostic candidate packages are indexed under
-`candidate.{static,diagnostic}.<configuration>`. These attributes are lazy:
-exporting the complete family does not realize every candidate.
+Static candidate packages are indexed under `candidate.static.<configuration>`.
+Structural diagnostics are a separate static package containing generated
+source, plans, and frontiers; they never contain object code, a PE, or a Wine
+runner. These attributes are lazy: exporting the complete family does not
+realize every candidate.
 
 Regression and acceptance are deliberately separate:
 
@@ -51,11 +53,13 @@ spaghetti-extractor project check gnu-hello --acceptance
 
 Regression validates the target input, extraction/component contracts, and
 other incomplete-capable repair artifacts. It must remain useful while whole
-program closure is incomplete. Acceptance additionally builds the final Stage A
-gate and static candidate; it is expected to fail closed until all authority
-families are complete.
+program closure is incomplete. Acceptance additionally builds the final
+authority gate, static candidate, and every candidate-only suite declared by
+the target; it is expected to fail closed until all authority families are
+complete.
 
-Candidate behavior suites may run only after acceptance. Wine execution is
+Candidate behavior suites are optional, but when declared they may run only
+after their candidate's final-authority gate closes. Wine execution is
 candidate-only and must use the headless constructors. The original is never
 executed or traced during repair iteration.
 

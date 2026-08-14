@@ -67,10 +67,18 @@ let
     namePrefix = "spaghetti-extractor-jq-1.8.1";
   };
   components = workflow.components;
+  candidateTests = {
+    "jq-1.8.1-idiomatic-candidate-functional" = workflow.candidateTestFor {
+      id = "jq-1.8.1-idiomatic-candidate-functional";
+      configurationId = target.workflow.default_configuration;
+      suite = ./tests/functional-suite.json;
+      timeoutSeconds = 90;
+    };
+  };
 in
 sdk.target.pe32Bundle {
   targetRoot = ./.;
-  inherit workflow;
+  inherit workflow candidateTests;
   inputs.original = original;
   checks = {
     component-contract = components.contracts.operator-whole;

@@ -166,7 +166,6 @@ class RepositoryBoundaryTests(unittest.TestCase):
         forbidden_prefixes = (
             "spaghetti_extractor.commands.proposals",
             "spaghetti_extractor.external.site_proposals",
-            "spaghetti_extractor.candidate.diagnostic",
         )
         offenders = sorted(
             module

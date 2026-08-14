@@ -42,11 +42,30 @@ let
       qualifications.example = artifact;
       activationPlans.default = artifact;
       sourceBundles.default = artifact;
+      statusReports.example = artifact;
+      workPackages.example = artifact;
+      checkGates.example = artifact;
+      configurationStatusReports.default = artifact;
+      configurationCheckGates.default = artifact;
+      liftUnitIndex.example = {
+        kind = "component";
+        label = "Example";
+        members = [ ];
+        hasSource = true;
+        hasEvidence = true;
+        hasQualification = true;
+      };
+      configurationIndex.default = {
+        kind = "configuration";
+        label = "Default";
+        selections = [ ];
+        hasRuntime = true;
+      };
       bundle = artifact;
     };
     componentRuntimes.default = artifact;
     staticCandidates.default = candidate;
-    diagnosticCandidates.default = candidate;
+    structuralDiagnostic = artifact;
   };
   target = sdk.target.pe32Bundle {
     targetRoot = ../../tests/fixtures/minimal-target-bundle;
@@ -72,6 +91,9 @@ assert registry.minimal-sdk-consumer.defaultConfiguration == "default";
 assert registry.minimal-sdk-consumer.artifacts.input.baseline == artifact;
 assert registry.minimal-sdk-consumer.artifacts.components.runtimes.default == artifact;
 assert registry.minimal-sdk-consumer.artifacts.candidate.static.default.candidate == artifact;
+assert registry.minimal-sdk-consumer.operator.components.units.example.workPackage == artifact;
+assert registry.minimal-sdk-consumer.operator.components.configurations.default.runtime == artifact;
+assert registry.minimal-sdk-consumer.operator.project.status == artifact;
 assert registry.minimal-sdk-consumer.acceptanceChecks.acceptance != null;
 pkgs.linkFarm "spaghetti-extractor-target-sdk-check" [
   { name = "regression"; path = registry.minimal-sdk-consumer.defaultCheck; }

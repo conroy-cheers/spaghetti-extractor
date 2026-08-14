@@ -41,7 +41,7 @@ The component DAG produces these independently cached artifacts:
    runtimes, all bound to the workflow's shared machine-IR interpreter.
 
 The runtime package is constructed directly by the component DAG. It does not
-construct a diagnostic candidate or require whole-program acceptance. It
+construct a candidate or require whole-program acceptance. It
 generates the machine-state adapter, copies exact authored source,
 cross-compiles it as a PE32 translation unit, marks internal component members
 as subsumed, and forbids silent fallback inside an enabled component. The same
@@ -99,9 +99,11 @@ candidate = workflow.candidateFor {
 ```
 
 `runtime` above is exactly the runtime package consumed by the default-compiler
-candidate. Building it does not pull a diagnostic candidate into its closure.
-`workflow.componentRuntimes` and `workflow.candidates.{static,diagnostic}`
-provide the corresponding configuration-indexed families.
+candidate. Building it does not pull an executable candidate into its closure.
+`workflow.componentRuntimes` and `workflow.candidates.static` provide the
+corresponding configuration-indexed families. The operator-facing interface
+also exposes independently cached work packages, status reports, and checks for
+every leaf or group, plus runtime/status/check products for each configuration.
 
 Adding a target should not require generic Python or Nix changes. A reusable
 capability gap must be implemented in the toolkit and covered by a small

@@ -237,12 +237,11 @@ conservative self-map used to emit a baseline contract and state machine.
 | `candidate/engine.py`, `candidate/engine_model.py`, `candidate/engine_analysis.py`, `candidate/engine_components.py`, `candidate/engine_render.py`, `candidate/engine_x87.py`, `candidate/engine_package.py` | Candidate engine model, machine-IR analysis, component/callback synthesis, typed x87 support, rendering, and deterministic packaging. |
 | `candidate/image.py` | Derives entry, callback, relocation, import, and zero-fill inputs from a checked load-image contract. |
 | `candidate/runtime.py`, `candidate/runtime_model.py`, `candidate/runtime_program_validation.py`, `candidate/runtime_plan_validation.py`, `candidate/runtime_receipts.py`, `candidate/runtime_render.py`, `candidate/runtime_render_core.py`, `candidate/runtime_render_entry.py`, `candidate/runtime_values.py` | Candidate external runtime model, input validation, receipts, C rendering, and strict values. |
-| `candidate/diagnostic.py` | Decodes candidate-only native runtime diagnostics into source- and contract-mapped repair evidence. |
 | `candidate/binding.py` | Runtime-boundary inventory and adapters. |
 | `candidate/native_build.py` | Generic native compile/compose pipeline. |
 | `candidate/pe.py`, `candidate/pe_model.py` | PE image composition plus isolated structural models, anchors, relocations, and validation helpers. |
 | `candidate/x87.py` | Typed, byte-free x87 replay records. |
-| `candidate/modes.py` | Stable fail-closed identifiers for static-closed and structural-diagnostic candidate builds. |
+| `candidate/modes.py` | Stable execution-scope identifiers; only static-closed scope may reach executable candidate construction, while structural scope is confined to static diagnostics. |
 | `recovered_executable_data.py` | Checked classification of immutable initialized data embedded in executable sections. |
 
 `reconstruction/plan.py` derives deterministic reconstruction clusters and
@@ -388,7 +387,8 @@ enforce this with `xvfb-run` where Wine is used.
 | `authority-final-gate.nix` | Strict final-authority record gate used by candidate generation, target validation, and runtime suites. |
 | `authority-graph-v3.nix`, `authority-graph-v3-boundaries.nix`, `authority-graph-v3-packs.nix`, `authority-resource-classes-v3.nix` | Manifest-driven v3 authority DAG, independently checked structural/dependency planning boundaries, stable schedule packs, and one shared resource policy used by dynamic preparation and standalone fixtures. |
 | `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix`, `test-suite-manifest.json` | Static, checked stable test shards and shared heavy fixtures; Nix evaluates no dynamic test discovery and unchanged shards substitute. |
-| `stage-b-headless-diagnostic-run.nix` | Runs only a statically closed candidate in an isolated headless Wine session. |
+| `structural-diagnostics.nix` | Emits non-authorizing source, plans, and frontiers without object code, a PE, runtime packages, or Wine. |
+| `candidate-test-suite.nix` | Binds a final-authority candidate to curated expected-output cases and executes it through isolated headless Wine. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure for phase-specific invalidation. |
 | `python-module-index.json` | Generated checked local-import graph consumed by phase-specific Python closures. |
 | `stage-b-linked-libraries.nix` | Library constellation and replacement-plan DAG. With no catalog it still classifies reviewed application ranges, import thunks, and unknown ownership without granting replacement authority. |
@@ -494,10 +494,14 @@ Target `targets/<id>/default.nix` modules acquire/build inputs and invoke generi
 Intent JSON and source are authored. Downloaded binaries and generated analyses
 must not be committed.
 
-The corpus flake exports
-`legacyPackages.x86_64-linux.targets.<id>.<family>.<artifact>` and
-`targetChecks.<id>`. Listing the registry or artifact families does not force
-the corresponding authority graph.
+The corpus flake exports the complete artifact family at
+`legacyPackages.x86_64-linux.targets.<id>`, the supported operator tree at
+`operatorTargets.<id>`, its pure discovery metadata at `operatorIndex.<id>`,
+and regression/acceptance checks at `targetChecks.<id>` and
+`targetAcceptanceChecks.<id>`. Listing the registry or artifact families does
+not force the corresponding authority graph. Candidate builds and suites are
+addressed only through the operator tree, avoiding a second public naming
+scheme.
 
 The root flake validates `import-smoke`, the complete `test-suite`,
 `repository-metadata`, `python-module-closure`, `authority-graph-v3`,

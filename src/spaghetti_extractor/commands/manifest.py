@@ -18,7 +18,7 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
     {
         "name": "project status",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "show the declared target project status",
+        "help": "show ranked checked-authority repair frontiers",
     },
     {
         "name": "project check",
@@ -26,9 +26,24 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "run the target regression or acceptance gate",
     },
     {
+        "name": "component list",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "list independently buildable component units and configurations",
+    },
+    {
+        "name": "component status",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "show checked status for one component unit or configuration",
+    },
+    {
         "name": "component build",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "build the target's default component runtime",
+        "help": "build one unit work package or configuration runtime",
+    },
+    {
+        "name": "component check",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "require one component unit or configuration to be ready",
     },
     {
         "name": "candidate build",
@@ -38,7 +53,7 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
     {
         "name": "candidate test",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "run the target's candidate acceptance tests",
+        "help": "run declared candidate-only expected-output tests",
     },
     {
         "name": "expert stage-a-inventory-binary",
@@ -198,7 +213,10 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "project analyze": "operator",
     "project status": "operator",
     "project check": "operator",
+    "component list": "operator",
+    "component status": "operator",
     "component build": "operator",
+    "component check": "operator",
     "candidate build": "operator",
     "candidate test": "operator",
     "expert stage-a-inventory-binary": "proposal",

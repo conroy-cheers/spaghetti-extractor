@@ -1,0 +1,18 @@
+{
+  "format": "stage-b-functional-suite-v1",
+  "target_name": "candidate-test-constructor-fixture",
+  "suite_id": "minimal-import-call",
+  "suite_name": "Minimal candidate-only import call",
+  "suite_kind": "curated_expected_output",
+  "suite_scope": "full",
+  "upstream_suite": false,
+  "cases": [
+    {
+      "id": "writes-expected-output",
+      "args": [],
+      "expected_returncode": 0,
+      "expected_stdout": "fixture\n",
+      "expected_stderr": ""
+    }
+  ]
+}

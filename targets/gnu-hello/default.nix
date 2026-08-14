@@ -51,7 +51,6 @@ let
   defaultConfiguration = target.workflow.default_configuration;
   components = workflow.components;
   componentRuntime = workflow.componentRuntimeFor defaultConfiguration;
-  diagnosticCandidate = workflow.diagnosticCandidates.${defaultConfiguration};
 in
 sdk.target.pe32Bundle {
   targetRoot = ./.;
@@ -62,6 +61,5 @@ sdk.target.pe32Bundle {
     ascii-to-lower-evidence = components.evidences.ascii-to-lower;
     ascii-to-lower-qualification = components.qualifications.ascii-to-lower;
     ascii-to-lower-runtime = componentRuntime;
-    native-object-package = diagnosticCandidate.nativeObjects.package;
   };
 }

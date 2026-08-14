@@ -358,6 +358,7 @@ def summarize_authority_artifacts_v3(
     frontiers.sort(
         key=lambda row: (
             0 if row["status"] == "violated" else 1,
+            -row["dependent_occurrences"],
             row["family"],
             row["code"],
             row["record_id"],

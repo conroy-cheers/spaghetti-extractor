@@ -48,6 +48,8 @@
           targetChecks = builtins.mapAttrs (_: target: target.defaultCheck) bundles;
           targetAcceptanceChecks = builtins.mapAttrs
             (_: target: target.acceptanceCheck) bundles;
+          operatorTargets = builtins.mapAttrs (_: target: target.operator) bundles;
+          operatorIndex = builtins.mapAttrs (_: target: target.operatorIndex) bundles;
           checkAttrs = pkgs.lib.mapAttrs'
             (id: target: pkgs.lib.nameValuePair "target-${id}" target.defaultCheck)
             bundles;
@@ -132,37 +134,19 @@
                 "''${builder_flags[@]}"
             '';
           };
-          projectAnalysisPackages = pkgs.lib.mapAttrs'
-            (id: target: pkgs.lib.nameValuePair "project-analyze-${id}"
-              (pkgs.linkFarm
-                "spaghetti-extractor-${id}-project-analysis"
-                (pkgs.lib.mapAttrsToList
-                  (name: path: { inherit name path; })
-                  target.artifacts.analysis)))
-            bundles;
-          componentBuildPackages = pkgs.lib.mapAttrs'
-            (id: target: pkgs.lib.nameValuePair "component-build-${id}"
-              target.default.componentRuntime)
-            bundles;
-          candidateBuilds = builtins.mapAttrs
-            (_: target: target.default.staticCandidate.candidate)
-            bundles;
-          candidateTests = targetAcceptanceChecks;
-          operatorPackages = projectAnalysisPackages
-            // componentBuildPackages;
         in
         {
           legacyPackages = {
             targets = artifacts;
             inherit
+              operatorIndex
+              operatorTargets
               targetChecks
               targetAcceptanceChecks
-              candidateBuilds
-              candidateTests
               ;
           };
           checks = checkAttrs // { corpus-boundary = corpusBoundary; };
-          packages = operatorPackages // { target-test-runner = testRunner; };
+          packages = { target-test-runner = testRunner; };
           apps.test = {
             type = "app";
             program = "${testRunner}/bin/spaghetti-extractor-target-test";

@@ -74,7 +74,6 @@ from .build_values import (
 )
 from .modes import (
     STATIC_CLOSED_CANDIDATE_MODE,
-    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
     require_candidate_mode,
 )
 from .pe import (
@@ -99,6 +98,10 @@ def prepare_stage_b_interpreter_native_object_graph(
 ) -> dict[str, Any]:
     """Emit a deterministic per-source compile graph for Nix CA derivations."""
 
+    if diagnostic_failure_trap:
+        raise StageBInterpreterNativeBuildError(
+            "structural diagnostics cannot prepare native object graphs"
+        )
     if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
         raise StageBInterpreterNativeBuildError(
             "payload entry symbol is not a C identifier"
@@ -486,46 +489,37 @@ def build_stage_b_interpreter_native_candidate(
         candidate_mode = require_candidate_mode(candidate_mode)
     except ValueError as exc:
         raise StageBInterpreterNativeBuildError(str(exc)) from exc
-    if (
-        candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
-        and not diagnostic_failure_trap
-    ):
+    if candidate_mode != STATIC_CLOSED_CANDIDATE_MODE:
         raise StageBInterpreterNativeBuildError(
-            "structural-diagnostic candidates require the failure trap"
+            "executable candidate construction requires static-closed authority; "
+            "structural diagnostics are static source and plan artifacts"
+        )
+    if diagnostic_failure_trap:
+        raise StageBInterpreterNativeBuildError(
+            "executable candidate construction does not accept diagnostic traps"
         )
     if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
         raise StageBInterpreterNativeBuildError(
             "payload entry symbol is not a C identifier"
         )
 
-    receipt: CandidateAuthorityV3Receipt | None = None
-    if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
-        if any(value is None for value in (
-            candidate_authority,
-            final_authority,
-            fallback_coverage_receipt,
-            component_runtime_package,
-        )):
-            raise StageBInterpreterNativeBuildError(
-                "static-closed candidates require complete v3 authority inputs"
-            )
-        receipt = _validate_candidate_authority_v3(
-            receipt=candidate_authority,
-            final_authority=final_authority,
-            machine_ir=machine_ir,
-            machine_ir_manifest=machine_ir_manifest,
-            fallback_coverage_receipt=fallback_coverage_receipt,
-            component_runtime_package=component_runtime_package,
-        )
-    elif any(value is not None for value in (
+    if any(value is None for value in (
         candidate_authority,
         final_authority,
         fallback_coverage_receipt,
         component_runtime_package,
     )):
         raise StageBInterpreterNativeBuildError(
-            "structural-diagnostic candidates must not consume acceptance authority"
+            "static-closed candidates require complete v3 authority inputs"
         )
+    receipt: CandidateAuthorityV3Receipt = _validate_candidate_authority_v3(
+        receipt=candidate_authority,
+        final_authority=final_authority,
+        machine_ir=machine_ir,
+        machine_ir_manifest=machine_ir_manifest,
+        fallback_coverage_receipt=fallback_coverage_receipt,
+        component_runtime_package=component_runtime_package,
+    )
 
     interpreter = _load_package(
         interpreter_package,
@@ -549,9 +543,7 @@ def build_stage_b_interpreter_native_candidate(
         require_roles=True,
     )
     runtime_plan = _validate_package_closure(interpreter, engine, runtime)
-    if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
-        assert receipt is not None
-        _validate_candidate_authority_package_bindings(receipt, interpreter, engine)
+    _validate_candidate_authority_package_bindings(receipt, interpreter, engine)
     structural_binding = _validate_candidate_mode_package_bindings(
         candidate_mode=candidate_mode,
         machine_ir=machine_ir,
@@ -901,24 +893,22 @@ def build_stage_b_interpreter_native_candidate(
         raise StageBInterpreterNativeBuildError(
             "compiler runtime changed during compilation"
         )
-    if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
-        assert receipt is not None
-        assert candidate_authority is not None
-        assert final_authority is not None
-        assert fallback_coverage_receipt is not None
-        assert component_runtime_package is not None
-        repeated_receipt = _validate_candidate_authority_v3(
-            receipt=candidate_authority,
-            final_authority=final_authority,
-            machine_ir=machine_ir,
-            machine_ir_manifest=machine_ir_manifest,
-            fallback_coverage_receipt=fallback_coverage_receipt,
-            component_runtime_package=component_runtime_package,
+    assert candidate_authority is not None
+    assert final_authority is not None
+    assert fallback_coverage_receipt is not None
+    assert component_runtime_package is not None
+    repeated_receipt = _validate_candidate_authority_v3(
+        receipt=candidate_authority,
+        final_authority=final_authority,
+        machine_ir=machine_ir,
+        machine_ir_manifest=machine_ir_manifest,
+        fallback_coverage_receipt=fallback_coverage_receipt,
+        component_runtime_package=component_runtime_package,
+    )
+    if repeated_receipt != receipt:
+        raise StageBInterpreterNativeBuildError(
+            "v3 candidate-authority inputs changed during compilation"
         )
-        if repeated_receipt != receipt:
-            raise StageBInterpreterNativeBuildError(
-                "v3 candidate-authority inputs changed during compilation"
-            )
     repeated_structural_binding = _validate_candidate_mode_package_bindings(
         candidate_mode=candidate_mode,
         machine_ir=machine_ir,
@@ -947,18 +937,10 @@ def build_stage_b_interpreter_native_candidate(
         "format": INTERPRETER_NATIVE_BUILD_FORMAT,
         "status": "candidate-generated",
         "acceptance_authority": "none",
-        "assurance": (
-            "non-authorizing fail-closed diagnostic candidate"
-            if candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
-            else "candidate static and behavioral validation required"
-        ),
+        "assurance": "candidate static and behavioral validation required",
         "inputs": {
-            "candidate_authority": (
-                None
-                if receipt is None
-                else _candidate_authority_manifest_binding(
-                    candidate_authority, receipt
-                )
+            "candidate_authority": _candidate_authority_manifest_binding(
+                candidate_authority, receipt
             ),
             "execution_scope": structural_binding,
             "interpreter_package": interpreter.binding(),
@@ -1003,13 +985,7 @@ def build_stage_b_interpreter_native_candidate(
         },
         "policy": {
             "architecture": "i686-pe32",
-            "candidate_class": (
-                "structural-diagnostic"
-                if candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
-                else "diagnostic-static-closed"
-                if diagnostic_failure_trap
-                else "release-static-closed"
-            ),
+            "candidate_class": "release-static-closed",
             "allow_deferred_potential_transfers": (
                 structural_binding["deferred_transfers"] > 0
             ),
