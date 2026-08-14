@@ -1,18 +1,20 @@
 {
   "format": "spaghetti-extractor-static-test-manifest-v1",
-  "identity": "2677ebcbff921846e090798946a805d42e46abe450611e4edb156b7713c1bb40",
+  "identity": "1673a85db262011ed0576cd6d776275147d694fe16985e7f81021073e2f56e41",
   "modes": {
     "benchmark": {
-      "identity": "dc293e7abfd43afde4cc2c5c0e3962eb690b10a97307fac8b66b4a1a5d19de02",
-      "selected_test_count": 1,
+      "identity": "1f88a0a7488610c2826696dfe7dba388aff03050ab8aa1459085154e2e40855b",
+      "selected_test_count": 2,
       "shard_ids": [
+        "benchmark-05786cef6afb",
         "benchmark-67776004d586"
       ]
     },
     "catalog": {
-      "identity": "24e309861ad1d6a97705d093c3102522724114428df050d4422734370387ec20",
-      "selected_test_count": 150,
+      "identity": "261c2fbf7b35edcca2c588950f806ce91d809a9aa0fadded3dba56c973151f02",
+      "selected_test_count": 151,
       "shard_ids": [
+        "benchmark-05786cef6afb",
         "benchmark-67776004d586",
         "bochs-d906802c54f2",
         "compiler-08064018d2ca",
@@ -330,6 +332,47 @@
   },
   "shard_count": 32,
   "shards": [
+    {
+      "files": [
+        "src/spaghetti_extractor/__init__.py",
+        "src/spaghetti_extractor/artifacts/__init__.py",
+        "src/spaghetti_extractor/artifacts/formats.py",
+        "src/spaghetti_extractor/authority_inputs/__init__.py",
+        "src/spaghetti_extractor/authority_inputs/isa_requirements.py",
+        "src/spaghetti_extractor/errors.py",
+        "src/spaghetti_extractor/extraction/__init__.py",
+        "src/spaghetti_extractor/extraction/schema.py",
+        "src/spaghetti_extractor/isa/__init__.py",
+        "src/spaghetti_extractor/isa/conformance.py",
+        "src/spaghetti_extractor/isa/kernel_qualification.py",
+        "src/spaghetti_extractor/isa/kernel_qualification_artifacts.py",
+        "src/spaghetti_extractor/isa/kernel_qualification_oracles.py",
+        "src/spaghetti_extractor/isa/kernel_qualification_reports.py",
+        "src/spaghetti_extractor/isa/kernel_selection.py",
+        "src/spaghetti_extractor/isa/semantic_forms.py",
+        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
+        "src/spaghetti_extractor/lean/StageA/Decode.lean",
+        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/StageA/Machine.lean",
+        "src/spaghetti_extractor/lean/StageA/PE32.lean",
+        "src/spaghetti_extractor/lean/StageA/X87.lean",
+        "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/util.py",
+        "tests/benchmark/test_isa_request_planning_performance.py"
+      ],
+      "fixtures": [],
+      "id": "benchmark-05786cef6afb",
+      "input_sha256": "95490850977a2ba06a8492c8d28b1b53da77a5cb79ca94906f8293ae3eab7ac7",
+      "resource_class": "large",
+      "test_paths": [
+        "tests/benchmark/test_isa_request_planning_performance.py"
+      ],
+      "tests": [
+        "tests/benchmark/test_isa_request_planning_performance"
+      ]
+    },
     {
       "files": [
         "src/spaghetti_extractor/__init__.py",

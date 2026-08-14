@@ -233,6 +233,30 @@ class MachineIRISARequirementsV2Tests(unittest.TestCase):
             ["path-a", "path-b"],
         )
 
+    def test_instruction_regions_are_canonical_by_address(self) -> None:
+        later = _unit(identity="later")
+        later["source"]["original"] = {
+            "rva_start": 0x2000,
+            "rva_end": 0x2003,
+        }
+        later["instructions"] = [
+            {"rva_start": 0x2000, "rva_end": 0x2001},
+            {"rva_start": 0x2001, "rva_end": 0x2003},
+        ]
+
+        request = build_machine_ir_isa_extraction_request_v2(
+            units=[later, _unit()], binary_sha256=PE_SHA
+        )
+
+        self.assertEqual(
+            [row["span"]["rva_start"] for row in request["regions"]],
+            [0x1000, 0x1001, 0x2000, 0x2001],
+        )
+        self.assertEqual(
+            [row["index"] for row in request["regions"]],
+            [0, 1, 2, 3],
+        )
+
     def test_different_overlapping_instruction_boundaries_are_rejected(self) -> None:
         first = {
             "id": "first",

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from spaghetti_extractor.util import utc_now
+from spaghetti_extractor.util import utc_now, write_json
 
 
 class UtilTests(unittest.TestCase):
@@ -22,6 +24,16 @@ class UtilTests(unittest.TestCase):
                         ValueError, "SOURCE_DATE_EPOCH"
                     ):
                         utc_now()
+
+    def test_write_json_uses_canonical_compact_encoding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "nested" / "artifact.json"
+            write_json(output, {"b": [2, 1], "a": {"value": True}})
+
+            self.assertEqual(
+                output.read_bytes(),
+                b'{"a":{"value":true},"b":[2,1]}\n',
+            )
 
 
 if __name__ == "__main__":

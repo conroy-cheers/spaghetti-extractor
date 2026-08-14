@@ -59,7 +59,6 @@ def build_machine_ir_isa_extraction_request_v2(
     """Return one canonical exact span per conservatively reachable instruction."""
 
     binary_sha256 = _digest(binary_sha256, "binary SHA-256")
-    regions: list[dict[str, Any]] = []
     locations: dict[tuple[int, int], dict[str, Any]] = {}
     selected = sorted(
         (
@@ -114,16 +113,7 @@ def build_machine_ir_isa_extraction_request_v2(
                 existing["owners"].append(owner)
                 cursor = instruction_stop
                 continue
-            if any(
-                instruction_start < prior_start + prior_size
-                and prior_start < instruction_stop
-                for prior_start, prior_size in locations
-            ):
-                raise MachineIRISARequirementsV2Error(
-                    "reachable machine-IR instruction boundaries overlap"
-                )
-            region = {
-                "index": len(regions),
+            locations[location] = {
                 "unit_id": unit_id,
                 "instruction_index": index,
                 "span": {"rva_start": location[0], "size": location[1]},
@@ -137,17 +127,29 @@ def build_machine_ir_isa_extraction_request_v2(
                 }],
                 "owners": [owner],
             }
-            locations[location] = region
-            regions.append(region)
             cursor = instruction_stop
         if cursor != stop:
             raise MachineIRISARequirementsV2Error(
                 f"{unit_id} instruction inventory does not cover its exact span"
             )
-    if not regions:
+    if not locations:
         raise MachineIRISARequirementsV2Error(
             "machine IR has no conservatively reachable instruction spans"
         )
+    ordered_locations = sorted(locations)
+    for previous, current in zip(
+        ordered_locations, ordered_locations[1:], strict=False
+    ):
+        previous_start, previous_size = previous
+        current_start, _ = current
+        if current_start < previous_start + previous_size:
+            raise MachineIRISARequirementsV2Error(
+                "reachable machine-IR instruction boundaries overlap"
+            )
+    regions = [
+        {"index": index, **locations[location]}
+        for index, location in enumerate(ordered_locations)
+    ]
     body = {
         "format": "spaghetti-extractor-machine-ir-isa-extraction-request-v2",
         "side": "original",

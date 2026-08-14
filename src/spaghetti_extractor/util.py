@@ -46,8 +46,10 @@ def json_dumps(data: Any) -> str:
 
 
 def write_json(path: Path, data: Any) -> None:
+    """Write canonical machine-consumed JSON without presentation whitespace."""
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.write_text(json_dumps(data) + "\n", encoding="utf-8")
 
 
 def entropy(data: bytes) -> float:

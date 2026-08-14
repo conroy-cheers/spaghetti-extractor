@@ -107,6 +107,16 @@ host. Times are wall-clock unless the row names aggregate shard execution.
 | DX-Ball final authority, clean / warm | 174.39 s / 0.09 s |
 | Generic full-suite peak shard RSS | 163,416 KiB |
 
+Machine-consumed JSON is emitted in canonical compact form. On the GNU Hello
+analysis artifacts this reduced the exact reference contract from 70.2 MiB to
+30.5 MiB, ABI callsites from 57.1 MiB to 25.5 MiB, the machine-IR manifest from
+32.1 MiB to 18.0 MiB, and the reconstruction plan from 59.0 MiB to 30.8 MiB.
+Exact ISA request planning for 21,040 unique instruction locations takes about
+0.33 seconds after replacing pairwise overlap discovery with one canonical sort
+and adjacent-interval check. These are phase-local measurements; the current
+cold GNU Hello analysis still takes about three minutes because later proposal
+and authority phases remain large and partly serialized.
+
 Framework-owned planning for the 9,041-unit DX-Ball structural universe takes
 about 1.70 seconds and 73 MiB RSS. The controlled Nix mutation fixture verifies
 that changing one unit changes one transition pack, two dependent SCC and
