@@ -15,6 +15,7 @@ from .formats import (
 )
 from ..util import sha256_file, write_json
 from .intent import ComponentIntentError
+from .model import EVIDENCE_PROFILE_PRODUCERS
 from .source import load_component_source_package
 
 
@@ -78,10 +79,27 @@ def qualify_lift_unit(
                 observed=bindings.get(field),
             )
     method = _object(evidence_payload.get("method"), "component evidence method")
+    evidence_profile = str(lift_unit.get("evidence_profile"))
+    expected_producer = EVIDENCE_PROFILE_PRODUCERS.get(evidence_profile)
+    method_requirements = {
+        "exhaustive-finite-domain-v1": (
+            "exhaustive_finite_domain_v1",
+            "complete_for_declared_domain",
+        ),
+        "candidate-only-functional-suite-v1": (
+            "candidate_only_functional_suite_v1",
+            "complete_for_declared_cases",
+        ),
+    }
+    required_method = method_requirements.get(expected_producer)
+    method_complete = (
+        required_method is not None
+        and method.get("kind") == required_method[0]
+        and method.get(required_method[1]) is True
+    )
     if (
-        verification.get("producer") != "exhaustive-finite-domain-v1"
-        or method.get("kind") != "exhaustive_finite_domain_v1"
-        or method.get("complete_for_declared_domain") is not True
+        verification.get("producer") != expected_producer
+        or not method_complete
         or method.get("candidate_only") is not True
     ):
         _issue(issues, "incomplete", "component_evidence_method_not_complete")
@@ -104,6 +122,11 @@ def qualify_lift_unit(
         if issues
         else "qualified"
     )
+    assurance_kind = (
+        "exhaustive_over_declared_finite_domain"
+        if expected_producer == "exhaustive-finite-domain-v1"
+        else "candidate_only_declared_functional_cases"
+    )
     core = {
         "format": COMPONENT_QUALIFICATION_V3_FORMAT,
         "status": status,
@@ -117,9 +140,16 @@ def qualify_lift_unit(
             "tool_version": bindings.get("tool_version"),
         },
         "assurance": {
-            "kind": "exhaustive_over_declared_finite_domain",
+            "kind": assurance_kind,
             "universal_equivalence_claimed": False,
-            "declared_domain_equivalence": status == "qualified",
+            "declared_domain_equivalence": (
+                status == "qualified"
+                and expected_producer == "exhaustive-finite-domain-v1"
+            ),
+            "declared_cases_satisfied": (
+                status == "qualified"
+                and expected_producer == "candidate-only-functional-suite-v1"
+            ),
             "original_binary_executed": False,
         },
         "activation": {

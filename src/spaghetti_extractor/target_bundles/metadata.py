@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Mapping
 
 
-TARGET_BUNDLE_METADATA_FORMAT = "spaghetti-extractor-target-bundle-v2"
+TARGET_BUNDLE_METADATA_FORMAT = "spaghetti-extractor-target-bundle-v3"
 _IDENTIFIER = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 
@@ -26,7 +26,7 @@ class TargetInputMetadata:
 
 @dataclass(frozen=True)
 class TargetWorkflowMetadata:
-    default_configuration: str
+    default_configuration: str | None
 
 
 @dataclass(frozen=True)
@@ -61,10 +61,18 @@ class TargetMetadata:
 
         path_row = _object(root.get("paths"), "target paths")
         _exact_keys(path_row, {"nix", "components"}, "target paths")
-        paths = tuple(
-            (name, _relative_path(path_row[name], f"target path {name}"))
-            for name in sorted(path_row)
-        )
+        component_path = path_row.get("components")
+        path_items = [
+            ("nix", _relative_path(path_row["nix"], "target path nix"))
+        ]
+        if component_path is not None:
+            path_items.append(
+                (
+                    "components",
+                    _relative_path(component_path, "target path components"),
+                )
+            )
+        paths = tuple(path_items)
 
         workflow_row = _object(root.get("workflow"), "target workflow")
         _exact_keys(
@@ -72,10 +80,16 @@ class TargetMetadata:
             {"default_configuration"},
             "target workflow",
         )
-        default_configuration = _identifier(
-            workflow_row.get("default_configuration"),
-            "default component configuration",
+        default_value = workflow_row.get("default_configuration")
+        default_configuration = (
+            None
+            if default_value is None
+            else _identifier(default_value, "default component configuration")
         )
+        if (component_path is None) != (default_configuration is None):
+            raise TargetMetadataError(
+                "component path and default configuration must both be set or both be null"
+            )
         return cls(
             identity=identity,
             display_name=display_name,

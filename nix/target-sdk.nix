@@ -64,7 +64,7 @@ let
           (lib.splitString "/" value);
     in
       assert exactAttrs metadata [ "display_name" "format" "id" "input" "paths" "workflow" ];
-      assert metadata.format == "spaghetti-extractor-target-bundle-v2";
+      assert metadata.format == "spaghetti-extractor-target-bundle-v3";
       assert identifier metadata.id;
       assert builtins.isString metadata.display_name && metadata.display_name != "";
       assert exactAttrs input [ "expected_sha256" "kind" ];
@@ -73,10 +73,13 @@ let
         && builtins.stringLength input.expected_sha256 == 64
         && builtins.match "[0-9a-f]*" input.expected_sha256 != null;
       assert exactAttrs paths [ "components" "nix" ];
-      assert lib.all (name: relativePath paths.${name})
-        (builtins.attrNames paths);
+      assert relativePath paths.nix;
+      assert paths.components == null || relativePath paths.components;
       assert exactAttrs workflow [ "default_configuration" ];
-      assert identifier workflow.default_configuration;
+      assert workflow.default_configuration == null
+        || identifier workflow.default_configuration;
+      assert (paths.components == null)
+        == (workflow.default_configuration == null);
       metadata;
   mkBundleRecord = {
     targetRoot,
@@ -92,7 +95,7 @@ let
         "spaghetti-extractor-${targetId}-metadata.json"
         (builtins.toJSON metadata);
       contractCheck = pkgs.runCommand
-        "spaghetti-extractor-${targetId}-bundle-contract-v2"
+        "spaghetti-extractor-${targetId}-bundle-contract-v3"
         { __contentAddressed = true; }
         ''
           mkdir -p "$out"
@@ -110,7 +113,7 @@ let
         (lib.mapAttrsToList
           (name: path: { inherit name path; }) completeAcceptanceChecks);
     in
-      assert metadata.format or null == "spaghetti-extractor-target-bundle-v2";
+      assert metadata.format or null == "spaghetti-extractor-target-bundle-v3";
       assert builtins.isString targetId && targetId != "";
       assert builtins.isAttrs artifacts && builtins.isAttrs checks
         && builtins.isAttrs acceptanceChecks && builtins.isAttrs apps;
@@ -135,7 +138,7 @@ let
     machineImportProfiles ? [ externalProfile ],
     launchProfileTemplate,
     namePrefix,
-    componentIntent,
+    componentIntent ? null,
     componentReviewRoot ? null,
     componentSourceRoot ? null,
     externalInterfaceProfiles ? [ ],
@@ -144,6 +147,7 @@ let
     maxCandidatesPerSeed ? 12,
   }:
     let
+      hasComponents = componentIntent != null;
       analysis = analysisComponent {
         inherit original externalProfile externalInterfaceProfiles namePrefix;
         additionalMachineImportProfiles = builtins.tail machineImportProfiles;
@@ -158,21 +162,23 @@ let
       interpreter = assert lib.assertMsg (authority.fallbackInterpreter != null)
         "PE32 workflows require the standard machine-IR interpreter";
         authority.fallbackInterpreter;
-      components = componentWorkflow {
-        machineIr = analysis.machineIr;
-        reconstructionPlan = analysis.reconstructionPlan;
-        componentProposals = analysis.componentProposals;
-        intent = componentIntent;
-        reviewRoot = componentReviewRoot;
-        sourceRoot = componentSourceRoot;
-        inherit namePrefix;
-        interpreterPackage = interpreter;
-      };
+      components = if !hasComponents then null else componentWorkflow {
+          machineIr = analysis.machineIr;
+          reconstructionPlan = analysis.reconstructionPlan;
+          componentProposals = analysis.componentProposals;
+          intent = componentIntent;
+          reviewRoot = componentReviewRoot;
+          sourceRoot = componentSourceRoot;
+          inherit namePrefix;
+          interpreterPackage = interpreter;
+        };
       candidateFor = {
         configurationId,
         extraMachineImportProfiles ? [ ],
         compiler ? pkgs.pkgsCross.mingw32.stdenv.cc,
-      }: hybridCandidate {
+      }: assert lib.assertMsg hasComponents
+        "candidate construction requires authored component intent";
+      hybridCandidate {
         machineIr = analysis.machineIr;
         staticExport = analysis.staticExport;
         staticAuthority = authority;
@@ -194,7 +200,8 @@ let
           ++ candidateMachineImportProfiles;
         namePrefix = "${namePrefix}-structural";
       };
-      configurationIds = builtins.attrNames components.runtimeConfigurations;
+      configurationIds = if hasComponents
+        then builtins.attrNames components.runtimeConfigurations else [ ];
       staticCandidates = builtins.listToAttrs (map (configurationId: {
         name = configurationId;
         value = candidateFor { inherit configurationId; };
@@ -213,11 +220,12 @@ let
       };
     in {
       inherit analysis authority components interpreter candidateFor
-        candidateTestFor configurationIds staticCandidates structuralDiagnostic;
+        candidateTestFor configurationIds staticCandidates structuralDiagnostic
+        hasComponents;
       originalBinary = original;
       inherit binaryIdentity;
-      componentRuntimeFor = components.runtimeFor;
-      componentRuntimes = components.runtimePackages;
+      componentRuntimeFor = if hasComponents then components.runtimeFor else null;
+      componentRuntimes = if hasComponents then components.runtimePackages else { };
       candidates = {
         static = staticCandidates;
       };
@@ -242,6 +250,7 @@ let
   }:
     let
       metadata = parseTargetMetadata targetRoot;
+      hasComponents = workflow.hasComponents or false;
       targetRootString = toString targetRoot;
       relativeTargetPath = path:
         let
@@ -259,7 +268,7 @@ let
         role = "module";
         owner = "target-sdk";
       };
-      componentAssets = map (asset: asset // {
+      componentAssets = if !hasComponents then [ ] else map (asset: asset // {
         path = relativeTargetPath asset.path;
       }) workflow.components.assetInventory;
       candidateTestAssets = lib.mapAttrsToList (id: test: {
@@ -281,7 +290,7 @@ let
         targetId = metadata.id;
         namePrefix = "spaghetti-extractor-${metadata.id}";
       };
-      defaultConfiguration = metadata.workflow.default_configuration or null;
+      defaultConfiguration = metadata.workflow.default_configuration;
       configurationIds = workflow.configurationIds;
       targetInputIdentity = pkgs.runCommand
         "spaghetti-extractor-${metadata.id}-target-input-identity-v1"
@@ -334,6 +343,8 @@ let
             workflow.authority.graph.phases;
         };
         components = {
+          proposals = workflow.analysis.componentProposals;
+        } // lib.optionalAttrs hasComponents {
           resolution = workflow.components.resolution;
           contracts = workflow.components.contracts;
           source-packages = workflow.components.sourcePackages;
@@ -363,16 +374,27 @@ let
       standardChecks = {
         target-bundle-assets = ownership;
         target-input-identity = targetInputIdentity;
+      } // lib.optionalAttrs hasComponents {
         component-resolution = workflow.components.resolution;
         default-component-configuration =
           workflow.components.activationPlans.${defaultConfiguration};
       };
+      componentIntentRequired = pkgs.runCommand
+        "spaghetti-extractor-${metadata.id}-component-intent-required"
+        { __contentAddressed = true; } ''
+          echo "target ${metadata.id} has no authored component intent" >&2
+          echo "run project analyze, inspect component proposals, then configure a default component configuration" >&2
+          exit 1
+        '';
       standardAcceptanceChecks = {
         final-authority = workflow.authority.finalAuthorityGate;
+      } // (if hasComponents then {
         default-static-candidate =
           workflow.staticCandidates.${defaultConfiguration}.candidate;
+      } else {
+        component-intent = componentIntentRequired;
       } // lib.mapAttrs' (id: test:
-        lib.nameValuePair "candidate-test-${id}" test.aggregate) candidateTests;
+        lib.nameValuePair "candidate-test-${id}" test.aggregate) candidateTests);
       bundle = mkBundleRecord {
         inherit targetRoot apps;
         artifacts = standardArtifacts;
@@ -386,12 +408,12 @@ let
           path = targetInputIdentity;
         } ] ++ lib.mapAttrsToList
           (name: path: { inherit name path; }) standardArtifacts.analysis);
-      componentUnits = lib.mapAttrs (id: _index: {
+      componentUnits = if !hasComponents then { } else lib.mapAttrs (id: _index: {
         workPackage = workflow.components.workPackages.${id};
         status = workflow.components.statusReports.${id};
         check = workflow.components.checkGates.${id};
       }) workflow.components.liftUnitIndex;
-      componentConfigurations = lib.mapAttrs (id: _index: {
+      componentConfigurations = if !hasComponents then { } else lib.mapAttrs (id: _index: {
         runtime = workflow.componentRuntimes.${id};
         status = workflow.components.configurationStatusReports.${id};
         check = workflow.components.configurationCheckGates.${id};
@@ -411,8 +433,14 @@ let
         caseIds = test.caseIds;
       }) candidateTests;
       mkProgress = configurationId:
+        let
+          configurationStatus = if configurationId == null then "-" else
+            toString workflow.components.configurationStatusReports.${configurationId};
+          progressName = if configurationId == null then "analysis" else configurationId;
+          configurationArgument = if configurationId == null then "-" else configurationId;
+        in
         pkgs.runCommand
-          "spaghetti-extractor-${metadata.id}-${configurationId}-project-progress-v1"
+          "spaghetti-extractor-${metadata.id}-${progressName}-project-progress-v1"
           {
             nativeBuildInputs = [ context.pythonEnv pkgs.jq ];
             preferLocalBuild = false;
@@ -428,9 +456,9 @@ let
             mkdir -p "$out"
             ${context.pythonEnv}/bin/python3 - \
               ${workflow.authority.diagnostics}/authority-diagnostics-v3.json \
-              ${workflow.components.configurationStatusReports.${configurationId}}/status.json \
+              ${lib.escapeShellArg configurationStatus} \
               ${lib.escapeShellArg metadata.id} \
-              ${lib.escapeShellArg configurationId} \
+              ${lib.escapeShellArg configurationArgument} \
               ${lib.escapeShellArg (builtins.toJSON candidateTestIndex)} \
               "$out/project-progress.json" <<'PY'
             import json
@@ -438,11 +466,14 @@ let
             import sys
             from spaghetti_extractor.target_bundles.progress import build_project_progress
 
+            optional = lambda value: None if value == "-" else value
             build_project_progress(
                 authority_diagnostics=pathlib.Path(sys.argv[1]),
-                configuration_status=pathlib.Path(sys.argv[2]),
+                configuration_status=(
+                    None if sys.argv[2] == "-" else pathlib.Path(sys.argv[2]) / "status.json"
+                ),
                 target_id=sys.argv[3],
-                configuration_id=sys.argv[4],
+                configuration_id=optional(sys.argv[4]),
                 candidate_test_suites=json.loads(sys.argv[5]),
                 out=pathlib.Path(sys.argv[6]),
             )
@@ -460,6 +491,7 @@ let
         name = configurationId;
         value = mkProgress configurationId;
       }) configurationIds);
+      projectProgress = mkProgress defaultConfiguration;
       checkedCandidateBuilds = lib.mapAttrs (configurationId: candidate:
         pkgs.runCommand
           "spaghetti-extractor-${metadata.id}-${configurationId}-checked-candidate"
@@ -479,10 +511,11 @@ let
           ]) candidateTests;
       operatorIndex = {
         targetId = metadata.id;
-        inherit defaultConfiguration;
+        inherit defaultConfiguration hasComponents;
         components = {
-          units = workflow.components.liftUnitIndex;
-          configurations = workflow.components.configurationIndex;
+          units = if hasComponents then workflow.components.liftUnitIndex else { };
+          configurations = if hasComponents
+            then workflow.components.configurationIndex else { };
         };
         candidate = {
           configurations = configurationIds;
@@ -493,13 +526,14 @@ let
         index = operatorIndex;
         project = {
           analysis = projectAnalysis;
-          status = progressReports.${defaultConfiguration};
+          status = projectProgress;
           authorityStatus = workflow.authority.diagnostics;
           regressionCheck = bundle.defaultCheck;
           acceptanceCheck = bundle.acceptanceCheck;
           structuralDiagnostics = workflow.structuralDiagnostic;
         };
         components = {
+          proposals = workflow.analysis.componentProposals;
           units = componentUnits;
           configurations = componentConfigurations;
         };
@@ -511,13 +545,14 @@ let
         };
       };
     in
-      assert metadata.format or null == "spaghetti-extractor-target-bundle-v2";
-      assert builtins.isString defaultConfiguration
-        && builtins.elem defaultConfiguration configurationIds;
+      assert metadata.format or null == "spaghetti-extractor-target-bundle-v3";
+      assert hasComponents == (defaultConfiguration != null);
+      assert !hasComponents || (builtins.isString defaultConfiguration
+        && builtins.elem defaultConfiguration configurationIds);
       assert lib.assertMsg (invalidManualRoles == [ ])
         "targetAssets contains unsupported roles: ${builtins.toJSON invalidManualRoles}";
       assert lib.assertMsg
-        (!(metadata.paths ? components) ||
+        ((metadata.paths.components == null && !hasComponents) ||
           (workflow.components.assetInventory != [ ] &&
             metadata.paths.components == relativeTargetPath
               (builtins.head workflow.components.assetInventory).path))
@@ -530,8 +565,10 @@ let
       bundle // {
         inherit defaultConfiguration candidateTests operator operatorIndex;
         default = {
-          componentRuntime = workflow.componentRuntimes.${defaultConfiguration};
-          staticCandidate = workflow.staticCandidates.${defaultConfiguration};
+          componentRuntime = if hasComponents
+            then workflow.componentRuntimes.${defaultConfiguration} else null;
+          staticCandidate = if hasComponents
+            then workflow.staticCandidates.${defaultConfiguration} else null;
           structuralDiagnostic = workflow.structuralDiagnostic;
         };
       };

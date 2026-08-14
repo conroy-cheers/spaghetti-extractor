@@ -15,6 +15,10 @@ EVIDENCE_PROFILES = frozenset(
         "validation-backed-v1",
     }
 )
+EVIDENCE_PROFILE_PRODUCERS = {
+    "bounded-equivalence-v1": "exhaustive-finite-domain-v1",
+    "validation-backed-v1": "candidate-only-functional-suite-v1",
+}
 LIFT_UNIT_KINDS = frozenset({"component", "group"})
 
 
@@ -30,6 +34,7 @@ class SourceInput:
 class ComponentEvidencePlan:
     producer: str
     parameter_domains: tuple[Mapping[str, object], ...] = ()
+    cases: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True)

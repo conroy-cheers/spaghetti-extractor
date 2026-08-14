@@ -60,9 +60,26 @@ executes the original binary. A concrete mismatch is `violated` and includes
 the source-level arguments, expected value, and observed value. Unsupported
 semantics, an excessive domain, or compiler failure is `incomplete`.
 
-Candidate-only functional evidence is appropriate for stateful or larger
-components, but its tested scope must remain explicit. No evidence report may
-authorize a component unless all exact hashes and the source entry ABI match.
+`validation-backed-v1` uses `candidate-only-functional-suite-v1`. Intent lists
+stable case IDs, exact logical arguments, and expected results. The producer
+compiles and executes only the portable replacement; a mismatch is `violated`
+and identifies the first case and concrete values. This profile makes no claim
+beyond the declared cases and is appropriate when exhaustive machine-IR
+evaluation is impractical. No evidence report may authorize a component unless
+its profile and producer match and all exact contract, source, machine-IR,
+verification, and source-entry bindings match.
+
+```json
+{
+  "evidence_profile": "validation-backed-v1",
+  "verification": {
+    "producer": "candidate-only-functional-suite-v1",
+    "cases": [
+      {"id": "zero", "arguments": {"value": 0}, "expected": 0}
+    ]
+  }
+}
+```
 
 ## Configuration Safety
 

@@ -4,7 +4,10 @@ let
   intent = pkgs.writeText "component-v3-fixture-intent.json" (builtins.toJSON {
     format = "spaghetti-extractor-component-catalog-intent-v2";
     program_id = "component-v2-fixture";
-    permitted_activation_profiles = [ "bounded-equivalence-v1" ];
+    permitted_activation_profiles = [
+      "bounded-equivalence-v1"
+      "validation-backed-v1"
+    ];
     components = [
       {
         id = "a";
@@ -37,7 +40,31 @@ let
           entry = { abi = "logical-c-v1"; symbol = "component_b"; };
         };
         verification = {
+          producer = "exhaustive-finite-domain-v1";
+          parameter_domains = [ {
+            parameter_id = "input_eax";
+            kind = "integer-range";
+            minimum = 0;
+            maximum = 0;
+          } ];
+        };
+      }
+      {
+        id = "c";
+        label = "C";
+        selector = { entry_rva = 4128; };
+        evidence_profile = "validation-backed-v1";
+        interface_review = "reviews/c.json";
+        source = {
+          files = [ "source/c.c" ];
+          entry = { abi = "logical-c-v1"; symbol = "component_c"; };
+        };
+        verification = {
           producer = "candidate-only-functional-suite-v1";
+          cases = [
+            { id = "zero"; arguments.input_eax = 0; expected = 0; }
+            { id = "high"; arguments.input_eax = 255; expected = 255; }
+          ];
         };
       }
     ];
@@ -70,6 +97,15 @@ let
           activation = "enabled";
         } ];
       }
+      {
+        id = "c-enabled";
+        label = "C validation backed";
+        selections = [ {
+          kind = "component";
+          id = "c";
+          activation = "enabled";
+        } ];
+      }
     ];
   });
   fixture = pkgs.runCommand "spaghetti-extractor-components-fixture"
@@ -96,7 +132,7 @@ let
               [{"register": "eax", "value": {
                   "op": "reg", "name": "eax", "width": 32,
               }}]
-              if identity == "unit:a" else []
+              if identity in {"unit:a", "unit:c"} else []
           )
           return {
               "id": identity,
@@ -114,7 +150,7 @@ let
                   "register_writes": register_writes, "flag_writes": [],
               },
           }
-      units = [unit("unit:a", 4096), unit("unit:b", 4112)]
+      units = [unit("unit:a", 4096), unit("unit:b", 4112), unit("unit:c", 4128)]
       ir = root / "machine-ir.jsonl"
       ir.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in units))
       ir_hash = hashlib.sha256(ir.read_bytes()).hexdigest()
@@ -160,6 +196,12 @@ let
                   "proposal_kinds": ["singleton"],
                   "membership": {"unit_ids": ["unit:b"], "rva_start": 4112, "rva_end": 4113},
                   "bindings": {"membership_bindings_sha256": "3" * 64},
+              },
+              {
+                  "id": "proposal:c",
+                  "proposal_kinds": ["singleton"],
+                  "membership": {"unit_ids": ["unit:c"], "rva_start": 4128, "rva_end": 4129},
+                  "bindings": {"membership_bindings_sha256": "4" * 64},
               },
           ],
       }
@@ -221,7 +263,7 @@ let
         .format == "spaghetti-extractor-component-activation-plan-v3" and
         .status == "incomplete" and
         .counts.blocked == 1 and
-        .counts.machine_ir_fallback == 1 and
+        .counts.machine_ir_fallback == 2 and
         (.entries | map(select(.implementation_kind == "blocked")) | length) == 1 and
         (.selections | all(
           if .requested_activation == "enabled"
@@ -245,9 +287,9 @@ assert base.sourcePackages.b.drvPath == sourceChanged.sourcePackages.b.drvPath;
 assert base.qualifications.a.drvPath != sourceChanged.qualifications.a.drvPath;
 assert base.activationPlans."a-only".drvPath != sourceChanged.activationPlans."a-only".drvPath;
 assert runtime.drvPath == base.runtimePackages."a-only".drvPath;
-assert builtins.attrNames base.workPackages == [ "a" "b" ];
-assert builtins.attrNames base.statusReports == [ "a" "b" ];
-assert builtins.attrNames base.configurationStatusReports == [ "a-only" "b-enabled" "b-only" ];
+assert builtins.attrNames base.workPackages == [ "a" "b" "c" ];
+assert builtins.attrNames base.statusReports == [ "a" "b" "c" ];
+assert builtins.attrNames base.configurationStatusReports == [ "a-only" "b-enabled" "b-only" "c-enabled" ];
 pkgs.linkFarm "spaghetti-extractor-components-check" [
   { name = "resolution"; path = base.resolution; }
   { name = "contract-a"; path = base.contracts.a; }
@@ -256,6 +298,10 @@ pkgs.linkFarm "spaghetti-extractor-components-check" [
   { name = "source-b"; path = base.sourcePackages.b; }
   { name = "evidence-a"; path = base.evidences.a; }
   { name = "qualification-a"; path = base.qualifications.a; }
+  { name = "evidence-c"; path = base.evidences.c; }
+  { name = "qualification-c"; path = base.qualifications.c; }
+  { name = "check-c"; path = base.checkGates.c; }
+  { name = "activation-c"; path = base.activationPlans."c-enabled"; }
   { name = "status-a"; path = base.statusReports.a; }
   { name = "work-package-a"; path = base.workPackages.a; }
   { name = "check-a"; path = base.checkGates.a; }

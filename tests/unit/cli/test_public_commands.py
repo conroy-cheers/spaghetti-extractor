@@ -235,6 +235,7 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
 
     def test_operator_workflows_select_explicit_products(self) -> None:
         index = {
+            "hasComponents": True,
             "defaultConfiguration": "default",
             "components": {
                 "units": {"leaf": {"kind": "component", "label": "Leaf"}},
@@ -300,6 +301,7 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
 
     def test_component_list_is_index_only(self) -> None:
         index = {
+            "hasComponents": True,
             "components": {
                 "units": {"leaf": {"kind": "component", "label": "Leaf"}},
                 "configurations": {"default": {"kind": "configuration", "label": "Default"}},
@@ -313,6 +315,52 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
             self.assertEqual(main(["component", "list", "gnu-hello"]), 0)
         self.assertIn("leaf", output.getvalue())
         self.assertIn("default", output.getvalue())
+
+    def test_component_list_exposes_analysis_proposals_before_intent(self) -> None:
+        index = {
+            "hasComponents": False,
+            "defaultConfiguration": None,
+            "components": {"units": {}, "configurations": {}},
+        }
+        proposals = {
+            "proposals": [
+                {
+                    "id": "proposal:entry",
+                    "proposal_kinds": ["singleton"],
+                    "membership": {"rva_start": 0x1000, "rva_end": 0x1010},
+                }
+            ]
+        }
+        output = io.StringIO()
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._realize_json",
+            return_value=proposals,
+        ) as realize, contextlib.redirect_stdout(output):
+            self.assertEqual(main(["component", "list", "fixture"]), 0)
+        realize.assert_called_once()
+        self.assertIn("component intent: not configured", output.getvalue())
+        self.assertIn("proposal:entry", output.getvalue())
+        self.assertIn("0x1000-0x1010", output.getvalue())
+
+    def test_component_and_candidate_builds_fail_cleanly_before_intent(self) -> None:
+        index = {
+            "hasComponents": False,
+            "defaultConfiguration": None,
+            "components": {"units": {}, "configurations": {}},
+            "candidate": {"configurations": [], "testSuites": {}},
+        }
+        for command in (
+            ["component", "build", "fixture"],
+            ["candidate", "build", "fixture"],
+        ):
+            with self.subTest(command=command), patch(
+                "spaghetti_extractor.commands.workflows._operator_index",
+                return_value=index,
+            ), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(main(command), 2)
 
     def test_candidate_test_without_declared_suites_is_a_usage_error(self) -> None:
         index = {
@@ -390,6 +438,7 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
 
     def test_operator_workflow_accepts_an_explicit_target_flake(self) -> None:
         index = {
+            "hasComponents": True,
             "defaultConfiguration": "default",
             "components": {
                 "units": {"leaf": {}},

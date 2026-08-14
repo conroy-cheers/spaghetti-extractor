@@ -36,6 +36,7 @@ let
     candidate = artifact;
   };
   workflow = {
+    hasComponents = true;
     originalBinary = artifact;
     binaryIdentity = "fixture.exe";
     configurationIds = [ "default" ];
@@ -114,8 +115,22 @@ let
         touch "$out"
       '';
   };
+  analysisWorkflow = workflow // {
+    hasComponents = false;
+    components = null;
+    configurationIds = [ ];
+    componentRuntimeFor = null;
+    componentRuntimes = { };
+    staticCandidates = { };
+  };
+  analysisTarget = sdk.target.pe32Bundle {
+    targetRoot = ../../tests/fixtures/minimal-analysis-target-bundle;
+    workflow = analysisWorkflow;
+    inputs.baseline = artifact;
+  };
   registry = sdk.target.registry {
     minimal-sdk-consumer = target;
+    minimal-analysis-consumer = analysisTarget;
   };
 in
 assert sdk.format == "spaghetti-extractor-target-sdk-v3";
@@ -129,8 +144,19 @@ assert registry.minimal-sdk-consumer.operator.components.configurations.default.
 assert registry.minimal-sdk-consumer.operator.project.authorityStatus == workflow.authority.diagnostics;
 assert registry.minimal-sdk-consumer.operator.candidate.statuses.default != null;
 assert registry.minimal-sdk-consumer.acceptanceChecks.acceptance != null;
+assert registry.minimal-analysis-consumer.defaultConfiguration == null;
+assert registry.minimal-analysis-consumer.operatorIndex.hasComponents == false;
+assert registry.minimal-analysis-consumer.operator.components.units == { };
+assert registry.minimal-analysis-consumer.operator.components.proposals ==
+  workflow.analysis.componentProposals;
+assert registry.minimal-analysis-consumer.default.componentRuntime == null;
+assert registry.minimal-analysis-consumer.acceptanceChecks.component-intent != null;
 pkgs.linkFarm "spaghetti-extractor-target-sdk-check" [
   { name = "regression"; path = registry.minimal-sdk-consumer.defaultCheck; }
   { name = "acceptance"; path = registry.minimal-sdk-consumer.acceptanceCheck; }
   { name = "progress"; path = registry.minimal-sdk-consumer.operator.project.status; }
+  {
+    name = "analysis-only-progress";
+    path = registry.minimal-analysis-consumer.operator.project.status;
+  }
 ]

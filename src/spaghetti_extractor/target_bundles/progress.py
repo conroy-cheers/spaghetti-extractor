@@ -21,30 +21,42 @@ class ProjectProgressError(ValueError):
 def build_project_progress(
     *,
     target_id: str,
-    configuration_id: str,
+    configuration_id: str | None,
     authority_diagnostics: Path | str,
-    configuration_status: Path | str,
+    configuration_status: Path | str | None,
     candidate_test_suites: Mapping[str, object],
     out: Path | str,
 ) -> dict[str, object]:
     """Combine checked static and component frontiers without opening a gate."""
 
     authority = _load(authority_diagnostics, "authority diagnostics")
-    configuration = _load(configuration_status, "component configuration status")
-    if not target_id or not configuration_id:
-        raise ProjectProgressError("target and configuration IDs must be nonempty")
-    if configuration.get("configuration_id") != configuration_id:
+    if not target_id:
+        raise ProjectProgressError("target ID must be nonempty")
+    configuration = (
+        None
+        if configuration_status is None
+        else _load(configuration_status, "component configuration status")
+    )
+    if (configuration_id is None) != (configuration is None):
+        raise ProjectProgressError(
+            "component configuration ID and status must both be set or both be absent"
+        )
+    if configuration is not None and configuration.get("configuration_id") != configuration_id:
         raise ProjectProgressError("component configuration status binds another ID")
 
     authority_status = _status(authority.get("status"), "authority status")
-    configuration_state = _status(
-        configuration.get("status"), "component configuration status"
+    configuration_state = (
+        "not_configured"
+        if configuration is None
+        else _status(configuration.get("status"), "component configuration status")
     )
     authority_ready = authority.get("authorizing") is True
     configuration_ready = configuration_state == "ready"
     frontiers = _authority_frontiers(authority)
-    configuration_frontiers = _configuration_frontiers(
-        configuration, configuration_id
+    configuration_frontiers = (
+        [_component_intent_frontier()]
+        if configuration is None
+        else _configuration_frontiers(configuration, str(configuration_id))
     )
     frontiers.extend(configuration_frontiers)
     frontiers.sort(key=_frontier_key)
@@ -62,9 +74,15 @@ def build_project_progress(
         if status == "violated"
         else "blocked_by_authority"
         if not authority_ready
+        else "blocked_by_component_intent"
+        if configuration is None
         else "blocked_by_component_configuration"
     )
-    suites = _suite_rows(candidate_test_suites, configuration_id)
+    suites = (
+        []
+        if configuration_id is None
+        else _suite_rows(candidate_test_suites, configuration_id)
+    )
     next_action = (
         copy.deepcopy(frontiers[0].get("next_action"))
         if frontiers
@@ -84,7 +102,11 @@ def build_project_progress(
         },
         "component_configuration": {
             "status": configuration_state,
-            "counts": copy.deepcopy(configuration.get("counts", {})),
+            "counts": (
+                {"blocked": 1}
+                if configuration is None
+                else copy.deepcopy(configuration.get("counts", {}))
+            ),
         },
         "candidate": {
             "status": candidate_state,
@@ -174,6 +196,25 @@ def _configuration_frontiers(
             }
         )
     return result
+
+
+def _component_intent_frontier() -> dict[str, object]:
+    return {
+        "status": "incomplete",
+        "family": "component-configuration",
+        "code": "component_intent_required",
+        "record_id": "component:bootstrap:intent-required",
+        "dependent_occurrences": 0,
+        "source_location": None,
+        "next_action": (
+            "review generated component proposals and author component intent "
+            "before building a candidate"
+        ),
+        "details": {
+            "analysis_available": True,
+            "candidate_available": False,
+        },
+    }
 
 
 def _suite_rows(

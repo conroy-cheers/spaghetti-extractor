@@ -11,6 +11,7 @@ from .formats import COMPONENT_CATALOG_INTENT_V2_FORMAT
 from .model import (
     ACTIVATION_MODES,
     EVIDENCE_PROFILES,
+    EVIDENCE_PROFILE_PRODUCERS,
     LIFT_UNIT_KINDS,
     ComponentCatalogIntent,
     ComponentConfiguration,
@@ -193,7 +194,7 @@ def _component(
         f"component {index}",
         optional={"interface_review", "source", "verification"},
     )
-    return ComponentIntent(
+    result = ComponentIntent(
         identity=_identifier(row.get("id"), f"component {index} id"),
         label=_string(row.get("label"), f"component {index} label"),
         selector=dict(_object(row.get("selector"), f"component {index} selector")),
@@ -216,6 +217,8 @@ def _component(
             row.get("verification"), f"component {index} verification"
         ),
     )
+    _check_evidence_plan(result.evidence_profile, result.verification, f"component {index}")
+    return result
 
 
 def _group(
@@ -245,7 +248,7 @@ def _group(
     )
     if not members or len(set(members)) != len(members):
         raise ComponentIntentError(f"group {index} members must be nonempty and unique")
-    return ComponentGroupIntent(
+    result = ComponentGroupIntent(
         identity=_identifier(row.get("id"), f"group {index} id"),
         label=_string(row.get("label"), f"group {index} label"),
         members=members,
@@ -268,6 +271,8 @@ def _group(
             row.get("verification"), f"group {index} verification"
         ),
     )
+    _check_evidence_plan(result.evidence_profile, result.verification, f"group {index}")
+    return result
 
 
 def _configuration(row: Mapping[str, object], index: int) -> ComponentConfiguration:
@@ -358,9 +363,9 @@ def _verification(value: object, context: str) -> ComponentEvidencePlan | None:
     row = _object(value, context)
     _exact_keys(
         row,
-        {"producer", "parameter_domains"},
+        {"producer", "parameter_domains", "cases"},
         context,
-        optional={"parameter_domains"},
+        optional={"parameter_domains", "cases"},
     )
     producer = _string(row.get("producer"), f"{context} producer")
     if producer not in _EVIDENCE_PRODUCERS:
@@ -406,10 +411,56 @@ def _verification(value: object, context: str) -> ComponentEvidencePlan | None:
     ids = [str(domain["parameter_id"]) for domain in domains]
     if len(ids) != len(set(ids)):
         raise ComponentIntentError(f"{context} parameter domains are duplicated")
+    cases: list[Mapping[str, object]] = []
+    for index, raw in enumerate(_array(row.get("cases", []), f"{context} cases")):
+        case = _object(raw, f"{context} case {index}")
+        _exact_keys(case, {"id", "arguments", "expected"}, f"{context} case {index}")
+        arguments = _object(case.get("arguments"), f"{context} case {index} arguments")
+        if any(
+            not isinstance(value, int) or isinstance(value, bool)
+            for value in arguments.values()
+        ):
+            raise ComponentIntentError(
+                f"{context} case {index} arguments must be integer values"
+            )
+        expected = case.get("expected")
+        if not isinstance(expected, int) or isinstance(expected, bool):
+            raise ComponentIntentError(
+                f"{context} case {index} expected value must be an integer"
+            )
+        cases.append(
+            {
+                "id": _identifier(case.get("id"), f"{context} case {index} id"),
+                "arguments": dict(sorted(arguments.items())),
+                "expected": expected,
+            }
+        )
+    if producer == "candidate-only-functional-suite-v1" and not cases:
+        raise ComponentIntentError(f"{context} functional producer has no cases")
+    case_ids = [str(case["id"]) for case in cases]
+    if len(case_ids) != len(set(case_ids)):
+        raise ComponentIntentError(f"{context} case identifiers are duplicated")
     return ComponentEvidencePlan(
         producer=producer,
         parameter_domains=tuple(domains),
+        cases=tuple(cases),
     )
+
+
+def _check_evidence_plan(
+    profile: str, plan: ComponentEvidencePlan | None, context: str
+) -> None:
+    if plan is None:
+        return
+    expected = EVIDENCE_PROFILE_PRODUCERS.get(profile)
+    if expected is None:
+        raise ComponentIntentError(
+            f"{context} structural-draft profile cannot declare behavioral evidence"
+        )
+    if plan.producer != expected:
+        raise ComponentIntentError(
+            f"{context} profile {profile} requires producer {expected}"
+        )
 
 
 def _check_group_cycles(groups: Sequence[ComponentGroupIntent]) -> None:

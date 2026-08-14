@@ -1,5 +1,5 @@
 {
-  "format": "spaghetti-extractor-target-bundle-v2",
+  "format": "spaghetti-extractor-target-bundle-v3",
   "id": "jq",
   "display_name": "jq 1.8.1 PE32 frontend",
   "input": {

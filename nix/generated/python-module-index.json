@@ -1676,6 +1676,7 @@
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.formats",
         "spaghetti_extractor.components.intent",
+        "spaghetti_extractor.components.model",
         "spaghetti_extractor.components.source",
         "spaghetti_extractor.util"
       ],

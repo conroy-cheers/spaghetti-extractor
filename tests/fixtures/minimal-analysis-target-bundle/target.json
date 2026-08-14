@@ -1,16 +1,16 @@
 {
-  "display_name": "Minimal SDK Consumer PE32",
+  "display_name": "Minimal Analysis-Only SDK Consumer PE32",
   "format": "spaghetti-extractor-target-bundle-v3",
-  "id": "minimal-sdk-consumer",
+  "id": "minimal-analysis-consumer",
   "input": {
     "expected_sha256": "77c2ca150b61c7330da139378ffd3940d093f1bd74a1294689345d27e15b5124",
     "kind": "pe32"
   },
   "paths": {
-    "components": "intent/components.json",
+    "components": null,
     "nix": "default.nix"
   },
   "workflow": {
-    "default_configuration": "default"
+    "default_configuration": null
   }
 }

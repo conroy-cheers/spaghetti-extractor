@@ -120,6 +120,29 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
         with self.assertRaisesRegex(ComponentIntentError, "disallowed profile"):
             load_component_catalog_intent(self.intent)
 
+    def test_evidence_profile_and_producer_must_match(self) -> None:
+        payload = json.loads(self.intent.read_text(encoding="utf-8"))
+        payload["groups"][0]["evidence_profile"] = "validation-backed-v1"
+        self.intent.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(
+            ComponentIntentError, "requires producer candidate-only-functional-suite-v1"
+        ):
+            load_component_catalog_intent(self.intent)
+
+    def test_validation_profile_parses_candidate_only_cases(self) -> None:
+        payload = json.loads(self.intent.read_text(encoding="utf-8"))
+        group = payload["groups"][0]
+        group["evidence_profile"] = "validation-backed-v1"
+        group["verification"] = {
+            "producer": "candidate-only-functional-suite-v1",
+            "cases": [
+                {"id": "zero", "arguments": {"input_eax": 0}, "expected": 1}
+            ],
+        }
+        self.intent.write_text(json.dumps(payload), encoding="utf-8")
+        parsed = load_component_catalog_intent(self.intent)
+        self.assertEqual(parsed.groups[0].verification.cases[0]["id"], "zero")
+
     def test_group_cycles_are_rejected(self) -> None:
         payload = json.loads(self.intent.read_text(encoding="utf-8"))
         payload["groups"] = [

@@ -19,7 +19,7 @@ def _write_metadata(root: Path, *, identity: str = "fixture") -> None:
     (root / "target.json").write_text(
         json.dumps(
             {
-                "format": "spaghetti-extractor-target-bundle-v2",
+                "format": "spaghetti-extractor-target-bundle-v3",
                 "id": identity,
                 "display_name": "Fixture PE32",
                 "input": {"kind": "pe32", "expected_sha256": "0" * 64},

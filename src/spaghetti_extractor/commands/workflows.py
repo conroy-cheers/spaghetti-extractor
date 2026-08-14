@@ -189,11 +189,12 @@ def _show_progress(args: argparse.Namespace, payload: dict[str, Any]) -> int:
         counts = payload.get("counts", {})
         authority = payload.get("authority", {})
         configuration = payload.get("configuration_id")
+        configuration_label = configuration or "not-configured"
         print(
             f"{args.target}: status={payload.get('status')} "
             f"static-ready={str(payload.get('static_ready')).lower()} "
             f"authority={authority.get('status')} "
-            f"configuration={configuration} "
+            f"configuration={configuration_label} "
             f"frontiers={counts.get('primary_frontiers', 0)} "
             f"dependent={counts.get('dependent_occurrences', 0)}"
         )
@@ -229,7 +230,32 @@ def _components_from_index(index: Mapping[str, Any]) -> Mapping[str, Any]:
 
 
 def _component_list(args: argparse.Namespace) -> int:
-    components = _component_index(args)
+    index = _operator_index(args)
+    components = _components_from_index(index)
+    if index.get("hasComponents") is not True:
+        proposals = _realize_json(
+            args, "components.proposals", "component-proposals.json"
+        )
+        if args.json:
+            print(json.dumps(proposals, indent=2, sort_keys=True))
+            return 0
+        print("component intent: not configured")
+        for row in proposals.get("proposals", []):
+            if not isinstance(row, Mapping):
+                continue
+            membership = row.get("membership", {})
+            start = membership.get("rva_start") if isinstance(membership, Mapping) else None
+            end = membership.get("rva_end") if isinstance(membership, Mapping) else None
+            span = (
+                f"0x{start:x}-0x{end:x}"
+                if isinstance(start, int) and isinstance(end, int)
+                else "unknown-span"
+            )
+            kinds = row.get("proposal_kinds", [])
+            kind = ",".join(str(value) for value in kinds) if isinstance(kinds, list) else ""
+            print(f"proposal      {str(row.get('id')):32} {kind:24} {span}")
+        print("next: author component intent from the generated proposals")
+        return 0
     if args.json:
         print(json.dumps(components, indent=2, sort_keys=True))
         return 0
@@ -250,6 +276,11 @@ def _component_selection(args: argparse.Namespace) -> tuple[str, str]:
     if args.configuration is not None and args.unit is not None:
         raise ValueError("choose either a component unit or --configuration, not both")
     index = _operator_index(args)
+    if index.get("hasComponents") is not True:
+        raise ValueError(
+            "target has no authored component intent; run project analyze and "
+            "component list, then configure component boundaries"
+        )
     components = _components_from_index(index)
     if args.configuration is not None:
         kind = "configurations"
@@ -319,6 +350,10 @@ def _candidate_build(args: argparse.Namespace) -> int:
         else []
     )
     configuration = args.configuration or index.get("defaultConfiguration")
+    if not configurations:
+        raise ValueError(
+            "target has no candidate configurations; author component intent first"
+        )
     if configuration not in configurations:
         raise ValueError(
             f"unknown candidate configuration {configuration!r}; "
@@ -362,6 +397,11 @@ def _candidate_status(args: argparse.Namespace) -> int:
         candidate.get("configurations", []) if isinstance(candidate, Mapping) else []
     )
     configuration = args.configuration or index.get("defaultConfiguration")
+    if not configurations:
+        raise ValueError(
+            "target has no candidate configurations; use project status while "
+            "component intent is not configured"
+        )
     if configuration not in configurations:
         raise ValueError(
             f"unknown candidate configuration {configuration!r}; "

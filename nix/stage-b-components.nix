@@ -241,7 +241,10 @@ let
     }) (builtins.filter (liftUnit:
       (liftUnit.source or null) != null &&
       (liftUnit.verification or null) != null &&
-      (liftUnit.verification.producer or null) == "exhaustive-finite-domain-v1"
+      builtins.elem (liftUnit.verification.producer or null) [
+        "exhaustive-finite-domain-v1"
+        "candidate-only-functional-suite-v1"
+      ]
     ) liftUnits)
   );
   mkQualification = liftUnit:

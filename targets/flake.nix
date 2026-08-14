@@ -25,9 +25,10 @@
     assert builtins.all (id: targetMetadata.${id}.id == id) targetIds;
     assert builtins.all
       (id:
-        targetMetadata.${id}.format == "spaghetti-extractor-target-bundle-v2"
-        && builtins.isString
-          targetMetadata.${id}.workflow.default_configuration)
+        targetMetadata.${id}.format == "spaghetti-extractor-target-bundle-v3"
+        && (targetMetadata.${id}.workflow.default_configuration == null
+          || builtins.isString
+            targetMetadata.${id}.workflow.default_configuration))
       targetIds;
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" ];

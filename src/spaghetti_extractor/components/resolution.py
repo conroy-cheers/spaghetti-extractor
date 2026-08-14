@@ -254,6 +254,7 @@ def _verification_payload(value: object) -> dict[str, object] | None:
     return {
         "producer": value.producer,
         "parameter_domains": [copy.deepcopy(dict(row)) for row in value.parameter_domains],
+        "cases": [copy.deepcopy(dict(row)) for row in value.cases],
     }
 
 

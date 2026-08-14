@@ -57,6 +57,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("identity_authorizes_activation", module)
         self.assertIn("sourcePackages", module)
         self.assertIn("evidences", module)
+        self.assertIn("candidate-only-functional-suite-v1", module)
         self.assertIn("runtimeConfigurations", module)
         self.assertIn("runtimeFor", module)
         self.assertIn("runtimePackages", module)
@@ -74,7 +75,10 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("static-closed candidates require a component runtime", candidate)
         self.assertNotIn("import ./stage-b-interpreter-package.nix", candidate)
         self.assertNotIn("import ./stage-b-component-runtime-package.nix", candidate)
-        self.assertIn("componentRuntimeFor = components.runtimeFor", sdk)
+        self.assertIn(
+            "componentRuntimeFor = if hasComponents then components.runtimeFor else null",
+            sdk,
+        )
         self.assertIn("componentRuntimePackage = components.mkRuntime", sdk)
         self.assertIn("interpreterPackage = interpreter", sdk)
 
@@ -82,8 +86,8 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
 
         self.assertIn("mkPe32Bundle", sdk)
-        self.assertIn('"spaghetti-extractor-target-bundle-v2"', sdk)
-        self.assertIn("metadata.workflow.default_configuration", sdk)
+        self.assertIn('"spaghetti-extractor-target-bundle-v3"', sdk)
+        self.assertIn("workflow.hasComponents", sdk)
         self.assertIn("runtimes = workflow.componentRuntimes", sdk)
         self.assertIn("static = lib.mapAttrs", sdk)
         self.assertIn("diagnostics = {", sdk)

@@ -515,6 +515,12 @@ Target `targets/<id>/default.nix` modules acquire/build inputs and invoke generi
 Intent JSON and source are authored. Downloaded binaries and generated analyses
 must not be committed.
 
+Target registration is analysis-first. A bundle may initially omit component
+intent and its default configuration; extraction, authority diagnostics, and
+component proposals remain available in that state. Reviewed component intent
+enables the component and candidate families atomically, so the SDK never
+invents a placeholder configuration or treats a proposal as operator intent.
+
 The corpus flake exports the complete artifact family at
 `legacyPackages.x86_64-linux.targets.<id>`, the supported operator tree at
 `operatorTargets.<id>`, its pure discovery metadata at `operatorIndex.<id>`,

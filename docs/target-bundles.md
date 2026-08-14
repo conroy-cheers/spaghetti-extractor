@@ -7,20 +7,24 @@ of the generic toolkit, not a Python extension point.
 explicit registry. In-tree modules receive `{ pkgs, sdk }`; out-of-tree users
 construct the same interface with `spaghetti-extractor.lib.mkTargetSdk`.
 
-A bundle contains:
+A bundle starts with:
 
 - `target.json`: identity, display name, input kind/hash, and declarative paths;
 - target Nix module (`targets/<id>/default.nix`): acquisition plus one
   `sdk.workflow.pe32` invocation;
-- `intent/components.json`: authored component boundaries/configurations;
-- `intent/reviews/`: reviewed logical component interfaces;
-- `source/`: manually authored portable component source;
+- optionally, after proposal review, `intent/components.json`: authored
+  component boundaries/configurations;
+- optionally, `intent/reviews/`: reviewed logical component interfaces;
+- optionally, `source/`: manually authored portable component source;
 - optional candidate-only tests and runtime assets.
 
-`target.json` uses `spaghetti-extractor-target-bundle-v2` and declares
-`workflow.default_configuration`. That configuration must exist in the
-component intent and selects the standard regression configuration, component
-runtime, and strict acceptance candidate. The SDK validates this schema
+`target.json` uses `spaghetti-extractor-target-bundle-v3`. Its `paths.components`
+and `workflow.default_configuration` fields are either both set or both `null`.
+This lets a new target run extraction, authority analysis, and component
+discovery before the operator has authored component intent. Once set, the
+default configuration must exist in the component intent and selects the
+standard regression configuration, component runtime, and strict acceptance
+candidate. The SDK validates this schema
 strictly and verifies the SHA-256 of the workflow's primary PE against
 `input.expected_sha256`; individual targets must not duplicate that check.
 
@@ -30,11 +34,12 @@ or ignored `build/`; private inputs stay in ignored `private/` paths.
 
 ## Standard Outputs
 
-Targets return `sdk.target.pe32Bundle { ... }`. The constructor publishes the
-standard `analysis`, `authority`, `components`, and `candidate` families for
-every component configuration. Targets supply only input acquisition, profiles,
-the workflow, target-specific artifacts, and additional checks; they do not
-manually duplicate the toolkit artifact graph.
+Targets return `sdk.target.pe32Bundle { ... }`. The constructor always publishes
+the standard `analysis` and `authority` families. Once component intent exists,
+it also publishes `components` and `candidate` families for every declared
+configuration. Targets supply only input acquisition, profiles, the workflow,
+target-specific artifacts, and additional checks; they do not manually
+duplicate the toolkit artifact graph.
 
 The authority family includes the final gate, diagnostics, graph metadata, and
 all phase derivations under `authority.phases`.
@@ -83,13 +88,16 @@ executed or traced during repair iteration.
 
 ## Adding A Target
 
-1. Add `targets/<id>/target.json`, its target Nix module, and component intent.
-2. Declare `workflow.default_configuration` in `target.json`.
+1. Add `targets/<id>/target.json` and its target Nix module. Start with
+   `paths.components` and `workflow.default_configuration` set to `null`.
+2. Run `project analyze` and inspect the generated proposals with
+   `component list`.
 3. Add exactly one entry to `targets/registry.nix`.
 4. Instantiate `sdk.workflow.pe32`; do not import private files under `nix/`.
 5. Return `sdk.target.pe32Bundle` with acquired inputs and target-specific
    checks. Standard component and acceptance checks are added automatically.
-6. Add portable source only through reviewed component entries.
+6. Add component intent, set its path and default configuration atomically,
+   then add portable source only through reviewed component entries.
 
 No root-flake, generic Nix-module, Python, or Lean change is required unless the
 new target demonstrates a genuinely reusable missing capability.

@@ -20,8 +20,8 @@ from .intent import ComponentIntentError
 from .source import load_component_source_package
 
 
-_TOOL_ID = "spaghetti-extractor-component-exhaustive-evaluator"
-_TOOL_VERSION = 1
+_TOOL_ID = "spaghetti-extractor-component-evidence-evaluator"
+_TOOL_VERSION = 2
 _CTYPE_BY_NAME = {
     "uint8_t": ctypes.c_uint8,
     "uint16_t": ctypes.c_uint16,
@@ -47,7 +47,7 @@ def produce_component_evidence(
     compiler: Path | str,
     out: Path | str,
 ) -> dict[str, object]:
-    """Compile portable C and compare it exhaustively with exact machine IR.
+    """Compile portable C and evaluate the declared candidate-only evidence.
 
     The original binary is never executed. Unsupported source ABIs, semantics,
     or domains are reported as ``incomplete``; a concrete mismatch is
@@ -79,7 +79,10 @@ def produce_component_evidence(
     if source.get("lift_unit_id") != lift_unit_id:
         issues.append(_issue("violated", "component_source_identity_mismatch"))
     producer = verification_payload.get("producer")
-    if producer != "exhaustive-finite-domain-v1":
+    if producer not in {
+        "exhaustive-finite-domain-v1",
+        "candidate-only-functional-suite-v1",
+    }:
         issues.append(
             _issue(
                 "incomplete",
@@ -90,14 +93,6 @@ def produce_component_evidence(
 
     try:
         parameters, result = _logical_signature(interface)
-        domains = _parameter_domains(verification_payload, parameters)
-        case_count = 1
-        for domain in domains:
-            case_count *= len(domain)
-        if case_count > 1_000_000:
-            raise _UnsupportedSemantics(
-                f"declared finite domain contains {case_count} cases"
-            )
         if issues:
             raise _UnsupportedSemantics("prerequisite contract or producer is not usable")
         library_path = Path(out).with_suffix(".component.so")
@@ -108,13 +103,37 @@ def produce_component_evidence(
             output=library_path,
         )
         function = _load_logical_function(library_path, source, parameters, result)
-        machine = _MachineProgram(Path(machine_ir), tuple(lift_unit["unit_ids"]))
-        for values in itertools.product(*domains):
-            arguments = dict(zip((row["id"] for row in parameters), values, strict=True))
-            expected = machine.evaluate(interface, arguments)
+        width = _ctype_width(_string(result.get("type"), "logical result type"))
+        mask = (1 << width) - 1
+        if producer == "exhaustive-finite-domain-v1":
+            domains = _parameter_domains(verification_payload, parameters)
+            case_count = 1
+            for domain in domains:
+                case_count *= len(domain)
+            if case_count > 1_000_000:
+                raise _UnsupportedSemantics(
+                    f"declared finite domain contains {case_count} cases"
+                )
+            vectors = (
+                (
+                    f"domain-{index}",
+                    dict(zip((row["id"] for row in parameters), values, strict=True)),
+                    None,
+                )
+                for index, values in enumerate(itertools.product(*domains))
+            )
+            machine = _MachineProgram(Path(machine_ir), tuple(lift_unit["unit_ids"]))
+        else:
+            vectors = iter(_functional_cases(verification_payload, parameters))
+            machine = None
+        for case_id, arguments, declared_expected in vectors:
+            expected = (
+                machine.evaluate(interface, arguments)
+                if machine is not None
+                else int(declared_expected)
+            )
+            values = tuple(int(arguments[str(row["id"])]) for row in parameters)
             observed = int(function(*values))
-            width = _ctype_width(_string(result.get("type"), "logical result type"))
-            mask = (1 << width) - 1
             observed &= mask
             expected &= mask
             cases += 1
@@ -122,6 +141,7 @@ def produce_component_evidence(
                 counterexamples.append(
                     {
                         "case_index": cases - 1,
+                        "case_id": case_id,
                         "arguments": arguments,
                         "expected": expected,
                         "observed": observed,
@@ -175,11 +195,7 @@ def produce_component_evidence(
             "tool_id": _TOOL_ID,
             "tool_version": _TOOL_VERSION,
         },
-        "method": {
-            "kind": "exhaustive_finite_domain_v1",
-            "complete_for_declared_domain": status != "incomplete",
-            "candidate_only": True,
-        },
+        "method": _method(producer, status),
         "coverage": {
             "cases": cases,
             "counterexamples": len(counterexamples),
@@ -258,7 +274,7 @@ def _logical_signature(
     ]
     if len(results) != 1:
         raise _UnsupportedSemantics(
-            "exhaustive logical-c-v1 evidence requires exactly one value result"
+            "logical-c-v1 evidence requires exactly one value result"
         )
     for row in (*parameters, results[0]):
         _ctype(_string(row.get("type"), "logical C type"))
@@ -291,6 +307,63 @@ def _parameter_domains(
             raise _UnsupportedSemantics(f"parameter {identity} range is malformed")
         result.append(range(minimum, maximum + 1))
     return result
+
+
+def _functional_cases(
+    verification: Mapping[str, object], parameters: Sequence[Mapping[str, object]]
+) -> list[tuple[str, dict[str, int], int]]:
+    expected_ids = [str(row.get("id")) for row in parameters]
+    result: list[tuple[str, dict[str, int], int]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(_array(verification.get("cases", []), "verification cases")):
+        row = _object(raw, f"verification case {index}")
+        identity = _string(row.get("id"), f"verification case {index} id")
+        if identity in seen:
+            raise _UnsupportedSemantics("functional case identifiers are duplicated")
+        seen.add(identity)
+        arguments = _object(row.get("arguments"), f"verification case {identity} arguments")
+        if set(arguments) != set(expected_ids):
+            raise _UnsupportedSemantics(
+                f"functional case {identity} arguments do not cover the logical parameters"
+            )
+        if any(
+            not isinstance(value, int) or isinstance(value, bool)
+            for value in arguments.values()
+        ):
+            raise _UnsupportedSemantics(
+                f"functional case {identity} arguments must be integers"
+            )
+        expected = row.get("expected")
+        if not isinstance(expected, int) or isinstance(expected, bool):
+            raise _UnsupportedSemantics(
+                f"functional case {identity} expected value must be an integer"
+            )
+        result.append(
+            (
+                identity,
+                {name: int(arguments[name]) for name in expected_ids},
+                expected,
+            )
+        )
+    if not result:
+        raise _UnsupportedSemantics("candidate-only functional suite has no cases")
+    return result
+
+
+def _method(producer: object, status: str) -> dict[str, object]:
+    if producer == "exhaustive-finite-domain-v1":
+        return {
+            "kind": "exhaustive_finite_domain_v1",
+            "complete_for_declared_domain": status != "incomplete",
+            "candidate_only": True,
+        }
+    if producer == "candidate-only-functional-suite-v1":
+        return {
+            "kind": "candidate_only_functional_suite_v1",
+            "complete_for_declared_cases": status != "incomplete",
+            "candidate_only": True,
+        }
+    return {"kind": "unsupported", "candidate_only": True}
 
 
 class _MachineProgram:

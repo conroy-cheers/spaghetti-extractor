@@ -83,6 +83,64 @@ class ComponentEvidenceTests(unittest.TestCase):
         self.assertEqual(counterexample["expected"], 0)
         self.assertEqual(counterexample["observed"], 1)
 
+    def test_candidate_only_functional_vectors_qualify_validation_profile(self) -> None:
+        self._write_contract(profile="validation-backed-v1")
+        verification = {
+            "producer": "candidate-only-functional-suite-v1",
+            "cases": [
+                {"id": "zero", "arguments": {"value": 0}, "expected": 0},
+                {"id": "high", "arguments": {"value": 255}, "expected": 255},
+            ],
+        }
+        package = self._source("uint32_t identity(uint32_t value) { return value; }\n")
+        evidence = produce_component_evidence(
+            contract=self.contract,
+            implementation=package,
+            machine_ir=self.machine,
+            verification=verification,
+            compiler=shutil.which("cc") or "cc",
+            out=self.root / "functional-evidence.json",
+        )
+        self.assertEqual(evidence["status"], "satisfied")
+        self.assertEqual(evidence["method"]["kind"], "candidate_only_functional_suite_v1")
+        self.assertEqual(evidence["coverage"]["cases"], 2)
+        qualification = qualify_lift_unit(
+            contract=self.contract / "contract.json",
+            implementation=package,
+            evidence=evidence,
+            machine_ir=self.machine,
+            verification=verification,
+            out=self.root / "functional-qualification.json",
+        )
+        self.assertEqual(qualification["status"], "qualified")
+        self.assertEqual(
+            qualification["assurance"]["kind"],
+            "candidate_only_declared_functional_cases",
+        )
+        self.assertTrue(qualification["assurance"]["declared_cases_satisfied"])
+
+    def test_functional_vector_mismatch_reports_case_id(self) -> None:
+        self._write_contract(profile="validation-backed-v1")
+        verification = {
+            "producer": "candidate-only-functional-suite-v1",
+            "cases": [
+                {"id": "bad-one", "arguments": {"value": 1}, "expected": 2}
+            ],
+        }
+        package = self._source("uint32_t identity(uint32_t value) { return value; }\n")
+        evidence = produce_component_evidence(
+            contract=self.contract,
+            implementation=package,
+            machine_ir=self.machine,
+            verification=verification,
+            compiler=shutil.which("cc") or "cc",
+            out=self.root / "functional-violated.json",
+        )
+        self.assertEqual(evidence["status"], "violated")
+        self.assertEqual(
+            evidence["coverage"]["first_counterexample"]["case_id"], "bad-one"
+        )
+
     def _source(self, text: str) -> Path:
         self.source_file.write_text(
             "#include <stdint.h>\n" + text,
@@ -160,7 +218,7 @@ class ComponentEvidenceTests(unittest.TestCase):
         }
         _write(self.machine / "machine-ir-manifest.json", manifest)
 
-    def _write_contract(self) -> None:
+    def _write_contract(self, *, profile: str = "bounded-equivalence-v1") -> None:
         expression = json.loads(
             (self.machine / "machine-ir.jsonl").read_text(encoding="ascii")
         )["semantics"]["register_writes"][0]["value"]
@@ -216,7 +274,7 @@ class ComponentEvidenceTests(unittest.TestCase):
                 "id": "identity",
                 "label": "Identity",
                 "unit_ids": ["unit:identity"],
-                "evidence_profile": "bounded-equivalence-v1",
+                "evidence_profile": profile,
             },
             "bindings": {},
             "authority": {},
