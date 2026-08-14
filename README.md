@@ -54,7 +54,10 @@ spaghetti-extractor project check gnu-hello
 
 A newly registered target does not need component intent up front. Its analysis
 and authority graph can run first; `component list <target>` then displays
-generated boundary proposals. Component build and candidate commands remain
+the compact selector index from a bounded v2 proposal package. Rich proposal
+diagnostics are stored in stable hash buckets and only the selected record is
+read during operator resolution; the producer validates every record once
+before publishing the package. Component build and candidate commands remain
 unavailable until reviewed intent and a default configuration are declared
 together.
 

@@ -18,7 +18,7 @@ let
   };
 in
 pkgs.runCommand
-  "${namePrefix}-component-proposals-v1"
+  "${namePrefix}-component-proposals-v2"
   {
     nativeBuildInputs = [ pythonEnv pkgs.jq ];
     preferLocalBuild = false;
@@ -34,10 +34,13 @@ pkgs.runCommand
     ${pythonEnv}/bin/python3 - \
       ${machineIr} \
       ${reconstructionPlan}/reconstruction-plan.json \
-      "$out/component-proposals.json" <<'PY'
+      "$out" <<'PY'
     import pathlib
     import sys
     from spaghetti_extractor.components.discovery import write_component_proposals
+    from spaghetti_extractor.components.proposal_package import (
+        load_component_proposal_package_v2,
+    )
 
     write_component_proposals(
         machine_ir=pathlib.Path(sys.argv[1]),
@@ -46,16 +49,22 @@ pkgs.runCommand
         max_units=${toString maxUnits},
         max_candidates_per_seed=${toString maxCandidatesPerSeed},
     )
+    load_component_proposal_package_v2(sys.argv[3]).validate_all_proposals()
     PY
     jq -e '
-      .format == "stage-b-component-proposal-set-v1" and
+      .format == "spaghetti-extractor-component-proposal-package-v2" and
+      (.package_sha256 | type == "string")
+    ' "$out/manifest.json" >/dev/null
+    jq -e '
+      .format == "spaghetti-extractor-component-proposal-index-v2" and
       (.status == "proposed" or .status == "incomplete") and
       (.executes_original_binary | not) and
       (.authority.can_authorize_replacement | not) and
       .authority.requires_operator_selection and
       .authority.requires_interface_refinement and
-      .coverage.exact.complete and .coverage.potential.complete and
       (.proposals | length) > 0 and
-      (.proposal_set_sha256 | type == "string")
-    ' "$out/component-proposals.json" >/dev/null
+      (.index_sha256 | type == "string")
+    ' "$out/proposal-index.json" >/dev/null
+    jq -e '.exact.complete and .potential.complete' \
+      "$out/coverage.json" >/dev/null
   ''

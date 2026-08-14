@@ -111,11 +111,20 @@ Machine-consumed JSON is emitted in canonical compact form. On the GNU Hello
 analysis artifacts this reduced the exact reference contract from 70.2 MiB to
 30.5 MiB, ABI callsites from 57.1 MiB to 25.5 MiB, the machine-IR manifest from
 32.1 MiB to 18.0 MiB, and the reconstruction plan from 59.0 MiB to 30.8 MiB.
+The v2 component-proposal package is 59 MiB instead of the former 143.5 MiB
+monolith: its selector index is 8,153,250 bytes and its 64 bounded rich-record
+packs total 33,871,985 compressed bytes, with a 666,639-byte largest pack.
+Semantic proposal metadata lives in the selector index; the package manifest
+is only a transport inventory. The producer validates all records once in pack
+order,
+while component resolution validates only the index and selected record.
 Exact ISA request planning for 21,040 unique instruction locations takes about
 0.33 seconds after replacing pairwise overlap discovery with one canonical sort
-and adjacent-interval check. These are phase-local measurements; the current
-cold GNU Hello analysis still takes about three minutes because later proposal
-and authority phases remain large and partly serialized.
+and adjacent-interval check. Rebuilding the real GNU Hello proposal package
+from warm upstream analysis inputs took 97.7 seconds after the package
+migration. Warm `component status` still takes 37.1 seconds because its Nix
+derivation currently retains a dependency on the complete proposal package;
+narrow selected-proposal derivations remain a separate invalidation task.
 
 Framework-owned planning for the 9,041-unit DX-Ball structural universe takes
 about 1.70 seconds and 73 MiB RSS. The controlled Nix mutation fixture verifies

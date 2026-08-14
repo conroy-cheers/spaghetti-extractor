@@ -92,6 +92,10 @@ executed or traced during repair iteration.
    `paths.components` and `workflow.default_configuration` set to `null`.
 2. Run `project analyze` and inspect the generated proposals with
    `component list`.
+   The list is served from the compact v2 selector index. The analysis
+   producer has already checked every rich proposal pack, while selection
+   rechecks the chosen record and its exact machine-unit bindings without
+   decoding unrelated diagnostic packs.
 3. Add exactly one entry to `targets/registry.nix`.
 4. Instantiate `sdk.workflow.pe32`; do not import private files under `nix/`.
 5. Return `sdk.target.pe32Bundle` with acquired inputs and target-specific

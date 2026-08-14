@@ -1,3 +1,4 @@
+# spaghetti-extractor-python-role: developer
 { pkgs, pythonEnv, pythonSource }:
 
 let
@@ -111,11 +112,15 @@ let
   fixture = pkgs.runCommand "spaghetti-extractor-components-fixture"
     { nativeBuildInputs = [ pythonEnv ]; __contentAddressed = true; } ''
       mkdir -p "$out"
+      export PYTHONPATH=${pythonSource}/src
       python - "$out" <<'PY'
       import hashlib
       import json
       import pathlib
       import sys
+      from spaghetti_extractor.components.proposal_package import (
+          write_component_proposal_package_v2,
+      )
 
       root = pathlib.Path(sys.argv[1])
 
@@ -137,7 +142,11 @@ let
           return {
               "id": identity,
               "reachability": "reachable",
-              "source": {"original": {"rva_start": start, "rva_end": start + 1}},
+              "source": {
+                  "contract_sha256": canonical({"contract": identity}),
+                  "instruction_bytes_sha256": canonical({"instructions": identity}),
+                  "original": {"rva_start": start, "rva_end": start + 1},
+              },
               "semantics": {
                   "outcome": {
                       "kind": "return",
@@ -175,8 +184,63 @@ let
       }
       plan["plan_sha256"] = canonical(plan)
       write(root / "reconstruction-plan.json", plan)
+      unit_bindings = {
+          row["id"]: {
+              "unit_id": row["id"],
+              "contract_sha256": row["source"]["contract_sha256"],
+              "instruction_bytes_sha256": row["source"]["instruction_bytes_sha256"],
+          }
+          for row in units
+      }
+      proposal_rows = [
+              {
+                  "id": "proposal:a",
+                  "status": "proposed",
+                  "proposal_kinds": ["singleton"],
+                  "membership": {
+                      "unit_ids": ["unit:a"], "unit_count": 1,
+                      "rva_start": 4096, "rva_end": 4097,
+                      "noncontiguous": False,
+                  },
+                  "bindings": {"membership_bindings_sha256": canonical([unit_bindings["unit:a"]])},
+                  "blockers": [],
+              },
+              {
+                  "id": "proposal:b",
+                  "status": "proposed",
+                  "proposal_kinds": ["singleton"],
+                  "membership": {
+                      "unit_ids": ["unit:b"], "unit_count": 1,
+                      "rva_start": 4112, "rva_end": 4113,
+                      "noncontiguous": False,
+                  },
+                  "bindings": {"membership_bindings_sha256": canonical([unit_bindings["unit:b"]])},
+                  "blockers": [],
+              },
+              {
+                  "id": "proposal:c",
+                  "status": "proposed",
+                  "proposal_kinds": ["singleton"],
+                  "membership": {
+                      "unit_ids": ["unit:c"], "unit_count": 1,
+                      "rva_start": 4128, "rva_end": 4129,
+                      "noncontiguous": False,
+                  },
+                  "bindings": {"membership_bindings_sha256": canonical([unit_bindings["unit:c"]])},
+                  "blockers": [],
+              },
+          ]
+      for proposal in proposal_rows:
+          proposal["proposal_sha256"] = canonical(proposal)
       proposals = {
-          "format": "stage-b-component-proposal-set-v1",
+          "format": "spaghetti-extractor-component-discovery-result-v2",
+          "status": "proposed",
+          "authority": {
+              "class": "untrusted_component_discovery_proposals",
+              "can_authorize_replacement": False,
+              "requires_operator_selection": True,
+              "requires_interface_refinement": True,
+          },
           "executes_original_binary": False,
           "bindings": {
               "machine_ir_sha256": ir_hash,
@@ -184,36 +248,29 @@ let
               "reconstruction_plan_sha256": plan["plan_sha256"],
               "original_binary_sha256": "1" * 64,
           },
-          "proposals": [
-              {
-                  "id": "proposal:a",
-                  "proposal_kinds": ["singleton"],
-                  "membership": {"unit_ids": ["unit:a"], "rva_start": 4096, "rva_end": 4097},
-                  "bindings": {"membership_bindings_sha256": "2" * 64},
-              },
-              {
-                  "id": "proposal:b",
-                  "proposal_kinds": ["singleton"],
-                  "membership": {"unit_ids": ["unit:b"], "rva_start": 4112, "rva_end": 4113},
-                  "bindings": {"membership_bindings_sha256": "3" * 64},
-              },
-              {
-                  "id": "proposal:c",
-                  "proposal_kinds": ["singleton"],
-                  "membership": {"unit_ids": ["unit:c"], "rva_start": 4128, "rva_end": 4129},
-                  "bindings": {"membership_bindings_sha256": "4" * 64},
-              },
-          ],
+          "limits": {
+              "max_units_per_candidate": 512,
+              "max_candidates_per_seed": 12,
+              "path_search_depth": 64,
+          },
+          "graph_facts": {"nodes": list(unit_bindings.values())},
+          "seed_index": [],
+          "proposals": proposal_rows,
+          "coverage": {},
+          "issues": [],
       }
-      proposals["proposal_set_sha256"] = canonical(proposals)
-      write(root / "component-proposals.json", proposals)
+      proposals["discovery_result_sha256"] = canonical(proposals)
+      write_component_proposal_package_v2(
+          payload=proposals,
+          out=root / "component-proposals",
+      )
       PY
     '';
   mkDag = reviewRoot: sourceRoot: import ../stage-b-components.nix {
     inherit pkgs pythonEnv pythonSource intent;
     machineIr = fixture;
     reconstructionPlan = fixture;
-    componentProposals = fixture;
+    componentProposals = "${fixture}/component-proposals";
     inherit reviewRoot sourceRoot;
     namePrefix = "spaghetti-extractor-components-fixture";
     interpreterPackage = interpreter;

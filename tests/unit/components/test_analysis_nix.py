@@ -35,8 +35,9 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("padding-bridge", analysis)
         self.assertNotIn("padding_bridge", analysis)
         self.assertIn("executes_original_binary", analysis)
-        self.assertIn(".coverage.exact.complete", discovery)
-        self.assertIn(".coverage.potential.complete", discovery)
+        self.assertIn('"$out/coverage.json"', discovery)
+        self.assertIn(".exact.complete and .potential.complete", discovery)
+        self.assertIn('"$out/proposal-index.json"', discovery)
 
     def test_component_dag_has_granular_phase_inputs(self) -> None:
         module = (ROOT / "nix" / "stage-b-components.nix").read_text(

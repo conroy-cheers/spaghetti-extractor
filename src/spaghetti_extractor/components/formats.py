@@ -3,6 +3,19 @@
 COMPONENT_CATALOG_INTENT_V2_FORMAT = (
     "spaghetti-extractor-component-catalog-intent-v2"
 )
+COMPONENT_DISCOVERY_RESULT_V2_FORMAT = (
+    "spaghetti-extractor-component-discovery-result-v2"
+)
+COMPONENT_PROPOSAL_PACKAGE_V2_FORMAT = (
+    "spaghetti-extractor-component-proposal-package-v2"
+)
+COMPONENT_PROPOSAL_INDEX_V2_FORMAT = (
+    "spaghetti-extractor-component-proposal-index-v2"
+)
+COMPONENT_UNIT_BINDING_INDEX_V2_FORMAT = (
+    "spaghetti-extractor-component-unit-binding-index-v2"
+)
+COMPONENT_PROPOSAL_RECORD_V2_KIND = "component-proposal-v2"
 COMPONENT_RESOLUTION_V2_FORMAT = "spaghetti-extractor-component-resolution-v2"
 COMPONENT_BOUNDARY_REVIEW_V2_FORMAT = (
     "spaghetti-extractor-component-boundary-review-v2"
@@ -44,6 +57,11 @@ PORTABLE_SELECTION_V3_FORMAT = "spaghetti-extractor-portable-selection-v3"
 __all__ = [
     "COMPONENT_ACTIVATION_PLAN_V3_FORMAT",
     "COMPONENT_CONFIGURATION_STATUS_V1_FORMAT",
+    "COMPONENT_DISCOVERY_RESULT_V2_FORMAT",
+    "COMPONENT_PROPOSAL_INDEX_V2_FORMAT",
+    "COMPONENT_PROPOSAL_PACKAGE_V2_FORMAT",
+    "COMPONENT_PROPOSAL_RECORD_V2_KIND",
+    "COMPONENT_UNIT_BINDING_INDEX_V2_FORMAT",
     "COMPONENT_BOUNDARY_REVIEW_V2_FORMAT",
     "COMPONENT_CATALOG_INTENT_V2_FORMAT",
     "COMPONENT_CONFIGURATION_RESOLUTION_V2_FORMAT",

@@ -272,6 +272,7 @@ content-addressed component workflow DAG.
 | Module | Purpose |
 |---|---|
 | `components/discovery.py`, `components/discovery_model.py`, `components/discovery_schema.py`, `components/discovery_checker.py`, `components/discovery_render.py` | Proposes coarsened component candidates with isolated models, schemas, checks, and rendering. |
+| `components/proposal_package.py` | Writes and checks the v2 component-proposal package: compact selector index, exact unit-binding sidecar, bounded rich-record packs, selected-record lookup, and a separate complete producer audit. |
 | `components/intent.py`, `components/model.py` | Strict authored leaves, overlapping alternative groups, and non-overlapping configurations. |
 | `components/resolution.py` | Binds component selectors and groups to exact machine units. |
 | `components/contracts.py` | Derives and checks one independently liftable machine boundary. |
@@ -386,7 +387,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `bochs-conformance.nix` | Pinned batched Bochs adapter. |
 | `machine-import-control-profile.nix` | Content-addressed no-return import projection that isolates machine IR from ordinary API-profile edits. |
 | `stage-b-component-analysis.nix` | Original inventory through component proposals. |
-| `stage-b-component-discovery.nix` | Independent proposal phase. |
+| `stage-b-component-discovery.nix` | Independent proposal phase; publishes the bounded v2 package only after streaming every rich record through its complete integrity audit. |
 | `stage-b-interpreter-package.nix` | Machine-IR interpreter package. |
 | `stage-b-native-object-graph.nix` | Controlled-IFD source normalization plus independently content-addressed native objects and assembly; a changed compile bundle invalidates only its object and final package. |
 | `stage-b-hybrid-candidate.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |

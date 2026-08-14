@@ -55,7 +55,6 @@ SEMANTIC_COMPONENT_DECLARATIONS_FORMAT = (
     "stage-b-semantic-component-declarations-v1"
 )
 SEMANTIC_COMPONENT_CATALOG_FORMAT = "stage-b-semantic-component-catalog-v1"
-COMPONENT_PROPOSAL_SET_FORMAT = "stage-b-component-proposal-set-v1"
 COMPONENT_INTERFACE_SPEC_FORMAT = "stage-b-component-interface-spec-v1"
 COMPONENT_INTERFACE_REFINEMENT_FORMAT = (
     "stage-b-component-interface-refinement-v1"
@@ -83,7 +82,6 @@ LIBRARY_REPLACEMENT_PLAN_FORMAT = "stage-b-library-replacement-plan-v1"
 __all__ = [
     "COMPONENT_INTERFACE_REFINEMENT_FORMAT",
     "COMPONENT_INTERFACE_SPEC_FORMAT",
-    "COMPONENT_PROPOSAL_SET_FORMAT",
     "COMPONENT_QUALIFICATION_FORMAT",
     "INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT",
     "CALLBACK_ADAPTER_RECEIPT_FORMAT",

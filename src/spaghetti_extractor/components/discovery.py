@@ -29,7 +29,6 @@ from .discovery_checker import (
     _strong_components,
 )
 from .discovery_model import (
-    COMPONENT_PROPOSAL_SET_FORMAT,
     MACHINE_IR_FORMAT,
     PROPOSAL_SET_FORMAT,
     RECONSTRUCTION_PLAN_FORMAT,
@@ -55,6 +54,7 @@ from .discovery_render import (
     _proposal_payload,
 )
 from .discovery_schema import _load_inputs
+from .proposal_package import write_component_proposal_package_v2
 
 
 def discover_component_proposals(
@@ -274,7 +274,7 @@ def discover_component_proposals(
         "coverage": coverage,
         "issues": issues,
     }
-    return {**core, "proposal_set_sha256": _canonical_sha256(core)}
+    return {**core, "discovery_result_sha256": _canonical_sha256(core)}
 
 
 def _attach_component_call_alternatives(
@@ -384,7 +384,7 @@ def write_component_proposals(
     max_units: int = 512,
     max_candidates_per_seed: int = 12,
 ) -> dict[str, Any]:
-    """Discover proposals and write their canonical JSON artifact."""
+    """Discover proposals and write a selectively readable v2 package."""
 
     payload = discover_component_proposals(
         machine_ir=machine_ir,
@@ -392,11 +392,9 @@ def write_component_proposals(
         max_units=max_units,
         max_candidates_per_seed=max_candidates_per_seed,
     )
-    path = Path(out)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
+    write_component_proposal_package_v2(
+        payload=payload,
+        out=Path(out),
     )
     return payload
 
@@ -962,7 +960,6 @@ def _candidate_blockers(
 
 
 __all__ = [
-    "COMPONENT_PROPOSAL_SET_FORMAT",
     "ComponentDiscoveryError",
     "PROPOSAL_SET_FORMAT",
     "discover_component_proposals",

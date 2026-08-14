@@ -234,7 +234,7 @@ def _component_list(args: argparse.Namespace) -> int:
     components = _components_from_index(index)
     if index.get("hasComponents") is not True:
         proposals = _realize_json(
-            args, "components.proposals", "component-proposals.json"
+            args, "components.proposals", "proposal-index.json"
         )
         if args.json:
             print(json.dumps(proposals, indent=2, sort_keys=True))

@@ -86,7 +86,7 @@ let
     ${environment resolutionSource}
     mkdir -p "$out"
     ${python} - \
-      ${componentProposals}/component-proposals.json \
+      ${componentProposals} \
       ${intent} \
       "$out/component-resolution.json" <<'PY'
     import pathlib

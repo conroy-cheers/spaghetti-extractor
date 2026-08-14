@@ -8,10 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.artifacts.formats import (
-    COMPONENT_PROPOSAL_SET_FORMAT,
-    RECONSTRUCTION_PLAN_FORMAT,
-)
+from spaghetti_extractor.artifacts.formats import RECONSTRUCTION_PLAN_FORMAT
 from spaghetti_extractor.components.formats import (
     COMPONENT_BOUNDARY_REVIEW_V2_FORMAT,
     COMPONENT_CATALOG_INTENT_V2_FORMAT,
@@ -27,6 +24,9 @@ from spaghetti_extractor.components.intent import (
     load_component_catalog_intent,
 )
 from spaghetti_extractor.components.resolution import resolve_component_catalog
+from spaghetti_extractor.components.proposal_package import (
+    write_component_proposal_package_v2,
+)
 from spaghetti_extractor.components.source import (
     build_component_source_package,
     load_component_source_package,
@@ -41,7 +41,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
         (self.root / "a.c").write_text("int a(void) { return 1; }\n", encoding="ascii")
         (self.root / "b.c").write_text("int b(void) { return 2; }\n", encoding="ascii")
         self.intent = self.root / "components.json"
-        self.proposals = self.root / "proposals.json"
+        self.proposals = self.root / "proposals"
         self.machine = self.root / "machine"
         self.machine.mkdir()
         self.plan = self.root / "reconstruction-plan.json"
@@ -600,8 +600,59 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
         manifest_path = self.machine / "machine-ir-manifest.json"
         ir_path = self.machine / "machine-ir.jsonl"
         plan = json.loads(self.plan.read_text(encoding="utf-8"))
-        core = {
-                    "format": COMPONENT_PROPOSAL_SET_FORMAT,
+        unit_bindings = {
+            identity: {
+                "unit_id": identity,
+                "contract_sha256": _canonical_sha256(
+                    {"kind": "contract", "unit_id": identity}
+                ),
+                "instruction_bytes_sha256": _canonical_sha256(
+                    {"kind": "instructions", "unit_id": identity}
+                ),
+            }
+            for identity in ("unit:a", "unit:b")
+        }
+        proposals = [
+                        {
+                            "id": "proposal:a",
+                            "status": "proposed",
+                            "proposal_kinds": ["singleton"],
+                            "membership": {
+                                "unit_ids": ["unit:a"],
+                                "unit_count": 1,
+                                "rva_start": 0x1000,
+                                "rva_end": 0x1010,
+                                "noncontiguous": False,
+                            },
+                            "bindings": {"membership_bindings_sha256": _canonical_sha256([unit_bindings["unit:a"]])},
+                            "blockers": [],
+                        },
+                        {
+                            "id": "proposal:b",
+                            "status": "proposed",
+                            "proposal_kinds": ["singleton"],
+                            "membership": {
+                                "unit_ids": ["unit:b"],
+                                "unit_count": 1,
+                                "rva_start": 0x1010,
+                                "rva_end": 0x1020,
+                                "noncontiguous": False,
+                            },
+                            "bindings": {"membership_bindings_sha256": _canonical_sha256([unit_bindings["unit:b"]])},
+                            "blockers": [],
+                        },
+                    ]
+        for proposal in proposals:
+            proposal["proposal_sha256"] = _canonical_sha256(proposal)
+        payload = {
+                    "format": "spaghetti-extractor-component-discovery-result-v2",
+                    "status": "proposed",
+                    "authority": {
+                        "class": "untrusted_component_discovery_proposals",
+                        "can_authorize_replacement": False,
+                        "requires_operator_selection": True,
+                        "requires_interface_refinement": True,
+                    },
                     "executes_original_binary": False,
                     "bindings": {
                         "machine_ir_sha256": _file_sha256(ir_path),
@@ -609,31 +660,19 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
                         "reconstruction_plan_sha256": plan["plan_sha256"],
                         "original_binary_sha256": "1" * 64,
                     },
-                    "proposals": [
-                        {
-                            "id": "proposal:a",
-                            "proposal_kinds": ["singleton"],
-                            "membership": {
-                                "unit_ids": ["unit:a"],
-                                "rva_start": 0x1000,
-                                "rva_end": 0x1010,
-                            },
-                            "bindings": {"membership_bindings_sha256": "2" * 64},
-                        },
-                        {
-                            "id": "proposal:b",
-                            "proposal_kinds": ["singleton"],
-                            "membership": {
-                                "unit_ids": ["unit:b"],
-                                "rva_start": 0x1010,
-                                "rva_end": 0x1020,
-                            },
-                            "bindings": {"membership_bindings_sha256": "3" * 64},
-                        },
-                    ],
+                    "limits": {
+                        "max_units_per_candidate": 512,
+                        "max_candidates_per_seed": 12,
+                        "path_search_depth": 64,
+                    },
+                    "graph_facts": {"nodes": list(unit_bindings.values())},
+                    "seed_index": [],
+                    "proposals": proposals,
+                    "coverage": {},
+                    "issues": [],
                 }
-        payload = {**core, "proposal_set_sha256": _canonical_sha256(core)}
-        self.proposals.write_text(json.dumps(payload), encoding="utf-8")
+        payload["discovery_result_sha256"] = _canonical_sha256(payload)
+        write_component_proposal_package_v2(payload=payload, out=self.proposals)
 
     def _write_machine_inputs(self) -> None:
         units = [

@@ -8,7 +8,6 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Mapping
 
-from ..artifacts.formats import COMPONENT_PROPOSAL_SET_FORMAT
 from ..util import write_json
 from .formats import (
     COMPONENT_CONFIGURATION_RESOLUTION_V2_FORMAT,
@@ -16,25 +15,20 @@ from .formats import (
 )
 from .intent import ComponentIntentError, load_component_catalog_intent
 from .model import ComponentCatalogIntent
+from .proposal_package import load_component_proposal_package_v2
 
 
 def resolve_component_catalog(
     *, proposals: Path | str, intent: Path | str, out: Path | str
 ) -> dict[str, object]:
-    proposal_path = Path(proposals)
     try:
-        proposal_set = json.loads(proposal_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        proposal_package = load_component_proposal_package_v2(proposals)
+    except ValueError as exc:
         raise ComponentIntentError(f"cannot read component proposals: {exc}") from exc
-    if not isinstance(proposal_set, Mapping) or proposal_set.get("format") != COMPONENT_PROPOSAL_SET_FORMAT:
-        raise ComponentIntentError("unsupported component proposal-set format")
-    _check_proposal_set(proposal_set)
-    if proposal_set.get("executes_original_binary") is not False:
-        raise ComponentIntentError("component proposal set has invalid runtime authority")
     catalog = load_component_catalog_intent(intent, require_references=False)
-    proposals_raw = proposal_set.get("proposals")
+    proposals_raw = proposal_package.index.get("proposals")
     if not isinstance(proposals_raw, list):
-        raise ComponentIntentError("component proposal set has no proposal array")
+        raise ComponentIntentError("component proposal index has no proposal array")
     resolved_components: dict[str, dict[str, object]] = {}
     for component in catalog.components:
         matches = [
@@ -46,7 +40,21 @@ def resolve_component_catalog(
             raise ComponentIntentError(
                 f"component {component.identity} resolved to {len(matches)} proposals"
             )
-        proposal = matches[0]
+        proposal_id = matches[0].get("id")
+        if not isinstance(proposal_id, str):
+            raise ComponentIntentError(
+                f"component {component.identity} proposal has no identity"
+            )
+        try:
+            proposal = proposal_package.get_proposal(proposal_id)
+        except ValueError as exc:
+            raise ComponentIntentError(
+                f"component {component.identity} proposal is stale: {exc}"
+            ) from exc
+        if not _proposal_matches(proposal, component.selector):
+            raise ComponentIntentError(
+                f"component {component.identity} selected proposal contradicts its index"
+            )
         membership = proposal.get("membership")
         if not isinstance(membership, Mapping):
             raise ComponentIntentError(
@@ -100,7 +108,9 @@ def resolve_component_catalog(
         "program_id": catalog.program_id,
         "executes_original_binary": False,
         "permitted_activation_profiles": list(catalog.permitted_activation_profiles),
-        "bindings": copy.deepcopy(dict(proposal_set.get("bindings", {}))),
+        "bindings": copy.deepcopy(
+            dict(proposal_package.index.get("bindings", {}))
+        ),
         "components": [resolved_components[key] for key in sorted(resolved_components)],
         "groups": [resolved_groups[key] for key in sorted(resolved_groups)],
         "configurations": configurations,
@@ -263,13 +273,3 @@ def _canonical_sha256(value: object) -> str:
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     return sha256(encoded).hexdigest()
-
-
-def _check_proposal_set(payload: Mapping[str, object]) -> None:
-    expected = payload.get("proposal_set_sha256")
-    if not isinstance(expected, str) or len(expected) != 64:
-        raise ComponentIntentError("component proposal set has no canonical self-hash")
-    core = copy.deepcopy(dict(payload))
-    core.pop("proposal_set_sha256", None)
-    if expected != _canonical_sha256(core):
-        raise ComponentIntentError("component proposal-set self-hash is stale")

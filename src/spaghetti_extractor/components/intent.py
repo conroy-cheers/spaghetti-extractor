@@ -35,7 +35,9 @@ _FORBIDDEN_GENERATED_KEYS = frozenset(
         "blockers",
         "counts",
         "proposal_id",
-        "proposal_set_sha256",
+        "discovery_result_sha256",
+        "index_sha256",
+        "package_sha256",
         "qualification_sha256",
         "status",
     }

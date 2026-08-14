@@ -14,6 +14,9 @@ from spaghetti_extractor.components.discovery import (
     discover_component_proposals,
     write_component_proposals,
 )
+from spaghetti_extractor.components.proposal_package import (
+    load_component_proposal_package_v2,
+)
 
 
 class ComponentDiscoveryTests(unittest.TestCase):
@@ -128,17 +131,31 @@ class ComponentDiscoveryTests(unittest.TestCase):
         self.assertFalse(first["authority"]["can_authorize_replacement"])
         issue_ids = [item["id"] for item in first["issues"]]
         self.assertEqual(len(issue_ids), len(set(issue_ids)))
-        core = {key: value for key, value in first.items() if key != "proposal_set_sha256"}
-        self.assertEqual(first["proposal_set_sha256"], _canonical_sha256(core))
+        core = {
+            key: value
+            for key, value in first.items()
+            if key != "discovery_result_sha256"
+        }
+        self.assertEqual(
+            first["discovery_result_sha256"], _canonical_sha256(core)
+        )
 
-        output = self.root / "proposals.json"
+        output = self.root / "proposal-package"
         written = write_component_proposals(
             machine_ir=self.machine,
             reconstruction_plan=self.plan_path,
             out=output,
         )
         self.assertEqual(written, first)
-        self.assertEqual(json.loads(output.read_text(encoding="utf-8")), first)
+        package = load_component_proposal_package_v2(output)
+        self.assertEqual(
+            package.index["counts"]["proposals"],
+            len(first["proposals"]),
+        )
+        self.assertEqual(
+            package.get_proposal(first["proposals"][0]["id"]),
+            first["proposals"][0],
+        )
 
         required = {
             "id",

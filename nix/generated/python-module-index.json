@@ -1570,7 +1570,8 @@
         "spaghetti_extractor.components.discovery_checker",
         "spaghetti_extractor.components.discovery_model",
         "spaghetti_extractor.components.discovery_render",
-        "spaghetti_extractor.components.discovery_schema"
+        "spaghetti_extractor.components.discovery_schema",
+        "spaghetti_extractor.components.proposal_package"
       ],
       "path": "src/spaghetti_extractor/components/discovery.py",
       "resources": []
@@ -1588,7 +1589,8 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.formats",
-        "spaghetti_extractor.components"
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats"
       ],
       "path": "src/spaghetti_extractor/components/discovery_model.py",
       "resources": []
@@ -1670,6 +1672,18 @@
       "path": "src/spaghetti_extractor/components/model.py",
       "resources": []
     },
+    "spaghetti_extractor.components.proposal_package": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.io",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/components/proposal_package.py",
+      "resources": []
+    },
     "spaghetti_extractor.components.qualification": {
       "dependencies": [
         "spaghetti_extractor",
@@ -1730,11 +1744,11 @@
     "spaghetti_extractor.components.resolution": {
       "dependencies": [
         "spaghetti_extractor",
-        "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.formats",
         "spaghetti_extractor.components.intent",
         "spaghetti_extractor.components.model",
+        "spaghetti_extractor.components.proposal_package",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/components/resolution.py",
@@ -4157,6 +4171,16 @@
       "role": "candidate"
     },
     {
+      "module": "spaghetti_extractor.components.proposal_package",
+      "owner": "nix/tests/components.nix",
+      "role": "developer"
+    },
+    {
+      "module": "spaghetti_extractor.components.proposal_package",
+      "owner": "nix/stage-b-component-discovery.nix",
+      "role": "proposal"
+    },
+    {
       "module": "spaghetti_extractor.components.qualification",
       "owner": "nix/stage-b-components.nix",
       "role": "candidate"
@@ -4588,6 +4612,7 @@
       "spaghetti_extractor.components.interface",
       "spaghetti_extractor.components.interface_schema",
       "spaghetti_extractor.components.model",
+      "spaghetti_extractor.components.proposal_package",
       "spaghetti_extractor.components.qualification",
       "spaghetti_extractor.components.region_replacement",
       "spaghetti_extractor.components.region_replacement_model",
@@ -4624,7 +4649,9 @@
     "developer": [
       "spaghetti_extractor",
       "spaghetti_extractor.artifacts",
+      "spaghetti_extractor.artifacts.artifact_set",
       "spaghetti_extractor.artifacts.formats",
+      "spaghetti_extractor.artifacts.io",
       "spaghetti_extractor.build_support",
       "spaghetti_extractor.build_support.architecture_manifest",
       "spaghetti_extractor.build_support.python_module_index",
@@ -4645,6 +4672,9 @@
       "spaghetti_extractor.commands",
       "spaghetti_extractor.commands.common",
       "spaghetti_extractor.commands.manifest",
+      "spaghetti_extractor.components",
+      "spaghetti_extractor.components.formats",
+      "spaghetti_extractor.components.proposal_package",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.extraction",
       "spaghetti_extractor.extraction.binary_inventory",
@@ -4857,6 +4887,7 @@
       "spaghetti_extractor.components.interface",
       "spaghetti_extractor.components.interface_schema",
       "spaghetti_extractor.components.model",
+      "spaghetti_extractor.components.proposal_package",
       "spaghetti_extractor.components.qualification",
       "spaghetti_extractor.components.region_replacement",
       "spaghetti_extractor.components.region_replacement_model",
@@ -4938,6 +4969,8 @@
       "spaghetti_extractor.components.discovery_model",
       "spaghetti_extractor.components.discovery_render",
       "spaghetti_extractor.components.discovery_schema",
+      "spaghetti_extractor.components.formats",
+      "spaghetti_extractor.components.proposal_package",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
       "spaghetti_extractor.external.callbacks",
