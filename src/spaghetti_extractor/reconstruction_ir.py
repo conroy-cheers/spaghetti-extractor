@@ -23,7 +23,7 @@ from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
 from ._contract_tools.common import BlockMapping
 from ._contract_tools.reference_contract import _semantic_transfer_contract
-from .analysis.cutpoints import semantic_cutpoint_spans_for_side
+from .extraction.cutpoints import semantic_cutpoint_spans_for_side
 from .callback_contracts import parse_callback_source
 from .authority_bindings_v2 import indirect_exit_id_v2
 from .indirect_target_dependency_v2 import (

@@ -19,9 +19,9 @@ let
       ../../../src/spaghetti_extractor/__init__.py
       ../../../src/spaghetti_extractor/artifact_set_v3.py
       ../../../src/spaghetti_extractor/phase_framework_v3.py
-      ../../../src/spaghetti_extractor/analysis_v3/__init__.py
-      ../../../src/spaghetti_extractor/analysis_v3/_schema.py
-      ../../../src/spaghetti_extractor/analysis_v3/planning.py
+      ../../../src/spaghetti_extractor/authority/__init__.py
+      ../../../src/spaghetti_extractor/authority/_schema.py
+      ../../../src/spaghetti_extractor/authority/planning.py
     ];
   };
   phaseFixtureSource = pkgs.lib.fileset.toSource {
@@ -38,13 +38,13 @@ let
         "$out/src/spaghetti_extractor/artifact_set_v3.py"
       ln -s ${frameworkSource}/src/spaghetti_extractor/phase_framework_v3.py \
         "$out/src/spaghetti_extractor/phase_framework_v3.py"
-      mkdir -p "$out/src/spaghetti_extractor/analysis_v3"
-      ln -s ${frameworkSource}/src/spaghetti_extractor/analysis_v3/__init__.py \
-        "$out/src/spaghetti_extractor/analysis_v3/__init__.py"
-      ln -s ${frameworkSource}/src/spaghetti_extractor/analysis_v3/_schema.py \
-        "$out/src/spaghetti_extractor/analysis_v3/_schema.py"
-      ln -s ${frameworkSource}/src/spaghetti_extractor/analysis_v3/planning.py \
-        "$out/src/spaghetti_extractor/analysis_v3/planning.py"
+      mkdir -p "$out/src/spaghetti_extractor/authority"
+      ln -s ${frameworkSource}/src/spaghetti_extractor/authority/__init__.py \
+        "$out/src/spaghetti_extractor/authority/__init__.py"
+      ln -s ${frameworkSource}/src/spaghetti_extractor/authority/_schema.py \
+        "$out/src/spaghetti_extractor/authority/_schema.py"
+      ln -s ${frameworkSource}/src/spaghetti_extractor/authority/planning.py \
+        "$out/src/spaghetti_extractor/authority/planning.py"
       ln -s ${phaseFixtureSource}/fixture_phase_v3.py \
         "$out/src/fixture_phase_v3.py"
       printf '%s\n' ${pkgs.lib.escapeShellArg marker} > "$out/source-identity"

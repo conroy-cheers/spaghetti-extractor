@@ -12,20 +12,18 @@ from ..artifact_formats import (
     MACHINE_IR_FORMAT,
 )
 from .formats import (
-    COMPONENT_ACTIVATION_PLAN_V2_FORMAT,
     COMPONENT_ACTIVATION_PLAN_V3_FORMAT,
     COMPONENT_CONFIGURATION_RESOLUTION_V2_FORMAT,
     COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
-    COMPONENT_QUALIFICATION_V2_FORMAT,
     COMPONENT_QUALIFICATION_V3_FORMAT,
     COMPONENT_RESOLUTION_V2_FORMAT,
 )
 from ..util import sha256_file, write_json
 from .intent import ComponentIntentError
-from .source import load_component_source_package_v2
+from .source import load_component_source_package
 
 
-def compose_component_configuration_v2(
+def compose_component_configuration(
     *,
     machine_ir: Path | str,
     resolution: Path | str | Mapping[str, object],
@@ -35,11 +33,11 @@ def compose_component_configuration_v2(
     qualifications: Mapping[str, Path | str | Mapping[str, object]] | None,
     out: Path | str,
 ) -> dict[str, object]:
-    """Produce one exact implementation owner per structural machine unit.
+    """Produce the sole v3 implementation-ownership authority.
 
-    Missing or incomplete portable evidence never makes the hybrid unusable:
-    the affected units deterministically retain machine-IR fallback.  The
-    resulting report still marks the requested activation as incomplete.
+    Draft and unselected units retain machine-IR fallback. An enabled unit is
+    either backed by an exact v3 qualification or is explicitly blocked; it
+    can never silently return to fallback.
     """
 
     resolution_payload = _load(resolution, "component resolution")
@@ -54,7 +52,7 @@ def compose_component_configuration_v2(
     qualification_inputs = qualifications or {}
     implementation_inputs = implementations or {}
     issues: list[dict[str, object]] = []
-    activation_by_unit: dict[str, dict[str, object]] = {}
+    ownership_by_unit: dict[str, dict[str, object]] = {}
     selection_rows: list[dict[str, object]] = []
 
     for raw_selection in _array(configuration.get("selections"), "configuration selections"):
@@ -72,10 +70,15 @@ def compose_component_configuration_v2(
                 f"component contract membership is stale for {lift_unit_id}"
             )
         requested = selection.get("activation")
-        activated = False
+        if requested not in {"draft", "enabled"}:
+            raise ComponentIntentError(
+                f"component selection {lift_unit_id} has invalid activation mode"
+            )
+        ownership_state = "machine_ir_fallback"
         qualification_sha256 = None
         implementation_sha256 = None
         if requested == "enabled":
+            ownership_state = "blocked"
             implementation_value = implementation_inputs.get(lift_unit_id)
             if implementation_value is None:
                 _issue(
@@ -85,9 +88,7 @@ def compose_component_configuration_v2(
                     lift_unit_id=lift_unit_id,
                 )
             else:
-                implementation = load_component_source_package_v2(
-                    implementation_value
-                )
+                implementation = load_component_source_package(implementation_value)
                 implementation_sha256 = implementation["implementation_sha256"]
                 if implementation.get("lift_unit_id") != lift_unit_id:
                     raise ComponentIntentError(
@@ -112,6 +113,8 @@ def compose_component_configuration_v2(
                     and contract.get("status") == "checked"
                     and qualification.get("status") == "qualified"
                     and qualification.get("lift_unit_id") == lift_unit_id
+                    and qualification.get("evidence_profile")
+                    == contract_unit.get("evidence_profile")
                     and bindings.get("contract_sha256") == contract.get("contract_sha256")
                     and bindings.get("implementation_sha256")
                     == implementation_sha256
@@ -120,18 +123,32 @@ def compose_component_configuration_v2(
                     ).get("authorized")
                     is True
                 )
-                if (
-                    implementation_sha256 is not None
-                    and bindings.get("implementation_sha256")
-                    != implementation_sha256
-                ):
+                if bindings.get("contract_sha256") != contract.get("contract_sha256"):
+                    _issue(
+                        issues,
+                        "violated",
+                        "enabled_component_contract_binding_stale",
+                        lift_unit_id=lift_unit_id,
+                    )
+                if implementation_sha256 is not None and bindings.get(
+                    "implementation_sha256"
+                ) != implementation_sha256:
                     _issue(
                         issues,
                         "violated",
                         "enabled_component_source_binding_stale",
                         lift_unit_id=lift_unit_id,
                     )
-                elif not activated:
+                if qualification.get("lift_unit_id") != lift_unit_id:
+                    _issue(
+                        issues,
+                        "violated",
+                        "enabled_component_qualification_identity_mismatch",
+                        lift_unit_id=lift_unit_id,
+                    )
+                if activated:
+                    ownership_state = "portable_replacement"
+                else:
                     _issue(
                         issues,
                         (
@@ -146,19 +163,27 @@ def compose_component_configuration_v2(
                         ),
                         lift_unit_id=lift_unit_id,
                     )
+            if contract.get("status") != "checked":
+                _issue(
+                    issues,
+                    "violated" if contract.get("status") == "violated" else "incomplete",
+                    "enabled_component_contract_not_checked",
+                    lift_unit_id=lift_unit_id,
+                    observed=contract.get("status"),
+                )
         for unit_id in expected_units:
             if unit_id not in machine["units"]:
                 raise ComponentIntentError(
                     f"configuration references unknown machine unit {unit_id}"
                 )
-            if unit_id in activation_by_unit:
+            if unit_id in ownership_by_unit:
                 raise ComponentIntentError(
                     f"configuration assigns machine unit {unit_id} more than once"
                 )
-            activation_by_unit[unit_id] = {
+            ownership_by_unit[unit_id] = {
                 "lift_unit_id": lift_unit_id,
                 "requested_activation": requested,
-                "portable_activated": activated,
+                "ownership_state": ownership_state,
                 "contract_sha256": contract["contract_sha256"],
                 "qualification_sha256": qualification_sha256,
                 "implementation_sha256": implementation_sha256,
@@ -168,9 +193,7 @@ def compose_component_configuration_v2(
                 "kind": selection["kind"],
                 "id": lift_unit_id,
                 "requested_activation": requested,
-                "effective_implementation": (
-                    "portable_replacement" if activated else "machine_ir_fallback"
-                ),
+                "ownership_state": ownership_state,
                 "unit_ids": sorted(expected_units),
                 "source": copy.deepcopy(selection.get("source")),
                 "contract_sha256": contract["contract_sha256"],
@@ -183,33 +206,41 @@ def compose_component_configuration_v2(
     for unit_id, unit in sorted(
         machine["units"].items(), key=lambda item: (item[1]["rva"], item[0])
     ):
-        selection = activation_by_unit.get(unit_id)
-        portable = selection is not None and selection["portable_activated"] is True
+        selection = ownership_by_unit.get(unit_id)
+        ownership_state = (
+            "machine_ir_fallback"
+            if selection is None
+            else _string(selection.get("ownership_state"), "ownership state")
+        )
         entries.append(
             {
                 "unit_id": unit_id,
                 "rva": unit["rva"],
-                "implementation_kind": (
-                    "portable_replacement" if portable else "machine_ir_fallback"
-                ),
+                "implementation_kind": ownership_state,
                 "dispatch_lookup": (
                     "stage_b_region_override_lookup"
-                    if portable
+                    if ownership_state == "portable_replacement"
                     else "stage_b_program_lookup"
+                    if ownership_state == "machine_ir_fallback"
+                    else None
                 ),
                 "selected_owner": copy.deepcopy(selection),
             }
         )
+    blocked_count = sum(row["implementation_kind"] == "blocked" for row in entries)
     status = (
         "violated"
         if any(row["status"] == "violated" for row in issues)
         else "incomplete"
-        if issues
+        if issues or blocked_count
         else "checked"
     )
-    portable_count = sum(row["implementation_kind"] == "portable_replacement" for row in entries)
+    counts = {
+        state: sum(row["implementation_kind"] == state for row in entries)
+        for state in ("portable_replacement", "machine_ir_fallback", "blocked")
+    }
     core = {
-        "format": COMPONENT_ACTIVATION_PLAN_V2_FORMAT,
+        "format": COMPONENT_ACTIVATION_PLAN_V3_FORMAT,
         "status": status,
         "configuration_id": configuration_id,
         "bindings": {
@@ -220,22 +251,28 @@ def compose_component_configuration_v2(
         },
         "policy": {
             "one_implementation_per_structural_unit": True,
-            "unqualified_components_use_machine_ir_fallback": True,
+            "enabled_components_must_activate": True,
+            "enabled_components_may_silently_fallback": False,
+            "draft_and_unselected_units_use_machine_ir_fallback": True,
+            "blocked_units_prevent_runtime_construction": True,
             "portable_fallback_on_unimplemented": False,
             "overlapping_selected_ownership": False,
-            "candidate_generation_may_consume_only_checked_portable_entries": True,
+            "runtime_package_is_sole_candidate_authority": True,
         },
         "ownership": {
             "complete": True,
             "exclusive": True,
-            "fallback_selected_for_every_unowned_or_unqualified_unit": True,
+            "states": [
+                "portable_replacement",
+                "machine_ir_fallback",
+                "blocked",
+            ],
+            "enabled_units_never_receive_fallback_ownership": True,
         },
         "hybrid": {
-            "structurally_executable": False,
+            "structurally_executable": blocked_count == 0,
             "release_ready": False,
-            "readiness_authority": (
-                "downstream_fallback_coverage_and_candidate_authority_required"
-            ),
+            "readiness_authority": "checked_component_runtime_package_v3_required",
             "machine_ir_status": machine["status"],
             "executes_original_binary": False,
         },
@@ -243,8 +280,7 @@ def compose_component_configuration_v2(
         "entries": entries,
         "counts": {
             "structural_units": len(entries),
-            "portable_replacements": portable_count,
-            "machine_ir_fallback": len(entries) - portable_count,
+            **counts,
             "issues": len(issues),
         },
         "issues": sorted(
@@ -255,57 +291,6 @@ def compose_component_configuration_v2(
                 str(row.get("lift_unit_id", "")),
             ),
         ),
-    }
-    result = {**core, "activation_plan_sha256": _canonical_sha256(core)}
-    write_json(Path(out), result)
-    return result
-
-
-def compose_component_configuration_v3(
-    *,
-    machine_ir: Path | str,
-    resolution: Path | str | Mapping[str, object],
-    configuration_id: str,
-    contracts: Mapping[str, Path | str | Mapping[str, object]],
-    implementations: Mapping[str, Path | str] | None,
-    qualifications: Mapping[str, Path | str | Mapping[str, object]] | None,
-    out: Path | str,
-) -> dict[str, object]:
-    """Produce the sole executable activation authority.
-
-    Unlike the diagnostic v2 plan, an enabled but unqualified component is a
-    hard candidate-generation blocker. Draft selections still use total
-    machine-IR fallback and remain executable.
-    """
-
-    diagnostic = compose_component_configuration_v2(
-        machine_ir=machine_ir,
-        resolution=resolution,
-        configuration_id=configuration_id,
-        contracts=contracts,
-        implementations=implementations,
-        qualifications=qualifications,
-        out=out,
-    )
-    core = copy.deepcopy(diagnostic)
-    core.pop("activation_plan_sha256", None)
-    core["format"] = COMPONENT_ACTIVATION_PLAN_V3_FORMAT
-    status = str(core.get("status"))
-    core["policy"] = {
-        **_object(core.get("policy"), "component activation policy"),
-        "enabled_components_must_activate": True,
-        "enabled_components_may_silently_fallback": False,
-        "runtime_package_is_sole_candidate_authority": True,
-    }
-    core["ownership"] = {
-        **_object(core.get("ownership"), "component ownership"),
-        "enabled_units_never_receive_fallback_ownership": status == "checked",
-    }
-    core["hybrid"] = {
-        **_object(core.get("hybrid"), "component hybrid state"),
-        "structurally_executable": status == "checked",
-        "release_ready": False,
-        "readiness_authority": "checked_component_runtime_package_v3_required",
     }
     result = {**core, "activation_plan_sha256": _canonical_sha256(core)}
     write_json(Path(out), result)
@@ -385,18 +370,78 @@ def _load_contract(value: Path | str | Mapping[str, object]) -> dict[str, object
 
 def _load_qualification(value: Path | str | Mapping[str, object]) -> dict[str, object]:
     payload = _load_local(value, "qualification.json", "component qualification")
-    format_name = payload.get("format")
-    if format_name not in {
-        COMPONENT_QUALIFICATION_V2_FORMAT,
-        COMPONENT_QUALIFICATION_V3_FORMAT,
-    }:
+    if payload.get("format") != COMPONENT_QUALIFICATION_V3_FORMAT:
         raise ComponentIntentError("unsupported component qualification format")
     _self_hash(
         payload,
-        format_name=str(format_name),
+        format_name=COMPONENT_QUALIFICATION_V3_FORMAT,
         field="qualification_sha256",
         description="component qualification",
     )
+    _exact_keys(
+        payload,
+        {
+            "format",
+            "status",
+            "lift_unit_id",
+            "evidence_profile",
+            "bindings",
+            "assurance",
+            "activation",
+            "issues",
+            "qualification_sha256",
+        },
+        "component qualification",
+    )
+    status = payload.get("status")
+    if status not in {"qualified", "incomplete", "violated"}:
+        raise ComponentIntentError("component qualification status is invalid")
+    activation = _object(payload.get("activation"), "component qualification activation")
+    _exact_keys(
+        activation,
+        {
+            "authorized",
+            "requires_exact_configuration_ownership",
+            "fallback_on_unimplemented",
+        },
+        "component qualification activation",
+    )
+    if (
+        activation.get("authorized") is not (status == "qualified")
+        or activation.get("requires_exact_configuration_ownership") is not True
+        or activation.get("fallback_on_unimplemented") is not False
+    ):
+        raise ComponentIntentError("component qualification activation is inconsistent")
+    bindings = _object(payload.get("bindings"), "component qualification bindings")
+    _exact_keys(
+        bindings,
+        {
+            "contract_sha256",
+            "evidence_sha256",
+            "implementation_sha256",
+            "machine_ir_sha256",
+            "domain_sha256",
+            "source_entry",
+            "tool_id",
+            "tool_version",
+        },
+        "component qualification bindings",
+    )
+    for field in (
+        "contract_sha256",
+        "evidence_sha256",
+        "implementation_sha256",
+        "machine_ir_sha256",
+        "domain_sha256",
+    ):
+        value = bindings.get(field)
+        if not isinstance(value, str) or len(value) != 64:
+            raise ComponentIntentError(
+                f"component qualification binding {field} is invalid"
+            )
+    issues = _array(payload.get("issues"), "component qualification issues")
+    if (status == "qualified") != (not issues):
+        raise ComponentIntentError("component qualification issues are inconsistent")
     return payload
 
 
@@ -447,6 +492,17 @@ def _array(value: object, description: str) -> list[object]:
     if not isinstance(value, list):
         raise ComponentIntentError(f"{description} must be an array")
     return value
+
+
+def _exact_keys(
+    value: Mapping[str, object], expected: set[str], description: str
+) -> None:
+    missing = sorted(expected - set(value))
+    unknown = sorted(set(value) - expected)
+    if missing or unknown:
+        raise ComponentIntentError(
+            f"{description} fields differ: missing={missing}, unknown={unknown}"
+        )
 
 
 def _string(value: object, description: str) -> str:

@@ -5,8 +5,11 @@ import re
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.python_module_index import production_unreachable_modules
-from spaghetti_extractor.analysis_v3.registry import AUTHORITY_PHASE_REGISTRY_V3
+from spaghetti_extractor.python_module_index import (
+    build_python_module_index,
+    production_unreachable_modules,
+)
+from spaghetti_extractor.authority.registry import AUTHORITY_PHASE_REGISTRY_V3
 
 
 TESTKIT = {
@@ -22,7 +25,7 @@ TESTKIT = {
     )
 }
 
-V3_AUTHORITY_PACKAGE = "spaghetti_extractor.analysis_v3"
+V3_AUTHORITY_PACKAGE = "spaghetti_extractor.authority"
 V3_NATIVE_IMPORT_ROOTS = frozenset(
     {
         V3_AUTHORITY_PACKAGE,
@@ -33,16 +36,15 @@ V3_NATIVE_IMPORT_ROOTS = frozenset(
 )
 V3_LEGACY_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {}
 V3_LEGACY_IMPORT_REMEDIATION = (
-    "Replace the dependency with native spaghetti_extractor.analysis_v3 records. "
+    "Replace the dependency with native spaghetti_extractor.authority records. "
     "Production v3 modules have no legacy import exceptions; do not add one. "
     "Comparison tests must construct native fixture records rather than importing "
     "a legacy analyzer."
 )
-RETAINED_NON_PRODUCTION_BACKENDS = (
-    "spaghetti_extractor.ghidra",
-    "spaghetti_extractor.stage_b",
-    "spaghetti_extractor.stage_b_provenance",
-)
+
+
+def _imports_package(module: str, package: str) -> bool:
+    return module == package or module.startswith(f"{package}.")
 
 
 def _module_name(root: Path, path: Path) -> str:
@@ -111,11 +113,57 @@ class RepositoryBoundaryTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [])
 
-    def test_only_explicitly_retained_backends_lack_a_production_consumer(self) -> None:
-        self.assertEqual(
-            production_unreachable_modules(self.root),
-            RETAINED_NON_PRODUCTION_BACKENDS,
+    def test_every_package_module_has_a_production_consumer(self) -> None:
+        self.assertEqual(production_unreachable_modules(self.root), ())
+
+    def test_shared_artifact_formats_have_production_consumers(self) -> None:
+        formats_path = (
+            self.root / "src/spaghetti_extractor/artifact_formats.py"
         )
+        namespace: dict[str, object] = {}
+        exec(formats_path.read_text(encoding="utf-8"), namespace)
+        exports = namespace["__all__"]
+        production_sources = {
+            path: path.read_text(encoding="utf-8")
+            for path in (self.root / "src/spaghetti_extractor").rglob("*.py")
+            if path != formats_path
+        }
+        unused = sorted(
+            name
+            for name in exports
+            if not any(name in source for source in production_sources.values())
+        )
+        self.assertEqual(
+            unused,
+            [],
+            msg=(
+                "Remove dead shared format identifiers instead of retaining "
+                "formats with no producer or consumer."
+            ),
+        )
+
+    def test_record_source_closures_do_not_pull_authority_checkers(self) -> None:
+        modules = build_python_module_index(self.root)["modules"]
+        for record_module, checker_module in (
+            (
+                "spaghetti_extractor.authority.external_site_records",
+                "spaghetti_extractor.authority.external_site_checker",
+            ),
+            (
+                "spaghetti_extractor.authority.target_certificate_records",
+                "spaghetti_extractor.authority.target_certificate_checker",
+            ),
+        ):
+            with self.subTest(record_module=record_module):
+                pending = [record_module]
+                closure = set()
+                while pending:
+                    module = pending.pop()
+                    if module in closure:
+                        continue
+                    closure.add(module)
+                    pending.extend(modules[module]["dependencies"])
+                self.assertNotIn(checker_module, closure)
 
     def test_generic_python_contains_no_validation_target_policy(self) -> None:
         package = self.root / "src/spaghetti_extractor"
@@ -279,7 +327,15 @@ class RepositoryBoundaryTests(unittest.TestCase):
 
     def test_installed_nix_data_covers_every_generic_nix_surface(self) -> None:
         manifest = (self.root / "pyproject.toml").read_text(encoding="utf-8")
-        flake_only = {"target-sdk.nix", "toolkit-context.nix"}
+        flake_only = {
+            "target-sdk.nix",
+            "test-suite-fixtures.nix",
+            "test-suite-manifest.json",
+            "test-suite-plan.nix",
+            "test-suite-shard.nix",
+            "test-suite.nix",
+            "toolkit-context.nix",
+        }
         missing = sorted(
             path.name
             for path in (self.root / "nix").iterdir()
@@ -288,6 +344,26 @@ class RepositoryBoundaryTests(unittest.TestCase):
             and f'"nix/{path.name}"' not in manifest
         )
         self.assertEqual(missing, [])
+
+    def test_test_metadata_does_not_invalidate_the_installed_toolkit(self) -> None:
+        context = (self.root / "nix/toolkit-context.nix").read_text(
+            encoding="utf-8"
+        )
+        manifest = (self.root / "pyproject.toml").read_text(encoding="utf-8")
+        for path in (
+            "nix/test-suite-fixtures.nix",
+            "nix/test-suite-manifest.json",
+            "nix/test-suite-plan.nix",
+            "nix/test-suite-shard.nix",
+            "nix/test-suite.nix",
+        ):
+            with self.subTest(path=path):
+                self.assertIn(f"../{path}", context)
+                self.assertNotIn(f'"{path}"', manifest)
+        self.assertIn(
+            "pkgs.lib.fileset.difference ../nix developerOnlyNixFiles",
+            context,
+        )
 
     def test_nix_graph_is_environment_independent_for_evaluation_receipts(self) -> None:
         forbidden = ("builtins.getEnv", "builtins.currentTime")
@@ -305,8 +381,8 @@ class RepositoryBoundaryTests(unittest.TestCase):
 
     def test_v3_authority_consumers_do_not_import_legacy_modules(self) -> None:
         guarded_paths = sorted(
-            (self.root / "src/spaghetti_extractor/analysis_v3").rglob("*.py")
-        ) + sorted((self.root / "tests/unit/analysis_v3").rglob("*.py"))
+            (self.root / "src/spaghetti_extractor/authority").rglob("*.py")
+        ) + sorted((self.root / "tests/unit/authority").rglob("*.py"))
         offenders = []
         for path in guarded_paths:
             relative = path.relative_to(self.root).as_posix()
@@ -321,6 +397,89 @@ class RepositoryBoundaryTests(unittest.TestCase):
             offenders,
             [],
             msg=V3_LEGACY_IMPORT_REMEDIATION,
+        )
+
+    def test_pipeline_packages_follow_the_supported_dependency_direction(self) -> None:
+        """Keep proposal, authority, and implementation layers independently usable."""
+
+        package_rules = {
+            "extraction": {
+                "spaghetti_extractor.authority",
+                "spaghetti_extractor.authority_inputs",
+                "spaghetti_extractor.candidate",
+                "spaghetti_extractor.components",
+            },
+            "authority_inputs": {
+                "spaghetti_extractor.authority.diagnostics",
+                "spaghetti_extractor.authority.final_authority",
+                "spaghetti_extractor.authority.planning",
+                "spaghetti_extractor.authority.registry",
+                "spaghetti_extractor.candidate",
+                "spaghetti_extractor.components",
+            },
+            "candidate": {
+                "spaghetti_extractor.authority.diagnostics",
+                "spaghetti_extractor.authority.planning",
+                "spaghetti_extractor.authority.registry",
+                "spaghetti_extractor.authority_inputs",
+                "spaghetti_extractor.extraction",
+            },
+            "components": {
+                "spaghetti_extractor.authority",
+                "spaghetti_extractor.authority_inputs",
+                "spaghetti_extractor.candidate",
+                "spaghetti_extractor.extraction",
+            },
+        }
+        offenders = []
+        for package_name, forbidden_packages in package_rules.items():
+            package = self.root / "src/spaghetti_extractor" / package_name
+            for path in sorted(package.rglob("*.py")):
+                relative = path.relative_to(self.root).as_posix()
+                for line_number, module in _imported_modules(self.root, path):
+                    if any(
+                        _imports_package(module, forbidden)
+                        for forbidden in forbidden_packages
+                    ):
+                        offenders.append(
+                            f"{relative}:{line_number}: imports {module}"
+                        )
+        self.assertEqual(
+            offenders,
+            [],
+            msg=(
+                "Layer ownership is strict: extraction cannot depend on proof or "
+                "candidate layers; authority-input adapters cannot depend on "
+                "terminal authority; candidate code may consume final authority "
+                "but not proposal machinery; components stay authority-neutral. "
+                "Move shared data to a dependency-free schema module."
+            ),
+        )
+
+    def test_active_pipeline_modules_remain_reviewable(self) -> None:
+        offenders = []
+        for package_name in (
+            "authority",
+            "authority_inputs",
+            "candidate",
+            "components",
+            "extraction",
+        ):
+            package = self.root / "src/spaghetti_extractor" / package_name
+            for path in sorted(package.rglob("*.py")):
+                line_count = len(path.read_text(encoding="utf-8").splitlines())
+                if line_count > 1600:
+                    offenders.append(
+                        f"{path.relative_to(self.root).as_posix()}: {line_count} lines"
+                    )
+        self.assertEqual(
+            offenders,
+            [],
+            msg=(
+                "Split active pipeline modules by model, codec, checker, and "
+                "phase ownership before adding more behavior. The phase "
+                "scaffolder provides the supported starting structure."
+            ),
         )
 
 

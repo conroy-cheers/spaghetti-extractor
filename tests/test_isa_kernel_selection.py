@@ -6,11 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.analysis_v3.exact_units import ExactUnitV3
-from spaghetti_extractor.analysis_v3.isa_qualification import (
+from spaghetti_extractor.authority.exact_units import ExactUnitV3
+from spaghetti_extractor.authority.isa_qualification import (
     ISA_QUALIFICATION_EVIDENCE_CODEC_V3,
 )
-from spaghetti_extractor.analysis_v3.semantic_index import (
+from spaghetti_extractor.authority.semantic_index import (
     SEMANTIC_INDEX_ARTIFACT_KIND_V3,
     SEMANTIC_INDEX_CODEC_V3,
     derive_semantic_index_v3,
@@ -60,7 +60,7 @@ from spaghetti_extractor.machine_ir_isa_selection_v2 import (
     build_machine_ir_isa_selection_authority_v2,
     parse_machine_ir_isa_selection_certificate_v2,
 )
-from spaghetti_extractor.stage_a_isa_evidence_v3 import (
+from spaghetti_extractor.authority_inputs.isa_evidence import (
     ISAEvidenceProjectionV3Error,
     emit_isa_evidence_v3,
 )

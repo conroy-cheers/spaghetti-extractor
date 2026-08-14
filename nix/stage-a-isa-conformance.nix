@@ -1,9 +1,8 @@
 {
   pkgs,
   name,
-  spaghettiExtractor ? null,
-  pythonEnv ? null,
-  pythonSource ? null,
+  pythonEnv,
+  pythonSource,
   kernelCache ? null,
   corpus,
   backend,
@@ -13,19 +12,14 @@
 }:
 
 let
-  narrowWorker = pythonEnv != null && pythonSource != null;
-  workerSource =
-    if narrowWorker then
-      import ./python-module-closure.nix {
-        inherit pkgs;
-        source = pythonSource;
-        modules = [ "spaghetti_extractor.isa_conformance_worker" ];
-        extraPaths = [ "spaghetti_extractor/lean/StageA" ];
-        name = "${name}-python-closure";
-      }
-    else
-      null;
-  narrowWorkerCommand = ''
+  workerSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.isa_conformance_worker" ];
+    extraPaths = [ "spaghetti_extractor/lean/StageA" ];
+    name = "${name}-python-closure";
+  };
+  workerCommand = ''
     export PYTHONHASHSEED=0
     export PYTHONDONTWRITEBYTECODE=1
     export PYTHONPATH=${workerSource}/src
@@ -57,17 +51,6 @@ let
     print(json.dumps(result, indent=2, sort_keys=True))
     PY
   '';
-  packageWorkerCommand = ''
-    spaghetti-extractor stage-a-check-isa-conformance-worker \
-      --corpus ${corpus} \
-      --backend ${backend} \
-      ${pkgs.lib.optionalString (backend == "bochs") "--bochs-runner ${bochsRunner}"} \
-      ${pkgs.lib.optionalString (backend == "lean") "--lean-kernel-cache ${kernelCache}"} \
-      ${pkgs.lib.optionalString (backend == "lean") "--lean-timeout-seconds 1800"} \
-      --out "$out/report.json" \
-      ${pkgs.lib.optionalString withForms ''--forms-out "$out/forms.json"''} \
-      > "$out/result.json"
-  '';
 in
 assert builtins.elem backend [
   "lean"
@@ -77,14 +60,10 @@ assert builtins.elem backend [
 assert backend != "bochs" || bochsRunner != null;
 assert !withForms || backend == "lean";
 assert backend != "lean" || kernelCache != null;
-assert narrowWorker || spaghettiExtractor != null;
-
 pkgs.runCommand name
   (
     {
-      nativeBuildInputs = [ pkgs.jq pkgs.lean4 ]
-        ++ pkgs.lib.optionals narrowWorker [ pythonEnv ]
-        ++ pkgs.lib.optionals (!narrowWorker) [ spaghettiExtractor ];
+      nativeBuildInputs = [ pkgs.jq pkgs.lean4 pythonEnv ];
       preferLocalBuild = false;
       allowSubstitutes = true;
     }
@@ -95,7 +74,7 @@ pkgs.runCommand name
   ''
     mkdir -p "$out"
     set -euo pipefail
-    ${if narrowWorker then narrowWorkerCommand else packageWorkerCommand}
+    ${workerCommand}
     jq -e '
       .format == "stage-a-isa-conformance-check-v1"
       and .proof_authority == false

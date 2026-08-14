@@ -117,11 +117,11 @@ class TestPlanningTests(unittest.TestCase):
         plan = build_suite_plan(
             index,
             mode="affected",
-            changed_paths=("nix/tests/analysis-v3-machine-ir-input.nix",),
+            changed_paths=("nix/tests/authority-machine-ir-input.nix",),
         )
 
         self.assertEqual(plan.selected_tests, (rows[0].id,))
-        self.assertEqual(plan.nix_checks, ("analysis-v3-machine-ir-input",))
+        self.assertEqual(plan.nix_checks, ("authority-machine-ir-input",))
 
     def test_directory_resource_suppresses_redundant_read_only_children(self) -> None:
         row = _test(1, dependencies=("docs/README.md",))

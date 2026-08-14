@@ -1,7 +1,6 @@
 {
   pkgs,
   name,
-  spaghettiExtractor,
   kernelCache,
   semanticKernel,
   corpus,
@@ -35,6 +34,12 @@ let
     source = pythonSource;
     modules = [ "spaghetti_extractor.isa_qualification_worker" ];
     name = "${name}-qualification-python-closure";
+  };
+  isaCliPythonSource = import ./python-module-closure.nix {
+    inherit pkgs;
+    source = pythonSource;
+    modules = [ "spaghetti_extractor.isa_cli" ];
+    name = "${name}-isa-cli-python-closure";
   };
   layeredArtifactSchemaPredicate = ''
     (
@@ -207,7 +212,6 @@ let
         pkgs
         pythonEnv
         pythonSource
-        spaghettiExtractor
         kernelCache
         bochsRunner
         contentAddressed
@@ -451,7 +455,7 @@ let
         {
           nativeBuildInputs = [
             pkgs.jq
-            spaghettiExtractor
+            pythonEnv
           ];
           preferLocalBuild = false;
           allowSubstitutes = true;
@@ -460,20 +464,28 @@ let
       )
       ''
         mkdir -p "$out"
-        set +e
-        spaghetti-extractor stage-a-select-isa-kernel-qualification \
-          --requirements ${requirements} \
-          --qualification ${qualification}/qualification.json \
-          --semantic-kernel ${semanticKernel} \
-          --side ${side} \
-          --out "$out/selection.json" \
-          > "$out/result.json"
-        worker_status="$?"
-        set -e
-        if [ "$worker_status" -gt 1 ]; then
-          echo "ISA selection worker failed with status $worker_status" >&2
-          exit "$worker_status"
-        fi
+        export PYTHONPATH=${isaCliPythonSource}/src
+        ${pythonEnv}/bin/python3 - \
+          ${requirements} \
+          ${qualification}/qualification.json \
+          ${semanticKernel} \
+          ${side} \
+          "$out/selection.json" \
+          > "$out/result.json" <<'PY'
+        import json
+        import pathlib
+        import sys
+        from spaghetti_extractor.isa_cli import select_isa_kernel_qualification
+
+        result = select_isa_kernel_qualification(
+            requirements=pathlib.Path(sys.argv[1]),
+            qualification=pathlib.Path(sys.argv[2]),
+            semantic_kernel=pathlib.Path(sys.argv[3]),
+            side=sys.argv[4],
+            out=pathlib.Path(sys.argv[5]),
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        PY
         jq -e '
           .format == "stage-a-isa-kernel-selection-result-v1"
           and .proof_authority == false
@@ -582,7 +594,7 @@ let
           {
             nativeBuildInputs = [
               pkgs.jq
-              spaghettiExtractor
+              pythonEnv
             ];
             preferLocalBuild = false;
             allowSubstitutes = true;
@@ -591,12 +603,26 @@ let
         )
         ''
           mkdir -p "$out"
-          spaghetti-extractor stage-a-plan-isa-qualification \
-            --catalog ${xedCatalog} \
-            --qualification ${qualification}/qualification.json \
-            --crosswalk ${qualification}/lean-form-crosswalk.json \
-            --out "$out/campaign.json" \
-            > "$out/result.json"
+          export PYTHONPATH=${isaCliPythonSource}/src
+          ${pythonEnv}/bin/python3 - \
+            ${xedCatalog} \
+            ${qualification}/qualification.json \
+            ${qualification}/lean-form-crosswalk.json \
+            "$out/campaign.json" \
+            > "$out/result.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+          from spaghetti_extractor.isa_cli import write_isa_qualification_campaign
+
+          result = write_isa_qualification_campaign(
+              catalog=pathlib.Path(sys.argv[1]),
+              qualification=pathlib.Path(sys.argv[2]),
+              crosswalk=pathlib.Path(sys.argv[3]),
+              out=pathlib.Path(sys.argv[4]),
+          )
+          print(json.dumps(result, indent=2, sort_keys=True))
+          PY
           jq -e '
             .format == "stage-a-isa-qualification-campaign-result-v1"
             and .status == "complete"

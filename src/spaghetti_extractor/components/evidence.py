@@ -17,7 +17,7 @@ from .formats import (
     COMPONENT_EVIDENCE_V3_FORMAT,
 )
 from .intent import ComponentIntentError
-from .source import load_component_source_package_v2
+from .source import load_component_source_package
 
 
 _TOOL_ID = "spaghetti-extractor-component-exhaustive-evaluator"
@@ -38,7 +38,7 @@ class _UnsupportedSemantics(ValueError):
     pass
 
 
-def produce_component_evidence_v3(
+def produce_component_evidence(
     *,
     contract: Path | str,
     implementation: Path | str,
@@ -62,7 +62,7 @@ def produce_component_evidence_v3(
         "contract_sha256",
         "component contract",
     )
-    source = load_component_source_package_v2(implementation)
+    source = load_component_source_package(implementation)
     lift_unit = _object(contract_payload.get("lift_unit"), "contract lift unit")
     lift_unit_id = _string(lift_unit.get("id"), "contract lift-unit id")
     interface = _read_object(
@@ -583,4 +583,4 @@ def _canonical_sha256(value: object) -> str:
     return sha256(encoded).hexdigest()
 
 
-__all__ = ["produce_component_evidence_v3"]
+__all__ = ["produce_component_evidence"]

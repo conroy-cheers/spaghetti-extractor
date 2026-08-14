@@ -35,13 +35,37 @@ library signatures, and operator-authored hints. Those inputs are not authority.
 Each accepting record is rebound to exact PE, machine-IR, unit, event, profile,
 and dependency identities by a checker-owned phase.
 
+Ghidra is exposed only through `stage-a-export-ghidra-proposal`. The adapter
+performs static headless analysis, verifies the exact binary hash in its output,
+and labels the result `untrusted-proposal`; it is not imported by or accepted as
+an authority phase.
+
 The structural universe is prepared independently of source lifting. Replacing
 a component changes its source and implementation evidence; it does not reopen
 original PE extraction or permit an unrepresented executable region.
 
+## Package Ownership
+
+The Python package enforces the same separation physically:
+
+- `extraction/` may depend on neutral PE, ISA, and utility code, never authority,
+  candidate, or component implementations;
+- `authority_inputs/` may construct checked record types, but may not depend on
+  terminal authority, diagnostics, candidate code, or components;
+- `authority/` contains the complete checker-owned graph and imports no proposal
+  adapters or implementation layers;
+- `components/` is an authority-neutral lifting subsystem over exact machine-IR
+  and component contracts;
+- `candidate/` consumes final authority and component runtime ownership, but
+  cannot invoke extraction or proposal discovery.
+
+Repository boundary tests parse imports and reject a dependency that crosses
+these ownership rules. Shared schemas belong in small dependency-free modules,
+not in a higher pipeline layer.
+
 ## Native V3 Authority
 
-`analysis_v3/registry.py` is the complete authority-family registry. The active
+`authority/registry.py` is the complete authority-family registry. The active
 phases, in dependency order, are:
 
 | Phase | Responsibility |

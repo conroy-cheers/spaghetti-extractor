@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .artifact_formats import MACHINE_IR_FORMAT
+from .components.formats import PORTABLE_SELECTION_V3_FORMAT
 from .stage_b_interpreter_backend import (
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PROGRAM_FORMAT,
@@ -25,13 +26,6 @@ from .util import sha256_bytes, sha256_file, write_json
 FALLBACK_COVERAGE_RECEIPT_FORMAT = "stage-b-fallback-coverage-receipt-v3"
 FALLBACK_COVERAGE_CHECKER_ID = "spaghetti-extractor-fallback-coverage-checker"
 FALLBACK_COVERAGE_CHECKER_VERSION = 3
-PORTABLE_REPLACEMENT_SELECTION_FORMAT = (
-    "stage-b-portable-replacement-selection-v1"
-)
-PORTABLE_COMPONENT_SELECTION_V2_FORMAT = (
-    "spaghetti-extractor-portable-component-selection-v2"
-)
-
 _PORTABLE_SELECTION_FIELDS = frozenset({
     "unit_id",
     "rva",
@@ -39,9 +33,19 @@ _PORTABLE_SELECTION_FIELDS = frozenset({
     "cluster_id",
     "component_manifest_sha256",
     "fallback_on_unimplemented",
+    "dispatch_role",
+    "entry_rva",
 })
-_PORTABLE_SELECTION_FIELDS_V2 = _PORTABLE_SELECTION_FIELDS | frozenset(
-    {"dispatch_role", "entry_rva"}
+_PORTABLE_SELECTION_ARTIFACT_FIELDS = frozenset(
+    {
+        "format",
+        "status",
+        "executes_original_binary",
+        "machine_ir_sha256",
+        "activation_plan_sha256",
+        "entries",
+        "selection_sha256",
+    }
 )
 
 
@@ -82,7 +86,7 @@ def write_stage_b_fallback_coverage_receipt(
     interpreter_package: Path | str,
     out: Path | str,
     portable_replacements: (
-        Sequence[Mapping[str, Any]] | Path | str | None
+        Path | str | None
     ) = None,
 ) -> dict[str, Any]:
     """Write a deterministic receipt for the complete structural universe."""
@@ -104,7 +108,7 @@ def validate_stage_b_fallback_coverage_receipt(
     machine_ir_manifest: Path | str,
     interpreter_package: Path | str,
     portable_replacements: (
-        Sequence[Mapping[str, Any]] | Path | str | None
+        Path | str | None
     ) = None,
 ) -> FallbackCoverageReceipt:
     """Recompute every receipt field from the submitted artifacts."""
@@ -147,7 +151,7 @@ def _expected_fallback_coverage_payload(
     machine_ir: Path,
     machine_ir_manifest: Path,
     interpreter_package: Path,
-    portable_replacements: Sequence[Mapping[str, Any]] | Path | str | None,
+    portable_replacements: Path | str | None,
 ) -> dict[str, Any]:
     machine_ir = _file(machine_ir, "machine IR")
     machine_ir_manifest = _file(machine_ir_manifest, "machine-IR manifest")
@@ -187,6 +191,7 @@ def _expected_fallback_coverage_payload(
         portable_replacements,
         structural_ids=structural_ids,
         units=unit_by_id,
+        machine_ir_sha256=machine_ir_sha256,
     )
 
     entries: list[dict[str, Any]] = []
@@ -594,50 +599,63 @@ def _validated_adapted_semantics(root: Path, value: Any) -> dict[str, str]:
 
 
 def _portable_replacement_selections(
-    value: Sequence[Mapping[str, Any]] | Path | str | None,
+    value: Path | str | None,
     *,
     structural_ids: set[str],
     units: Mapping[str, Mapping[str, Any]],
+    machine_ir_sha256: str,
 ) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
     artifact_binding: dict[str, Any] | None = None
+    artifact_selection_sha256: str | None = None
     if value is None:
         raw_values: Sequence[Any] = ()
-    elif isinstance(value, (Path, str)):
+    else:
         path = _file(Path(value), "portable-replacement selection")
         payload = _read_json(path, "portable-replacement selection")
-        if isinstance(payload, Mapping):
-            selection_format = payload.get("format")
-            if selection_format not in {
-                PORTABLE_REPLACEMENT_SELECTION_FORMAT,
-                PORTABLE_COMPONENT_SELECTION_V2_FORMAT,
-            }:
-                raise FallbackCoverageReceiptError(
-                    "portable-replacement selection has an unsupported format"
-                )
-            raw_values = _list(
-                payload.get(
-                    "entries"
-                    if selection_format == PORTABLE_COMPONENT_SELECTION_V2_FORMAT
-                    else "replacements"
-                ),
-                "portable-replacement selections",
-            )
-        else:
-            raw_values = _list(payload, "portable-replacement selections")
-        artifact_binding = _artifact_binding(path, sha256_file(path))
-    else:
-        if isinstance(value, (str, bytes)):
+        artifact = _object(payload, "portable-replacement selection")
+        if set(artifact) != _PORTABLE_SELECTION_ARTIFACT_FIELDS:
             raise FallbackCoverageReceiptError(
-                "portable replacements must be a sequence of objects"
+                "portable-replacement selection fields are not canonical"
             )
-        raw_values = value
+        if artifact.get("format") != PORTABLE_SELECTION_V3_FORMAT:
+            raise FallbackCoverageReceiptError(
+                "portable-replacement selection has an unsupported format"
+            )
+        if artifact.get("status") != "checked":
+            raise FallbackCoverageReceiptError(
+                "portable-replacement selection is not checked"
+            )
+        if artifact.get("executes_original_binary") is not False:
+            raise FallbackCoverageReceiptError(
+                "portable-replacement selection has invalid runtime authority"
+            )
+        if artifact.get("machine_ir_sha256") != machine_ir_sha256:
+            raise FallbackCoverageReceiptError(
+                "portable-replacement selection is bound to different machine IR"
+            )
+        _sha256(
+            artifact.get("activation_plan_sha256"),
+            "portable-replacement activation-plan SHA-256",
+        )
+        artifact_core = dict(artifact)
+        artifact_selection_sha256 = _sha256(
+            artifact_core.pop("selection_sha256", None),
+            "portable-replacement selection SHA-256",
+        )
+        if _canonical_sha256(artifact_core) != artifact_selection_sha256:
+            raise FallbackCoverageReceiptError(
+                "portable-replacement selection self-hash is stale"
+            )
+        raw_values = _list(
+            artifact.get("entries"), "portable-replacement selections"
+        )
+        artifact_binding = _artifact_binding(path, sha256_file(path))
 
     result: dict[str, dict[str, Any]] = {}
     seen_rvas: set[int] = set()
     for index, raw in enumerate(raw_values):
         row = _object(raw, f"portable replacement {index}")
-        v2 = set(row) == _PORTABLE_SELECTION_FIELDS_V2
-        if not v2 and set(row) != _PORTABLE_SELECTION_FIELDS:
+        if set(row) != _PORTABLE_SELECTION_FIELDS:
             raise FallbackCoverageReceiptError(
                 f"portable replacement {index} fields are not canonical"
             )
@@ -677,16 +695,12 @@ def _portable_replacement_selections(
                     row.get("dispatch_role"),
                     f"portable replacement {index} dispatch role",
                 )
-                if v2
-                else "entry"
             ),
             "entry_rva": (
                 _u32(
                     row.get("entry_rva"),
                     f"portable replacement {index} entry RVA",
                 )
-                if v2
-                else rva
             ),
         }
         if normalized["dispatch_role"] not in {"entry", "subsumed_member"}:
@@ -726,12 +740,10 @@ def _portable_replacement_selections(
         if not selections and artifact_binding is None
         else {
             "format": (
-                PORTABLE_COMPONENT_SELECTION_V2_FORMAT
-                if any(value["dispatch_role"] != "entry" for value in result.values())
-                else PORTABLE_REPLACEMENT_SELECTION_FORMAT
+                PORTABLE_SELECTION_V3_FORMAT
             ),
             "artifact": artifact_binding,
-            "selection_sha256": _canonical_sha256(selections),
+            "selection_sha256": artifact_selection_sha256,
             "count": len(selections),
         }
     )
@@ -834,8 +846,7 @@ __all__ = [
     "FALLBACK_COVERAGE_CHECKER_ID",
     "FALLBACK_COVERAGE_CHECKER_VERSION",
     "FALLBACK_COVERAGE_RECEIPT_FORMAT",
-    "PORTABLE_REPLACEMENT_SELECTION_FORMAT",
-    "PORTABLE_COMPONENT_SELECTION_V2_FORMAT",
+    "PORTABLE_SELECTION_V3_FORMAT",
     "FallbackCoverageReceipt",
     "FallbackCoverageReceiptError",
     "validate_fallback_coverage_receipt",

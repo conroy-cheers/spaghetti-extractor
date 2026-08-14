@@ -18,7 +18,7 @@ from .model import INDEX_FORMAT, PLAN_FORMAT, canonical_json
 from .planning import MODES, build_suite_plan, changed_paths_from_git
 from .rebuild import explain_index_rebuild, explain_plan_rebuild
 from .scaffold import apply_scaffold_plan, plan_fixture_scaffold, plan_phase_scaffold, plan_test_scaffold
-from ..python_module_index import refresh_python_module_index
+from .static_manifest import refresh_repository_metadata
 
 
 def _repository(value: str) -> Path:
@@ -47,11 +47,11 @@ def _build_parser() -> argparse.ArgumentParser:
     index.add_argument("--out", type=Path, default=Path("-"))
     index.add_argument("--shards", type=int, default=32)
 
-    refresh_index = subcommands.add_parser(
-        "refresh-index", help="refresh the checked Python module dependency index"
+    refresh = subcommands.add_parser(
+        "refresh", help="refresh both checked repository metadata manifests"
     )
-    refresh_index.add_argument(
-        "--out", type=Path, help="output path (default: nix/python-module-index.json)"
+    refresh.add_argument(
+        "--check", action="store_true", help="fail if either checked manifest is stale"
     )
 
     plan = subcommands.add_parser("plan", help="create an execution plan")
@@ -94,10 +94,13 @@ def main(argv: list[str] | None = None) -> int:
             index = build_impact_index(repository, shard_count=args.shards)
             write_manifest(args.out, index)
             return 0
-        if args.command == "refresh-index":
-            output = (args.out or repository / "nix" / "python-module-index.json").resolve()
-            changed = refresh_python_module_index(repository, output)
-            print(f"{'updated' if changed else 'current'} {output.relative_to(repository)}")
+        if args.command == "refresh":
+            changed = refresh_repository_metadata(repository, check=args.check)
+            if args.check or not changed:
+                print("current repository metadata")
+            else:
+                for path in changed:
+                    print(f"updated {path.relative_to(repository)}")
             return 0
         if args.command == "plan":
             index = load_index(args.index) if args.index else build_impact_index(repository, shard_count=args.shards)

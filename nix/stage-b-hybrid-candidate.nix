@@ -4,7 +4,7 @@
   pythonSource,
   machineIr,
   staticExport,
-  staticAuthorityV3 ? null,
+  staticAuthority ? null,
   machineImportProfiles,
   namePrefix,
   compiler ? pkgs.pkgsCross.mingw32.stdenv.cc,
@@ -27,7 +27,7 @@ assert pkgs.lib.assertMsg
   "structural-diagnostic candidates require diagnosticFailureTrap = true";
 assert pkgs.lib.assertMsg
   (candidateMode != "static-closed" ||
-    staticAuthorityV3 != null)
+    staticAuthority != null)
   "static-closed candidates require v3 final authority";
 assert pkgs.lib.assertMsg
   (externalSiteProposals == null || candidateMode == "structural-diagnostic")
@@ -45,7 +45,7 @@ let
     else ""
   );
   finalAuthorityArg = lib.escapeShellArg (
-    if staticClosed then toString staticAuthorityV3.finalAuthorityArtifact else ""
+    if staticClosed then toString staticAuthority.finalAuthorityArtifact else ""
   );
   fallbackCoverageArg = lib.escapeShellArg (
     if staticClosed then
@@ -70,7 +70,7 @@ let
     "spaghetti_extractor.stage_b_interpreter_native_build"
   ];
   candidateAuthorityPythonSource = mkPythonClosure "candidate-authority-v3" [
-    "spaghetti_extractor.stage_b_candidate_authority_v3"
+    "spaghetti_extractor.candidate.authority"
   ];
   profileArgs = lib.concatMapStringsSep " "
     (profile: lib.escapeShellArg (toString profile)) machineImportProfiles;
@@ -172,7 +172,7 @@ let
       export PYTHONPATH=${candidateAuthorityPythonSource}/src
       mkdir -p "$out"
       ${python} - \
-        ${staticAuthorityV3.finalAuthorityArtifact} \
+        ${staticAuthority.finalAuthorityArtifact} \
         ${machineIr}/machine-ir.jsonl \
         ${machineIr}/machine-ir-manifest.json \
         ${fallbackCoverageReceipt}/fallback-coverage-receipt.json \
@@ -181,8 +181,8 @@ let
       import pathlib
       import sys
 
-      from spaghetti_extractor.stage_b_candidate_authority_v3 import (
-          build_stage_b_candidate_authority_v3,
+      from spaghetti_extractor.candidate.authority import (
+          build_candidate_authority,
       )
 
       (
@@ -193,7 +193,7 @@ let
           component_runtime,
           output,
       ) = sys.argv[1:]
-      receipt = build_stage_b_candidate_authority_v3(
+      receipt = build_candidate_authority(
           final_authority=pathlib.Path(final_authority),
           machine_ir=pathlib.Path(machine_ir),
           machine_ir_manifest=pathlib.Path(manifest),
@@ -227,14 +227,14 @@ let
         "$out/candidate-authority.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.stage_b_candidate_authority_v3 import (
-          parse_stage_b_candidate_authority_v3,
-          require_stage_b_candidate_authority_v3,
+      from spaghetti_extractor.candidate.authority import (
+          parse_candidate_authority,
+          require_candidate_authority,
       )
 
       source, output = map(pathlib.Path, sys.argv[1:])
-      receipt = require_stage_b_candidate_authority_v3(
-          parse_stage_b_candidate_authority_v3(source.read_bytes())
+      receipt = require_candidate_authority(
+          parse_candidate_authority(source.read_bytes())
       )
       output.write_text(receipt.to_json(), encoding="ascii")
       PY

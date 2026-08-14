@@ -12,13 +12,13 @@ from .model import (
     ACTIVATION_MODES,
     EVIDENCE_PROFILES,
     LIFT_UNIT_KINDS,
-    ComponentCatalogIntentV2,
-    ComponentConfigurationV2,
-    ComponentEvidencePlanV3,
-    ComponentGroupIntentV2,
-    ComponentIntentV2,
-    ConfigurationSelectionV2,
-    SourceInputV2,
+    ComponentCatalogIntent,
+    ComponentConfiguration,
+    ComponentEvidencePlan,
+    ComponentGroupIntent,
+    ComponentIntent,
+    ConfigurationSelection,
+    SourceInput,
 )
 
 
@@ -45,9 +45,9 @@ class ComponentIntentError(ValueError):
     """Operator-authored component intent is unsafe or ambiguous."""
 
 
-def load_component_catalog_intent_v2(
+def load_component_catalog_intent(
     path: Path | str, *, require_references: bool = True
-) -> ComponentCatalogIntentV2:
+) -> ComponentCatalogIntent:
     source = Path(path)
     try:
         payload = json.loads(source.read_text(encoding="utf-8"))
@@ -163,7 +163,7 @@ def load_component_catalog_intent_v2(
                     f"configuration {configuration.identity} enables "
                     f"{selection.identity} without an evidence producer"
                 )
-    return ComponentCatalogIntentV2(
+    return ComponentCatalogIntent(
         program_id=program_id,
         permitted_activation_profiles=permitted,
         components=components,
@@ -178,7 +178,7 @@ def _component(
     index: int,
     *,
     require_references: bool,
-) -> ComponentIntentV2:
+) -> ComponentIntent:
     _exact_keys(
         row,
         {
@@ -193,7 +193,7 @@ def _component(
         f"component {index}",
         optional={"interface_review", "source", "verification"},
     )
-    return ComponentIntentV2(
+    return ComponentIntent(
         identity=_identifier(row.get("id"), f"component {index} id"),
         label=_string(row.get("label"), f"component {index} label"),
         selector=dict(_object(row.get("selector"), f"component {index} selector")),
@@ -224,7 +224,7 @@ def _group(
     index: int,
     *,
     require_references: bool,
-) -> ComponentGroupIntentV2:
+) -> ComponentGroupIntent:
     _exact_keys(
         row,
         {
@@ -245,7 +245,7 @@ def _group(
     )
     if not members or len(set(members)) != len(members):
         raise ComponentIntentError(f"group {index} members must be nonempty and unique")
-    return ComponentGroupIntentV2(
+    return ComponentGroupIntent(
         identity=_identifier(row.get("id"), f"group {index} id"),
         label=_string(row.get("label"), f"group {index} label"),
         members=members,
@@ -270,7 +270,7 @@ def _group(
     )
 
 
-def _configuration(row: Mapping[str, object], index: int) -> ComponentConfigurationV2:
+def _configuration(row: Mapping[str, object], index: int) -> ComponentConfiguration:
     _exact_keys(row, {"id", "label", "selections"}, f"configuration {index}")
     selections = tuple(
         _selection(_object(value, f"configuration {index} selection"), index)
@@ -281,14 +281,14 @@ def _configuration(row: Mapping[str, object], index: int) -> ComponentConfigurat
     keys = [(item.kind, item.identity) for item in selections]
     if len(set(keys)) != len(keys):
         raise ComponentIntentError(f"configuration {index} selections are duplicated")
-    return ComponentConfigurationV2(
+    return ComponentConfiguration(
         identity=_identifier(row.get("id"), f"configuration {index} id"),
         label=_string(row.get("label"), f"configuration {index} label"),
         selections=selections,
     )
 
 
-def _selection(row: Mapping[str, object], index: int) -> ConfigurationSelectionV2:
+def _selection(row: Mapping[str, object], index: int) -> ConfigurationSelection:
     _exact_keys(row, {"kind", "id", "activation"}, f"configuration {index} selection")
     kind = _string(row.get("kind"), "selection kind")
     activation = _string(row.get("activation"), "selection activation")
@@ -296,7 +296,7 @@ def _selection(row: Mapping[str, object], index: int) -> ConfigurationSelectionV
         raise ComponentIntentError(f"unsupported selection kind: {kind}")
     if activation not in ACTIVATION_MODES:
         raise ComponentIntentError(f"unsupported selection activation: {activation}")
-    return ConfigurationSelectionV2(
+    return ConfigurationSelection(
         kind=kind,
         identity=_identifier(row.get("id"), "selection id"),
         activation=activation,
@@ -309,7 +309,7 @@ def _source(
     context: str,
     *,
     require_references: bool,
-) -> SourceInputV2 | None:
+) -> SourceInput | None:
     if value is None:
         return None
     row = _object(value, context)
@@ -344,7 +344,7 @@ def _source(
     symbol = _string(entry.get("symbol"), f"{context} entry symbol")
     if _C_IDENTIFIER.fullmatch(symbol) is None:
         raise ComponentIntentError(f"{context} entry symbol is not a C identifier")
-    return SourceInputV2(
+    return SourceInput(
         files=files,
         shared_inputs=shared,
         entry_abi=abi,
@@ -352,7 +352,7 @@ def _source(
     )
 
 
-def _verification(value: object, context: str) -> ComponentEvidencePlanV3 | None:
+def _verification(value: object, context: str) -> ComponentEvidencePlan | None:
     if value is None:
         return None
     row = _object(value, context)
@@ -406,13 +406,13 @@ def _verification(value: object, context: str) -> ComponentEvidencePlanV3 | None
     ids = [str(domain["parameter_id"]) for domain in domains]
     if len(ids) != len(set(ids)):
         raise ComponentIntentError(f"{context} parameter domains are duplicated")
-    return ComponentEvidencePlanV3(
+    return ComponentEvidencePlan(
         producer=producer,
         parameter_domains=tuple(domains),
     )
 
 
-def _check_group_cycles(groups: Sequence[ComponentGroupIntentV2]) -> None:
+def _check_group_cycles(groups: Sequence[ComponentGroupIntent]) -> None:
     group_ids = {item.identity for item in groups}
     edges = {
         item.identity: tuple(member for member in item.members if member in group_ids)

@@ -31,6 +31,10 @@ pkgs.runCommand "${namePrefix}-component-runtime-package-v3" {
   export LC_ALL=C.UTF-8
   export SOURCE_DATE_EPOCH=1
   export PYTHONPATH=${phaseSource}/src
+  jq -e '
+    .format == "spaghetti-extractor-component-activation-plan-v3" and
+    .status == "checked" and .counts.blocked == 0
+  ' ${componentConfiguration.activationPlan}/activation-plan.json >/dev/null
   ${python} - \
     ${machineIr} \
     ${componentConfiguration.activationPlan}/activation-plan.json \
@@ -44,10 +48,10 @@ pkgs.runCommand "${namePrefix}-component-runtime-package-v3" {
   import sys
 
   from spaghetti_extractor.components.runtime import (
-      build_component_runtime_package_v3,
+      build_component_runtime_package,
   )
 
-  build_component_runtime_package_v3(
+  build_component_runtime_package(
       machine_ir=pathlib.Path(sys.argv[1]),
       activation_plan=pathlib.Path(sys.argv[2]),
       contracts={key: pathlib.Path(value) for key, value in json.loads(sys.argv[3]).items()},
@@ -70,6 +74,10 @@ pkgs.runCommand "${namePrefix}-component-runtime-package-v3" {
     .ownership_complete and .ownership_exclusive and
     (.executes_original_binary | not)
   ' "$out/component-runtime-completion.json" >/dev/null
+  jq -e '
+    .format == "spaghetti-extractor-portable-selection-v3" and
+    .status == "checked" and (.executes_original_binary | not)
+  ' "$out/portable-component-selection.json" >/dev/null
 
   for adapter in "$out"/components/*/generated-adapter.c; do
     test -e "$adapter" || continue

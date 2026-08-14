@@ -312,18 +312,6 @@ def render_python_module_index(repository: Path) -> str:
     return json.dumps(index, indent=2, sort_keys=True) + "\n"
 
 
-def refresh_python_module_index(repository: Path, output: Path) -> bool:
-    """Write the canonical index and return whether its content changed."""
-
-    rendered = render_python_module_index(repository)
-    previous = output.read_text(encoding="utf-8") if output.is_file() else None
-    if previous == rendered:
-        return False
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(rendered, encoding="utf-8")
-    return True
-
-
 __all__ = [
     "FORMAT",
     "build_python_module_index",
@@ -333,6 +321,5 @@ __all__ = [
     "production_module_closure",
     "production_module_roots",
     "production_unreachable_modules",
-    "refresh_python_module_index",
     "render_python_module_index",
 ]

@@ -38,7 +38,7 @@ let
       name = "${namePrefix}-${suffix}-python-closure";
     };
   inventoryPythonSource = mkPythonClosure staticPythonSource "inventory" [
-    "spaghetti_extractor.analysis.binary_inventory"
+    "spaghetti_extractor.extraction.binary_inventory"
   ];
   staticExportPythonSource = mkPythonClosure staticPythonSource "static-export" [
     "spaghetti_extractor.behavioral_roots"
@@ -144,7 +144,7 @@ let
         "$out/inventory.json" <<'PY' > "$out/inventory.stdout"
       import pathlib
       import sys
-      from spaghetti_extractor.analysis.binary_inventory import (
+      from spaghetti_extractor.extraction.binary_inventory import (
           stage_a_inventory_binary,
       )
 

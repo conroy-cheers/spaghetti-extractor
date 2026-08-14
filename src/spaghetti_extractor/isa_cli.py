@@ -49,7 +49,7 @@ from .isa_qualification_worker import (
     build_isa_kernel_qualification,
     load_isa_semantic_kernel_binding,
 )
-from .analysis.isa_requirements import (
+from .extraction.isa_requirements import (
     ISARequirementInventory,
 )
 from .isa_side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT

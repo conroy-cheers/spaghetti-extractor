@@ -7,11 +7,10 @@ let
   analysisCommon = {
     inherit pkgs;
     inherit (context) pythonEnv;
-    pythonSource = context.sources.analysisSource;
+    pythonSource = context.sources.staticSource;
   };
   authorityCommon = analysisCommon // {
-    isaPythonSource = context.sources.isaAnalysisSource;
-    spaghettiExtractor = context.package;
+    isaPythonSource = context.sources.isaSource;
     isaKernelCache = context.kernels.isaConformanceKernel;
     isaSemanticKernel = context.kernels.isaSemanticKernel;
     bochsRunner = context.tools.bochsRunner;
@@ -19,11 +18,11 @@ let
   candidateCommon = {
     inherit pkgs;
     inherit (context) pythonEnv;
-    pythonSource = context.sources.candidateSource;
+    pythonSource = context.sources.fullSource;
   };
   analysisComponent = callWith ./stage-b-component-analysis.nix analysisCommon;
-  authorityV3 = callWith ./analysis-v3-authority.nix authorityCommon;
-  componentsV3 = callWith ./stage-b-components-v3.nix analysisCommon;
+  authorityWorkflow = callWith ./authority-workflow.nix authorityCommon;
+  componentWorkflow = callWith ./stage-b-components.nix analysisCommon;
   hybridCandidate = callWith ./stage-b-hybrid-candidate.nix candidateCommon;
   mkBundle = {
     targetRoot,
@@ -95,13 +94,13 @@ let
         additionalMachineImportProfiles = builtins.tail machineImportProfiles;
         inherit launchProfileTemplate maxUnits maxCandidatesPerSeed;
       };
-      authority = authorityV3 {
+      authority = authorityWorkflow {
         name = "${namePrefix}-authority-v3";
         machineIr = "${analysis.machineIr}/machine-ir.jsonl";
         binary = original;
         inherit binaryIdentity machineImportProfiles launchProfileTemplate;
       };
-      components = componentsV3 {
+      components = componentWorkflow {
         machineIr = analysis.machineIr;
         reconstructionPlan = analysis.reconstructionPlan;
         componentProposals = analysis.componentProposals;
@@ -117,7 +116,7 @@ let
       }: hybridCandidate {
         machineIr = analysis.machineIr;
         staticExport = analysis.staticExport;
-        staticAuthorityV3 = authority;
+        staticAuthority = authority;
         machineImportProfiles = machineImportProfiles ++ extraMachineImportProfiles;
         namePrefix = "${namePrefix}-${configurationId}";
         inherit compiler;
@@ -156,7 +155,7 @@ in
   workflow.pe32 = mkPe32Workflow;
   analysis = {
     component = analysisComponent;
-    inherit authorityV3;
+    authority = authorityWorkflow;
     externalInterfaceProfile = callWith
       ./stage-a-external-interface-profile.nix analysisCommon;
   };
@@ -168,7 +167,7 @@ in
   lifting = {
     linkedLibraries = callWith ./stage-b-linked-libraries.nix analysisCommon;
     functionalSuite = callWith ./stage-b-functional-suite.nix analysisCommon;
-    components = componentsV3;
+    components = componentWorkflow;
   };
   validation = {
     testRunner = context.packages.testkitTestRunner;

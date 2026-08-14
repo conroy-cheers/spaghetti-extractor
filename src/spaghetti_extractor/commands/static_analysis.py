@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from ..analysis.binary_inventory import stage_a_inventory_binary
+from ..extraction.binary_inventory import stage_a_inventory_binary
 from ..behavioral_roots import generate_behavioral_roots
 from ..contract_tools import (
     REFERENCE_CONTRACT_MODEL_ID,

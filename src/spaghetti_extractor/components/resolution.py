@@ -14,11 +14,11 @@ from .formats import (
     COMPONENT_CONFIGURATION_RESOLUTION_V2_FORMAT,
     COMPONENT_RESOLUTION_V2_FORMAT,
 )
-from .intent import ComponentIntentError, load_component_catalog_intent_v2
-from .model import ComponentCatalogIntentV2
+from .intent import ComponentIntentError, load_component_catalog_intent
+from .model import ComponentCatalogIntent
 
 
-def resolve_component_catalog_v2(
+def resolve_component_catalog(
     *, proposals: Path | str, intent: Path | str, out: Path | str
 ) -> dict[str, object]:
     proposal_path = Path(proposals)
@@ -31,7 +31,7 @@ def resolve_component_catalog_v2(
     _check_proposal_set(proposal_set)
     if proposal_set.get("executes_original_binary") is not False:
         raise ComponentIntentError("component proposal set has invalid runtime authority")
-    catalog = load_component_catalog_intent_v2(intent, require_references=False)
+    catalog = load_component_catalog_intent(intent, require_references=False)
     proposals_raw = proposal_set.get("proposals")
     if not isinstance(proposals_raw, list):
         raise ComponentIntentError("component proposal set has no proposal array")
@@ -111,7 +111,7 @@ def resolve_component_catalog_v2(
 
 
 def _resolve_groups(
-    catalog: ComponentCatalogIntentV2,
+    catalog: ComponentCatalogIntent,
     components: Mapping[str, Mapping[str, object]],
 ) -> dict[str, dict[str, object]]:
     group_intents = {item.identity: item for item in catalog.groups}
@@ -155,7 +155,7 @@ def _resolve_groups(
 
 def _resolve_configuration(
     *,
-    catalog: ComponentCatalogIntentV2,
+    catalog: ComponentCatalogIntent,
     configuration: object,
     components: Mapping[str, Mapping[str, object]],
     groups: Mapping[str, Mapping[str, object]],

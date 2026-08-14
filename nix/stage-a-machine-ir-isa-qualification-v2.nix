@@ -3,7 +3,6 @@
   pythonEnv,
   pythonSource,
   isaPythonSource,
-  spaghettiExtractor,
   kernelCache,
   semanticKernel,
   bochsRunner,
@@ -173,7 +172,6 @@ let
     inherit
       pkgs
       pythonEnv
-      spaghettiExtractor
       kernelCache
       semanticKernel
       bochsRunner

@@ -3,16 +3,26 @@
 let
   repositoryRoot = ../.;
   pythonPackages = pkgs.python3Packages;
+  developerOnlyNixFiles = pkgs.lib.fileset.unions [
+    ../nix/flake-modules
+    ../nix/tests
+    ../nix/test-suite-fixtures.nix
+    ../nix/test-suite-manifest.json
+    ../nix/test-suite-plan.nix
+    ../nix/test-suite-shard.nix
+    ../nix/test-suite.nix
+  ];
+  installedNixFiles = pkgs.lib.fileset.difference ../nix developerOnlyNixFiles;
   packageSource = pkgs.lib.fileset.toSource {
     root = repositoryRoot;
     fileset = pkgs.lib.fileset.unions [
       ../pyproject.toml
       ../src
-      ../nix
+      installedNixFiles
       ../profiles
     ];
   };
-  candidateOnlySourceFiles = pkgs.lib.fileset.unions [
+  runtimeOnlySourceFiles = pkgs.lib.fileset.unions [
     ../src/spaghetti_extractor/stage_b_interpreter_backend.py
     ../src/spaghetti_extractor/stage_b_interpreter_native_build.py
     ../src/spaghetti_extractor/stage_b_candidate_modes.py
@@ -26,20 +36,20 @@ let
     ../src/spaghetti_extractor/stage_b_pe_composer.py
   ];
   leanSource = ../src/spaghetti_extractor/lean;
-  analysisPythonFiles = pkgs.lib.fileset.difference ../src (
+  staticPythonFiles = pkgs.lib.fileset.difference ../src (
     pkgs.lib.fileset.unions [
-      candidateOnlySourceFiles
+      runtimeOnlySourceFiles
       leanSource
     ]
   );
-  analysisSource = pkgs.lib.fileset.toSource {
+  staticSource = pkgs.lib.fileset.toSource {
     root = repositoryRoot;
-    fileset = analysisPythonFiles;
+    fileset = staticPythonFiles;
   };
-  isaAnalysisSource = pkgs.lib.fileset.toSource {
+  isaSource = pkgs.lib.fileset.toSource {
     root = repositoryRoot;
     fileset = pkgs.lib.fileset.unions [
-      analysisPythonFiles
+      staticPythonFiles
       leanSource
     ];
   };
@@ -47,7 +57,7 @@ let
     root = ../profiles;
     fileset = ../profiles;
   };
-  candidateSource = pkgs.lib.fileset.toSource {
+  fullSource = pkgs.lib.fileset.toSource {
     root = repositoryRoot;
     fileset = ../src;
   };
@@ -71,11 +81,11 @@ let
     doCheck = false;
   };
   testkitTestRunner = pkgs.writeShellScriptBin "spaghetti-extractor-test" ''
-    export PYTHONPATH=${candidateSource}/src
+    export PYTHONPATH=${fullSource}/src
     exec ${pythonEnv}/bin/python -m spaghetti_extractor.testkit.runner "$@"
   '';
   testkitDeveloper = pkgs.writeShellScriptBin "spaghetti-extractor-dev" ''
-    export PYTHONPATH=${candidateSource}/src
+    export PYTHONPATH=${fullSource}/src
     exec ${pythonEnv}/bin/python -m spaghetti_extractor.testkit "$@"
   '';
   isaConformanceKernel = import ./stage-a-isa-conformance-kernel.nix {
@@ -165,10 +175,10 @@ in
   sources = {
     inherit
       packageSource
-      analysisSource
-      isaAnalysisSource
+      staticSource
+      isaSource
       profileSource
-      candidateSource
+      fullSource
       leanSource
       ;
   };

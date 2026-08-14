@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from typing import Any
 
-from spaghetti_extractor.analysis.isa_requirements import (
+from spaghetti_extractor.extraction.isa_requirements import (
     _lean_side_form_extraction_source,
 )
 from spaghetti_extractor.machine_ir_isa_requirements_v2 import (

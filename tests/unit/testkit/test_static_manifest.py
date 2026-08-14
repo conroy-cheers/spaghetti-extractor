@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from spaghetti_extractor.testkit import TestkitError
 from spaghetti_extractor.testkit.model import PlannedShard, SuitePlan, canonical_json
 from spaghetti_extractor.testkit.static_manifest import (
     STATIC_MANIFEST_FORMAT,
     build_static_test_manifest,
+    check_repository_metadata,
     check_static_test_manifest,
     nix_execution_plan_payload,
+    refresh_repository_metadata,
 )
 
 
@@ -23,6 +27,28 @@ def _repository(root: Path) -> Path:
     tests.mkdir(parents=True)
     (tests / "test_base.py").write_text(
         "from spaghetti_extractor.base import VALUE\n",
+        encoding="ascii",
+    )
+    return root
+
+
+def _metadata_repository(root: Path) -> Path:
+    _repository(root)
+    (root / "src/spaghetti_extractor/commands").mkdir()
+    (root / "src/spaghetti_extractor/commands/__init__.py").write_text(
+        "", encoding="ascii"
+    )
+    (root / "src/spaghetti_extractor/commands/manifest.py").write_text(
+        "SUPPORTED_COMMAND_MANIFEST = ()\n", encoding="ascii"
+    )
+    (root / "pyproject.toml").write_text(
+        """
+[project]
+name = "metadata-fixture"
+version = "0"
+[project.scripts]
+fixture = "spaghetti_extractor.base:main"
+""".lstrip(),
         encoding="ascii",
     )
     return root
@@ -75,7 +101,71 @@ class StaticTestManifestTests(unittest.TestCase):
                 check_static_test_manifest(root, manifest_path)
 
         self.assertIn("stale_static_test_manifest", str(raised.exception))
-        self.assertIn("static_manifest", str(raised.exception))
+        self.assertIn("nix run .#dev -- refresh", str(raised.exception))
+
+    def test_repository_refresh_updates_and_checks_both_manifests(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _metadata_repository(Path(temporary))
+
+            changed = refresh_repository_metadata(root)
+            check_repository_metadata(root)
+            unchanged = refresh_repository_metadata(root)
+
+            self.assertEqual(
+                {path.relative_to(root).as_posix() for path in changed},
+                {
+                    "nix/python-module-index.json",
+                    "nix/test-suite-manifest.json",
+                },
+            )
+            self.assertEqual(unchanged, ())
+
+    def test_repository_check_reports_all_stale_metadata_with_one_remediation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _metadata_repository(Path(temporary))
+            (root / "nix").mkdir()
+            (root / "nix/python-module-index.json").write_text("{}\n", encoding="ascii")
+            (root / "nix/test-suite-manifest.json").write_text("{}\n", encoding="ascii")
+
+            with self.assertRaises(TestkitError) as raised:
+                check_repository_metadata(root)
+
+        self.assertEqual(len(raised.exception.diagnostics), 1)
+        rendered = str(raised.exception)
+        self.assertIn("stale_repository_metadata", rendered)
+        self.assertIn("nix/python-module-index.json", rendered)
+        self.assertIn("nix/test-suite-manifest.json", rendered)
+        self.assertEqual(rendered.count("nix run .#dev -- refresh"), 1)
+
+    def test_repository_refresh_rolls_back_if_publication_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _metadata_repository(Path(temporary))
+            (root / "nix").mkdir()
+            python_index = root / "nix/python-module-index.json"
+            test_manifest = root / "nix/test-suite-manifest.json"
+            python_index.write_text("old python index\n", encoding="ascii")
+            test_manifest.write_text("old test manifest\n", encoding="ascii")
+            original_replace = os.replace
+            calls = 0
+
+            def fail_second_replace(source: object, destination: object) -> None:
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("simulated second publication failure")
+                original_replace(source, destination)
+
+            with patch(
+                "spaghetti_extractor.testkit.static_manifest.os.replace",
+                side_effect=fail_second_replace,
+            ):
+                with self.assertRaisesRegex(
+                    TestkitError, "repository_metadata_write_failed"
+                ):
+                    refresh_repository_metadata(root)
+
+            self.assertEqual(python_index.read_text(encoding="ascii"), "old python index\n")
+            self.assertEqual(test_manifest.read_text(encoding="ascii"), "old test manifest\n")
 
     def test_generic_manifest_does_not_capture_validation_targets(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

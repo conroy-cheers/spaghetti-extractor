@@ -34,7 +34,7 @@ from .isa_semantic_forms import (
 )
 from .isa_side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
 from .lean_runner import run_lean_module_graph
-from .analysis.schema import STATIC_ANALYSIS_MODEL_ID
+from .extraction.schema import STATIC_ANALYSIS_MODEL_ID
 from .stage_binary import StageAInputError
 from .util import sha256_bytes, sha256_file, write_json
 

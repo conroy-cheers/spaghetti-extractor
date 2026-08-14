@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from spaghetti_extractor.testkit import (
+    Diagnostic,
     FixtureCatalog,
     ImpactIndex,
     TestRecord,
@@ -16,6 +20,7 @@ from spaghetti_extractor.testkit import (
     plan_phase_scaffold,
     plan_test_scaffold,
 )
+from spaghetti_extractor.testkit.cli import main as developer_main
 from spaghetti_extractor.testkit.fixtures import FIXTURE_MANIFEST_FORMAT
 
 
@@ -87,7 +92,7 @@ class TestDeveloperServices(unittest.TestCase):
 
         self.assertEqual(test.files[0].path, "tests/unit/memory/test_alias_kill.py")
         self.assertIn("nix run .#test -- affected", test.next_commands[0])
-        self.assertEqual(phase.files[0].path, "src/spaghetti_extractor/analysis_v3/alias_summary.py")
+        self.assertEqual(phase.files[0].path, "src/spaghetti_extractor/authority/alias_summary.py")
         self.assertIn("phase_framework_v3", phase.files[0].content)
 
     def test_scaffold_apply_creates_files_and_refuses_overwrite(self) -> None:
@@ -95,12 +100,53 @@ class TestDeveloperServices(unittest.TestCase):
             repository = Path(temporary)
             plan = plan_test_scaffold(subsystem="memory", name="alias_kill")
 
-            created = apply_scaffold_plan(repository, plan)
+            with patch(
+                "spaghetti_extractor.testkit.scaffold.refresh_repository_metadata"
+            ) as refresh:
+                created = apply_scaffold_plan(repository, plan)
 
             self.assertEqual(created, (repository / plan.files[0].path,))
+            refresh.assert_called_once_with(repository.resolve())
             self.assertIn("class AliasKillTests", created[0].read_text(encoding="ascii"))
             with self.assertRaisesRegex(TestkitError, "scaffold_destination_exists"):
                 apply_scaffold_plan(repository, plan)
+
+    def test_scaffold_rolls_back_new_files_when_metadata_refresh_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            plan = plan_test_scaffold(subsystem="memory", name="alias_kill")
+            failure = TestkitError(
+                Diagnostic("error", "refresh_failed", "metadata generation failed")
+            )
+
+            with patch(
+                "spaghetti_extractor.testkit.scaffold.refresh_repository_metadata",
+                side_effect=failure,
+            ):
+                with self.assertRaisesRegex(TestkitError, "refresh_failed"):
+                    apply_scaffold_plan(repository, plan)
+
+            self.assertFalse((repository / plan.files[0].path).exists())
+            self.assertFalse((repository / "tests").exists())
+
+    def test_refresh_command_uses_joint_repository_metadata_service(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            repository = Path(temporary)
+            updated = repository / "nix/python-module-index.json"
+            output = StringIO()
+
+            with patch(
+                "spaghetti_extractor.testkit.cli.refresh_repository_metadata",
+                return_value=(updated,),
+            ) as refresh:
+                with redirect_stdout(output):
+                    status = developer_main(
+                        ["--repository", str(repository), "refresh", "--check"]
+                    )
+
+            self.assertEqual(status, 0)
+            refresh.assert_called_once_with(repository.resolve(), check=True)
+            self.assertEqual(output.getvalue(), "current repository metadata\n")
 
 
 if __name__ == "__main__":

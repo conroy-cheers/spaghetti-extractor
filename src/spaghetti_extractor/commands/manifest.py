@@ -61,14 +61,14 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "run one ISA oracle as a cached Nix derivation",
     },
     {
-        "name": "stage-a-check-isa-conformance-worker",
-        "group": "spaghetti_extractor.commands.isa",
-        "help": "internal Nix worker for one concrete ISA oracle",
-    },
-    {
         "name": "stage-a-enrich-isa-catalog",
         "group": "spaghetti_extractor.commands.isa",
         "help": "replay static encodings and derive qualification metadata",
+    },
+    {
+        "name": "stage-a-export-ghidra-proposal",
+        "group": "spaghetti_extractor.commands.proposals",
+        "help": "emit a binary-bound, non-authorizing Ghidra proposal",
     },
     {
         "name": "roundtrip-generate",
@@ -86,12 +86,12 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "export deterministic byte-free executable machine IR",
     },
     {
-        "name": "stage-b-build-candidate-authority-v3",
+        "name": "stage-b-build-candidate-authority",
         "group": "spaghetti_extractor.commands.authority",
         "help": "recompute the fail-closed v3 candidate-generation authority receipt",
     },
     {
-        "name": "stage-b-validate-candidate-authority-v3",
+        "name": "stage-b-validate-candidate-authority",
         "group": "spaghetti_extractor.commands.authority",
         "help": "recompute and validate a v3 candidate receipt against exact inputs",
     },

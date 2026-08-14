@@ -25,7 +25,7 @@ CAPABILITY_RESOURCE_CLASS = {
     "wine": "oracle",
 }
 NIX_TEST_CHECKS = {
-    "nix/tests/analysis-v3-machine-ir-input.nix": "analysis-v3-machine-ir-input",
+    "nix/tests/authority-machine-ir-input.nix": "authority-machine-ir-input",
     "nix/tests/artifact-seed-v3.nix": "artifact-seed-v3",
     "nix/tests/machine-import-control-profile.nix": "machine-import-control-profile",
 }

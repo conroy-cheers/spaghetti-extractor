@@ -17,6 +17,12 @@ or unrelated regions first.
 
 ## V3 Lifecycle
 
+Version 2 is retained only for authored/input wire schemas: catalog intent,
+resolution, boundary review, component contract, and source package. These are
+parsed inputs, not executable authority. Evidence, qualification, configuration
+ownership, portable selection, runtime completion, and candidate authorization
+are native v3 artifacts; no v2 artifact can activate source.
+
 The component DAG produces these independently cached artifacts:
 
 1. `resolution`: selectors and groups bound to exact machine units.
@@ -26,8 +32,9 @@ The component DAG produces these independently cached artifacts:
 4. `evidences.<id>`: candidate-only exhaustive or functional evidence bound to
    the contract, source, machine IR, domain, and producer.
 5. `qualifications.<id>`: a fail-closed activation decision.
-6. `activationPlans.<configuration>`: total, exclusive portable-or-fallback
-   ownership.
+6. `activationPlans.<configuration>`: total, exclusive portable, fallback, or
+   explicitly blocked ownership. An enabled but stale or unqualified component
+   is blocked rather than silently downgraded.
 7. `runtimeConfigurations.<configuration>`: the only input accepted by the
    executable component runtime package.
 

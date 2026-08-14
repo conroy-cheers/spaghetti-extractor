@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from .artifact_formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
-from .analysis.definedness import analyze_definedness_jsonl
+from .extraction.definedness import analyze_definedness_jsonl
 from .stage_b_c_backend import _runtime_header, _runtime_helpers
 from .stage_b_machine_ir_scope import partition_candidate_machine_ir_units
 from .stage_b_typed_x87 import (

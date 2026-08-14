@@ -30,23 +30,19 @@
       fullSuite = mkTestSuite "full";
       catalogSuite = mkTestSuite "catalog";
       benchmarkSuite = mkTestSuite "benchmark";
-      testManifestFreshness = pkgs.runCommand "spaghetti-extractor-test-manifest-freshness" {
-        nativeBuildInputs = [ context.pythonEnv ];
+      repositoryMetadataFreshness = pkgs.runCommand "spaghetti-extractor-repository-metadata-freshness" {
+        nativeBuildInputs = [ context.packages.testkitDeveloper ];
         preferLocalBuild = true;
         allowSubstitutes = true;
         __contentAddressed = true;
       } ''
-        export PYTHONPATH=${testSource}/src
-        python -m spaghetti_extractor.testkit.static_manifest \
-          --repository ${testSource} \
-          --manifest ${testSource}/nix/test-suite-manifest.json \
-          --check
+        spaghetti-extractor-dev --repository ${testSource} refresh --check
         touch "$out"
       '';
       roundtrip = import ../stage-a-roundtrip-corpus.nix {
         inherit pkgs;
         inherit (context) pythonEnv;
-        source = context.sources.analysisSource;
+        source = context.sources.staticSource;
         count = 6;
       };
       authorityGraphV3Check = import ../../tests/unit/nix_v3/check.nix {
@@ -55,27 +51,27 @@
       artifactSeedV3Check = import ../tests/artifact-seed-v3.nix {
         inherit pkgs;
         inherit (context) pythonEnv;
-        pythonSource = context.sources.analysisSource;
+        pythonSource = context.sources.staticSource;
       };
-      analysisV3MachineIrInputCheck = import ../tests/analysis-v3-machine-ir-input.nix {
+      authorityMachineIrInputCheck = import ../tests/authority-machine-ir-input.nix {
         inherit pkgs;
         inherit (context) pythonEnv;
-        pythonSource = context.sources.analysisSource;
+        pythonSource = context.sources.staticSource;
       };
       fullGate = pkgs.linkFarm "spaghetti-extractor-test-full" [
-        { name = "test-manifest-freshness"; path = testManifestFreshness; }
+        { name = "repository-metadata-freshness"; path = repositoryMetadataFreshness; }
         { name = "python-suite"; path = fullSuite.aggregate; }
-        { name = "analysis-v3-machine-ir-input"; path = analysisV3MachineIrInputCheck; }
+        { name = "authority-machine-ir-input"; path = authorityMachineIrInputCheck; }
         { name = "authority-graph-v3"; path = authorityGraphV3Check; }
         { name = "artifact-seed-v3"; path = artifactSeedV3Check; }
         { name = "roundtrip-qualification"; path = roundtrip.qualification; }
       ];
       smokeGate = pkgs.linkFarm "spaghetti-extractor-test-smoke" [
-        { name = "test-manifest-freshness"; path = testManifestFreshness; }
+        { name = "repository-metadata-freshness"; path = repositoryMetadataFreshness; }
         { name = "python-suite"; path = smokeSuite.aggregate; }
       ];
       benchmarkGate = pkgs.linkFarm "spaghetti-extractor-test-benchmark" [
-        { name = "test-manifest-freshness"; path = testManifestFreshness; }
+        { name = "repository-metadata-freshness"; path = repositoryMetadataFreshness; }
         { name = "python-suite"; path = benchmarkSuite.aggregate; }
       ];
       interpreterPythonClosure = import ../python-module-closure.nix {
@@ -96,10 +92,10 @@
         pythonSource = testSource;
       };
       targetSdkCheck = import ../tests/target-sdk.nix { inherit pkgs; };
-      componentsV3Check = import ../tests/components-v3.nix {
+      componentsCheck = import ../tests/components.nix {
         inherit pkgs;
         inherit (context) pythonEnv;
-        pythonSource = context.sources.analysisSource;
+        pythonSource = context.sources.staticSource;
       };
     in
     {
@@ -110,7 +106,7 @@
         test-shards = catalogSuite.shards;
         authority-graph-v3-check = authorityGraphV3Check;
         artifact-seed-v3-check = artifactSeedV3Check;
-        analysis-v3-machine-ir-input-check = analysisV3MachineIrInputCheck;
+        authority-machine-ir-input-check = authorityMachineIrInputCheck;
         roundtrip-corpus = roundtrip.corpus;
         roundtrip-qualification = roundtrip.qualification;
       };
@@ -127,7 +123,7 @@
           touch "$out"
         '';
         test-suite = fullGate;
-        test-manifest = testManifestFreshness;
+        repository-metadata = repositoryMetadataFreshness;
         python-module-closure = pkgs.runCommand
           "spaghetti-extractor-python-module-closure-check"
           { nativeBuildInputs = [ context.pythonEnv ]; }
@@ -140,25 +136,15 @@
             test -s ${isaClassifierPythonClosure}/python-module-closure.json
             touch "$out"
           '';
-        python-module-index = pkgs.runCommand
-          "spaghetti-extractor-python-module-index-check"
-          { nativeBuildInputs = [ context.pythonEnv ]; }
-          ''
-            python ${testSource}/tools/update-python-module-index.py \
-              --repository ${testSource} \
-              --out ${testSource}/nix/python-module-index.json \
-              --check
-            touch "$out"
-          '';
         authority-graph-v3 = authorityGraphV3Check;
         artifact-seed-v3 = artifactSeedV3Check;
-        analysis-v3-machine-ir-input = analysisV3MachineIrInputCheck;
+        authority-machine-ir-input = authorityMachineIrInputCheck;
         machine-import-control-profile = machineImportControlProfileFixture;
         isa-kernel = context.kernels.isaConformanceKernel;
         inductive-certificate-kernel = context.kernels.inductiveCertificateKernel;
         roundtrip = roundtrip.qualification;
         target-sdk = targetSdkCheck;
-        components-v3 = componentsV3Check;
+        components = componentsCheck;
       };
     };
 }

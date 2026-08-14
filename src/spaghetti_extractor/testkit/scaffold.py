@@ -9,6 +9,7 @@ import re
 
 from .diagnostics import Diagnostic, TestkitError
 from .model import canonical_sha256
+from .static_manifest import refresh_repository_metadata
 
 
 PHASE_KINDS = frozenset({"map-units", "map-sccs", "reduce"})
@@ -54,7 +55,7 @@ class ScaffoldPlan:
 
 
 def apply_scaffold_plan(repository: Path, plan: ScaffoldPlan) -> tuple[Path, ...]:
-    """Create every planned file atomically with fail-closed path checks."""
+    """Create planned files and refresh checked metadata as one transaction."""
 
     root = repository.resolve()
     destinations: list[Path] = []
@@ -82,14 +83,29 @@ def apply_scaffold_plan(repository: Path, plan: ScaffoldPlan) -> tuple[Path, ...
         destinations.append(destination)
 
     created: list[Path] = []
+    created_directories: set[Path] = set()
     try:
         for destination, row in zip(destinations, plan.files, strict=True):
+            parent = destination.parent
+            while parent != root and not parent.exists():
+                created_directories.add(parent)
+                parent = parent.parent
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text(row.content, encoding="ascii")
             created.append(destination)
-    except OSError as exc:
+        refresh_repository_metadata(root)
+    except Exception as exc:
         for destination in reversed(created):
             destination.unlink(missing_ok=True)
+        for directory in sorted(
+            created_directories, key=lambda path: len(path.parts), reverse=True
+        ):
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+        if isinstance(exc, TestkitError):
+            raise
         raise TestkitError(
             Diagnostic(
                 "error",
@@ -210,7 +226,7 @@ def plan_phase_scaffold(*, phase_kind: str, name: str) -> ScaffoldPlan:
     test = (
         "from __future__ import annotations\n\n"
         "import unittest\n\n"
-        f"from spaghetti_extractor.analysis_v3.{name} import PHASE\n\n\n"
+        f"from spaghetti_extractor.authority.{name} import PHASE\n\n\n"
         f"class {''.join(part.title() for part in name.split('_'))}PhaseTests(unittest.TestCase):\n"
         "    def test_declares_expected_phase_kind(self) -> None:\n"
         f"        self.assertEqual(PHASE.form, {constructor!r})\n"
@@ -220,7 +236,7 @@ def plan_phase_scaffold(*, phase_kind: str, name: str) -> ScaffoldPlan:
         "{ mkArtifactPhaseV3, inputs, bindings, schedule ? null }:\n"
         "mkArtifactPhaseV3 {\n"
         f"  name = {json.dumps('spaghetti-' + name + '-v3')};\n"
-        f"  phaseReference = {json.dumps(f'spaghetti_extractor.analysis_v3.{name}:PHASE')};\n"
+        f"  phaseReference = {json.dumps(f'spaghetti_extractor.authority.{name}:PHASE')};\n"
         f"  expectedKind = {json.dumps(name + '-v3')};\n"
         "  inherit inputs bindings schedule;\n"
         "}\n"
@@ -229,12 +245,12 @@ def plan_phase_scaffold(*, phase_kind: str, name: str) -> ScaffoldPlan:
         kind="phase",
         name=name,
         files=(
-            ScaffoldFile(f"src/spaghetti_extractor/analysis_v3/{name}.py", source, "typed v3 phase implementation"),
-            ScaffoldFile(f"tests/unit/analysis_v3/test_{name}.py", test, "focused phase unit test"),
+            ScaffoldFile(f"src/spaghetti_extractor/authority/{name}.py", source, "typed v3 phase implementation"),
+            ScaffoldFile(f"tests/unit/authority/test_{name}.py", test, "focused phase unit test"),
             ScaffoldFile(f"nix/phase-v3-{name}.nix", nix, "thin v3 phase registration"),
         ),
         next_commands=(
-            f"nix run .#test -- affected --changed src/spaghetti_extractor/analysis_v3/{name}.py",
+            f"nix run .#test -- affected --changed src/spaghetti_extractor/authority/{name}.py",
             "nix run .#dev -- doctor",
         ),
     )

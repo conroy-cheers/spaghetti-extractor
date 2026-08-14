@@ -17,6 +17,7 @@ from spaghetti_extractor.python_module_index import build_python_module_index
 
 
 RETIRED_COMMANDS = (
+    "stage-a-check-isa-conformance-worker",
     "stage-b-record-candidate",
     "stage-b-validate-candidate",
     "stage-b-explain-delta",
@@ -60,6 +61,15 @@ class PublicCliTests(unittest.TestCase):
         )
         for retired in RETIRED_COMMANDS:
             self.assertNotIn(retired, subparsers.choices)
+
+    def test_public_commands_are_not_versioned_implementation_names(self) -> None:
+        offenders = [
+            command.name
+            for command in SUPPORTED_COMMANDS
+            if command.name.endswith(("-v1", "-v2", "-v3"))
+            or "-worker" in command.name
+        ]
+        self.assertEqual(offenders, [])
 
     def test_every_manifest_command_is_configured_by_its_group(self) -> None:
         for spec in SUPPORTED_COMMANDS:

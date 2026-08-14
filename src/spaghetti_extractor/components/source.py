@@ -18,7 +18,7 @@ from .intent import ComponentIntentError
 _IDENTIFIER = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\Z")
 
 
-def build_component_source_package_v2(
+def build_component_source_package(
     *,
     lift_unit_id: str,
     files: Mapping[str, Path | str],
@@ -60,7 +60,7 @@ def build_component_source_package_v2(
     return result
 
 
-def load_component_source_package_v2(value: Path | str) -> dict[str, object]:
+def load_component_source_package(value: Path | str) -> dict[str, object]:
     """Load a package only after rechecking its manifest against source bytes."""
 
     path = Path(value)
@@ -200,6 +200,6 @@ def _canonical_sha256(value: object) -> str:
 
 
 __all__ = [
-    "build_component_source_package_v2",
-    "load_component_source_package_v2",
+    "build_component_source_package",
+    "load_component_source_package",
 ]

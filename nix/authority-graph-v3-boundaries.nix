@@ -44,7 +44,7 @@ let
         // caAttrs
       ) ''
         ${commonEnvironment}
-        ${python} -m spaghetti_extractor.analysis_v3.planning structural \
+        ${python} -m spaghetti_extractor.authority.planning structural \
           --inventory ${lib.escapeShellArg (toString inventoryPath)} \
           --schedule ${if schedule == null then "-" else lib.escapeShellArg (toString schedule)} \
           --bucket-count ${toString scheduleBucketCount} \
@@ -80,7 +80,7 @@ let
         // caAttrs
       ) ''
         ${commonEnvironment}
-        ${python} -m spaghetti_extractor.analysis_v3.planning dependency \
+        ${python} -m spaghetti_extractor.authority.planning dependency \
           --structural-schedule ${lib.escapeShellArg (toString structuralSchedule)} \
           --record-edges ${lib.escapeShellArg (toString recordEdgesPath)} \
           --schedule ${if schedule == null then "-" else lib.escapeShellArg (toString schedule)} \

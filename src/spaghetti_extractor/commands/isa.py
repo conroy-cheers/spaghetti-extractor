@@ -5,10 +5,9 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from ..analysis.isa_inventory import write_binary_isa_inventory
+from ..extraction.isa_inventory import write_binary_isa_inventory
 from ..isa_catalog_enrichment import write_enriched_side_isa_catalog
 from ..isa_conformance_nix import stage_a_check_isa_conformance_nix
-from ..isa_conformance_worker import run_isa_conformance_worker
 from .common import Handler, path_argument
 
 
@@ -22,18 +21,6 @@ def _run_isa_conformance_nix(args: argparse.Namespace) -> dict[str, Any]:
         flake=args.flake,
         builders_file=args.builders_file,
         builder_trusted_public_keys_file=args.builder_trusted_public_keys_file,
-    )
-
-
-def _run_isa_conformance_worker(args: argparse.Namespace) -> dict[str, Any]:
-    return run_isa_conformance_worker(
-        corpus_path=args.corpus,
-        backend=args.backend,
-        out=args.out,
-        bochs_runner=args.bochs_runner,
-        lean_kernel_cache=args.lean_kernel_cache,
-        lean_timeout_seconds=args.lean_timeout_seconds,
-        forms_out=args.forms_out,
     )
 
 
@@ -60,18 +47,6 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         path_argument(command, "out", required=True)
         return _run_isa_conformance_nix
 
-    if name == "stage-a-check-isa-conformance-worker":
-        path_argument(command, "corpus", required=True)
-        command.add_argument(
-            "--backend", choices=("lean", "unicorn", "bochs"), required=True
-        )
-        path_argument(command, "bochs_runner")
-        path_argument(command, "lean_kernel_cache")
-        command.add_argument("--lean-timeout-seconds", type=int, default=1800)
-        path_argument(command, "forms_out")
-        path_argument(command, "out", required=True)
-        return _run_isa_conformance_worker
-
     if name == "stage-a-enrich-isa-catalog":
         path_argument(command, "proposal", required=True)
         command.add_argument("--timeout-seconds", type=float, default=300.0)
@@ -83,4 +58,4 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
     raise ValueError(f"unsupported ISA command: {name}")
 
 
-__all__ = ["_run_isa_conformance_worker", "configure_command"]
+__all__ = ["configure_command"]

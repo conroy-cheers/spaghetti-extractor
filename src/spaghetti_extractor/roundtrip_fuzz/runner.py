@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..analysis.binary_inventory import parse_binary_cutpoint_inventory
+from ..extraction.binary_inventory import parse_binary_cutpoint_inventory
 from ..stage_binary import StageAInputError
 from ..util import sha256_file, write_json
 from .model import CaseManifest, ExpectedDisposition, load_corpus_manifest

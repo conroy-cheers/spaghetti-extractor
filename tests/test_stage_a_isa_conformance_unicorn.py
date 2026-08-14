@@ -1,4 +1,3 @@
-from argparse import Namespace
 import copy
 import json
 from pathlib import Path
@@ -6,7 +5,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-from spaghetti_extractor.commands.isa import _run_isa_conformance_worker
 from spaghetti_extractor.isa_conformance import (
     BackendKind,
     ObservationStatus,
@@ -24,6 +22,7 @@ from spaghetti_extractor.isa_conformance_unicorn import (
     unicorn_backend_descriptor,
     unicorn_x87_capability_detail,
 )
+from spaghetti_extractor.isa_conformance_worker import run_isa_conformance_worker
 
 
 GPR_VALUES = {
@@ -130,16 +129,14 @@ class StageAISAConformanceUnicornTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            result = _run_isa_conformance_worker(
-                Namespace(
-                    corpus=corpus_path,
-                    backend="unicorn",
-                    bochs_runner=None,
-                    lean_kernel_cache=None,
-                    lean_timeout_seconds=1800,
-                    forms_out=None,
-                    out=report_path,
-                )
+            result = run_isa_conformance_worker(
+                corpus_path=corpus_path,
+                backend="unicorn",
+                bochs_runner=None,
+                lean_kernel_cache=None,
+                lean_timeout_seconds=1800,
+                forms_out=None,
+                out=report_path,
             )
 
             self.assertEqual(

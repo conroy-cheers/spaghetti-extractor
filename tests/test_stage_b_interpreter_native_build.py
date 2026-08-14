@@ -19,8 +19,8 @@ from spaghetti_extractor.roundtrip_fuzz.image_contract import (
 from spaghetti_extractor.machine_ir_authority_v2 import (
     build_machine_ir_authority_bindings,
 )
-from spaghetti_extractor.analysis_v3._schema import stable_id
-from spaghetti_extractor.analysis_v3.final_authority import (
+from spaghetti_extractor.authority._schema import stable_id
+from spaghetti_extractor.authority.final_authority import (
     FINAL_AUTHORITY_ARTIFACT_KIND_V3,
     FINAL_AUTHORITY_CODEC_V3,
     FINAL_AUTHORITY_SCOPE_V3,
@@ -56,8 +56,8 @@ from spaghetti_extractor.stage_b_native_runtime import (
 from spaghetti_extractor.stage_b_pe_composer import (
     EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
 )
-from spaghetti_extractor.stage_b_candidate_authority_v3 import (
-    build_stage_b_candidate_authority_v3,
+from spaghetti_extractor.candidate.authority import (
+    build_candidate_authority,
 )
 from spaghetti_extractor.stage_b_candidate_modes import (
     STATIC_CLOSED_CANDIDATE_MODE,
@@ -500,7 +500,7 @@ class _Packages:
                 "receipt_sha256": _canonical_sha256(fallback_body),
             },
         )
-        candidate_authority = build_stage_b_candidate_authority_v3(
+        candidate_authority = build_candidate_authority(
             final_authority=self.final_authority,
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.machine_ir_manifest,

@@ -19,7 +19,7 @@ LIFT_UNIT_KINDS = frozenset({"component", "group"})
 
 
 @dataclass(frozen=True)
-class SourceInputV2:
+class SourceInput:
     files: tuple[PurePosixPath, ...]
     shared_inputs: tuple[PurePosixPath, ...] = ()
     entry_abi: str = "logical-c-v1"
@@ -27,58 +27,58 @@ class SourceInputV2:
 
 
 @dataclass(frozen=True)
-class ComponentEvidencePlanV3:
+class ComponentEvidencePlan:
     producer: str
     parameter_domains: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
-class ComponentIntentV2:
+class ComponentIntent:
     identity: str
     label: str
     selector: Mapping[str, object]
     evidence_profile: str
     interface_review: PurePosixPath | None
-    source: SourceInputV2 | None
-    verification: ComponentEvidencePlanV3 | None
+    source: SourceInput | None
+    verification: ComponentEvidencePlan | None
 
 
 @dataclass(frozen=True)
-class ComponentGroupIntentV2:
+class ComponentGroupIntent:
     identity: str
     label: str
     members: tuple[str, ...]
     evidence_profile: str
     interface_review: PurePosixPath | None
-    source: SourceInputV2 | None
-    verification: ComponentEvidencePlanV3 | None
+    source: SourceInput | None
+    verification: ComponentEvidencePlan | None
 
 
 @dataclass(frozen=True)
-class ConfigurationSelectionV2:
+class ConfigurationSelection:
     kind: str
     identity: str
     activation: str
 
 
 @dataclass(frozen=True)
-class ComponentConfigurationV2:
+class ComponentConfiguration:
     identity: str
     label: str
-    selections: tuple[ConfigurationSelectionV2, ...]
+    selections: tuple[ConfigurationSelection, ...]
 
 
 @dataclass(frozen=True)
-class ComponentCatalogIntentV2:
+class ComponentCatalogIntent:
     program_id: str
     permitted_activation_profiles: tuple[str, ...]
-    components: tuple[ComponentIntentV2, ...]
-    groups: tuple[ComponentGroupIntentV2, ...]
-    configurations: tuple[ComponentConfigurationV2, ...]
+    components: tuple[ComponentIntent, ...]
+    groups: tuple[ComponentGroupIntent, ...]
+    configurations: tuple[ComponentConfiguration, ...]
 
 
 @dataclass(frozen=True)
-class ComponentBoundaryReviewV2:
+class ComponentBoundaryReview:
     lift_unit_id: str
     accept_derived_machine_boundary: bool
     overrides: Mapping[str, object]

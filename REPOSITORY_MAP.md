@@ -25,17 +25,18 @@ experiments remain available in Git history and are not supported interfaces.
 
 ```text
 PE bytes
-  -> analysis/binary_inventory.py
-  -> analysis/isa_inventory.py + ISA qualification
+  -> extraction/binary_inventory.py
+  -> extraction/isa_inventory.py + ISA qualification
   -> contract_tools.py / opaque_reconstruction.py
   -> stage_b_state_machine.py
   -> reconstruction_ir.py
-  -> typed v3 authority graph
-  -> complete interpreter/native fallback
-  -> library/interface/component proposals
-  -> component v3 contracts, evidence, qualifications, and activation plans
-  -> rebuilt candidate
-  -> stage_b.py static assurance
+  +-> authority_inputs/ exact-bound proposals -> authority/ checked graph
+  +-> library/interface/component proposals
+        -> components/ contracts, evidence, qualifications, and configuration
+  +-> complete interpreter/native fallback
+  -> candidate/authority/ joins final authority, exact machine IR,
+     fallback coverage, and the component runtime package
+  -> static-closed rebuilt candidate (or explicitly non-authorizing diagnostic)
   -> stage_b_functional.py candidate-only tests
 ```
 
@@ -47,13 +48,37 @@ SDK through Nix; the root flake and generic modules never import `targets/`.
 | Module | Purpose |
 |---|---|
 | `cli.py` | Canonical `spaghetti-extractor` command registry and exit policy. |
+| `commands/` | Lazy command groups behind the literal public command manifest. Internal workers are Python functions, not hidden CLI commands. |
 | `contract_tools.py` | Stable facade over static contract generation and candidate feedback. |
-| `stage_b.py` | Candidate-only provenance, static checks, failure extraction, and ranked delta explanation. |
 | `__main__.py` | `python -m spaghetti_extractor`. |
 
-The command surface is grouped into static inventory/contract commands,
-ISA qualification, round trips, machine-IR generation, component lifting,
-source rendering, candidate assurance, and candidate-only functional tests.
+`pyproject.toml` installs three console scripts. `spaghetti-extractor` is the
+production dispatcher above; `spaghetti-extractor-test` is the Nix-first test
+runner used by `nix run .#test`; `spaghetti-extractor-dev` is repository
+tooling used by `nix run .#dev` for impact plans, fixtures, diagnostics,
+scaffolding, rebuild explanations, and metadata refresh. The latter two are
+separate flake packages and are not alternate production command surfaces.
+
+`commands/manifest.py` is the literal, sole public-command manifest. `cli.py`
+loads only the selected command group; the Python module index reads the
+manifest without importing command implementations. The current surface is:
+
+| Group module | Public commands |
+|---|---|
+| `commands/static_analysis.py` | `stage-a-inventory-binary`, `stage-a-export-behavioral-roots`, `stage-a-export-opaque-reconstruction`, `stage-a-export-reference-contract`, `stage-a-smoke-contract`, `stage-a-explain-contract`, `stage-a-diff-contract`, `stage-a-expand-import-abi` |
+| `commands/isa.py` | `stage-a-inventory-isa`, `stage-a-check-isa-conformance`, `stage-a-enrich-isa-catalog` |
+| `commands/proposals.py` | `stage-a-export-ghidra-proposal` |
+| `commands/roundtrip.py` | `roundtrip-generate`, `roundtrip-run` |
+| `commands/reconstruction.py` | `stage-a-export-machine-ir` |
+| `commands/authority.py` | `stage-b-build-candidate-authority`, `stage-b-validate-candidate-authority` |
+| `commands/runtime.py` | `stage-b-generate-interpreter`, `stage-b-generate-native-engine`, `stage-b-generate-native-runtime` |
+| `commands/components.py` | `stage-b-discover-components`, `stage-b-resolve-components`, `stage-b-build-component-contract`, `stage-b-package-component-source`, `stage-b-produce-component-evidence`, `stage-b-qualify-component`, `stage-b-compose-components`, `stage-b-build-component-runtime` |
+| `commands/source.py` | `stage-b-render-source-operations` |
+| `commands/validation.py` | `stage-b-run-functional-suite` |
+
+`commands/common.py` owns the handler protocol. Commands not present in this
+manifest are internal Python workers or retired interfaces, not hidden CLI
+entrypoints.
 
 Core support modules are deliberately small:
 
@@ -65,9 +90,25 @@ Core support modules are deliberately small:
 | `nix_support.py` | Nix discovery and content-addressed worker command construction. |
 | `python_module_index.py` | Canonical local-import index plus production-root closure enforcement used by Nix and developer diagnostics. |
 
+## Package Ownership
+
+The active pipeline packages are ownership boundaries, not migration aliases:
+
+| Package | Owns | Dependency rule |
+|---|---|---|
+| `extraction/` | Static PE decoding, executable-byte/region/cutpoint inventories, definedness, ISA requirements, and non-authorizing Ghidra proposals. | Must not depend on `authority/`, `authority_inputs/`, `candidate/`, or `components/`. |
+| `authority_inputs/` | Exact-bound adapters that turn profiles, PE roots, machine-IR facts, oracle results, exception classifications, target evidence, and implementation capabilities into untrusted v3 proposal artifacts. | May use record codecs needed to construct proposals, but must not depend on terminal authority/graph orchestration, candidates, or components. |
+| `authority/` | Native v3 record schemas, codecs, checkers, phase registry, graph planning, diagnostics, and fail-closed final authority. | The authority kernel depends only on its own package plus `address_expressions.py`, `artifact_set_v3.py`, and `phase_framework_v3.py`; it does not call legacy analyzers. |
+| `candidate/authority/` | Candidate-receipt model, canonical I/O, fresh recomputation, and the final static-closed candidate gate. | It consumes checked final authority, exact machine IR, fallback coverage, and component runtime completion; it cannot consume extraction or proposal machinery. |
+| `components/` | Target-neutral intent, resolution, contracts, source binding, candidate-only evidence, qualifications, total configurations, and runtime completion. | It remains neutral to extraction, authority, authority inputs, and candidate packages so the same contracts can be composed independently. |
+
+`tests/test_repository_boundaries.py` enforces these directions, requires every
+production module to have a public-command or Nix-phase consumer, and caps the
+active package modules at a reviewable size.
+
 ## Static Analysis
 
-`src/spaghetti_extractor/analysis/` owns original-side extraction schemas and
+`src/spaghetti_extractor/extraction/` owns original-side extraction schemas and
 machine-model qualification:
 
 | Module | Purpose |
@@ -84,11 +125,24 @@ machine-model qualification:
 
 PE primitives live in `pe.py`, `stage_binary.py`, and `recursive_decode.py`.
 `rooted_state_machine.py` performs rooted static control recovery.
-`stage_a_external_inputs_v3.py` is the untrusted ingestion boundary that
-re-parses machine-import profiles and exact PE roots into native-v3 artifacts;
-it is intentionally outside the authority kernel.
+`extraction/ghidra.py` is an optional, non-authorizing static proposal adapter.
+It hash-binds Ghidra output to the submitted PE and never executes the original
+binary. `authority_inputs/` owns the other untrusted ingestion boundaries that
+re-parse machine-import profiles, exact PE roots, exception proposals, target
+evidence, ISA selections, and fallback capabilities into checked-input artifact
+sets.
 
-`src/spaghetti_extractor/analysis_v3/` is the authoritative typed pipeline on
+| Authority-input module | Proposal role |
+|---|---|
+| `authority_inputs/external_inputs.py` | Re-parses exact profile bytes, recovers and binds PE launch roots, and projects conditional launch assumptions. |
+| `authority_inputs/standard_evidence.py` | Emits target hints and inductive inputs from exact machine IR and checked roots. |
+| `authority_inputs/exception_evidence.py` | Classifies instruction-bound exceptional transitions under an explicit launch profile. |
+| `authority_inputs/indexed_target_evidence.py` | Rechecks immutable PE tables, bounded selectors, exact targets, and alias safety. |
+| `authority_inputs/external_site_evidence.py` | Selects exact external profiles and emits replayable external-call evidence. |
+| `authority_inputs/isa_evidence.py` | Binds form-scoped oracle/Lean results back to each exact machine-IR occurrence. |
+| `authority_inputs/implementation_capabilities.py` | Binds checked ISA selection and fallback coverage to the actual interpreter package. |
+
+`src/spaghetti_extractor/authority/` is the authoritative typed pipeline on
 the content-addressed graph:
 
 | Module | Purpose |
@@ -101,8 +155,10 @@ the content-addressed graph:
 | `memory_records.py`, `memory_versions.py` | Native typed memory-version, alias, merge, access, kill, and issue records. |
 | `structural_targets.py` | Non-authorizing finite indirect-target proposals with explicit blockers. |
 | `inductive_records.py`, `inductive.py` | Native typed invariant proposals, dependency discharge, and checked SCC induction authority. |
-| `external_sites.py`, `callbacks.py` | Canonical checked external sites and callback entry/registration authority. |
+| `external_site_records.py`, `external_site_checker.py`, `callbacks.py` | Lightweight external-site records/codecs, the separately cached site checker, and callback entry/registration authority. |
+| `external_abi.py` | Deterministic fixed-stack-ABI argument recovery used while checking exact external sites. |
 | `root_closure.py`, `exceptional_transitions.py` | Launch-root closure and checked fault/exception dispositions. |
+| `target_certificate_records.py`, `target_certificate_checker.py` | Lightweight target-certificate wire records/codecs and the separately loaded finite-target checker. |
 | `isa_qualification.py`, `fallback_coverage.py` | Exact reachable-form qualification and one fallback implementation disposition per structural unit. |
 | `final_authority.py` | Fail-closed reduction over all authority families; copied status fields cannot authorize it. |
 | `diagnostics.py` | Non-authorizing family and primary-frontier summaries over checked artifact sets and sharded bundles. |
@@ -152,7 +208,7 @@ conservative self-map used to emit a baseline contract and state machine.
 | `isa_kernel_selection.py` | Binary-specific binding from reachable forms to qualified semantics and fallback capabilities. |
 | `machine_ir_isa_catalog_v2.py`, `machine_ir_isa_requirements_v2.py`, `machine_ir_isa_selection_v2.py` | Exact machine-IR ISA inventory, required-form extraction, and binary-bound qualification selection. |
 | `launch_assumption_inputs_v2.py` | Content-stable, non-authorizing PE-bound assumption projection for root-independent SCC analysis. |
-| `stage_b_candidate_authority_v3.py` | Sole candidate-generation receipt; independently joins checked v3 final authority with exact machine IR and complete fallback implementation coverage. |
+| `candidate/authority/model.py`, `candidate/authority/io.py`, `candidate/authority/checker.py` | Sole candidate-generation receipt model, canonical serialization, and independent recomputation over checked final authority, exact machine IR, component runtime ownership, and fallback coverage. |
 | `reconstruction_control.py` | Proposes clusters from decoded control structure. |
 | `reconstruction_composition.py` | Composes compatible machine units into larger reconstruction clusters. |
 | `reconstruction_contract_analysis.py` | Derives cluster inputs, outputs, effects, and frontiers. |
@@ -163,13 +219,13 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_interpreter_native_build.py` | Freestanding PE32 build from interpreter, engine, and runtime packages. |
 | `stage_b_fallback_coverage.py` | Replays exact interpreter lowerings and portable selections and proves one implementation kind per unit in the complete structural universe; it has no rooted-reachability authority. |
 | `components/source.py`, `components/evidence.py`, `components/qualification.py`, `components/runtime.py` | Content-bind logical C, produce candidate-only behavioral evidence, qualify exact replacements, and generate the sole executable component runtime package. |
-| `stage_a_standard_evidence_v3.py` | Emits exact launch-root, callback, target-hint, and inductive-input proposals for native v3 checking. |
-| `stage_a_exception_evidence_v3.py` | Generates instruction-bound exception classifications under a checked launch profile; terminal faults remain explicit observable outcomes. |
-| `stage_a_external_site_evidence_v3.py` | Generates exact-bound machine-level external-site evidence for downstream native-v3 checking. |
-| `stage_a_indexed_target_evidence_v3.py` | Checks immutable PE jump tables, finite selector guards, exact targets, and alias safety before emitting target evidence. |
-| `stage_a_isa_evidence_v3.py` | Projects binary-specific oracle and Lean qualification into exact native-v3 ISA evidence. |
+| `authority_inputs/standard_evidence.py` | Emits exact launch-root, callback, target-hint, and inductive-input proposals for authority checking. |
+| `authority_inputs/exception_evidence.py` | Generates instruction-bound exception classifications under a checked launch profile; terminal faults remain explicit observable outcomes. |
+| `authority_inputs/external_site_evidence.py` | Generates exact-bound machine-level external-site evidence for downstream authority checking. |
+| `authority_inputs/indexed_target_evidence.py` | Checks immutable PE jump tables, finite selector guards, exact targets, and alias safety before emitting target evidence. |
+| `authority_inputs/isa_evidence.py` | Projects binary-specific oracle and Lean qualification into exact authority evidence. |
 | `isa_frontier_report_v1.py` | Replays exact ISA requirements and selection authority into compact form-, field-, and RVA-level repair diagnostics without sharing an output identity with authority evidence. |
-| `stage_a_implementation_capabilities_v3.py` | Binds fallback implementation capability IDs to the exact selected ISA forms. |
+| `authority_inputs/implementation_capabilities.py` | Binds fallback implementation capability IDs to the exact selected ISA forms. |
 | `stage_b_machine_ir_scope.py` | Fail-closed partition of executable and deferred machine-IR transfers for candidate generation. |
 | `stage_b_engine_layout.py` | Structural engine layout tables. |
 | `stage_b_native_engine.py` | IA-32 ABI bridge and typed x87 native operations. |
@@ -180,7 +236,6 @@ conservative self-map used to emit a baseline contract and state machine.
 | `stage_b_native_build.py` | Generic native compile/compose pipeline. |
 | `stage_b_pe_composer.py` | PE image composition, anchors, and relocation checks. |
 | `stage_b_typed_x87.py` | Typed, byte-free x87 replay records. |
-| `stage_b_provenance.py` | Candidate source/build/output hash binding. |
 | `stage_b_candidate_modes.py` | Stable fail-closed identifiers for static-closed and structural-diagnostic candidate builds. |
 | `recovered_executable_data.py` | Checked classification of immutable initialized data embedded in executable sections. |
 
@@ -190,8 +245,8 @@ component discovery inputs from the checked machine IR.
 `components/source.py` packages the exact portable files used by component
 qualification and candidate source bundles. Qualification cannot outlive a
 source-byte change.
-The public component framework is the typed `components/` package and the
-content-addressed `stage-b-components-v3.nix` DAG.
+The public component framework is the typed `components/` package and its
+content-addressed component workflow DAG.
 
 ## Components And Portable Source
 
@@ -227,7 +282,7 @@ and interfaces; it does not erase unresolved whole-program reconstruction gaps.
 | `external_operation_profiles.py` | Machine external-operation and environment contracts. |
 | `external_interface_profiles.py` | Interface/vtable catalogs and call identities. |
 | `external_capabilities.py` | Resolver-issued callable capability contracts. |
-| `external_sites.py` | Static machine-level external call-site bindings. |
+| top-level `external_sites.py` | Static machine-level external call-site proposals outside the authority package. |
 | `callable_external_runtime.py` | Candidate runtime projection for callable capabilities. |
 | `external_interface_ast.py` | Interface declarations recovered from AST JSON. |
 | `stage_b_api_catalog.py` | Known API signature/substitution catalog support. |
@@ -287,7 +342,7 @@ The corpus is an untrusted regression system, not a candidate equivalence claim.
 | Module | Purpose |
 |---|---|
 | `stage_b_functional.py` | Curated expected-output cases and sharded candidate execution. |
-| `ghidra.py` | Optional headless decompiler proposal exporter. |
+| `extraction/ghidra.py` | Optional headless static proposal exporter; its output cannot authorize candidate generation. |
 
 Wine execution is candidate-only and must run headlessly. Nix constructors
 enforce this with `xvfb-run` where Wine is used.
@@ -298,7 +353,7 @@ enforce this with `xvfb-run` where Wine is used.
 |---|---|
 | `toolkit-context.nix` | One reusable per-system source, package, kernel, oracle, and fixture context shared by the root flake and target SDK. |
 | `target-sdk.nix` | Stable v3 target interface and high-level `workflow.pe32` constructor for analysis, authority, components, candidates, and validation. |
-| `stage-b-components-v3.nix` | Content-addressed resolution, contract, source, evidence, qualification, activation, and runtime-configuration DAG. |
+| `stage-b-components.nix` | Content-addressed resolution, contract, source, evidence, qualification, configuration, and runtime-package DAG. |
 | `stage-b-component-runtime-package.nix` | Generates and cross-compiles the sole executable component runtime package. |
 | `flake-modules/toolkit.nix`, `flake-modules/checks.nix` | Focused `flake-parts` modules for generic packages/apps/shells and checks. |
 | `stage-a-external-interface-profile.nix` | Pinned SDK headers through a checked machine-level interface profile. |
@@ -317,14 +372,14 @@ enforce this with `xvfb-run` where Wine is used.
 | `stage-b-hybrid-candidate.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |
 | `ca-python-json-phase.nix` | Generic CA phase constructor with explicit store dependencies, schema/status checking, and phase manifests. |
 | `artifact-seed-v3.nix`, `artifact-set-v3.nix`, `artifact-phase-v3.nix` | Strict source-byte-bound artifact ingestion, typed streaming validation, complete checker-source provenance, and framework-owned map/reduce/SCC phase execution over bounded CA packs. |
-| `analysis-v3-source-plan.nix`, `analysis-v3-machine-ir-input.nix` | One streaming dynamic-analysis preparation boundary followed by stable bucket re-interning, so one changed unit invalidates one bounded machine-IR shard without thousands of evaluator reads. |
-| `analysis-v3-graph-manifest.nix`, `analysis-v3-authority.nix` | Registry-derived graph-manifest realization and the reusable fail-closed target adapter that combines exact machine IR with typed external evidence artifacts. |
-| `analysis-v3-diagnostics.nix` | Non-authorizing checked-artifact summary for precise operator feedback across sharded authority families. |
-| `analysis-v3-exception-evidence.nix`, `analysis-v3-external-site-evidence.nix`, `analysis-v3-indexed-target-evidence.nix`, `analysis-v3-isa-evidence.nix`, `analysis-v3-standard-evidence.nix` | Content-addressed exact-evidence providers for exception, external-call, indirect-target, ISA, launch-root, callback, and invariant families. |
-| `analysis-v3-implementation-capabilities.nix` | Exact fallback-capability projection over the selected binary-specific ISA inventory. |
-| `analysis-v3-isa-frontiers.nix` | Separate content-addressed ISA repair report; diagnostic changes cannot invalidate the authoritative ISA artifact or its downstream closure. |
-| `analysis-v3-external-inputs.nix` | Content-addressed ingestion of exact machine-import profiles and PE/load-image roots into native-v3 input artifact sets. |
-| `analysis-v3-final-authority-gate.nix` | Strict final-authority record gate used by candidate generation, target validation, and runtime suites. |
+| `authority-source-plan.nix`, `authority-machine-ir-input.nix` | One streaming dynamic-analysis preparation boundary followed by stable bucket re-interning, so one changed unit invalidates one bounded machine-IR shard without thousands of evaluator reads. |
+| `authority-graph-manifest.nix`, `authority-workflow.nix` | Registry-derived graph-manifest realization and the reusable fail-closed target adapter that combines exact machine IR with typed external evidence artifacts. |
+| `authority-diagnostics.nix` | Non-authorizing checked-artifact summary for precise operator feedback across sharded authority families. |
+| `authority-input-exception-evidence.nix`, `authority-input-external-site-evidence.nix`, `authority-input-indexed-target-evidence.nix`, `authority-input-isa-evidence.nix`, `authority-input-standard-evidence.nix` | Content-addressed exact-evidence providers for exception, external-call, indirect-target, ISA, launch-root, callback, and invariant families. |
+| `authority-input-implementation-capabilities.nix` | Exact fallback-capability projection over the selected binary-specific ISA inventory. |
+| `authority-isa-frontiers.nix` | Separate content-addressed ISA repair report; diagnostic changes cannot invalidate the authoritative ISA artifact or its downstream closure. |
+| `authority-input-external-inputs.nix` | Content-addressed ingestion of exact machine-import profiles and PE/load-image roots into native-v3 input artifact sets. |
+| `authority-final-gate.nix` | Strict final-authority record gate used by candidate generation, target validation, and runtime suites. |
 | `authority-graph-v3.nix`, `authority-graph-v3-boundaries.nix`, `authority-graph-v3-packs.nix`, `authority-resource-classes-v3.nix` | Manifest-driven v3 authority DAG, independently checked structural/dependency planning boundaries, stable schedule packs, and one shared resource policy used by dynamic preparation and standalone fixtures. |
 | `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix`, `test-suite-manifest.json` | Static, checked stable test shards and shared heavy fixtures; Nix evaluates no dynamic test discovery and unchanged shards substitute. |
 | `stage-b-headless-diagnostic-run.nix` | Runs only a statically closed candidate in an isolated headless Wine session. |
@@ -342,6 +397,45 @@ The supported consumer interface is `flake.lib.mkTargetSdk`. Low-level Nix
 constructors are private implementation details rather than a parallel API.
 CA derivations are first-class; dependency granularity, not CA mode alone,
 determines invalidation.
+
+`nix/target-sdk.nix` returns format `spaghetti-extractor-target-sdk-v3` and
+owns the generic consumer boundary: `workflow.pe32`, lower-level `analysis`,
+`candidate`, `lifting`, and `validation` constructors, pinned `profiles`,
+`sources`, `kernels`, `tools`, `fixtures`, and `target.bundle`/`target.registry`.
+An external flake obtains it through `flake.lib.mkTargetSdk`; the independent
+in-tree corpus imports this same entrypoint. Individual
+`targets/<id>/default.nix` modules accept only `{ pkgs, sdk }` and may not
+reach into other `nix/` constructors. Conversely, the root flake, generic Nix,
+and Python package never import or name validation targets.
+
+## Authored And Generated Data
+
+Authored source includes Python, Lean, Nix constructors, documentation,
+reviewed `profiles/*.json`, the reviewed smoke ISA catalog, tool adapters, and
+target `target.json`, intent, review, portable source, and functional-suite
+files. Format suffixes such as v1, v2, and v3 remain where they identify actual
+wire schemas, artifact kinds, SDK contracts, or compatibility surfaces; they
+are not package-generation labels.
+
+Two checked-in files are generated repository metadata and must not be edited
+by hand:
+
+| Path | Ownership |
+|---|---|
+| `nix/python-module-index.json` | Generated local-import/resource graph. It is installed because production Nix closures use it. |
+| `nix/test-suite-manifest.json` | Generated stable test/shard topology. It is repository-only developer metadata. |
+
+`nix run .#dev -- refresh` regenerates both atomically, and
+`nix run .#dev -- refresh --check` verifies freshness. The root check runs that
+freshness check. `nix/flake-modules/`, `nix/tests/`,
+`nix/test-suite-fixtures.nix`, `nix/test-suite-plan.nix`,
+`nix/test-suite-shard.nix`, and `nix/test-suite.nix` are also repository-only
+test/evaluation machinery excluded from the installed toolkit source.
+
+All phase artifacts, reports, candidates, downloaded binaries, extracted
+target inputs, and evaluation receipts are generated data. They belong in the
+Nix store or ignored `private/`, `build/`, `outputs/`, and `result*` paths, not
+in Git. Machine-generated JSON reports do not belong under `docs/`.
 
 ## Profiles And Catalogs
 
@@ -379,8 +473,9 @@ machine-generated catalogs belong in Nix outputs.
 `docs/README.md` is the documentation index. The active design references are
 `architecture.md`, `components.md`, `external-operations.md`,
 `isa-qualification.md`, `static-roundtrip-qualification.md`, and
-`target-bundles.md`, and `performance-and-invalidation.md`. Historical plans and experiment reports remain in Git
-history rather than competing with the current design.
+`target-bundles.md`, and `performance-and-invalidation.md`. Historical plans
+and experiment reports remain in Git history rather than competing with the
+current design.
 
 ## Validation Targets
 
@@ -399,6 +494,15 @@ The corpus flake exports
 `targetChecks.<id>`. Listing the registry or artifact families does not force
 the corresponding authority graph.
 
+The root flake validates `import-smoke`, the complete `test-suite`,
+`repository-metadata`, `python-module-closure`, `authority-graph-v3`,
+`artifact-seed-v3`, `authority-machine-ir-input`,
+`machine-import-control-profile`, `isa-kernel`,
+`inductive-certificate-kernel`, `roundtrip`, `target-sdk`, and `components`.
+The target flake adds `corpus-boundary` plus one regression aggregate per
+registered target. Acceptance aggregates additionally require final authority
+and the static-closed candidate where the target exposes them.
+
 ## Tests
 
 `src/spaghetti_extractor/testkit/` owns convention discovery, import/resource
@@ -414,21 +518,39 @@ bundle, intent, and SDK-boundary contracts independently of the generic suite.
 
 Tests are phase-oriented by filename:
 
+- `tests/unit/extraction/`, `tests/unit/authority_inputs/`,
+  `tests/unit/authority/`, `tests/unit/candidate/`, and
+  `tests/unit/components/`: package-owner unit contracts for the migrated
+  pipeline.
+- `tests/unit/cli/` and `tests/unit/testkit/`: the exact public command surface,
+  module closure, metadata, planning, and Nix-runner behavior.
+- `tests/unit/nix_v3/` and `nix/tests/`: focused Nix constructor and authority
+  graph fixtures.
+- `tests/integration/native/`: fixture-backed native integration; `tests/smoke/`
+  and `tests/benchmark/` own their explicit suite tiers.
 - `test_stage_a_isa_*`: ISA catalog, corpus, oracle, qualification, and Nix paths.
 - `test_reconstruction_*`, `test_recursive_decode.py`,
   `test_rooted_state_machine.py`: static reconstruction and machine IR.
-- `test_component_*`, `test_semantic_components.py`,
-  `test_*component_contract.py`: component discovery/interface/source checks.
+- `test_component_discovery.py`, `test_component_interface.py`, and
+  `test_semantic_components.py`: generic component discovery/interface checks.
 - `test_external_*`, `test_callable_external_runtime.py`: ABI and external calls.
-- `test_linked_libraries.py`, `test_source_call_substitution.py`: library and
-  source substitution.
+- `test_linked_libraries.py`, `test_source_operation_catalog.py`: library
+  recognition and non-authoritative source rendering.
 - `test_stage_b_*`: C/interpreter/native/PE/functional/Nix integration.
-- `test_target_intent.py`, `test_repository_boundaries.py`: generic/target and
-  generated/authored separation.
+- `test_repository_boundaries.py`: package direction, generic/target separation,
+  documented paths, developer metadata, and removed-surface checks.
 - `pe_fixtures.py`: generic synthetic PE32 constructors only.
 
-The canonical full gate is `nix flake check`. Focused Python runs are useful
-during implementation, but Nix is the supported build and cache boundary.
+The workflow is Nix-only. Use `nix build` for the package, `nix develop` for an
+interactive environment, `nix run .#test -- smoke|affected|full|benchmark` for
+generic test modes, and `nix flake check` for every root check. Use
+`nix run ./targets#test -- <id>` for a target regression aggregate,
+`nix run ./targets#test -- --acceptance <id>` for its strict acceptance
+aggregate, and `nix flake check ./targets` for the independent corpus boundary
+and all registered target regressions. Direct `python`, `unittest`, `pytest`,
+`pip`, and ad hoc compiler/oracle/Wine invocations are not supported build or
+test interfaces; the Nix graph supplies the exact package, fixtures, resource
+classes, and cache boundaries.
 
 ## Adding A Target
 

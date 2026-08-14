@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
-from ..analysis.binary_inventory import stage_a_inventory_binary
+from ..extraction.binary_inventory import stage_a_inventory_binary
 from ..stage_binary import StageAInputError
 from ..util import sha256_file, write_json
 from .lowering import (

@@ -9,14 +9,14 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.components.evidence import produce_component_evidence_v3
+from spaghetti_extractor.components.evidence import produce_component_evidence
 from spaghetti_extractor.components.formats import COMPONENT_CONTRACT_PACKAGE_V2_FORMAT
-from spaghetti_extractor.components.qualification import qualify_lift_unit_v3
-from spaghetti_extractor.components.source import build_component_source_package_v2
+from spaghetti_extractor.components.qualification import qualify_lift_unit
+from spaghetti_extractor.components.source import build_component_source_package
 from spaghetti_extractor.reconstruction_ir import MACHINE_IR_FORMAT
 
 
-class ComponentEvidenceV3Tests(unittest.TestCase):
+class ComponentEvidenceTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
@@ -44,7 +44,7 @@ class ComponentEvidenceV3Tests(unittest.TestCase):
 
     def test_exhaustive_evidence_qualifies_exact_logical_c(self) -> None:
         package = self._source("uint32_t identity(uint32_t value) { return value; }\n")
-        evidence = produce_component_evidence_v3(
+        evidence = produce_component_evidence(
             contract=self.contract,
             implementation=package,
             machine_ir=self.machine,
@@ -54,7 +54,7 @@ class ComponentEvidenceV3Tests(unittest.TestCase):
         )
         self.assertEqual(evidence["status"], "satisfied")
         self.assertEqual(evidence["coverage"]["cases"], 256)
-        qualification = qualify_lift_unit_v3(
+        qualification = qualify_lift_unit(
             contract=self.contract / "contract.json",
             implementation=package,
             evidence=evidence,
@@ -69,7 +69,7 @@ class ComponentEvidenceV3Tests(unittest.TestCase):
         package = self._source(
             "uint32_t identity(uint32_t value) { return value + 1U; }\n"
         )
-        evidence = produce_component_evidence_v3(
+        evidence = produce_component_evidence(
             contract=self.contract,
             implementation=package,
             machine_ir=self.machine,
@@ -89,7 +89,7 @@ class ComponentEvidenceV3Tests(unittest.TestCase):
             encoding="ascii",
         )
         package = self.root / ("source-" + hashlib.sha256(text.encode()).hexdigest()[:8])
-        build_component_source_package_v2(
+        build_component_source_package(
             lift_unit_id="identity",
             files={"component.c": self.source_file},
             shared_inputs={},

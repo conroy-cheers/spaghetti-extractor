@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .analysis.schema import STATIC_ANALYSIS_MODEL_ID
+from .extraction.schema import STATIC_ANALYSIS_MODEL_ID
 from .stage_binary import StageAInputError
 from .util import sha256_bytes
 

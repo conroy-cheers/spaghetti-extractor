@@ -20,7 +20,7 @@ from .discovery import build_impact_index
 from .evaluation_receipts import evaluation_receipt_directory
 from .model import SuitePlan
 from .planning import build_suite_plan, changed_paths_from_git
-from .static_manifest import nix_execution_plan_payload
+from .static_manifest import check_repository_metadata, nix_execution_plan_payload
 
 
 Run = Callable[[Sequence[str], Path], int]
@@ -525,6 +525,7 @@ def main(argv: list[str] | None = None, *, run: Run = _run) -> int:
     args = _parser().parse_args(argv)
     repository = args.repository.resolve()
     try:
+        check_repository_metadata(repository)
         commands = build_commands(
             repository,
             mode=args.mode,

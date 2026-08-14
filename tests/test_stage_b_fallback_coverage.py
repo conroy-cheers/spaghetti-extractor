@@ -7,6 +7,7 @@ from pathlib import Path
 
 from spaghetti_extractor.stage_b_fallback_coverage import (
     FALLBACK_COVERAGE_RECEIPT_FORMAT,
+    PORTABLE_SELECTION_V3_FORMAT,
     FallbackCoverageReceiptError,
     validate_stage_b_fallback_coverage_receipt,
     write_stage_b_fallback_coverage_receipt,
@@ -21,6 +22,28 @@ def _write_json(path: Path, payload: object) -> None:
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+
+
+def _canonical_sha256(value: object) -> str:
+    return sha256_bytes(
+        json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+    )
+
+
+def _write_portable_selection(
+    path: Path, *, machine_ir: Path, entries: list[dict]
+) -> None:
+    core = {
+        "format": PORTABLE_SELECTION_V3_FORMAT,
+        "status": "checked",
+        "executes_original_binary": False,
+        "machine_ir_sha256": sha256_file(machine_ir),
+        "activation_plan_sha256": "a" * 64,
+        "entries": entries,
+    }
+    _write_json(path, {**core, "selection_sha256": _canonical_sha256(core)})
 
 
 def _unit(identity: str, rva: int, marker: str) -> dict:
@@ -177,9 +200,7 @@ class _CoverageFixture:
             "execution_policy": "complete_transfer_inventory_v1",
         })
 
-    def write_coverage(
-        self, replacements: list[dict] | Path | None = None
-    ) -> dict:
+    def write_coverage(self, replacements: Path | None = None) -> dict:
         return write_stage_b_fallback_coverage_receipt(
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.manifest,
@@ -188,9 +209,7 @@ class _CoverageFixture:
             out=self.coverage_receipt,
         )
 
-    def validate_coverage(
-        self, replacements: list[dict] | Path | None = None
-    ):
+    def validate_coverage(self, replacements: Path | None = None):
         return validate_stage_b_fallback_coverage_receipt(
             receipt=self.coverage_receipt,
             machine_ir=self.machine_ir,
@@ -273,12 +292,13 @@ class StageBFallbackCoverageTests(unittest.TestCase):
                 "cluster_id": "cluster-reachable-v1",
                 "component_manifest_sha256": "c" * 64,
                 "fallback_on_unimplemented": False,
+                "dispatch_role": "entry",
+                "entry_rva": 0x1010,
             }
             selection = fixture.root / "portable-replacements.json"
-            _write_json(selection, {
-                "format": "stage-b-portable-replacement-selection-v1",
-                "replacements": [replacement],
-            })
+            _write_portable_selection(
+                selection, machine_ir=fixture.machine_ir, entries=[replacement]
+            )
             payload = fixture.write_coverage(selection)
 
             by_id = {entry["unit_id"]: entry for entry in payload["entries"]}
@@ -305,13 +325,41 @@ class StageBFallbackCoverageTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 FallbackCoverageReceiptError, "duplicate dispatch assignments"
             ):
-                fixture.write_coverage([replacement, replacement])
+                duplicate = fixture.root / "duplicate-portable-replacements.json"
+                _write_portable_selection(
+                    duplicate,
+                    machine_ir=fixture.machine_ir,
+                    entries=[replacement, replacement],
+                )
+                fixture.write_coverage(duplicate)
             permissive = dict(replacement)
             permissive["fallback_on_unimplemented"] = True
             with self.assertRaisesRegex(
                 FallbackCoverageReceiptError, "must disable machine-IR fallback"
             ):
-                fixture.write_coverage([permissive])
+                permissive_path = fixture.root / "permissive-portable-replacements.json"
+                _write_portable_selection(
+                    permissive_path,
+                    machine_ir=fixture.machine_ir,
+                    entries=[permissive],
+                )
+                fixture.write_coverage(permissive_path)
+
+    def test_rejects_legacy_portable_selection_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = _CoverageFixture(Path(temporary) / "fixture")
+            selection = fixture.root / "legacy-portable-replacements.json"
+            _write_json(
+                selection,
+                {
+                    "format": "spaghetti-extractor-portable-component-selection-v2",
+                    "entries": [],
+                },
+            )
+            with self.assertRaisesRegex(
+                FallbackCoverageReceiptError, "fields are not canonical"
+            ):
+                fixture.write_coverage(selection)
 
     def test_receipt_validation_rejects_stale_bound_artifacts(self) -> None:
         mutations = {
@@ -352,8 +400,8 @@ class StageBFallbackCoverageTests(unittest.TestCase):
             "fallbackCoverageReceipt",
             "candidateAuthorityReport",
             "candidateAuthorityGate",
-            "build_stage_b_candidate_authority_v3",
-            "require_stage_b_candidate_authority_v3",
+            "build_candidate_authority",
+            "require_candidate_authority",
         ):
             self.assertIn(name, module)
         self.assertIn(

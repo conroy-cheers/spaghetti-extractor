@@ -17,12 +17,8 @@ NATIVE_ENGINE_PLAN_FORMAT = "stage-b-native-engine-plan-v1"
 NATIVE_ENGINE_PACKAGE_FORMAT = "stage-b-native-engine-package-v1"
 NATIVE_RUNTIME_PACKAGE_FORMAT = "stage-b-native-runtime-package-v1"
 MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
-STATIC_HYBRID_FINAL_AUDIT_V2_FORMAT = (
-    "spaghetti-extractor-static-hybrid-final-audit-v2"
-)
 EXTERNAL_OPERATION_PROFILE_FORMAT = "stage-a-external-operation-profile-v2"
 EXTERNAL_OPERATION_CONTRACT_FORMAT = "stage-a-external-operation-contract-v1"
-OPERATION_PROVENANCE_FORMAT = "stage-a-operation-provenance-v2"
 SOURCE_OPERATION_CATALOG_FORMAT = "stage-b-source-operation-catalog-v1"
 SOURCE_OPERATION_RENDERING_FORMAT = "stage-b-source-operation-rendering-v1"
 PAYLOAD_RELOCATION_INVENTORY_FORMAT = (
@@ -31,25 +27,18 @@ PAYLOAD_RELOCATION_INVENTORY_FORMAT = (
 PE_COMPOSITION_MANIFEST_FORMAT = "stage-b-pe-composition-manifest-v1"
 REGION_REPLACEMENT_BUNDLE_FORMAT = "stage-b-region-replacement-v2"
 RECONSTRUCTION_PLAN_FORMAT = "stage-b-reconstruction-plan-v1"
-RECONSTRUCTION_REGISTRY_FORMAT = "stage-b-reconstruction-registry-v1"
-RECONSTRUCTION_STATUS_FORMAT = "stage-b-reconstruction-status-v1"
 RECONSTRUCTION_CONTRACT_ANALYSIS_FORMAT = (
     "stage-a-reconstruction-contract-analysis-v1"
-)
-RECONSTRUCTION_VALIDATION_CASES_FORMAT = (
-    "stage-b-reconstruction-validation-cases-v1"
 )
 SEMANTIC_COMPONENT_DECLARATIONS_FORMAT = (
     "stage-b-semantic-component-declarations-v1"
 )
 SEMANTIC_COMPONENT_CATALOG_FORMAT = "stage-b-semantic-component-catalog-v1"
-SEMANTIC_CLAIM_CHECK_FORMAT = "stage-b-semantic-claim-check-v1"
 COMPONENT_PROPOSAL_SET_FORMAT = "stage-b-component-proposal-set-v1"
 COMPONENT_INTERFACE_SPEC_FORMAT = "stage-b-component-interface-spec-v1"
 COMPONENT_INTERFACE_REFINEMENT_FORMAT = (
     "stage-b-component-interface-refinement-v1"
 )
-COMPONENT_INTERFACE_BUNDLE_FORMAT = "stage-b-component-interface-bundle-v1"
 COMPONENT_QUALIFICATION_FORMAT = "stage-b-component-qualification-v1"
 LIBRARY_ARTIFACT_INPUTS_FORMAT = "stage-b-library-artifact-inputs-v1"
 LIBRARY_ARTIFACT_INDEX_FORMAT = "stage-b-library-artifact-index-v1"
@@ -70,13 +59,7 @@ LINKED_INTERFACE_QUALIFICATION_FORMAT = (
     "stage-b-linked-interface-qualification-v1"
 )
 LIBRARY_REPLACEMENT_PLAN_FORMAT = "stage-b-library-replacement-plan-v1"
-GENERATED_ARTIFACT_PROVENANCE_FORMAT = (
-    "spaghetti-extractor-generated-artifact-provenance-v1"
-)
-
-
 __all__ = [
-    "COMPONENT_INTERFACE_BUNDLE_FORMAT",
     "COMPONENT_INTERFACE_REFINEMENT_FORMAT",
     "COMPONENT_INTERFACE_SPEC_FORMAT",
     "COMPONENT_PROPOSAL_SET_FORMAT",
@@ -103,22 +86,16 @@ __all__ = [
     "MACHINE_IR_FORMAT",
     "NATIVE_ENGINE_PACKAGE_FORMAT",
     "NATIVE_ENGINE_PLAN_FORMAT",
-    "OPERATION_PROVENANCE_FORMAT",
     "NATIVE_RUNTIME_PACKAGE_FORMAT",
     "PAYLOAD_RELOCATION_INVENTORY_FORMAT",
     "PE_COMPOSITION_MANIFEST_FORMAT",
     "REGION_REPLACEMENT_BUNDLE_FORMAT",
     "RECONSTRUCTION_PLAN_FORMAT",
     "RECONSTRUCTION_CONTRACT_ANALYSIS_FORMAT",
-    "RECONSTRUCTION_REGISTRY_FORMAT",
-    "RECONSTRUCTION_STATUS_FORMAT",
-    "RECONSTRUCTION_VALIDATION_CASES_FORMAT",
     "SEMANTIC_COMPONENT_CATALOG_FORMAT",
     "SEMANTIC_COMPONENT_DECLARATIONS_FORMAT",
     "SEMANTIC_IR_FORMAT",
-    "SEMANTIC_CLAIM_CHECK_FORMAT",
     "SEMANTIC_TRANSFER_CONTRACT_FORMAT",
     "SOURCE_OPERATION_CATALOG_FORMAT",
     "SOURCE_OPERATION_RENDERING_FORMAT",
-    "GENERATED_ARTIFACT_PROVENANCE_FORMAT",
 ]

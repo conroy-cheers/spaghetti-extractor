@@ -17,6 +17,7 @@ nix run .#test -- benchmark
 nix run ./targets#test -- <target-id>
 nix run .#dev -- doctor
 nix run .#dev -- fixtures
+nix run .#dev -- refresh --check
 nix run .#dev -- scaffold test <subsystem> <name>
 nix run .#dev -- scaffold phase <map-units|map-sccs|reduce> <name>
 nix run .#dev -- explain-rebuild --before before.json --after after.json
@@ -24,7 +25,12 @@ nix run .#dev -- explain-rebuild --before before.json --after after.json
 
 The scaffolder creates files by default, refuses overwrites and repository
 escapes, and emits the affected Nix command. `--dry-run` renders the proposed
-files. Direct Lean, compiler, emulator, Nix, or Wine execution from tests is a
+files. A real scaffold transaction refreshes both the Python import index and
+the stable test manifest, and rolls its new files back if either metadata build
+fails. `refresh` is the only supported writer for those checked manifests.
+Test-only manifests and planners are excluded from the distributable toolkit
+source, so changing test topology cannot rebuild the installed CLI package.
+Direct Lean, compiler, emulator, Nix, or Wine execution from tests is a
 policy error; tests consume a shared fixture. Wine fixtures are headless.
 
 The test runner caches only the expensive evaluation from a filtered source

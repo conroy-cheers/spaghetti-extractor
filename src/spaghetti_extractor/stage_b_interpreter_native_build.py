@@ -39,11 +39,11 @@ from .stage_b_pe_composer import (
     compose_stage_b_pe,
 )
 from .recovered_executable_data import load_recovered_executable_data_contract
-from .stage_b_candidate_authority_v3 import (
+from .candidate.authority import (
     STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT,
     CandidateAuthorityV3Error,
     CandidateAuthorityV3Receipt,
-    validate_stage_b_candidate_authority_v3,
+    validate_candidate_authority,
 )
 from .stage_b_candidate_modes import (
     STATIC_CLOSED_CANDIDATE_MODE,
@@ -1134,7 +1134,7 @@ def _validate_candidate_authority_v3(
     component_runtime_package: Path | str,
 ) -> CandidateAuthorityV3Receipt:
     try:
-        return validate_stage_b_candidate_authority_v3(
+        return validate_candidate_authority(
             receipt=receipt,
             final_authority=final_authority,
             machine_ir=machine_ir,

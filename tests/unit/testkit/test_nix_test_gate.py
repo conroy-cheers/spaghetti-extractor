@@ -24,12 +24,13 @@ class NixTestGateArchitectureTests(unittest.TestCase):
         self.assertNotIn("unsafeDiscardStringContext", module)
         self.assertIn("planPayload ? null", module)
 
-    def test_flake_gate_checks_manifest_freshness(self) -> None:
+    def test_flake_gate_checks_repository_metadata_freshness_once(self) -> None:
         module = (ROOT / "nix/flake-modules/checks.nix").read_text(encoding="utf-8")
 
-        self.assertIn("testManifestFreshness", module)
-        self.assertIn("--check", module)
-        self.assertIn("test-manifest = testManifestFreshness", module)
+        self.assertIn("repositoryMetadataFreshness", module)
+        self.assertIn("spaghetti-extractor-dev --repository ${testSource} refresh --check", module)
+        self.assertIn("repository-metadata = repositoryMetadataFreshness", module)
+        self.assertNotIn("testManifestFreshness", module)
 
 
 if __name__ == "__main__":

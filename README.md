@@ -77,13 +77,17 @@ Developer operations use the same conventions:
 ```console
 nix run .#dev -- doctor
 nix run .#dev -- fixtures
+nix run .#dev -- refresh --check
 nix run .#dev -- scaffold test control branch_targets
 nix run .#dev -- scaffold phase map-sccs pointer_provenance
 nix run .#dev -- explain-rebuild --before before.json --after after.json
 ```
 
-Scaffolding creates convention-wired files and refuses overwrites; add
-`--dry-run` to inspect the generated files without changing the worktree.
+`refresh` transactionally regenerates both checked repository manifests;
+`refresh --check` verifies them without writing. Scaffolding creates
+convention-wired files, refreshes both manifests, and rolls the new files back
+if metadata generation fails. Add `--dry-run` to inspect the generated files
+without changing the worktree.
 
 Portable-source iteration is also Nix-native. GNU Hello exposes the canonical
 component and target-gate workflow:

@@ -6,13 +6,13 @@ import argparse
 import json
 
 from ..component_discovery import write_component_proposals
-from ..components.configuration import compose_component_configuration_v3
-from ..components.contracts import build_lift_unit_contract_v2
-from ..components.evidence import produce_component_evidence_v3
-from ..components.qualification import qualify_lift_unit_v3
-from ..components.resolution import resolve_component_catalog_v2
-from ..components.runtime import build_component_runtime_package_v3
-from ..components.source import build_component_source_package_v2
+from ..components.configuration import compose_component_configuration
+from ..components.contracts import build_lift_unit_contract
+from ..components.evidence import produce_component_evidence
+from ..components.qualification import qualify_lift_unit
+from ..components.resolution import resolve_component_catalog
+from ..components.runtime import build_component_runtime_package
+from ..components.source import build_component_source_package
 from .common import Handler, keyed_paths, path_argument
 
 
@@ -35,7 +35,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         path_argument(command, "proposals", required=True)
         path_argument(command, "intent", required=True)
         path_argument(command, "out", required=True)
-        return lambda a: resolve_component_catalog_v2(
+        return lambda a: resolve_component_catalog(
             proposals=a.proposals, intent=a.intent, out=a.out
         )
 
@@ -46,7 +46,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         command.add_argument("--lift-unit-id", required=True)
         path_argument(command, "review")
         path_argument(command, "out", required=True)
-        return lambda a: build_lift_unit_contract_v2(
+        return lambda a: build_lift_unit_contract(
             machine_ir=a.machine_ir,
             reconstruction_plan=a.reconstruction_plan,
             resolution=a.resolution,
@@ -61,7 +61,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         command.add_argument("--shared-input", action="append", default=[])
         command.add_argument("--entry-symbol", required=True)
         path_argument(command, "out", required=True)
-        return lambda a: build_component_source_package_v2(
+        return lambda a: build_component_source_package(
             lift_unit_id=a.lift_unit_id,
             files=keyed_paths(a.file),
             shared_inputs=keyed_paths(a.shared_input),
@@ -76,7 +76,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         path_argument(command, "verification", required=True)
         path_argument(command, "compiler", required=True)
         path_argument(command, "out", required=True)
-        return lambda a: produce_component_evidence_v3(
+        return lambda a: produce_component_evidence(
             contract=a.contract,
             implementation=a.implementation,
             machine_ir=a.machine_ir,
@@ -92,7 +92,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         path_argument(command, "machine_ir", required=True)
         path_argument(command, "verification", required=True)
         path_argument(command, "out", required=True)
-        return lambda a: qualify_lift_unit_v3(
+        return lambda a: qualify_lift_unit(
             contract=a.contract,
             implementation=a.implementation,
             evidence=a.evidence,
@@ -109,7 +109,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         command.add_argument("--implementation", action="append", default=[])
         command.add_argument("--qualification", action="append", default=[])
         path_argument(command, "out", required=True)
-        return lambda a: compose_component_configuration_v3(
+        return lambda a: compose_component_configuration(
             machine_ir=a.machine_ir,
             resolution=a.resolution,
             configuration_id=a.configuration_id,
@@ -127,7 +127,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         command.add_argument("--qualification", action="append", default=[])
         path_argument(command, "interpreter_package", required=True)
         path_argument(command, "out", required=True)
-        return lambda a: build_component_runtime_package_v3(
+        return lambda a: build_component_runtime_package(
             machine_ir=a.machine_ir,
             activation_plan=a.activation_plan,
             contracts=keyed_paths(a.contract),

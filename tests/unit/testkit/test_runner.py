@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+from contextlib import redirect_stderr
+from io import StringIO
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from spaghetti_extractor.testkit import Diagnostic, TestkitError
 from spaghetti_extractor.testkit.runner import (
     _canonical_json,
     _evaluate_derivations,
@@ -16,10 +19,40 @@ from spaghetti_extractor.testkit.runner import (
     _realise_derivations,
     _write_evaluation_receipt,
     build_commands,
+    main,
 )
 
 
 class TestNixFirstRunner(unittest.TestCase):
+    def test_runner_fails_fast_with_canonical_metadata_remediation(self) -> None:
+        error = TestkitError(
+            Diagnostic(
+                "error",
+                "stale_repository_metadata",
+                "metadata is stale",
+                remediation="Run `nix run .#dev -- refresh`.",
+            )
+        )
+        run_calls: list[tuple[object, object]] = []
+        stderr = StringIO()
+
+        with patch(
+            "spaghetti_extractor.testkit.runner.check_repository_metadata",
+            side_effect=error,
+        ):
+            with redirect_stderr(stderr):
+                status = main(
+                    ["smoke", "--repository", "/work/repo"],
+                    run=lambda command, repository: run_calls.append(
+                        (command, repository)
+                    )
+                    or 0,
+                )
+
+        self.assertEqual(status, 2)
+        self.assertEqual(run_calls, [])
+        self.assertEqual(stderr.getvalue().count("nix run .#dev -- refresh"), 1)
+
     def test_evaluator_materializes_large_expressions_in_a_file(self) -> None:
         expression = "[ " + " ".join("value" for _ in range(500_000)) + " ]"
         observed: dict[str, object] = {}
@@ -125,12 +158,12 @@ class TestNixFirstRunner(unittest.TestCase):
             rendered = build_commands(
                 root,
                 mode="affected",
-                changed=("nix/tests/analysis-v3-machine-ir-input.nix",),
+                changed=("nix/tests/authority-machine-ir-input.nix",),
             )
 
             self.assertEqual(len(rendered), 2)
             self.assertIn(
-                'flake.checks.x86_64-linux."analysis-v3-machine-ir-input"',
+                'flake.checks.x86_64-linux."authority-machine-ir-input"',
                 rendered[1][4],
             )
             self.assertIn('import (source + "/nix/test-suite.nix")', rendered[1][4])

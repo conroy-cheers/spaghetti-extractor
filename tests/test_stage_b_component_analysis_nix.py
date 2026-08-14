@@ -37,8 +37,8 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn(".coverage.exact.complete", discovery)
         self.assertIn(".coverage.potential.complete", discovery)
 
-    def test_component_v3_dag_has_granular_phase_inputs(self) -> None:
-        module = (ROOT / "nix" / "stage-b-components-v3.nix").read_text(
+    def test_component_dag_has_granular_phase_inputs(self) -> None:
+        module = (ROOT / "nix" / "stage-b-components.nix").read_text(
             encoding="utf-8"
         )
         for declaration in (
@@ -125,7 +125,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
 
     def test_v3_registry_owns_the_complete_authority_family(self) -> None:
         registry = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3" / "registry.py"
+            ROOT / "src" / "spaghetti_extractor" / "authority" / "registry.py"
         ).read_text(encoding="utf-8")
         for phase in (
             "TRANSITION_SUMMARIES_PHASE_V3",
@@ -138,7 +138,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
 
     def test_transition_summaries_are_native_content_addressed_units(self) -> None:
         transition = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            ROOT / "src" / "spaghetti_extractor" / "authority"
             / "transition_summaries.py"
         ).read_text(encoding="utf-8")
         self.assertIn("map_units(", transition)
@@ -148,7 +148,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
 
     def test_memory_authority_is_a_dependency_scc_phase(self) -> None:
         memory = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            ROOT / "src" / "spaghetti_extractor" / "authority"
             / "memory_versions.py"
         ).read_text(encoding="utf-8")
         self.assertIn("map_sccs(", memory)
@@ -157,7 +157,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
 
     def test_inductive_authority_consumes_native_checked_summaries(self) -> None:
         inductive = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3" / "inductive.py"
+            ROOT / "src" / "spaghetti_extractor" / "authority" / "inductive.py"
         ).read_text(encoding="utf-8")
         self.assertIn("map_sccs(", inductive)
         self.assertIn('"memory_versions": "memory-versions-v3"', inductive)
@@ -168,13 +168,13 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         graph = (ROOT / "nix" / "authority-graph-v3.nix").read_text(
             encoding="utf-8"
         )
-        manifest = (ROOT / "nix" / "analysis-v3-graph-manifest.nix").read_text(
+        manifest = (ROOT / "nix" / "authority-graph-manifest.nix").read_text(
             encoding="utf-8"
         )
         self.assertIn("graph.phases", graph)
         self.assertIn("authority_graph_manifest_v3", manifest)
         graph_module = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3" / "graph.py"
+            ROOT / "src" / "spaghetti_extractor" / "authority" / "graph.py"
         ).read_text(encoding="utf-8")
         self.assertIn("AUTHORITY_PHASE_REGISTRY_V3", graph_module)
         self.assertNotIn("staticHybridAuthorityV2", graph)
@@ -184,7 +184,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             encoding="utf-8"
         )
         gate = (
-            ROOT / "nix" / "analysis-v3-final-authority-gate.nix"
+            ROOT / "nix" / "authority-final-gate.nix"
         ).read_text(encoding="utf-8")
 
         self.assertIn(
@@ -198,20 +198,20 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             "planningPythonSource = import ./python-module-closure.nix", graph
         )
         self.assertIn(
-            'modules = [ "spaghetti_extractor.analysis_v3.planning" ];',
+            'modules = [ "spaghetti_extractor.authority.planning" ];',
             graph,
         )
         self.assertIn("pythonSource = artifactSetPythonSource;", graph)
         self.assertIn("pythonSource = planningPythonSource;", graph)
         self.assertIn("pythonClosure = import ./python-module-closure.nix", gate)
         self.assertIn(
-            'modules = [ "spaghetti_extractor.analysis_v3.final_authority" ];',
+            'modules = [ "spaghetti_extractor.authority.final_authority" ];',
             gate,
         )
 
     def test_late_authority_families_have_independent_phase_boundaries(self) -> None:
         registry = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3" / "registry.py"
+            ROOT / "src" / "spaghetti_extractor" / "authority" / "registry.py"
         ).read_text(encoding="utf-8")
         for phase in (
             "CANONICAL_EXTERNAL_SITES_PHASE_V3",
@@ -224,11 +224,11 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             self.assertIn(phase, registry)
 
     def test_exact_source_plan_is_separate_from_semantic_consumers(self) -> None:
-        source_plan = (ROOT / "nix" / "analysis-v3-source-plan.nix").read_text(
+        source_plan = (ROOT / "nix" / "authority-source-plan.nix").read_text(
             encoding="utf-8"
         )
         machine_input = (
-            ROOT / "nix" / "analysis-v3-machine-ir-input.nix"
+            ROOT / "nix" / "authority-machine-ir-input.nix"
         ).read_text(encoding="utf-8")
         self.assertIn("prepare_analysis_source_v3", source_plan)
         self.assertIn('"${preparation}/plan.json"', machine_input)
@@ -239,7 +239,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         index = json.loads(
             (ROOT / "nix" / "python-module-index.json").read_text(encoding="utf-8")
         )["modules"]
-        pending = ["spaghetti_extractor.analysis_v3.registry"]
+        pending = ["spaghetti_extractor.authority.registry"]
         closure: set[str] = set()
         while pending:
             module = pending.pop()
@@ -254,7 +254,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
 
     def test_final_authority_recomputes_family_completeness(self) -> None:
         final = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            ROOT / "src" / "spaghetti_extractor" / "authority"
             / "final_authority.py"
         ).read_text(encoding="utf-8")
         self.assertIn("_check_unit_inventory", final)
@@ -273,11 +273,11 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
 
     def test_isa_and_fallback_bindings_are_v3_native(self) -> None:
         isa = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            ROOT / "src" / "spaghetti_extractor" / "authority"
             / "isa_qualification.py"
         ).read_text(encoding="utf-8")
         fallback = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            ROOT / "src" / "spaghetti_extractor" / "authority"
             / "fallback_coverage.py"
         ).read_text(encoding="utf-8")
         self.assertIn("ISA_QUALIFICATION_PHASE_V3", isa)
@@ -310,7 +310,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("ast.parse", closure)
         self.assertIn("python-module-closure.json", closure)
         self.assertIn('package = module.split(".", 1)[0]', closure)
-        self.assertIn("run `nix run .#dev -- refresh-index`", closure)
+        self.assertIn("run `nix run .#dev -- refresh`", closure)
 
     def test_headless_diagnostic_run_decodes_candidate_failure_evidence(self) -> None:
         module = (
@@ -330,8 +330,8 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
 
         self.assertIn("candidateAuthorityReport", module)
         self.assertIn("candidateAuthorityGate", module)
-        self.assertIn("build_stage_b_candidate_authority_v3", module)
-        self.assertIn("require_stage_b_candidate_authority_v3", module)
+        self.assertIn("build_candidate_authority", module)
+        self.assertIn("require_candidate_authority", module)
         self.assertIn("final_authority=", module)
         self.assertNotIn("final_static_hybrid_audit", module)
         self.assertNotIn("authority_bundle", module)
@@ -352,11 +352,11 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
 
     def test_checked_external_sites_and_callbacks_are_native_v3_phases(self) -> None:
         external = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
-            / "external_sites.py"
+            ROOT / "src" / "spaghetti_extractor" / "authority"
+            / "external_site_checker.py"
         ).read_text(encoding="utf-8")
         callbacks = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            ROOT / "src" / "spaghetti_extractor" / "authority"
             / "callbacks.py"
         ).read_text(encoding="utf-8")
         self.assertIn("CANONICAL_EXTERNAL_SITES_PHASE_V3 = map_units(", external)
@@ -384,11 +384,11 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
 
     def test_mutable_memory_authority_uses_native_version_records(self) -> None:
         memory = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            ROOT / "src" / "spaghetti_extractor" / "authority"
             / "memory_records.py"
         ).read_text(encoding="utf-8")
         versions = (
-            ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+            ROOT / "src" / "spaghetti_extractor" / "authority"
             / "memory_versions.py"
         ).read_text(encoding="utf-8")
         self.assertIn("MemoryVersionRecordV3", memory)
@@ -396,7 +396,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("global_slot_authority_replay_v2", versions)
 
     def test_v3_root_isa_and_exception_phases_use_checked_records(self) -> None:
-        root = ROOT / "src" / "spaghetti_extractor" / "analysis_v3"
+        root = ROOT / "src" / "spaghetti_extractor" / "authority"
         launch = (root / "root_closure.py").read_text(encoding="utf-8")
         isa = (root / "isa_qualification.py").read_text(encoding="utf-8")
         exceptional = (root / "exceptional_transitions.py").read_text(
@@ -419,12 +419,12 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("__contentAddressed = true;", module)
         self.assertNotIn("dxball", module.lower())
 
-    def test_analysis_source_excludes_nix_orchestration_files(self) -> None:
+    def test_static_source_excludes_nix_orchestration_files(self) -> None:
         context = (ROOT / "nix" / "toolkit-context.nix").read_text(
             encoding="utf-8"
         )
-        analysis_start = context.index("analysisPythonFiles =")
-        analysis_end = context.index("analysisSource =", analysis_start)
+        analysis_start = context.index("staticPythonFiles =")
+        analysis_end = context.index("staticSource =", analysis_start)
         analysis_source = context[analysis_start:analysis_end]
 
         self.assertIn("../src", analysis_source)
@@ -434,9 +434,9 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         flake = (ROOT / "flake.nix").read_text(encoding="utf-8")
         sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
         self.assertIn("mkTargetSdk", flake)
-        self.assertIn("authorityV3", sdk)
+        self.assertIn("authority = authorityWorkflow", sdk)
         self.assertIn("workflow.pe32", sdk)
-        self.assertIn("analysis-v3-authority.nix", sdk)
+        self.assertIn("authority-workflow.nix", sdk)
         self.assertNotIn("dxball-final-authority-v3", flake)
         self.assertNotIn("mkStaticHybridAuthorityV2Graph", flake)
 

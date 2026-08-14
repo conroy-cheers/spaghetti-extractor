@@ -52,7 +52,7 @@ let
       repositoryRoot
       ;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.analysis_v3.planning" ];
+    modules = [ "spaghetti_extractor.authority.planning" ];
     name = "authority-graph-v3-planning-python-closure";
   };
   boundaries = import ./authority-graph-v3-boundaries.nix {

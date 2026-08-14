@@ -19,17 +19,13 @@ from .formats import (
     COMPONENT_QUALIFICATION_V3_FORMAT,
     COMPONENT_RUNTIME_COMPLETION_V3_FORMAT,
     COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
+    PORTABLE_SELECTION_V3_FORMAT,
 )
 from .intent import ComponentIntentError
-from .source import load_component_source_package_v2
+from .source import load_component_source_package
 
 
-PORTABLE_COMPONENT_SELECTION_V2_FORMAT = (
-    "spaghetti-extractor-portable-component-selection-v2"
-)
-
-
-def build_component_runtime_package_v3(
+def build_component_runtime_package(
     *,
     machine_ir: Path | str,
     activation_plan: Path | str,
@@ -57,7 +53,56 @@ def build_component_runtime_package_v3(
     )
     if activation.get("status") != "checked":
         raise ComponentIntentError("component activation plan is not checked")
+    activation_counts = _object(
+        activation.get("counts"), "component activation counts"
+    )
+    activation_entries = [
+        _object(row, "component activation entry")
+        for row in _array(activation.get("entries"), "component activation entries")
+    ]
+    ownership_states = (
+        "portable_replacement",
+        "machine_ir_fallback",
+        "blocked",
+    )
+    observed_counts = {
+        state: sum(row.get("implementation_kind") == state for row in activation_entries)
+        for state in ownership_states
+    }
+    if any(
+        row.get("implementation_kind") not in ownership_states
+        for row in activation_entries
+    ):
+        raise ComponentIntentError("component activation plan has an invalid ownership state")
+    if any(activation_counts.get(state) != count for state, count in observed_counts.items()):
+        raise ComponentIntentError("component activation ownership counts are stale")
+    if observed_counts["blocked"] != 0:
+        raise ComponentIntentError("component activation plan contains blocked units")
     machine_path, machine_manifest_path, machine_rows = _load_machine_ir(Path(machine_ir))
+    activation_bindings = _object(
+        activation.get("bindings"), "component activation bindings"
+    )
+    if (
+        activation_bindings.get("machine_ir_sha256") != sha256_file(machine_path)
+        or activation_bindings.get("machine_ir_manifest_sha256")
+        != sha256_file(machine_manifest_path)
+    ):
+        raise ComponentIntentError("component activation plan has stale machine-IR bindings")
+    activation_by_id = {
+        _string(row.get("unit_id"), "component activation unit id"): row
+        for row in activation_entries
+    }
+    if len(activation_by_id) != len(activation_entries) or set(activation_by_id) != set(
+        machine_rows
+    ):
+        raise ComponentIntentError(
+            "component activation plan does not exactly cover the machine-IR units"
+        )
+    for unit_id, row in activation_by_id.items():
+        if row.get("rva") != _unit_rva(machine_rows[unit_id]):
+            raise ComponentIntentError(
+                f"component activation plan has a stale RVA for {unit_id}"
+            )
     interpreter_manifest, baseline_program_sha256 = _interpreter_binding(
         Path(interpreter_package)
     )
@@ -65,7 +110,7 @@ def build_component_runtime_package_v3(
         _object(row, "component selection")
         for row in _array(activation.get("selections"), "component selections")
         if isinstance(row, Mapping)
-        and row.get("effective_implementation") == "portable_replacement"
+        and row.get("ownership_state") == "portable_replacement"
     ]
     component_rows: list[dict[str, object]] = []
     selection_rows: list[dict[str, object]] = []
@@ -99,7 +144,7 @@ def build_component_runtime_package_v3(
             "qualification_sha256",
             "component qualification",
         )
-        source = load_component_source_package_v2(implementation_root)
+        source = load_component_source_package(implementation_root)
         _validate_component_bindings(identity, contract, source, qualification)
         interface = _read_object(
             contract_root / "reviewed-interface.json", "reviewed component interface"
@@ -204,7 +249,7 @@ def build_component_runtime_package_v3(
             )
 
     selection_core = {
-        "format": PORTABLE_COMPONENT_SELECTION_V2_FORMAT,
+        "format": PORTABLE_SELECTION_V3_FORMAT,
         "status": "checked",
         "executes_original_binary": False,
         "machine_ir_sha256": sha256_file(machine_path),
@@ -882,6 +927,5 @@ def _canonical_sha256(value: object) -> str:
 
 
 __all__ = [
-    "PORTABLE_COMPONENT_SELECTION_V2_FORMAT",
-    "build_component_runtime_package_v3",
+    "build_component_runtime_package",
 ]

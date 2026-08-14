@@ -22,7 +22,7 @@ from ..component_interface import (
 from ..semantic_components import build_semantic_component_catalog
 from ..util import write_json
 from .intent import ComponentIntentError
-from .model import ComponentBoundaryReviewV2
+from .model import ComponentBoundaryReview
 
 
 _INTERFACE_OVERRIDE_FIELDS = frozenset(
@@ -38,7 +38,7 @@ _INTERFACE_OVERRIDE_FIELDS = frozenset(
 )
 
 
-def build_lift_unit_contract_v2(
+def build_lift_unit_contract(
     *,
     machine_ir: Path | str,
     reconstruction_plan: Path | str,
@@ -158,9 +158,9 @@ def build_lift_unit_contract_v2(
     return result
 
 
-def load_component_boundary_review_v2(
+def load_component_boundary_review(
     value: Path | str | Mapping[str, object], *, lift_unit_id: str
-) -> ComponentBoundaryReviewV2:
+) -> ComponentBoundaryReview:
     """Parse the small authored review layer without accepting generated facts."""
 
     return _load_review(value, lift_unit_id)
@@ -219,7 +219,7 @@ def _declarations(
 
 
 def _apply_review(
-    synthesized: Mapping[str, object], review: ComponentBoundaryReviewV2 | None
+    synthesized: Mapping[str, object], review: ComponentBoundaryReview | None
 ) -> dict[str, object]:
     result = copy.deepcopy(dict(synthesized))
     if review is not None:
@@ -230,7 +230,7 @@ def _apply_review(
 
 def _load_review(
     value: Path | str | Mapping[str, object], lift_unit_id: str
-) -> ComponentBoundaryReviewV2:
+) -> ComponentBoundaryReview:
     row = _load_object(value, "component boundary review")
     _exact_keys(
         row,
@@ -257,7 +257,7 @@ def _load_review(
             f"unsupported component boundary-review overrides: {unknown}"
         )
     _reject_generated(overrides, "component boundary review")
-    return ComponentBoundaryReviewV2(
+    return ComponentBoundaryReview(
         lift_unit_id=lift_unit_id,
         accept_derived_machine_boundary=True,
         overrides=copy.deepcopy(dict(overrides)),

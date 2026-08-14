@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from .analysis.binary_inventory import parse_binary_cutpoint_inventory
+from .extraction.binary_inventory import parse_binary_cutpoint_inventory
 from .contract_tools import stage_a_export_reference_contract
 from .roundtrip_fuzz.image_contract import write_stage_a_load_image_contract
 from .stage_b_state_machine import write_stage_b_state_machine_from_stage_a_export

@@ -204,14 +204,14 @@ pkgs.runCommand name {
           raise SystemExit(
               f"stale checked imports for {row['module']}: "
               f"expected {expected!r}, observed {observed!r}; "
-              "run `nix run .#dev -- refresh-index`"
+              "run `nix run .#dev -- refresh`"
           )
       observed_data = observed_resources(row)
       if observed_data != row["resources"]:
           raise SystemExit(
               f"stale checked resources for {row['module']}: "
               f"expected {row['resources']!r}, observed {observed_data!r}; "
-              "run `nix run .#dev -- refresh-index`"
+              "run `nix run .#dev -- refresh`"
           )
 
   def copy_file(source: pathlib.Path, relative: pathlib.PurePosixPath) -> None:

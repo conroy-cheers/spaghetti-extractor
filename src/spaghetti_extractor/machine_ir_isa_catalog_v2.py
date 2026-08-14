@@ -6,7 +6,7 @@ import copy
 from collections.abc import Mapping
 from typing import Any
 
-from .analysis.schema import STATIC_ANALYSIS_MODEL_ID
+from .extraction.schema import STATIC_ANALYSIS_MODEL_ID
 from .artifact_identity_v2 import canonical_sha256
 from .isa_catalog import ISA_PROFILE_ID
 from .isa_semantic_forms import (

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import argparse
 import json
+import os
 from pathlib import Path
-import sys
+import tempfile
 from typing import Mapping
 
+from ..python_module_index import render_python_module_index
 from .diagnostics import Diagnostic, TestkitError
 from .discovery import build_impact_index
 from .model import PlannedShard, SuitePlan, canonical_json, canonical_sha256
@@ -17,6 +18,9 @@ from .planning import build_suite_plan
 STATIC_MANIFEST_FORMAT = "spaghetti-extractor-static-test-manifest-v1"
 STATIC_MODES = ("benchmark", "catalog", "full", "smoke")
 DEFAULT_SHARD_COUNT = 32
+PYTHON_MODULE_INDEX_PATH = Path("nix/python-module-index.json")
+STATIC_TEST_MANIFEST_PATH = Path("nix/test-suite-manifest.json")
+REPOSITORY_METADATA_REMEDIATION = "Run `nix run .#dev -- refresh`."
 _GENERIC_SUITE_INCLUDED_ROOTS = frozenset(
     {
         "README.md",
@@ -167,16 +171,8 @@ def load_static_test_manifest(path: Path) -> Mapping[str, object]:
 
 
 def _refresh_command(path: Path) -> str:
-    rendered = (
-        "nix/test-suite-manifest.json"
-        if path.name == "test-suite-manifest.json"
-        else path.as_posix()
-    )
-    return (
-        "Run `nix develop --command python -m "
-        "spaghetti_extractor.testkit.static_manifest "
-        f"--repository . --manifest {rendered}`."
-    )
+    del path
+    return REPOSITORY_METADATA_REMEDIATION
 
 
 def check_static_test_manifest(
@@ -226,47 +222,159 @@ def check_static_test_manifest(
     )
 
 
-def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Refresh or check the static Nix test manifest.")
-    parser.add_argument("--repository", type=Path, default=Path.cwd())
-    parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--shards", type=int, default=DEFAULT_SHARD_COUNT)
-    parser.add_argument("--check", action="store_true")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
-    repository = args.repository.resolve()
-    manifest = args.manifest
-    if not manifest.is_absolute():
-        manifest = repository / manifest
+def _metadata_payloads(
+    repository: Path,
+    *,
+    shard_count: int,
+) -> dict[Path, str]:
+    root = repository.resolve()
     try:
-        if args.check:
-            check_static_test_manifest(repository, manifest, shard_count=args.shards)
-        else:
-            manifest.parent.mkdir(parents=True, exist_ok=True)
-            manifest.write_text(
-                canonical_json(build_static_test_manifest(repository, shard_count=args.shards)),
-                encoding="utf-8",
+        python_index = render_python_module_index(root)
+        test_manifest = canonical_json(
+            build_static_test_manifest(root, shard_count=shard_count)
+        )
+    except TestkitError:
+        raise
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise TestkitError(
+            Diagnostic(
+                "error",
+                "repository_metadata_generation_failed",
+                f"could not generate checked repository metadata: {exc}",
+                remediation=REPOSITORY_METADATA_REMEDIATION,
             )
-        return 0
-    except TestkitError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
+        ) from exc
+    return {
+        root / PYTHON_MODULE_INDEX_PATH: python_index,
+        root / STATIC_TEST_MANIFEST_PATH: test_manifest,
+    }
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+def _relative_metadata_paths(repository: Path, paths: list[Path]) -> str:
+    root = repository.resolve()
+    rendered: list[str] = []
+    for path in paths:
+        try:
+            rendered.append(path.relative_to(root).as_posix())
+        except ValueError:
+            rendered.append(path.as_posix())
+    return ", ".join(rendered)
+
+
+def _stale_metadata_error(repository: Path, paths: list[Path]) -> TestkitError:
+    rendered = _relative_metadata_paths(repository, paths)
+    return TestkitError(
+        Diagnostic(
+            "error",
+            "stale_repository_metadata",
+            f"checked repository metadata does not match discovery: {rendered}",
+            location=str(repository.resolve()),
+            remediation=REPOSITORY_METADATA_REMEDIATION,
+        )
+    )
+
+
+def _replace_metadata_files(payloads: Mapping[Path, str]) -> None:
+    staged: dict[Path, Path] = {}
+    previous: dict[Path, bytes | None] = {}
+    replaced: list[Path] = []
+    try:
+        for destination, content in payloads.items():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            previous[destination] = (
+                destination.read_bytes() if destination.is_file() else None
+            )
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{destination.name}.",
+                suffix=".tmp",
+                dir=destination.parent,
+            )
+            staged[destination] = Path(temporary)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+        for destination, temporary in staged.items():
+            os.replace(temporary, destination)
+            replaced.append(destination)
+    except OSError as exc:
+        for destination in reversed(replaced):
+            old_content = previous[destination]
+            if old_content is None:
+                destination.unlink(missing_ok=True)
+                continue
+            descriptor, temporary = tempfile.mkstemp(
+                prefix=f".{destination.name}.rollback.",
+                suffix=".tmp",
+                dir=destination.parent,
+            )
+            rollback = Path(temporary)
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(old_content)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(rollback, destination)
+            finally:
+                rollback.unlink(missing_ok=True)
+        raise TestkitError(
+            Diagnostic(
+                "error",
+                "repository_metadata_write_failed",
+                f"could not atomically publish repository metadata: {exc}",
+                remediation=REPOSITORY_METADATA_REMEDIATION,
+            )
+        ) from exc
+    finally:
+        for temporary in staged.values():
+            temporary.unlink(missing_ok=True)
+
+
+def refresh_repository_metadata(
+    repository: Path,
+    *,
+    check: bool = False,
+    shard_count: int = DEFAULT_SHARD_COUNT,
+) -> tuple[Path, ...]:
+    """Refresh or jointly validate both checked repository metadata files."""
+
+    root = repository.resolve()
+    payloads = _metadata_payloads(root, shard_count=shard_count)
+    stale = [
+        path
+        for path, expected in payloads.items()
+        if not path.is_file()
+        or path.read_text(encoding="utf-8", errors="replace") != expected
+    ]
+    if check:
+        if stale:
+            raise _stale_metadata_error(root, stale)
+        return ()
+    if not stale:
+        return ()
+    _replace_metadata_files({path: payloads[path] for path in stale})
+    return tuple(stale)
+
+
+def check_repository_metadata(
+    repository: Path,
+    *,
+    shard_count: int = DEFAULT_SHARD_COUNT,
+) -> None:
+    refresh_repository_metadata(repository, check=True, shard_count=shard_count)
 
 
 __all__ = [
     "DEFAULT_SHARD_COUNT",
+    "PYTHON_MODULE_INDEX_PATH",
+    "REPOSITORY_METADATA_REMEDIATION",
     "STATIC_MANIFEST_FORMAT",
     "STATIC_MODES",
+    "STATIC_TEST_MANIFEST_PATH",
     "build_static_test_manifest",
+    "check_repository_metadata",
     "check_static_test_manifest",
     "load_static_test_manifest",
-    "main",
     "nix_execution_plan_payload",
+    "refresh_repository_metadata",
 ]
