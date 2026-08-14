@@ -19,7 +19,7 @@ def _configure_command(
     configure = getattr(module, "configure_command", None)
     if not callable(configure):
         raise RuntimeError(f"command group {spec.group!r} has no configure_command")
-    handler = configure(spec.name, parser)
+    handler = configure(spec.implementation_name, parser)
     if not callable(handler):
         raise RuntimeError(
             f"command group {spec.group!r} did not configure {spec.name!r}"
@@ -27,22 +27,43 @@ def _configure_command(
     return handler
 
 
+_NAMESPACE_HELP = {
+    "project": "analyze and validate a registered target project",
+    "component": "build the selected target's portable component runtime",
+    "candidate": "build and test an authorized candidate",
+    "expert": "invoke an individual pipeline leaf command",
+}
+
+
 def _build_parser(
     *, selected_command: str | None = None, prog: str | None = None
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog=prog or "spaghetti-extractor")
-    commands = parser.add_subparsers(dest="command", required=True)
+    namespaces = parser.add_subparsers(dest="namespace", required=True)
+    namespace_parsers: dict[str, argparse._SubParsersAction[argparse.ArgumentParser]] = {}
     for spec in SUPPORTED_COMMANDS:
-        command = commands.add_parser(spec.name, help=spec.help)
+        namespace, name = spec.path
+        commands = namespace_parsers.get(namespace)
+        if commands is None:
+            namespace_parser = namespaces.add_parser(
+                namespace,
+                help=_NAMESPACE_HELP[namespace],
+            )
+            commands = namespace_parser.add_subparsers(
+                dest=f"{namespace}_command",
+                required=True,
+            )
+            namespace_parsers[namespace] = commands
+        command = commands.add_parser(name, help=spec.help)
         if spec.name == selected_command:
             command.set_defaults(handler=_configure_command(spec, command))
     return parser
 
 
 def _selected_command(argv: Sequence[str]) -> str | None:
-    if not argv:
+    if len(argv) < 2:
         return None
-    candidate = argv[0]
+    candidate = " ".join(argv[:2])
     return candidate if candidate in COMMANDS_BY_NAME else None
 
 

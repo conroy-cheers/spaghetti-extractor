@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..artifact_formats import MACHINE_IR_FORMAT
-from ..region_replacement import REGION_OVERRIDE_TABLE_FORMAT
+from .region_replacement import REGION_OVERRIDE_TABLE_FORMAT
 from ..util import sha256_file, write_json
 from .formats import (
     COMPONENT_ACTIVATION_PLAN_V3_FORMAT,

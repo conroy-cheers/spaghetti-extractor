@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from .._contract_tools.map_generation import (
+from ..reference_contract.map_analysis import (
     _linker_function_import_thunk_evidence,
     _linker_function_issues,
     _recover_basic_blocks,

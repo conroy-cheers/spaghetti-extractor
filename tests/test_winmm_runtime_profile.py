@@ -11,12 +11,12 @@ from spaghetti_extractor.callback_contracts import (
     parse_callback_source,
     parse_nested_native_callback_behavior,
 )
-from spaghetti_extractor.machine_import_profiles import (
+from spaghetti_extractor.external.machine_import_profiles import (
     NATIVE_DLL_CALLTHROUGH_EFFECT_MODEL,
     NATIVE_DLL_CALLTHROUGH_PREREQUISITES,
     load_machine_import_profile_set,
 )
-from spaghetti_extractor.stage_b_state_machine import (
+from spaghetti_extractor.candidate.state_machine import (
     _machine_import_contracts,
 )
 from spaghetti_extractor.stage_binary import StageAInputError

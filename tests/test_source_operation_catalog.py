@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.cli import main
-from spaghetti_extractor.external_operation_profiles import (
+from spaghetti_extractor.external.operation_profiles import (
     EXTERNAL_OPERATION_CONTRACT_FORMAT,
     EXTERNAL_OPERATION_PROFILE_FORMAT,
     parse_external_operation_profile,
@@ -24,6 +24,9 @@ from spaghetti_extractor.source_operation_catalog import (
     render_source_operation_rows,
     render_source_operations,
 )
+
+
+TESTKIT = {"commands": ("expert stage-b-render-source-operations",)}
 
 
 _PROFILE_SHA256 = "a" * 64
@@ -110,6 +113,7 @@ class SourceOperationCatalogTests(unittest.TestCase):
 
             with contextlib.redirect_stdout(io.StringIO()):
                 status = main([
+                    "expert",
                     "stage-b-render-source-operations",
                     "--catalog", str(catalog_path),
                     "--operation-profile", str(profile_path),

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.region_replacement import (
+from spaghetti_extractor.components.region_replacement import (
     REGION_OBSERVATIONS_FORMAT,
     REGION_OVERRIDE_TABLE_FORMAT,
     REGION_REPLACEMENT_FORMAT,

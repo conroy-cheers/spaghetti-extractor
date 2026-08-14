@@ -6,14 +6,28 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from spaghetti_extractor.isa_conformance_nix import (
+from spaghetti_extractor.isa.conformance_nix import (
     _isa_conformance_nix_expression,
     stage_a_check_isa_conformance_nix,
 )
 from spaghetti_extractor.stage_binary import StageAInputError
 
 
+ROOT = Path(__file__).resolve().parents[1]
+TESTKIT = {"resources": ("nix/authority-input-isa-evidence.nix",)}
+
+
 class StageAISAConformanceNixTests(unittest.TestCase):
+    def test_authority_input_reuses_the_canonical_requirements_parser(self):
+        wiring = (ROOT / "nix" / "authority-input-isa-evidence.nix").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("parse_machine_ir_isa_requirements_v2(requirements)", wiring)
+        self.assertNotIn(
+            ".counts.regions == (.occurrences | length)",
+            wiring,
+        )
+
     def test_expression_uses_explicit_nixpkgs_config_and_optional_kernel(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -108,22 +122,22 @@ class StageAISAConformanceNixTests(unittest.TestCase):
 
             with (
                 patch(
-                    "spaghetti_extractor.isa_conformance_nix."
+                    "spaghetti_extractor.isa.conformance_nix."
                     "_isa_conformance_nix_evaluator",
                     return_value=evaluator,
                 ),
                 patch(
-                    "spaghetti_extractor.isa_conformance_nix."
+                    "spaghetti_extractor.isa.conformance_nix."
                     "find_flake_root",
                     return_value=root,
                 ),
                 patch(
-                    "spaghetti_extractor.isa_conformance_nix."
+                    "spaghetti_extractor.isa.conformance_nix."
                     "nix_build_expression",
                     return_value=["nix", "build"],
                 ),
                 patch(
-                    "spaghetti_extractor.isa_conformance_nix.subprocess.run",
+                    "spaghetti_extractor.isa.conformance_nix.subprocess.run",
                     return_value=process,
                 ),
             ):

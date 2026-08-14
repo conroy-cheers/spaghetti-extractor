@@ -22,19 +22,11 @@ let
       ../profiles
     ];
   };
-  runtimeOnlySourceFiles = pkgs.lib.fileset.unions [
-    ../src/spaghetti_extractor/stage_b_interpreter_backend.py
-    ../src/spaghetti_extractor/stage_b_interpreter_native_build.py
-    ../src/spaghetti_extractor/stage_b_candidate_modes.py
-    ../src/spaghetti_extractor/stage_b_machine_ir_scope.py
-    ../src/spaghetti_extractor/stage_b_native_binding.py
-    ../src/spaghetti_extractor/stage_b_native_build.py
-    ../src/spaghetti_extractor/stage_b_native_engine.py
-    ../src/spaghetti_extractor/stage_b_native_image.py
-    ../src/spaghetti_extractor/stage_b_native_runtime.py
-    ../src/spaghetti_extractor/stage_b_native_diagnostic.py
-    ../src/spaghetti_extractor/stage_b_pe_composer.py
-  ];
+  # Candidate generation is one physical ownership boundary.  Keeping the
+  # fileset at package granularity makes new runtime modules private by
+  # default and prevents static/ISA derivations from accidentally acquiring
+  # candidate-only dependencies.
+  runtimeOnlySourceFiles = ../src/spaghetti_extractor/candidate;
   leanSource = ../src/spaghetti_extractor/lean;
   staticPythonFiles = pkgs.lib.fileset.difference ../src (
     pkgs.lib.fileset.unions [

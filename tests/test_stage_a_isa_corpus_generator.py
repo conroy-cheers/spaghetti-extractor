@@ -5,10 +5,10 @@ from dataclasses import replace
 import inspect
 import unittest
 
-from spaghetti_extractor import isa_conformance as conformance
-from spaghetti_extractor import isa_corpus_generator as generator_module
-from spaghetti_extractor.isa_catalog import parse_isa_form_catalog, parse_xed_instruction_catalog
-from spaghetti_extractor.isa_conformance import (
+from spaghetti_extractor.isa import conformance
+from spaghetti_extractor.isa import corpus_generator as generator_module
+from spaghetti_extractor.isa.catalog import parse_isa_form_catalog, parse_xed_instruction_catalog
+from spaghetti_extractor.isa.conformance import (
     ControlClass,
     FaultClass,
     ISAConformanceCorpus,
@@ -16,7 +16,7 @@ from spaghetti_extractor.isa_conformance import (
     isa_conformance_corpus_sha256,
     parse_isa_conformance_report,
 )
-from spaghetti_extractor.isa_corpus_generator import (
+from spaghetti_extractor.isa.corpus_generator import (
     CoverageScenario,
     FS_BASE,
     ISACorpusGenerationError,

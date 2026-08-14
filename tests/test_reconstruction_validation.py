@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from spaghetti_extractor.reconstruction_validation import (
+from spaghetti_extractor.reconstruction.validation import (
     VALIDATION_TRUST_BOUNDARY,
     ReconstructionValidationError,
     check_semantic_claim,

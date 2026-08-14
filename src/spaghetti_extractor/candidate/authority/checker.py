@@ -30,7 +30,7 @@ from ...components.formats import (
     COMPONENT_RUNTIME_COMPLETION_V3_FORMAT,
     COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
 )
-from ...stage_b_fallback_coverage import FALLBACK_COVERAGE_RECEIPT_FORMAT
+from ...machine_ir.coverage import FALLBACK_COVERAGE_RECEIPT_FORMAT
 from .io import load_candidate_authority
 from .model import (
     CHECK_NAMES as _CHECK_NAMES,

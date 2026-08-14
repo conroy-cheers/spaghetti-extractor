@@ -34,10 +34,22 @@ pkgs.runCommand name {
           value.update(data)
       return value.hexdigest()
 
-  decoder = digest(["Formal.lean", "ISAInventory.lean"])
+  decoder = digest([
+      "X87.lean",
+      "Bytes.lean",
+      "PE32.lean",
+      "Machine.lean",
+      "Decode.lean",
+      "ISAQualification.lean",
+      "ISAInventory.lean",
+  ])
   semantics = digest([
       "X87.lean",
-      "Formal.lean",
+      "Bytes.lean",
+      "PE32.lean",
+      "Machine.lean",
+      "Decode.lean",
+      "Semantics.lean",
       "ISAQualification.lean",
       "ISAConformance.lean",
   ])

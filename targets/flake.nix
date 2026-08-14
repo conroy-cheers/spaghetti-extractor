@@ -23,6 +23,12 @@
     in
     assert discoveredTargetIds == targetIds;
     assert builtins.all (id: targetMetadata.${id}.id == id) targetIds;
+    assert builtins.all
+      (id:
+        targetMetadata.${id}.format == "spaghetti-extractor-target-bundle-v2"
+        && builtins.isString
+          targetMetadata.${id}.workflow.default_configuration)
+      targetIds;
     flake-parts.lib.mkFlake { inherit inputs; } {
       systems = [ "x86_64-linux" ];
 
@@ -126,14 +132,37 @@
                 "''${builder_flags[@]}"
             '';
           };
+          projectAnalysisPackages = pkgs.lib.mapAttrs'
+            (id: target: pkgs.lib.nameValuePair "project-analyze-${id}"
+              (pkgs.linkFarm
+                "spaghetti-extractor-${id}-project-analysis"
+                (pkgs.lib.mapAttrsToList
+                  (name: path: { inherit name path; })
+                  target.artifacts.analysis)))
+            bundles;
+          componentBuildPackages = pkgs.lib.mapAttrs'
+            (id: target: pkgs.lib.nameValuePair "component-build-${id}"
+              target.default.componentRuntime)
+            bundles;
+          candidateBuilds = builtins.mapAttrs
+            (_: target: target.default.staticCandidate.candidate)
+            bundles;
+          candidateTests = targetAcceptanceChecks;
+          operatorPackages = projectAnalysisPackages
+            // componentBuildPackages;
         in
         {
           legacyPackages = {
             targets = artifacts;
-            inherit targetChecks targetAcceptanceChecks;
+            inherit
+              targetChecks
+              targetAcceptanceChecks
+              candidateBuilds
+              candidateTests
+              ;
           };
           checks = checkAttrs // { corpus-boundary = corpusBoundary; };
-          packages.target-test-runner = testRunner;
+          packages = operatorPackages // { target-test-runner = testRunner; };
           apps.test = {
             type = "app";
             program = "${testRunner}/bin/spaghetti-extractor-target-test";

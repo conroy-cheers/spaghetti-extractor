@@ -5,7 +5,7 @@ import unittest
 from hashlib import sha256
 from typing import Any
 
-from spaghetti_extractor.reconstruction_control import (
+from spaghetti_extractor.reconstruction.control import (
     classify_overlapping_instruction_starts,
     derive_rooted_reachable_units,
     propose_semantic_clusters,

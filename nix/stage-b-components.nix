@@ -9,6 +9,8 @@
   reviewRoot ? null,
   sourceRoot ? null,
   namePrefix,
+  interpreterPackage ? null,
+  compiler ? pkgs.pkgsCross.mingw32.stdenv.cc,
 }:
 
 let
@@ -379,6 +381,25 @@ let
     name = configuration.id;
     value = mkRuntimeConfiguration configuration;
   }) intentPayload.configurations);
+  mkRuntime = {
+    configurationId,
+    runtimeCompiler ? compiler,
+  }:
+    assert lib.assertMsg (interpreterPackage != null)
+      "component runtime construction requires interpreterPackage";
+    assert lib.assertMsg (builtins.hasAttr configurationId runtimeConfigurations)
+      "unknown component configuration: ${configurationId}";
+    import ./stage-b-component-runtime-package.nix {
+      inherit pkgs pythonEnv pythonSource machineIr interpreterPackage;
+      componentConfiguration = runtimeConfigurations.${configurationId};
+      namePrefix = "${namePrefix}-${configurationId}";
+      compiler = runtimeCompiler;
+    };
+  runtimeFor = configurationId: mkRuntime { inherit configurationId; };
+  runtimePackages =
+    if interpreterPackage == null then { }
+    else lib.mapAttrs (configurationId: _configuration:
+      runtimeFor configurationId) runtimeConfigurations;
   bundle = pkgs.linkFarm "${namePrefix}-component-contracts-v3" (
     [ { name = "resolution"; path = resolution; } ]
     ++ lib.mapAttrsToList (name: path: { inherit name path; }) contracts
@@ -389,7 +410,9 @@ let
   );
 in
 {
-  inherit resolution contracts sourcePackages evidences qualifications activationPlans sourceBundles runtimeConfigurations bundle;
+  inherit resolution contracts sourcePackages evidences qualifications
+    activationPlans sourceBundles runtimeConfigurations mkRuntime runtimeFor
+    runtimePackages bundle;
   contractIds = map (row: row.id) liftUnits;
   format = "spaghetti-extractor-component-dag-v3";
 }

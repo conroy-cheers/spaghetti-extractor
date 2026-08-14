@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 
 from spaghetti_extractor.errors import StageAInputError
-from spaghetti_extractor.stage_b_native_binding import (
+from spaghetti_extractor.candidate.binding import (
     NATIVE_RUNTIME_BINDING_FORMAT,
     build_stage_b_native_runtime_binding,
     write_stage_b_native_runtime_binding,

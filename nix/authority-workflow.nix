@@ -13,7 +13,7 @@
   machineImportProfiles ? [ ],
   launchProfileTemplate ? null,
   externalArtifacts ? { },
-  outputs ? [ "final-authority-v3" ],
+  outputs ? [ "canonical-external-sites-v3" "final-authority-v3" ],
   scheduleBucketCount ? 4,
   resourceClasses ? import ./authority-resource-classes-v3.nix,
   contentAddressed ? true,

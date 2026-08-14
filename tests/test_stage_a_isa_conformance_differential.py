@@ -3,9 +3,9 @@ from __future__ import annotations
 import shutil
 import unittest
 
-from spaghetti_extractor.isa_conformance import ReportQualification
-from spaghetti_extractor.isa_conformance_lean import run_lean_isa_conformance
-from spaghetti_extractor.isa_conformance_unicorn import (
+from spaghetti_extractor.isa.conformance import ReportQualification
+from spaghetti_extractor.isa.conformance_lean import run_lean_isa_conformance
+from spaghetti_extractor.isa.conformance_unicorn import (
     run_unicorn_corpus,
     unicorn_available,
 )

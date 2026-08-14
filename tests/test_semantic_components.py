@@ -12,8 +12,8 @@ from spaghetti_extractor.artifact_formats import (
     SEMANTIC_COMPONENT_CATALOG_FORMAT,
     SEMANTIC_COMPONENT_DECLARATIONS_FORMAT,
 )
-from spaghetti_extractor.reconstruction_ir import MACHINE_IR_FORMAT
-from spaghetti_extractor.semantic_components import (
+from spaghetti_extractor.reconstruction.ir import MACHINE_IR_FORMAT
+from spaghetti_extractor.components.semantic import (
     SemanticComponentError,
     build_semantic_component_catalog,
     write_semantic_component_catalog,

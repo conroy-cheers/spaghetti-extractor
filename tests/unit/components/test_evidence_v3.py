@@ -13,7 +13,7 @@ from spaghetti_extractor.components.evidence import produce_component_evidence
 from spaghetti_extractor.components.formats import COMPONENT_CONTRACT_PACKAGE_V2_FORMAT
 from spaghetti_extractor.components.qualification import qualify_lift_unit
 from spaghetti_extractor.components.source import build_component_source_package
-from spaghetti_extractor.reconstruction_ir import MACHINE_IR_FORMAT
+from spaghetti_extractor.reconstruction.ir import MACHINE_IR_FORMAT
 
 
 class ComponentEvidenceTests(unittest.TestCase):

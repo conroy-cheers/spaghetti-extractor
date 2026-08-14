@@ -34,7 +34,7 @@ from spaghetti_extractor.authority_inputs.implementation_capabilities import (
     emit_implementation_capabilities_v3,
     validate_implementation_capabilities_v3,
 )
-from spaghetti_extractor.stage_b_fallback_coverage import (
+from spaghetti_extractor.machine_ir.coverage import (
     write_stage_b_fallback_coverage_receipt,
 )
 from spaghetti_extractor.util import sha256_file

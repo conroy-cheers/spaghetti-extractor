@@ -8,12 +8,12 @@ from typing import Any
 
 from .extraction.schema import STATIC_ANALYSIS_MODEL_ID
 from .artifact_identity_v2 import canonical_sha256
-from .isa_catalog import ISA_PROFILE_ID
-from .isa_semantic_forms import (
+from .isa.catalog import ISA_PROFILE_ID
+from .isa.semantic_forms import (
     lean_semantic_form_classifier_sha256,
     lean_semantic_form_id,
 )
-from .isa_side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
+from .isa.side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
 from .machine_ir_isa_requirements_v2 import (
     MACHINE_IR_ISA_REQUIREMENTS_V2_FORMAT,
     build_machine_ir_isa_semantic_requirements_v2,

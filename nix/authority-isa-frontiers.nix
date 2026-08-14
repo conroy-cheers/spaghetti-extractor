@@ -13,7 +13,7 @@ let
   pythonClosure = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.isa_frontier_report_v1" ];
+    modules = [ "spaghetti_extractor.isa.frontier_report_v1" ];
     name = "${name}-python-closure";
   };
   caAttrs = lib.optionalAttrs contentAddressed { __contentAddressed = true; };
@@ -35,7 +35,7 @@ pkgs.runCommand name (
   export PYTHONPATH=${pythonClosure}/src
 
   mkdir -p "$out"
-  ${pythonEnv}/bin/python3 -m spaghetti_extractor.isa_frontier_report_v1 \
+  ${pythonEnv}/bin/python3 -m spaghetti_extractor.isa.frontier_report_v1 \
     --requirements ${requirements} \
     --selection-authority ${selectionAuthority} \
     --out "$out/isa-frontiers-v1.json"

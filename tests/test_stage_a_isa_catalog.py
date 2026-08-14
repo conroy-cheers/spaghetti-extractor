@@ -4,7 +4,7 @@ import copy
 from unittest import mock
 import unittest
 
-from spaghetti_extractor.isa_catalog import (
+from spaghetti_extractor.isa.catalog import (
     DispositionReason,
     EffectClass,
     ISA_FORM_CATALOG_ENTRY_FORMAT,
@@ -19,7 +19,7 @@ from spaghetti_extractor.isa_catalog import (
     serialize_isa_form_catalog,
     serialize_xed_instruction_catalog,
 )
-from spaghetti_extractor.isa_conformance import ISAConformanceError
+from spaghetti_extractor.isa.conformance import ISAConformanceError
 
 
 GPRS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
@@ -578,7 +578,7 @@ class StageAXEDInstructionCatalogTests(unittest.TestCase):
             xed_template(2, category="LOGICAL"),
         )
         with mock.patch(
-            "spaghetti_extractor.isa_catalog.xed_template_form_id_from_fields",
+            "spaghetti_extractor.isa.catalog.xed_template_form_id_from_fields",
             return_value="xed-" + "0" * 64,
         ):
             with self.assertRaisesRegex(

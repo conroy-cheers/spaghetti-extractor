@@ -24,7 +24,7 @@ from spaghetti_extractor.recovered_executable_data import (
     build_recovered_executable_data_contract,
 )
 from spaghetti_extractor.stage_binary import _parse_stage_a_pe
-from spaghetti_extractor.stage_b_pe_composer import (
+from spaghetti_extractor.candidate.pe import (
     COMPOSITION_MANIFEST_FILENAME,
     EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
     PAYLOAD_RELOCATION_INVENTORY_FORMAT,

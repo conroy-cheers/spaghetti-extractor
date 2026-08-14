@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.rooted_state_machine import (
+from spaghetti_extractor.reconstruction.rooted_state_machine import (
     _manifest_seed_roots,
     _merge_roots,
     _rooted_direct_reachability,

@@ -4,7 +4,7 @@ import copy
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.machine_abi import (
+from spaghetti_extractor.external.machine_abi import (
     build_pe32_normal_call_abi_premise,
     load_normal_call_abi_premise,
     parse_normal_call_abi_premise,

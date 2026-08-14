@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from spaghetti_extractor.finite_value_domain import FiniteU32Dataflow
-from spaghetti_extractor.reconstruction_ir import (
+from spaghetti_extractor.reconstruction.ir import (
     MACHINE_IR_FILENAME,
     MACHINE_IR_FORMAT,
     MACHINE_IR_MANIFEST_FILENAME,
@@ -29,7 +29,7 @@ from spaghetti_extractor.reconstruction_ir import (
     export_machine_ir_package,
     prepare_machine_ir_units_package,
 )
-from spaghetti_extractor.stage_b_state_machine import (
+from spaghetti_extractor.candidate.state_machine import (
     normalize_stage_a_semantic_transfer,
 )
 from spaghetti_extractor.stage_binary import _parse_stage_a_pe

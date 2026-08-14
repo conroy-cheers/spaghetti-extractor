@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 
-from ..stage_b_functional import stage_b_run_functional_suite
+from ..candidate.functional import stage_b_run_functional_suite
 from .common import Handler, path_argument
 
 

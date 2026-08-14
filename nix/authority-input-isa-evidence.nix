@@ -58,6 +58,7 @@ let
     from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
         build_machine_ir_isa_extraction_request_v2,
         build_machine_ir_isa_requirements_v2,
+        parse_machine_ir_isa_requirements_v2,
     )
     from spaghetti_extractor.util import sha256_file
 
@@ -85,6 +86,7 @@ let
         lean_evidence=evidence,
         lean_gaps=evidence.get("decode_gaps", []),
     )
+    parse_machine_ir_isa_requirements_v2(requirements)
     output.write_text(
         json.dumps(requirements, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -94,8 +96,7 @@ let
     jq -e '
       .format == "spaghetti-extractor-machine-ir-isa-requirements-v2" and
       (.status == "complete" or .status == "incomplete" or .status == "violated") and
-      (.requirements_sha256 | test("^[0-9a-f]{64}$")) and
-      .counts.regions == (.occurrences | length)
+      (.requirements_sha256 | test("^[0-9a-f]{64}$"))
     ' "$out/requirements.json" >/dev/null
   '';
   qualification = import ./stage-a-machine-ir-isa-qualification-v2.nix {

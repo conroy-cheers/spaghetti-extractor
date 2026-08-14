@@ -15,7 +15,7 @@ let
   workerSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.isa_conformance_worker" ];
+    modules = [ "spaghetti_extractor.isa.conformance_worker" ];
     extraPaths = [ "spaghetti_extractor/lean/StageA" ];
     name = "${name}-python-closure";
   };
@@ -34,7 +34,7 @@ let
     import pathlib
     import sys
 
-    from spaghetti_extractor.isa_conformance_worker import (
+    from spaghetti_extractor.isa.conformance_worker import (
         run_isa_conformance_worker,
     )
 

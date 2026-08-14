@@ -7,14 +7,11 @@ import unittest
 from pathlib import Path
 
 from tests.pe_fixtures import pe32_import_image
-from spaghetti_extractor.import_abi import (
+from spaghetti_extractor.external.import_abi import (
     expand_import_abi_policy,
     load_selected_import_abis,
 )
-from spaghetti_extractor.external_profile_authority_v2 import (
-    build_external_profile_authority_v2,
-)
-from spaghetti_extractor.machine_import_profiles import (
+from spaghetti_extractor.external.machine_import_profiles import (
     MachineImportIdentity,
     MachineImportProfileError,
     load_machine_import_profile_set,
@@ -22,7 +19,7 @@ from spaghetti_extractor.machine_import_profiles import (
 from spaghetti_extractor.control_disposition_profile import (
     build_control_disposition_profile,
 )
-from spaghetti_extractor.stage_b_state_machine import (
+from spaghetti_extractor.candidate.state_machine import (
     _annotate_machine_import_arguments,
     _machine_import_contracts,
 )
@@ -342,12 +339,6 @@ class MachineImportProfileTests(unittest.TestCase):
             / "profiles/pe32-win32-windowing-runtime-v1.json"
         )
         selected = load_machine_import_profile_set([profile]).by_identity()
-        authority = build_external_profile_authority_v2([profile])
-        authority_entries = {
-            (entry.identity.get("dll"), entry.identity.get("symbol")): entry
-            for entry in authority.entries
-        }
-
         for (dll, symbol), argument_words in _ABI_ONLY_PROFILE_ARITIES.items():
             with self.subTest(import_identity=(dll, symbol)):
                 contract = next(
@@ -363,11 +354,6 @@ class MachineImportProfileTests(unittest.TestCase):
                 self.assertNotIn("memory_effect", contract.contract)
                 self.assertNotIn("world_effect", contract.contract)
                 self.assertNotIn("callback_effect", contract.contract)
-                self.assertFalse(authority_entries[(dll, symbol)].complete)
-                self.assertEqual(
-                    authority_entries[(dll, symbol)].failure_reason,
-                    "machine import profile entry lacks an exact ABI/effect contract",
-                )
 
         contracts = _machine_import_contracts([profile])
         event = {

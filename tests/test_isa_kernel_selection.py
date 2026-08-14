@@ -21,7 +21,7 @@ from spaghetti_extractor.artifact_set_v3 import (
     ArtifactSetWriterV3,
 )
 
-from spaghetti_extractor.isa_kernel_qualification import (
+from spaghetti_extractor.isa.kernel_qualification import (
     BackendBinding,
     BackendRole,
     BinaryFormRequirement,
@@ -38,7 +38,7 @@ from spaghetti_extractor.isa_kernel_qualification import (
     build_oracle_observation,
     select_isa_kernel_qualification,
 )
-from spaghetti_extractor.isa_kernel_selection import (
+from spaghetti_extractor.isa.kernel_selection import (
     ISA_KERNEL_SELECTION_AUTHORITY_FORMAT,
     ISAKernelSelectionAuthorityError,
     SelectionAuthorityStatus,
@@ -46,11 +46,11 @@ from spaghetti_extractor.isa_kernel_selection import (
     parse_isa_kernel_selection_authority,
     validate_isa_kernel_selection_authority,
 )
-from spaghetti_extractor.isa_frontier_report_v1 import (
+from spaghetti_extractor.isa.frontier_report_v1 import (
     ISA_FRONTIER_REPORT_V1_FORMAT,
     build_isa_frontier_report_v1,
 )
-from spaghetti_extractor.isa_semantic_forms import lean_semantic_form_id
+from spaghetti_extractor.isa.semantic_forms import lean_semantic_form_id
 from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
     MACHINE_IR_FALLBACK_CAPABILITY_V2,
 )
@@ -286,7 +286,7 @@ class ISAKernelSelectionAuthorityTests(unittest.TestCase):
             build_machine_ir_isa_extraction_request_v2,
             build_machine_ir_isa_requirements_v2,
         )
-        from spaghetti_extractor.isa_semantic_forms import (
+        from spaghetti_extractor.isa.semantic_forms import (
             lean_semantic_form_classifier_sha256,
         )
 
@@ -390,8 +390,82 @@ class ISAKernelSelectionAuthorityTests(unittest.TestCase):
         ):
             parse_machine_ir_isa_selection_certificate_v2(corrupted)
 
+    def test_incomplete_exact_inventory_still_qualifies_decoded_subset(self) -> None:
+        from spaghetti_extractor.isa.semantic_forms import (
+            lean_semantic_form_classifier_sha256,
+        )
+        from spaghetti_extractor.machine_ir_isa_requirements_v2 import (
+            build_machine_ir_isa_extraction_request_v2,
+            build_machine_ir_isa_requirements_v2,
+        )
+
+        classifier = lean_semantic_form_classifier_sha256()
+        form_id = lean_semantic_form_id(
+            SEMANTIC_FORM, classifier_sha256=classifier
+        )
+        request = build_machine_ir_isa_extraction_request_v2(
+            units=[{
+                "id": "unit-1000",
+                "reachable": True,
+                "source": {
+                    "original": {"rva_start": 0x1000, "rva_end": 0x1002}
+                },
+                "instructions": [
+                    {"rva_start": 0x1000, "rva_end": 0x1001},
+                    {"rva_start": 0x1001, "rva_end": 0x1002},
+                ],
+            }],
+            binary_sha256=BINARY_SHA,
+        )
+        requirements = build_machine_ir_isa_requirements_v2(
+            request=request,
+            machine_ir_sha256=SHA2,
+            lean_rows={
+                ("original", 0): ({
+                    "rva": 0x1000,
+                    "size": 1,
+                    "bytes": "40",
+                    "form": SEMANTIC_FORM,
+                },),
+            },
+            lean_evidence={
+                "status": "lean_extracted_untrusted",
+                "classifier_sha256": classifier,
+                "extractor_sha256": SHA0,
+                "source_sha256": SHA1,
+            },
+            lean_gaps=[{
+                "side": "original",
+                "node_id": 1,
+                "rva": 0x1001,
+                "size": 1,
+                "code": "unsupported_instruction_form",
+            }],
+        )
+        authority = build_machine_ir_isa_selection_authority_v2(
+            requirements=requirements,
+            qualification=_qualification(
+                form_id=form_id,
+                semantic_form=SEMANTIC_FORM,
+            ).to_payload(),
+            binary_id="game.exe",
+        )
+        certificate = build_machine_ir_isa_selection_certificate_v2(
+            requirements=requirements,
+            authority=authority,
+        )
+
+        self.assertEqual(requirements["status"], "incomplete")
+        self.assertEqual(authority["status"], "qualified")
+        self.assertEqual(certificate["status"], "incomplete")
+        self.assertEqual(certificate["counts"]["qualified_forms"], 1)
+        self.assertIn(
+            "isa_exact_requirements_incomplete",
+            {row["code"] for row in certificate["issues"]},
+        )
+
     def test_v3_projection_binds_checked_form_to_exact_occurrence(self) -> None:
-        from spaghetti_extractor.isa_semantic_forms import (
+        from spaghetti_extractor.isa.semantic_forms import (
             lean_semantic_form_classifier_sha256,
         )
         from spaghetti_extractor.machine_ir_isa_requirements_v2 import (

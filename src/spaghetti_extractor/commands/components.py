@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from ..component_discovery import write_component_proposals
+from ..components.discovery import write_component_proposals
 from ..components.configuration import compose_component_configuration
 from ..components.contracts import build_lift_unit_contract
 from ..components.evidence import produce_component_evidence

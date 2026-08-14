@@ -16,7 +16,7 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.external_interface_ast" ];
+    modules = [ "spaghetti_extractor.external.interface_ast" ];
     name = "${profileName}-python-closure";
   };
   headers = map (
@@ -60,7 +60,7 @@ pkgs.runCommand profileName {
     "$out/interface-profile.json" ${headerArguments} <<'PY'
   import pathlib
   import sys
-  from spaghetti_extractor.external_interface_ast import (
+  from spaghetti_extractor.external.interface_ast import (
       extract_external_interface_profile,
   )
 

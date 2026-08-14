@@ -24,8 +24,8 @@ Formats:
 Commands:
 
 ```console
-spaghetti-extractor roundtrip-generate --out build/roundtrip --count 36
-spaghetti-extractor roundtrip-run \
+spaghetti-extractor expert roundtrip-generate --out build/roundtrip --count 36
+spaghetti-extractor expert roundtrip-run \
   --corpus build/roundtrip/corpus.json --out build/roundtrip-result
 nix build .#roundtrip-qualification --no-link
 ```

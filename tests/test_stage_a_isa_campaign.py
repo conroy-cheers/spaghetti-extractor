@@ -5,7 +5,7 @@ from dataclasses import replace
 import json
 import unittest
 
-from spaghetti_extractor.isa_campaign import (
+from spaghetti_extractor.isa.campaign import (
     CampaignNextAction,
     CampaignPriority,
     CampaignQualificationStatus,
@@ -14,13 +14,13 @@ from spaghetti_extractor.isa_campaign import (
     build_isa_qualification_campaign,
     parse_isa_qualification_campaign,
 )
-from spaghetti_extractor.isa_catalog import (
+from spaghetti_extractor.isa.catalog import (
     DispositionReason,
     ProfileDisposition,
     parse_xed_instruction_catalog,
 )
-from spaghetti_extractor.isa_conformance_unicorn import UNICORN_BACKEND_ID
-from spaghetti_extractor.isa_kernel_qualification import (
+from spaghetti_extractor.isa.conformance_unicorn import UNICORN_BACKEND_ID
+from spaghetti_extractor.isa.kernel_qualification import (
     BackendBinding,
     BackendRole,
     BinaryFormRequirement,

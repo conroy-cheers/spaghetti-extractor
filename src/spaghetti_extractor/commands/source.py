@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 
-from ..external_operation_profiles import load_external_operation_profile
+from ..external.operation_profiles import load_external_operation_profile
 from ..source_operation_catalog import render_source_operations
 from ..errors import StageAInputError
 from .common import Handler, path_argument

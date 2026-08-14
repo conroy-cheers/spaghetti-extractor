@@ -14,12 +14,12 @@ from .formats import (
     COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
     COMPONENT_RESOLUTION_V2_FORMAT,
 )
-from ..component_interface import (
+from .interface import (
     check_component_interface,
     finalize_component_interface_spec,
     synthesize_component_interface_spec,
 )
-from ..semantic_components import build_semantic_component_catalog
+from .semantic import build_semantic_component_catalog
 from ..util import write_json
 from .intent import ComponentIntentError
 from .model import ComponentBoundaryReview

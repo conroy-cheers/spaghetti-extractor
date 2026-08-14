@@ -39,7 +39,9 @@ def _metadata_repository(root: Path) -> Path:
         "", encoding="ascii"
     )
     (root / "src/spaghetti_extractor/commands/manifest.py").write_text(
-        "SUPPORTED_COMMAND_MANIFEST = ()\n", encoding="ascii"
+        "SUPPORTED_COMMAND_MANIFEST = ()\n"
+        "SUPPORTED_COMMAND_ROLES = {}\n",
+        encoding="ascii",
     )
     (root / "pyproject.toml").write_text(
         """

@@ -4,18 +4,18 @@ import copy
 import unittest
 from typing import Any
 
-from spaghetti_extractor.isa_semantic_forms import (
+from spaghetti_extractor.isa.semantic_forms import (
     lean_semantic_form_classifier_sha256,
 )
-from spaghetti_extractor.isa_catalog_enrichment import (
+from spaghetti_extractor.isa.catalog_enrichment import (
     enrich_side_isa_catalog,
     resolved_isa_catalog,
 )
-from spaghetti_extractor.isa_conformance import isa_conformance_corpus_sha256
-from spaghetti_extractor.isa_conformance_shards import (
+from spaghetti_extractor.isa.conformance import isa_conformance_corpus_sha256
+from spaghetti_extractor.isa.conformance_shards import (
     partition_isa_conformance_corpus,
 )
-from spaghetti_extractor.isa_corpus_generator import (
+from spaghetti_extractor.isa.corpus_generator import (
     generate_boundary_isa_corpus,
     generated_corpus_executor_input,
 )
@@ -200,7 +200,7 @@ class MachineIRISACatalogV2Tests(unittest.TestCase):
         self.assertNotEqual(baseline, changed_form)
 
     def test_reviewed_increment_metadata_is_enrichable(self) -> None:
-        from spaghetti_extractor.isa_catalog_enrichment import _derive_enrichment
+        from spaghetti_extractor.isa.catalog_enrichment import _derive_enrichment
 
         semantic_form = "unary-increment-memory"
         encoding = {
@@ -232,7 +232,7 @@ class MachineIRISACatalogV2Tests(unittest.TestCase):
         self.assertEqual(enrichment["effects"][0]["access"], "read_write")
 
     def test_reviewed_x87_int64_store_width_is_exported(self) -> None:
-        from spaghetti_extractor.isa_catalog_enrichment import _x87_format_width
+        from spaghetti_extractor.isa.catalog_enrichment import _x87_format_width
 
         self.assertEqual(
             _x87_format_width(

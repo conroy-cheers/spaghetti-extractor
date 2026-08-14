@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from spaghetti_extractor.reconstruction_composition import (
+from spaghetti_extractor.reconstruction.composition import (
     compose_linear_reconstruction_cluster,
     inspect_linear_reconstruction_cluster,
 )

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .authority.external_abi import CONTROL_DISPOSITION_PROFILE_ID
-from .machine_import_profiles import load_machine_import_profile_set
+from .external.machine_import_profiles import load_machine_import_profile_set
 
 
 CONTROL_DISPOSITION_PROFILE_FORMAT = "stage-a-static-machine-import-profile-v1"

@@ -2,7 +2,7 @@ import copy
 import unittest
 from dataclasses import FrozenInstanceError, replace
 
-from spaghetti_extractor.isa_conformance import (
+from spaghetti_extractor.isa.conformance import (
     BackendObservation,
     ISA_CONFORMANCE_REPORT_FORMAT,
     ISAConformanceCorpus,

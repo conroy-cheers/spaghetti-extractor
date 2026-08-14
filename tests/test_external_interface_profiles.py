@@ -5,12 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.external_interface_profiles import (
+from spaghetti_extractor.external.interface_profiles import (
     EXTERNAL_INTERFACE_PROFILE_FORMAT,
     ExternalInterfaceProfileError,
     load_external_interface_profile,
 )
-from spaghetti_extractor.machine_import_profiles import MachineImportIdentity
+from spaghetti_extractor.external.machine_import_profiles import MachineImportIdentity
 
 
 def profile() -> dict[str, object]:

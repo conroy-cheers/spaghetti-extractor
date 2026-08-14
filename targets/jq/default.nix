@@ -66,45 +66,13 @@ let
     componentSourceRoot = ./source;
     namePrefix = "spaghetti-extractor-jq-1.8.1";
   };
-  inherit (workflow) analysis components;
-  analysisV3 = workflow.authority;
-  staticCandidate = workflow.candidateFor {
-    configurationId = "operator-whole";
-  };
+  components = workflow.components;
 in
-sdk.target.bundle {
+sdk.target.pe32Bundle {
   targetRoot = ./.;
-  artifacts = {
-    input.original = original;
-    analysis = {
-      machine-ir = analysis.machineIr;
-      component-proposals = analysis.componentProposals;
-    };
-    components = {
-      resolution = components.resolution;
-      contracts = components.contracts;
-      source-packages = components.sourcePackages;
-      evidence = components.evidences;
-      qualifications = components.qualifications;
-      contract-bundle = components.bundle;
-      configurations = components.activationPlans;
-      source-bundles = components.sourceBundles;
-    };
-    authority = {
-      final = analysisV3.finalAuthority;
-      gate = analysisV3.finalAuthorityGate;
-      graph-metadata = analysisV3.graph.metadata;
-      diagnostics = analysisV3.diagnostics;
-    };
-    candidate.static = staticCandidate.candidate;
-  };
+  inherit workflow;
+  inputs.original = original;
   checks = {
-    component-resolution = components.resolution;
     component-contract = components.contracts.operator-whole;
-    component-configuration = components.activationPlans.operator-whole;
-  };
-  acceptanceChecks = {
-    final-authority = analysisV3.finalAuthorityGate;
-    static-candidate = staticCandidate.candidate;
   };
 }

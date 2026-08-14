@@ -16,11 +16,11 @@ from tests.pe_fixtures import pe32_image
 from spaghetti_extractor.roundtrip_fuzz.image_contract import (
     write_stage_a_load_image_contract,
 )
-from spaghetti_extractor.stage_b_engine_layout import (
+from spaghetti_extractor.candidate.engine_layout import (
     EngineLayoutFeature,
     render_stage_b_engine_layout_c,
 )
-from spaghetti_extractor.stage_b_native_build import (
+from spaghetti_extractor.candidate.native_build import (
     BUILD_MANIFEST_FILENAME,
     COMPILE_MANIFEST_FILENAME,
     ENGINE_LAYOUT_FILENAME,
@@ -36,7 +36,7 @@ from spaghetti_extractor.stage_b_native_build import (
     compose_stage_b_native_candidate,
     prepare_stage_b_native_build,
 )
-from spaghetti_extractor.stage_b_pe_composer import (
+from spaghetti_extractor.candidate.pe import (
     EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
 )
 from spaghetti_extractor.util import sha256_file

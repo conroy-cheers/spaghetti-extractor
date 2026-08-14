@@ -3,11 +3,12 @@
 STATIC_ANALYSIS_MODEL_ID = "x86-pe32-machine-ir-v1"
 STATIC_ANALYSIS_PROFILE_ID = "x86-pe32-static-reconstruction-v1"
 
-ISA_KERNEL_MODULES = (
+ISA_FORM_EXTRACTION_MODULES = (
     "X87",
-    "Formal",
+    "Bytes",
+    "PE32",
+    "Machine",
+    "Decode",
     "ISAQualification",
     "ISAInventory",
-    "ISAConformance",
-    "ISAConformanceRunner",
 )

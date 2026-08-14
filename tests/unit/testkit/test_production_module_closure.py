@@ -9,6 +9,7 @@ from spaghetti_extractor.python_module_index import (
     declared_public_command_modules,
     nix_phase_module_roots,
     production_module_closure,
+    production_roots_by_role,
     production_unreachable_modules,
 )
 
@@ -54,6 +55,7 @@ SUPPORTED_COMMAND_MANIFEST = (
         "help": "exercise the fixture command",
     },
 )
+SUPPORTED_COMMAND_ROLES = {"fixture-command": "proposal"}
 """.lstrip(),
             )
             _write(
@@ -82,9 +84,16 @@ SUPPORTED_COMMAND_MANIFEST = (
                 "spaghetti_extractor.worker",
                 nix_phase_module_roots(root),
             )
-            self.assertIn(
+            self.assertNotIn(
                 "spaghetti_extractor.commands.fixture",
                 index["modules"]["spaghetti_extractor.cli"]["dependencies"],
+            )
+            self.assertIn(
+                ("spaghetti_extractor.commands.fixture", "proposal"),
+                {
+                    (root.module, root.role)
+                    for root in production_roots_by_role(root, index)
+                },
             )
 
             self.assertEqual(
@@ -124,7 +133,7 @@ fixture = "spaghetti_extractor.missing:main"
             _write(
                 root,
                 "src/spaghetti_extractor/commands/manifest.py",
-                "SUPPORTED_COMMAND_MANIFEST = ()\n",
+                "SUPPORTED_COMMAND_MANIFEST = ()\nSUPPORTED_COMMAND_ROLES = {}\n",
             )
 
             with self.assertRaisesRegex(ValueError, "missing modules"):

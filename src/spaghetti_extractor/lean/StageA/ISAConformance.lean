@@ -1,4 +1,4 @@
-import StageA.Formal
+import StageA.Semantics
 
 namespace StageA.Formal
 

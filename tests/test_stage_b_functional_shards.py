@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.stage_b_functional import (
+from spaghetti_extractor.candidate.functional import (
     StageBFunctionalInputError,
     stage_b_aggregate_functional_cases,
     stage_b_run_functional_case,

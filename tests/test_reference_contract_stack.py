@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from spaghetti_extractor._contract_tools.reference_contract import (
+from spaghetti_extractor.reference_contract.reference_semantics import (
     _semantic_stack_delta_expr,
 )
 

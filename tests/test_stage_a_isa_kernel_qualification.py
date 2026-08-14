@@ -4,13 +4,13 @@ import copy
 from dataclasses import replace
 import unittest
 
-from spaghetti_extractor.isa_conformance import (
+from spaghetti_extractor.isa.conformance import (
     ISA_CONFORMANCE_REPORT_FORMAT,
     X87Mask,
     isa_conformance_corpus_sha256,
     parse_isa_conformance_corpus,
 )
-from spaghetti_extractor.isa_kernel_qualification import (
+from spaghetti_extractor.isa.kernel_qualification import (
     BackendBinding,
     BackendRole,
     BinaryFormRequirement,

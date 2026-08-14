@@ -5,16 +5,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.external_interface_ast import (
+from spaghetti_extractor.external.interface_ast import (
     EXTERNAL_INTERFACE_EXTRACTION_SPEC_FORMAT,
     extract_external_interface_profile,
 )
-from spaghetti_extractor.external_interface_profiles import (
+from spaghetti_extractor.external.interface_profiles import (
     ExternalInterfaceProfileError,
     SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL,
     load_external_interface_profile,
 )
-from spaghetti_extractor.machine_import_profiles import (
+from spaghetti_extractor.external.machine_import_profiles import (
     load_machine_import_profile_set,
 )
 from spaghetti_extractor.stage_binary import StageAInputError

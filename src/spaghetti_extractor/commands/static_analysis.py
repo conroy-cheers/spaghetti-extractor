@@ -6,15 +6,15 @@ import argparse
 
 from ..extraction.binary_inventory import stage_a_inventory_binary
 from ..behavioral_roots import generate_behavioral_roots
-from ..contract_tools import (
+from ..reference_contract import (
     REFERENCE_CONTRACT_MODEL_ID,
     stage_a_diff_obligations,
     stage_a_explain_obligations,
     stage_a_export_reference_contract,
     stage_a_smoke_contract,
 )
-from ..import_abi import expand_import_abi_policy
-from ..opaque_reconstruction import stage_a_export_opaque_reconstruction
+from ..external.import_abi import expand_import_abi_policy
+from ..reconstruction.opaque import stage_a_export_opaque_reconstruction
 from ..util import write_json
 from .common import Handler, path_argument
 

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor._contract_tools.map_generation import (
+from spaghetti_extractor.reference_contract.map_analysis import (
     _is_padding_bytes as contract_is_padding_bytes,
 )
 from spaghetti_extractor.stage_binary import (

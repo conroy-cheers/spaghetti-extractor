@@ -57,7 +57,6 @@ spaghetti_extractor = [ "lean/**/*.lean", "resources/ghidra/*.java" ]
   "nix/authority-graph-v3.nix",
   "nix/authority-resource-classes-v3.nix",
   "nix/ca-python-json-phase.nix",
-  "nix/callable-external-runtime-contract.py",
   "nix/machine-import-control-profile.nix",
   "nix/python-module-closure.nix",
   "nix/python-module-index.json",

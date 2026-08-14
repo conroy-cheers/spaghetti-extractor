@@ -18,7 +18,7 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.stage_b_functional" ];
+    modules = [ "spaghetti_extractor.candidate.functional" ];
     name = "${namePrefix}-functional-python-closure";
   };
   cases = map (id: { inherit id; }) caseIds;
@@ -59,7 +59,7 @@ let
         import pathlib
         import sys
 
-        from spaghetti_extractor.stage_b_functional import (
+        from spaghetti_extractor.candidate.functional import (
             stage_b_run_functional_case,
         )
 
@@ -99,7 +99,7 @@ let
       import pathlib
       import sys
 
-      from spaghetti_extractor.stage_b_functional import (
+      from spaghetti_extractor.candidate.functional import (
           stage_b_aggregate_functional_cases,
       )
 

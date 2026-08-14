@@ -11,9 +11,8 @@
   candidateMode ? "static-closed",
   allowDeferredPotentialTransfers ? candidateMode == "structural-diagnostic",
   diagnosticFailureTrap ? false,
-  componentConfiguration ? null,
-  callableExternalRuntimeContract ? null,
-  externalSiteProposals ? null,
+  interpreterPackage,
+  componentRuntimePackage ? null,
 }:
 
 assert pkgs.lib.assertMsg
@@ -30,11 +29,8 @@ assert pkgs.lib.assertMsg
     staticAuthority != null)
   "static-closed candidates require v3 final authority";
 assert pkgs.lib.assertMsg
-  (externalSiteProposals == null || candidateMode == "structural-diagnostic")
-  "proposal-only external-site evidence is diagnostic-only";
-assert pkgs.lib.assertMsg
-  (candidateMode != "static-closed" || componentConfiguration != null)
-  "static-closed candidates require a component runtime configuration";
+  (candidateMode != "static-closed" || componentRuntimePackage != null)
+  "static-closed candidates require a component runtime package";
 
 let
   lib = pkgs.lib;
@@ -46,6 +42,14 @@ let
   );
   finalAuthorityArg = lib.escapeShellArg (
     if staticClosed then toString staticAuthority.finalAuthorityArtifact else ""
+  );
+  canonicalExternalSites =
+    if staticClosed then
+      staticAuthority.graph.outputs."canonical-external-sites-v3"
+        or (throw "static authority omitted canonical-external-sites-v3")
+    else null;
+  canonicalExternalSitesArg = lib.escapeShellArg (
+    if canonicalExternalSites == null then "" else toString canonicalExternalSites
   );
   fallbackCoverageArg = lib.escapeShellArg (
     if staticClosed then
@@ -60,46 +64,31 @@ let
     name = "${namePrefix}-${suffix}-python-closure";
   };
   nativeEnginePythonSource = mkPythonClosure "native-engine" [
-    "spaghetti_extractor.stage_b_native_engine"
-    "spaghetti_extractor.stage_b_native_image"
+    "spaghetti_extractor.candidate.engine"
+    "spaghetti_extractor.candidate.image"
   ];
   nativeRuntimePythonSource = mkPythonClosure "native-runtime" [
-    "spaghetti_extractor.stage_b_native_runtime"
+    "spaghetti_extractor.candidate.runtime"
   ];
   nativeBuildPythonSource = mkPythonClosure "native-build" [
-    "spaghetti_extractor.stage_b_interpreter_native_build"
+    "spaghetti_extractor.candidate.build"
   ];
   candidateAuthorityPythonSource = mkPythonClosure "candidate-authority-v3" [
     "spaghetti_extractor.candidate.authority"
   ];
   profileArgs = lib.concatMapStringsSep " "
     (profile: lib.escapeShellArg (toString profile)) machineImportProfiles;
-  componentRuntime =
-    if componentConfiguration == null then null
-    else import ./stage-b-component-runtime-package.nix {
-      inherit pkgs pythonEnv pythonSource machineIr namePrefix compiler;
-      interpreterPackage = interpreter;
-      inherit componentConfiguration;
-    };
+  interpreter = interpreterPackage;
+  componentRuntime = componentRuntimePackage;
   portableReplacementSelection =
     if componentRuntime == null then null
     else "${componentRuntime}/portable-component-selection.json";
-  hasPortableComponents =
-    componentConfiguration != null && componentConfiguration.enabledIds != [ ];
   portableReplacementArg = lib.escapeShellArg (
     if portableReplacementSelection == null then ""
     else toString portableReplacementSelection
   );
   componentRuntimeArg = lib.escapeShellArg (
     if componentRuntime == null then "" else toString componentRuntime
-  );
-  callableExternalRuntimeArg = lib.escapeShellArg (
-    if callableExternalRuntimeContract == null then ""
-    else toString callableExternalRuntimeContract
-  );
-  externalSiteProposalsArg = lib.escapeShellArg (
-    if externalSiteProposals == null then ""
-    else toString externalSiteProposals
   );
   machineImportProfileBundle = pkgs.runCommand
     "${namePrefix}-machine-import-profile-bundle-v1"
@@ -115,7 +104,7 @@ let
       import pathlib
       import sys
 
-      from spaghetti_extractor.machine_import_profiles import (
+      from spaghetti_extractor.external.machine_import_profiles import (
           load_machine_import_profile_set,
       )
       from spaghetti_extractor.util import write_json
@@ -143,12 +132,6 @@ let
       })
       PY
     '';
-
-  interpreter = import ./stage-b-interpreter-package.nix {
-    inherit pkgs pythonEnv machineIr namePrefix;
-    inherit pythonSource;
-    inherit allowDeferredPotentialTransfers;
-  };
 
   fallbackCoverageReceipt = import ./stage-b-fallback-coverage-receipt.nix {
     inherit pkgs pythonEnv pythonSource machineIr namePrefix;
@@ -264,17 +247,16 @@ let
       ${loadImageContract} \
       ${portableReplacementArg} \
       ${machineImportProfileBundle}/profile.json \
-      ${callableExternalRuntimeArg} \
-      ${externalSiteProposalsArg} \
+      ${canonicalExternalSitesArg} \
       "$out" ${profileArgs} <<'PY'
     import json
     import pathlib
     import sys
 
-    from spaghetti_extractor.stage_b_native_engine import (
+    from spaghetti_extractor.candidate.engine import (
         write_stage_b_native_engine_package,
     )
-    from spaghetti_extractor.stage_b_native_image import (
+    from spaghetti_extractor.candidate.image import (
         derive_native_image_inputs,
         select_native_termination_import,
     )
@@ -285,10 +267,9 @@ let
     load_contract = pathlib.Path(sys.argv[4])
     portable_path = sys.argv[5]
     profile_bundle = pathlib.Path(sys.argv[6])
-    callable_external_path = sys.argv[7]
-    external_site_proposals_path = sys.argv[8]
-    output = pathlib.Path(sys.argv[9])
-    profiles = tuple(pathlib.Path(value) for value in sys.argv[10:])
+    canonical_external_sites_path = sys.argv[7]
+    output = pathlib.Path(sys.argv[8])
+    profiles = tuple(pathlib.Path(value) for value in sys.argv[9:])
     selected_portable_components = ()
     if portable_path:
         portable_payload = json.loads(
@@ -330,13 +311,9 @@ let
         fixed_image_base=inputs.fixed_image_base,
         preferred_image_base=inputs.image_base,
         machine_import_profiles=(profile_bundle,),
-        callable_external_contract=(
-            pathlib.Path(callable_external_path)
-            if callable_external_path else None
-        ),
-        external_site_proposals=(
-            pathlib.Path(external_site_proposals_path)
-            if external_site_proposals_path else None
+        canonical_external_sites=(
+            pathlib.Path(canonical_external_sites_path)
+            if canonical_external_sites_path else None
         ),
         candidate_mode=${builtins.toJSON candidateMode},
         allow_deferred_potential_transfers=${if allowDeferredPotentialTransfers then "True" else "False"},
@@ -371,11 +348,10 @@ let
     export PYTHONPATH=${nativeRuntimePythonSource}/src
     ${python} - ${interpreter} ${nativeEngine} \
       ${machineImportProfileBundle}/profile.json \
-      ${callableExternalRuntimeArg} \
       "$out" <<'PY'
     import pathlib
     import sys
-    from spaghetti_extractor.stage_b_native_runtime import (
+    from spaghetti_extractor.candidate.runtime import (
         write_stage_b_native_runtime_package,
     )
 
@@ -383,10 +359,7 @@ let
         interpreter_package=pathlib.Path(sys.argv[1]),
         native_engine_package=pathlib.Path(sys.argv[2]),
         external_profile=pathlib.Path(sys.argv[3]),
-        callable_external_contract=(
-            pathlib.Path(sys.argv[4]) if sys.argv[4] else None
-        ),
-        out=pathlib.Path(sys.argv[5]),
+        out=pathlib.Path(sys.argv[4]),
     )
     PY
     jq -e '
@@ -405,7 +378,7 @@ let
     nativeEnginePackage = nativeEngine;
     nativeRuntimePackage = nativeRuntime;
     inherit compiler namePrefix diagnosticFailureTrap;
-    regionOverridePackage = if hasPortableComponents then componentRuntime else null;
+    regionOverridePackage = componentRuntime;
   };
 
   candidate = pkgs.runCommand "${namePrefix}-hybrid-candidate-v1" {
@@ -439,7 +412,7 @@ let
       ${compiler}/bin/i686-w64-mingw32-gcc "$out" <<'PY'
     import pathlib
     import sys
-    from spaghetti_extractor.stage_b_interpreter_native_build import (
+    from spaghetti_extractor.candidate.build import (
         build_stage_b_interpreter_native_candidate,
     )
 

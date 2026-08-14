@@ -19,7 +19,7 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = nativeBuildPythonSource;
-    modules = [ "spaghetti_extractor.stage_b_interpreter_native_build" ];
+    modules = [ "spaghetti_extractor.candidate.build" ];
     name = "${namePrefix}-native-object-python-closure";
   };
   graph = pkgs.runCommand "${namePrefix}-native-object-graph-v2" {
@@ -40,7 +40,7 @@ let
       ${if diagnosticFailureTrap then "1" else "0"} "$out" <<'PY'
     import pathlib
     import sys
-    from spaghetti_extractor.stage_b_interpreter_native_build import (
+    from spaghetti_extractor.candidate.build import (
         prepare_stage_b_interpreter_native_object_graph,
     )
 
@@ -125,7 +125,7 @@ let
       ${python} - ${sourceBundle} ${compiler}/bin/i686-w64-mingw32-gcc "$out" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.stage_b_interpreter_native_build import (
+      from spaghetti_extractor.candidate.build import (
           compile_stage_b_interpreter_native_source_bundle,
       )
 
@@ -162,7 +162,7 @@ let
     ${python} - ${graph} "$out" ${lib.escapeShellArgs (map toString objectReceipts)} <<'PY'
     import pathlib
     import sys
-    from spaghetti_extractor.stage_b_interpreter_native_build import (
+    from spaghetti_extractor.candidate.build import (
         assemble_stage_b_interpreter_native_objects,
     )
 

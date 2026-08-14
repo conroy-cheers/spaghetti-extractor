@@ -31,7 +31,7 @@ from spaghetti_extractor.components.source import (
     build_component_source_package,
     load_component_source_package,
 )
-from spaghetti_extractor.reconstruction_ir import MACHINE_IR_FORMAT
+from spaghetti_extractor.reconstruction.ir import MACHINE_IR_FORMAT
 
 
 class ComponentInputsAndConfigurationTests(unittest.TestCase):

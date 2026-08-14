@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import unittest
 
-from spaghetti_extractor.reconstruction_contract_analysis import (
+from spaghetti_extractor.reconstruction.contract_analysis import (
     RECONSTRUCTION_CONTRACT_ANALYSIS_FORMAT,
     analyze_reconstruction_contracts,
 )

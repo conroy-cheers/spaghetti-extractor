@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.stage_b_fallback_coverage import (
+from spaghetti_extractor.machine_ir.coverage import (
     FALLBACK_COVERAGE_RECEIPT_FORMAT,
     PORTABLE_SELECTION_V3_FORMAT,
     FallbackCoverageReceiptError,

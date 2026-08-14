@@ -1,5 +1,5 @@
 {
-  "format": "spaghetti-extractor-target-bundle-v1",
+  "format": "spaghetti-extractor-target-bundle-v2",
   "id": "dxball",
   "display_name": "DX-Ball 1.09 PE32",
   "input": {
@@ -9,5 +9,8 @@
   "paths": {
     "nix": "default.nix",
     "components": "intent/components.json"
+  },
+  "workflow": {
+    "default_configuration": "startup-extended"
   }
 }

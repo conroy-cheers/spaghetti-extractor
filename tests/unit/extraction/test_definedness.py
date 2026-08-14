@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from spaghetti_extractor.extraction.definedness import analyze_definedness_rows
+from spaghetti_extractor.machine_ir.definedness import analyze_definedness_rows
 
 
 def _undefined() -> dict[str, object]:

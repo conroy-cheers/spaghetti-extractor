@@ -37,12 +37,17 @@ The component DAG produces these independently cached artifacts:
    is blocked rather than silently downgraded.
 7. `runtimeConfigurations.<configuration>`: the only input accepted by the
    executable component runtime package.
+8. `runtimePackages.<configuration>`: independently buildable component
+   runtimes, all bound to the workflow's shared machine-IR interpreter.
 
-The runtime package generates the machine-state adapter, copies exact authored
-source, cross-compiles it as a PE32 translation unit, marks internal component
-members as subsumed, and forbids silent fallback inside an enabled component.
-The same portable-selection artifact is consumed by fallback coverage, native
-dispatch, candidate authority, and completion checks.
+The runtime package is constructed directly by the component DAG. It does not
+construct a diagnostic candidate or require whole-program acceptance. It
+generates the machine-state adapter, copies exact authored source,
+cross-compiles it as a PE32 translation unit, marks internal component members
+as subsumed, and forbids silent fallback inside an enabled component. The same
+interpreter derivation is reused by standalone component runtimes and all
+candidates, and the same portable-selection artifact is consumed by fallback
+coverage, native dispatch, candidate authority, and completion checks.
 
 ## Evidence
 
@@ -92,6 +97,11 @@ candidate = workflow.candidateFor {
   configurationId = "one-enabled-component";
 };
 ```
+
+`runtime` above is exactly the runtime package consumed by the default-compiler
+candidate. Building it does not pull a diagnostic candidate into its closure.
+`workflow.componentRuntimes` and `workflow.candidates.{static,diagnostic}`
+provide the corresponding configuration-indexed families.
 
 Adding a target should not require generic Python or Nix changes. A reusable
 capability gap must be implemented in the toolkit and covered by a small

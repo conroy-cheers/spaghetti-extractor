@@ -6,7 +6,11 @@
 let
   modules = [
     "X87"
-    "Formal"
+    "Bytes"
+    "PE32"
+    "Machine"
+    "Decode"
+    "Semantics"
     "ISAQualification"
     "ISAInventory"
     "ISAConformance"

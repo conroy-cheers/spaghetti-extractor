@@ -8,19 +8,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.stage_b_interpreter_backend import (
+from spaghetti_extractor.external.contracts import (
+    ExternalSiteIdentity,
+    checked_external_site_contract_from_event,
+)
+from spaghetti_extractor.candidate.interpreter import (
     write_stage_b_interpreter_package,
 )
-from spaghetti_extractor.stage_b_native_engine import (
+from spaghetti_extractor.candidate.engine import (
     write_stage_b_native_engine_package,
 )
-from spaghetti_extractor.stage_b_native_runtime import (
+from spaghetti_extractor.candidate.runtime import (
     DEFINEDNESS_USE_FORMAT,
     StageBNativeRuntimeError,
     plan_stage_b_native_runtime,
     write_stage_b_native_runtime_package,
 )
 from spaghetti_extractor.util import sha256_bytes, sha256_file
+from tests.test_stage_b_native_engine import _canonical_external_sites
 
 
 _CONTRACT_SHA256 = "a" * 64
@@ -535,6 +540,21 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
     machine_ir = root / "callback-machine-ir.jsonl"
     _write_state_machine(machine_ir, [registration, callback])
     manifest = root / "callback-machine-ir-manifest.json"
+    callback_evidence = {
+        "format": "stage-a-callback-registration-provenance-v1",
+        "record_kind": "callback_registration",
+        "status": "complete",
+        "unit_id": registration["id"],
+        "event_index": 0,
+        "instruction_rva": 0x1000,
+        "callback_source": callback_source,
+        "callback_abi": callback_abi,
+        "callback_lifetime": "until_class_unregistered_or_process_exit",
+        "callback_behavior": "registration",
+        "target_rvas": [0x3000],
+        "target_unit_ids": [callback["id"]],
+        "failure": None,
+    }
     manifest.write_text(json.dumps({
         "format": "stage-a-machine-ir-v2",
         "artifacts": {
@@ -549,28 +569,36 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
                 "summaries": [],
             },
             "external_interface_provenance": {
-                "callback_registrations": [{
-                    "format": "stage-a-callback-registration-provenance-v1",
-                    "record_kind": "callback_registration",
-                    "status": "complete",
-                    "unit_id": registration["id"],
-                    "event_index": 0,
-                    "instruction_rva": 0x1000,
-                    "callback_source": callback_source,
-                    "callback_abi": callback_abi,
-                    "callback_lifetime": (
-                        "until_class_unregistered_or_process_exit"
-                    ),
-                    "callback_behavior": "registration",
-                    "target_rvas": [0x3000],
-                    "target_unit_ids": [callback["id"]],
-                    "failure": None,
-                }],
+                "callback_registrations": [callback_evidence],
             },
         },
     }, sort_keys=True), encoding="utf-8")
     interpreter = root / "callback-interpreter"
     engine = root / "callback-engine"
+    identity_payload = {
+        "kind": "import",
+        "dll": "user32.dll",
+        "symbol": "RegisterClassA",
+        "ordinal": None,
+    }
+    checked_contract = checked_external_site_contract_from_event(
+        event=event,
+        identity=ExternalSiteIdentity.imported(
+            identity_payload, context="runtime callback fixture"
+        ),
+        transfer_kind="call",
+        disposition="returns_here",
+        callback_evidence=callback_evidence,
+        context="runtime callback fixture",
+    )
+    canonical_external_sites = _canonical_external_sites(
+        root,
+        unit=registration,
+        event_index=0,
+        identity=identity_payload,
+        contract=checked_contract,
+        callback_target_rvas=(0x3000,),
+    )
     write_stage_b_interpreter_package(machine_ir=machine_ir, out=interpreter)
     write_stage_b_native_engine_package(
         machine_ir=machine_ir,
@@ -579,6 +607,7 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
         fixed_image_base=0x400000,
         preferred_image_base=0x400000,
         import_iat_vas={("user32.dll", "RegisterClassA"): 0x432000},
+        canonical_external_sites=canonical_external_sites,
         out=engine,
     )
     return interpreter, engine, profile
@@ -1277,7 +1306,6 @@ class StageBNativeRuntimeTests(unittest.TestCase):
                     "diagnostic_frontiers": 0,
                     "authorized_external_sites": 0,
                     "blocked_external_sites": 0,
-                    "callable_external_routes": 0,
                 },
             )
             self.assertEqual(first["inputs"]["entry_rva"], 0x1000)

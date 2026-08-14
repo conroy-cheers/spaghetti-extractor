@@ -12,12 +12,12 @@ from spaghetti_extractor.artifact_formats import (
     COMPONENT_INTERFACE_SPEC_FORMAT,
     SEMANTIC_COMPONENT_CATALOG_FORMAT,
 )
-from spaghetti_extractor.component_interface import (
+from spaghetti_extractor.components.interface import (
     check_component_interface,
     finalize_component_interface_spec,
     synthesize_component_interface_spec,
 )
-from spaghetti_extractor.reconstruction_ir import MACHINE_IR_FORMAT
+from spaghetti_extractor.reconstruction.ir import MACHINE_IR_FORMAT
 
 
 class ComponentInterfaceTests(unittest.TestCase):

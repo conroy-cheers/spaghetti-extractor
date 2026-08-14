@@ -77,13 +77,13 @@
       interpreterPythonClosure = import ../python-module-closure.nix {
         inherit pkgs;
         source = testSource;
-        modules = [ "spaghetti_extractor.stage_b_interpreter_backend" ];
+        modules = [ "spaghetti_extractor.candidate.interpreter" ];
         name = "spaghetti-extractor-interpreter-python-closure-smoke";
       };
       isaClassifierPythonClosure = import ../python-module-closure.nix {
         inherit pkgs;
         source = testSource;
-        modules = [ "spaghetti_extractor.isa_semantic_forms" ];
+        modules = [ "spaghetti_extractor.isa.semantic_forms" ];
         name = "spaghetti-extractor-isa-classifier-python-closure-smoke";
       };
       machineImportControlProfileFixture = import ../tests/machine-import-control-profile.nix {
@@ -129,10 +129,10 @@
           { nativeBuildInputs = [ context.pythonEnv ]; }
           ''
             export PYTHONPATH=${interpreterPythonClosure}/src
-            python -c 'import spaghetti_extractor.stage_b_interpreter_backend'
+            python -c 'import spaghetti_extractor.candidate.interpreter'
             test -s ${interpreterPythonClosure}/python-module-closure.json
             export PYTHONPATH=${isaClassifierPythonClosure}/src
-            python -c 'from spaghetti_extractor.isa_semantic_forms import lean_semantic_form_classifier_sha256; assert len(lean_semantic_form_classifier_sha256()) == 64'
+            python -c 'from spaghetti_extractor.isa.semantic_forms import lean_semantic_form_classifier_sha256; assert len(lean_semantic_form_classifier_sha256()) == 64'
             test -s ${isaClassifierPythonClosure}/python-module-closure.json
             touch "$out"
           '';

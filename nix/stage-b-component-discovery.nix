@@ -13,7 +13,7 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.component_discovery" ];
+    modules = [ "spaghetti_extractor.components.discovery" ];
     name = "${namePrefix}-component-discovery-python-closure";
   };
 in
@@ -37,7 +37,7 @@ pkgs.runCommand
       "$out/component-proposals.json" <<'PY'
     import pathlib
     import sys
-    from spaghetti_extractor.component_discovery import write_component_proposals
+    from spaghetti_extractor.components.discovery import write_component_proposals
 
     write_component_proposals(
         machine_ir=pathlib.Path(sys.argv[1]),

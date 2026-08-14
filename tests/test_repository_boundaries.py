@@ -7,6 +7,7 @@ from pathlib import Path
 
 from spaghetti_extractor.python_module_index import (
     build_python_module_index,
+    production_module_closure,
     production_unreachable_modules,
 )
 from spaghetti_extractor.authority.registry import AUTHORITY_PHASE_REGISTRY_V3
@@ -111,6 +112,67 @@ class RepositoryBoundaryTests(unittest.TestCase):
             for path in package.rglob("*.py")
             if any(name in path.name.lower() for name in forbidden)
         ]
+        self.assertEqual(offenders, [])
+
+    def test_isa_implementation_is_owned_by_isa_package(self) -> None:
+        package = self.root / "src/spaghetti_extractor"
+        self.assertTrue((package / "isa/__init__.py").is_file())
+        self.assertEqual(
+            sorted(path.name for path in package.glob("isa_*.py")),
+            [],
+            msg=(
+                "ISA implementation modules belong under spaghetti_extractor/isa; "
+                "do not restore flat package-root modules or compatibility shims."
+            ),
+        )
+
+    def test_pipeline_families_have_no_flat_compatibility_modules(self) -> None:
+        package = self.root / "src/spaghetti_extractor"
+        forbidden_patterns = (
+            "stage_b_*.py",
+            "isa_*.py",
+            "reconstruction_*.py",
+            "external_*.py",
+            "component_*.py",
+        )
+        forbidden_names = {
+            "contract_tools.py",
+            "opaque_reconstruction.py",
+            "rooted_state_machine.py",
+            "semantic_components.py",
+        }
+        offenders = sorted(
+            {
+                path.name
+                for pattern in forbidden_patterns
+                for path in package.glob(pattern)
+            }
+            | {name for name in forbidden_names if (package / name).exists()}
+        )
+        self.assertEqual(
+            offenders,
+            [],
+            msg=(
+                "Pipeline implementations belong to their ownership package; "
+                "Git history, not root-level compatibility shims, preserves old paths."
+            ),
+        )
+
+    def test_candidate_role_closure_excludes_proposal_and_diagnostic_code(self) -> None:
+        index = build_python_module_index(self.root)
+        closure = set(
+            production_module_closure(self.root, index, roles={"candidate"})
+        )
+        forbidden_prefixes = (
+            "spaghetti_extractor.commands.proposals",
+            "spaghetti_extractor.external.site_proposals",
+            "spaghetti_extractor.candidate.diagnostic",
+        )
+        offenders = sorted(
+            module
+            for module in closure
+            if module.startswith(forbidden_prefixes)
+        )
         self.assertEqual(offenders, [])
 
     def test_every_package_module_has_a_production_consumer(self) -> None:
@@ -463,7 +525,12 @@ class RepositoryBoundaryTests(unittest.TestCase):
             "authority_inputs",
             "candidate",
             "components",
+            "external",
             "extraction",
+            "isa",
+            "machine_ir",
+            "reconstruction",
+            "reference_contract",
         ):
             package = self.root / "src/spaghetti_extractor" / package_name
             for path in sorted(package.rglob("*.py")):

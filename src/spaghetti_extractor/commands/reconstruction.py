@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from ..reconstruction_ir import export_machine_ir_package
+from ..reconstruction.ir import export_machine_ir_package
 from .common import Handler, many_path_arguments, path_argument
 
 

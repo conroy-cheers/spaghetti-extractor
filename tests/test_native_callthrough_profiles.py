@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.machine_import_profiles import (
+from spaghetti_extractor.external.machine_import_profiles import (
     NATIVE_DLL_CALLTHROUGH_EFFECT_MODEL,
     NATIVE_DLL_CALLTHROUGH_PREREQUISITES,
     MachineImportIdentity,

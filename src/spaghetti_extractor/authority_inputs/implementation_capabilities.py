@@ -47,7 +47,7 @@ from ..artifact_set_v3 import (
     canonical_sha256_v3,
     open_artifact_reader_v3,
 )
-from ..stage_b_fallback_coverage import (
+from ..machine_ir.coverage import (
     FallbackCoverageReceiptError,
     validate_stage_b_fallback_coverage_receipt,
 )

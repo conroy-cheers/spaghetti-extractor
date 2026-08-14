@@ -307,6 +307,10 @@ class MachineIRISARequirementsV2Tests(unittest.TestCase):
                 "operands": None,
             },
         }])
+        projection = build_machine_ir_isa_semantic_requirements_v2(payload)
+        self.assertEqual(projection["status"], "complete")
+        self.assertEqual(projection["counts"], {"forms": 1, "encodings": 1})
+        self.assertEqual(projection["forms"][0]["instruction_hexes"], ["53"])
 
     def test_stale_self_hash_is_rejected(self) -> None:
         request = build_machine_ir_isa_extraction_request_v2(

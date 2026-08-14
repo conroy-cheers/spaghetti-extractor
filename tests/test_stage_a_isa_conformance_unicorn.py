@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from spaghetti_extractor.isa_conformance import (
+from spaghetti_extractor.isa.conformance import (
     BackendKind,
     ObservationStatus,
     ReportQualification,
@@ -14,7 +14,7 @@ from spaghetti_extractor.isa_conformance import (
     parse_isa_conformance_report,
     serialize_isa_conformance_corpus,
 )
-from spaghetti_extractor.isa_conformance_unicorn import (
+from spaghetti_extractor.isa.conformance_unicorn import (
     UNICORN_BACKEND_ID,
     run_unicorn_case,
     run_unicorn_corpus,
@@ -22,7 +22,7 @@ from spaghetti_extractor.isa_conformance_unicorn import (
     unicorn_backend_descriptor,
     unicorn_x87_capability_detail,
 )
-from spaghetti_extractor.isa_conformance_worker import run_isa_conformance_worker
+from spaghetti_extractor.isa.conformance_worker import run_isa_conformance_worker
 
 
 GPR_VALUES = {
@@ -276,7 +276,7 @@ class StageAISAConformanceUnicornTests(unittest.TestCase):
         corpus = _corpus(payload)
 
         with mock.patch(
-            "spaghetti_extractor.isa_conformance_unicorn._probe_x87_register_api",
+            "spaghetti_extractor.isa.conformance_unicorn._probe_x87_register_api",
             return_value="FP3 read-back truncated the exponent",
         ):
             observation = run_unicorn_case(corpus.cases[0])

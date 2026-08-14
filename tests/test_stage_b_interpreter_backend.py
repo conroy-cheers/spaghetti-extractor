@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.stage_b_interpreter_backend import (
+from spaghetti_extractor.candidate.interpreter import (
     STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT,
     StageBInterpreterError,
     compile_stage_b_interpreter_machine_ir,

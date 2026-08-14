@@ -24,7 +24,7 @@ let
   authorityWorkflow = callWith ./authority-workflow.nix authorityCommon;
   componentWorkflow = callWith ./stage-b-components.nix analysisCommon;
   hybridCandidate = callWith ./stage-b-hybrid-candidate.nix candidateCommon;
-  mkBundle = {
+  mkBundleRecord = {
     targetRoot,
     artifacts,
     checks ? { },
@@ -38,7 +38,7 @@ let
         "spaghetti-extractor-${targetId}-metadata.json"
         (builtins.toJSON metadata);
       contractCheck = pkgs.runCommand
-        "spaghetti-extractor-${targetId}-bundle-contract-v1"
+        "spaghetti-extractor-${targetId}-bundle-contract-v2"
         { __contentAddressed = true; }
         ''
           mkdir -p "$out"
@@ -56,12 +56,12 @@ let
         (lib.mapAttrsToList
           (name: path: { inherit name path; }) completeAcceptanceChecks);
     in
-      assert metadata.format or null == "spaghetti-extractor-target-bundle-v1";
+      assert metadata.format or null == "spaghetti-extractor-target-bundle-v2";
       assert builtins.isString targetId && targetId != "";
       assert builtins.isAttrs artifacts && builtins.isAttrs checks
         && builtins.isAttrs acceptanceChecks && builtins.isAttrs apps;
       {
-        _type = "spaghetti-extractor-target-definition-v3";
+        _type = "spaghetti-extractor-target-definition-v4";
         inherit metadata artifacts apps defaultCheck acceptanceCheck;
         checks = regressionChecks;
         inherit acceptanceChecks;
@@ -70,7 +70,7 @@ let
     assert lib.all
       (id:
         let bundle = registry.${id};
-        in bundle._type or null == "spaghetti-extractor-target-definition-v3"
+        in bundle._type or null == "spaghetti-extractor-target-definition-v4"
           && bundle.metadata.id == id)
       (builtins.attrNames registry);
     registry;
@@ -85,6 +85,7 @@ let
     componentReviewRoot ? null,
     componentSourceRoot ? null,
     externalInterfaceProfiles ? [ ],
+    candidateMachineImportProfiles ? [ ],
     maxUnits ? 512,
     maxCandidatesPerSeed ? 12,
   }:
@@ -100,6 +101,9 @@ let
         binary = original;
         inherit binaryIdentity machineImportProfiles launchProfileTemplate;
       };
+      interpreter = assert lib.assertMsg (authority.fallbackInterpreter != null)
+        "PE32 workflows require the standard machine-IR interpreter";
+        authority.fallbackInterpreter;
       components = componentWorkflow {
         machineIr = analysis.machineIr;
         reconstructionPlan = analysis.reconstructionPlan;
@@ -108,6 +112,7 @@ let
         reviewRoot = componentReviewRoot;
         sourceRoot = componentSourceRoot;
         inherit namePrefix;
+        interpreterPackage = interpreter;
       };
       candidateFor = {
         configurationId,
@@ -117,10 +122,16 @@ let
         machineIr = analysis.machineIr;
         staticExport = analysis.staticExport;
         staticAuthority = authority;
-        machineImportProfiles = machineImportProfiles ++ extraMachineImportProfiles;
+        machineImportProfiles = machineImportProfiles
+          ++ candidateMachineImportProfiles
+          ++ extraMachineImportProfiles;
         namePrefix = "${namePrefix}-${configurationId}";
         inherit compiler;
-        componentConfiguration = components.runtimeConfigurations.${configurationId};
+        interpreterPackage = interpreter;
+        componentRuntimePackage = components.mkRuntime {
+          inherit configurationId;
+          runtimeCompiler = compiler;
+        };
         allowDeferredPotentialTransfers = false;
       };
       diagnosticFor = {
@@ -130,21 +141,129 @@ let
       }: hybridCandidate {
         machineIr = analysis.machineIr;
         staticExport = analysis.staticExport;
-        machineImportProfiles = machineImportProfiles ++ extraMachineImportProfiles;
-        namePrefix = "${namePrefix}-diagnostic";
+        machineImportProfiles = machineImportProfiles
+          ++ candidateMachineImportProfiles
+          ++ extraMachineImportProfiles;
+        namePrefix = "${namePrefix}-${if configurationId == null then "fallback" else configurationId}-diagnostic";
         inherit compiler;
+        interpreterPackage = interpreter;
         candidateMode = "structural-diagnostic";
         allowDeferredPotentialTransfers = true;
         diagnosticFailureTrap = true;
-        componentConfiguration =
+        componentRuntimePackage =
           if configurationId == null then null
-          else components.runtimeConfigurations.${configurationId};
+          else components.mkRuntime {
+            inherit configurationId;
+            runtimeCompiler = compiler;
+          };
       };
+      configurationIds = builtins.attrNames components.runtimeConfigurations;
+      staticCandidates = builtins.listToAttrs (map (configurationId: {
+        name = configurationId;
+        value = candidateFor { inherit configurationId; };
+      }) configurationIds);
+      diagnosticCandidates = builtins.listToAttrs (map (configurationId: {
+        name = configurationId;
+        value = diagnosticFor { inherit configurationId; };
+      }) configurationIds);
     in {
-      inherit analysis authority components candidateFor diagnosticFor;
-      componentRuntimeFor = configurationId:
-        (diagnosticFor { inherit configurationId; }).componentRuntime;
+      inherit analysis authority components interpreter candidateFor diagnosticFor
+        configurationIds staticCandidates diagnosticCandidates;
+      componentRuntimeFor = components.runtimeFor;
+      componentRuntimes = components.runtimePackages;
+      candidates = {
+        static = staticCandidates;
+        diagnostic = diagnosticCandidates;
+      };
     };
+  projectCandidate = candidate: lib.filterAttrs (_name: value: value != null) {
+    inherit (candidate) interpreter componentRuntime machineImportProfileBundle
+      fallbackCoverageReceipt candidateAuthorityReport candidateAuthorityGate
+      nativeEngine nativeRuntime candidate;
+    nativeObjects = candidate.nativeObjects.package;
+  };
+  mkPe32Bundle = {
+    targetRoot,
+    workflow,
+    inputs,
+    profiles ? { },
+    extraArtifacts ? { },
+    checks ? { },
+    acceptanceChecks ? { },
+    apps ? { },
+  }:
+    let
+      metadata = builtins.fromJSON (builtins.readFile (targetRoot + "/target.json"));
+      defaultConfiguration = metadata.workflow.default_configuration or null;
+      configurationIds = workflow.configurationIds;
+      standardArtifacts = {
+        input = inputs;
+        inherit profiles;
+        analysis = {
+          inventory = workflow.analysis.originalInventory;
+          static-export = workflow.analysis.staticExport;
+          launch-assumptions = workflow.analysis.launchAnalysisAssumptions;
+          state-machine = workflow.analysis.stateMachine;
+          machine-ir = workflow.analysis.machineIr;
+          reconstruction-plan = workflow.analysis.reconstructionPlan;
+          component-proposals = workflow.analysis.componentProposals;
+        };
+        authority = {
+          final = workflow.authority.finalAuthority;
+          gate = workflow.authority.finalAuthorityGate;
+          diagnostics = workflow.authority.diagnostics;
+          graph-metadata = workflow.authority.graph.metadata;
+          phases = lib.mapAttrs (_: phase: phase.derivation)
+            workflow.authority.graph.phases;
+        };
+        components = {
+          resolution = workflow.components.resolution;
+          contracts = workflow.components.contracts;
+          source-packages = workflow.components.sourcePackages;
+          evidence = workflow.components.evidences;
+          qualifications = workflow.components.qualifications;
+          configurations = workflow.components.activationPlans;
+          source-bundles = workflow.components.sourceBundles;
+          runtimes = workflow.componentRuntimes;
+          bundle = workflow.components.bundle;
+        };
+        candidate = {
+          static = lib.mapAttrs (_: candidate: projectCandidate candidate)
+            workflow.staticCandidates;
+          diagnostic = lib.mapAttrs (_: candidate: projectCandidate candidate)
+            workflow.diagnosticCandidates;
+        };
+      } // lib.optionalAttrs (builtins.attrNames extraArtifacts != [ ]) {
+        target = extraArtifacts;
+      };
+      standardChecks = {
+        component-resolution = workflow.components.resolution;
+        default-component-configuration =
+          workflow.components.activationPlans.${defaultConfiguration};
+      };
+      standardAcceptanceChecks = {
+        final-authority = workflow.authority.finalAuthorityGate;
+        default-static-candidate =
+          workflow.staticCandidates.${defaultConfiguration}.candidate;
+      };
+      bundle = mkBundleRecord {
+        inherit targetRoot apps;
+        artifacts = standardArtifacts;
+        checks = standardChecks // checks;
+        acceptanceChecks = standardAcceptanceChecks // acceptanceChecks;
+      };
+    in
+      assert metadata.format or null == "spaghetti-extractor-target-bundle-v2";
+      assert builtins.isString defaultConfiguration
+        && builtins.elem defaultConfiguration configurationIds;
+      bundle // {
+        inherit defaultConfiguration;
+        default = {
+          componentRuntime = workflow.componentRuntimes.${defaultConfiguration};
+          staticCandidate = workflow.staticCandidates.${defaultConfiguration};
+          diagnosticCandidate = workflow.diagnosticCandidates.${defaultConfiguration};
+        };
+      };
 in
 {
   format = "spaghetti-extractor-target-sdk-v3";
@@ -178,7 +297,7 @@ in
     upstreamShellSuite = import ./stage-b-upstream-shell-suite.nix { inherit pkgs; };
   };
   target = {
-    bundle = mkBundle;
+    pe32Bundle = mkPe32Bundle;
     registry = validateRegistry;
   };
 }

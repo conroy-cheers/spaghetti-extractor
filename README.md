@@ -41,12 +41,21 @@ and uncovered executable bytes remain `incomplete`; observed contradictions are
 ```console
 nix develop
 spaghetti-extractor --help
-spaghetti-extractor stage-a-inventory-binary \
+spaghetti-extractor project status gnu-hello
+spaghetti-extractor project analyze gnu-hello
+spaghetti-extractor component build gnu-hello
+spaghetti-extractor project check gnu-hello
+```
+
+Individual pipeline leaves are available only in the explicit expert namespace:
+
+```console
+spaghetti-extractor expert stage-a-inventory-binary \
   --binary original.exe --out build/inventory.json
-spaghetti-extractor stage-a-inventory-isa \
+spaghetti-extractor expert stage-a-inventory-isa \
   --binary original.exe --inventory build/inventory.json \
   --out build/isa.json
-spaghetti-extractor stage-a-export-opaque-reconstruction \
+spaghetti-extractor expert stage-a-export-opaque-reconstruction \
   --original original.exe --inventory build/inventory.json \
   --out build/static-export
 ```
@@ -93,9 +102,11 @@ Portable-source iteration is also Nix-native. GNU Hello exposes the canonical
 component and target-gate workflow:
 
 ```console
-nix run ./targets#test -- gnu-hello
-nix build './targets#legacyPackages.x86_64-linux.targets.gnu-hello.components.componentRuntime' --no-link
-nix run ./targets#test -- --acceptance gnu-hello
+spaghetti-extractor project check gnu-hello
+spaghetti-extractor component build gnu-hello
+spaghetti-extractor project check gnu-hello --acceptance
+spaghetti-extractor candidate build gnu-hello
+spaghetti-extractor candidate test gnu-hello
 ```
 
 Regression remains buildable while whole-program authority is incomplete.
@@ -104,8 +115,8 @@ gate.
 
 ## Public Surfaces
 
-- `spaghetti-extractor`: inventory, contract, ISA, machine-IR, component,
-  source-rendering, candidate assurance, and functional-test commands.
+- `spaghetti-extractor`: project, component, and candidate operator workflows,
+  plus explicit `expert` access to individual pipeline leaves.
 - `nix run .#test`: cached smoke, affected, full, and benchmark toolkit gates.
 - `nix run ./targets#test`: validation for one explicitly registered consumer.
 - `nix run .#dev`: scaffolding, fixture discovery, environment diagnosis, and

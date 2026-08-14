@@ -18,7 +18,7 @@ from .indirect_target_dependency_v2 import (
     build_bounded_selector_dependency_v2,
     validate_bounded_selector_dependency_v2,
 )
-from .reconstruction_control import (
+from .reconstruction.control import (
     pe32_jump_table_index_expression,
     recover_static_pe32_jump_table_inventory,
 )

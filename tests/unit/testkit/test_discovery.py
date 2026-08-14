@@ -5,6 +5,7 @@ import unittest
 import json
 from pathlib import Path
 
+from spaghetti_extractor.python_module_index import declared_public_command_roots
 from spaghetti_extractor.testkit import TestkitError, build_impact_index
 
 
@@ -22,7 +23,7 @@ def _write(root: Path, relative: str, content: str) -> None:
 
 
 class TestDiscoveryTests(unittest.TestCase):
-    def test_command_manifest_dynamic_imports_enter_test_closures(self) -> None:
+    def test_command_backends_are_role_roots_not_cli_dependencies(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _repository(Path(temporary))
             _write(root, "src/spaghetti_extractor/commands/__init__.py", "")
@@ -37,6 +38,7 @@ SUPPORTED_COMMAND_MANIFEST = (
         "help": "exercise dynamic command closure",
     },
 )
+SUPPORTED_COMMAND_ROLES = {"example": "expert"}
 """.lstrip(),
             )
             _write(
@@ -56,6 +58,52 @@ SUPPORTED_COMMAND_MANIFEST = (
                 root,
                 "tests/unit/cli/test_cli.py",
                 "from spaghetti_extractor.cli import load\n",
+            )
+
+            row = build_impact_index(root).tests[0]
+            roots = declared_public_command_roots(root)
+
+            self.assertNotIn(
+                "src/spaghetti_extractor/commands/example.py",
+                row.dependency_paths,
+            )
+            self.assertNotIn(
+                "src/spaghetti_extractor/support.py",
+                row.dependency_paths,
+            )
+            self.assertEqual(
+                {(item.module, item.role, item.owner) for item in roots},
+                {
+                    (
+                        "spaghetti_extractor.commands.example",
+                        "expert",
+                        "command:example",
+                    )
+                },
+            )
+
+    def test_declared_test_commands_add_only_the_selected_backend_closure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            _write(root, "src/spaghetti_extractor/commands/__init__.py", "")
+            _write(
+                root,
+                "src/spaghetti_extractor/commands/manifest.py",
+                "SUPPORTED_COMMAND_MANIFEST = ("
+                "{'name': 'example', 'group': 'spaghetti_extractor.commands.example', "
+                "'help': 'fixture'},)\n"
+                "SUPPORTED_COMMAND_ROLES = {'example': 'expert'}\n",
+            )
+            _write(
+                root,
+                "src/spaghetti_extractor/commands/example.py",
+                "from spaghetti_extractor.support import VALUE\n",
+            )
+            _write(root, "src/spaghetti_extractor/support.py", "VALUE = 1\n")
+            _write(
+                root,
+                "tests/unit/cli/test_cli.py",
+                "TESTKIT = {'commands': ('example',)}\n",
             )
 
             row = build_impact_index(root).tests[0]

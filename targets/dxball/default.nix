@@ -55,6 +55,9 @@ let
     externalInterfaceProfiles = [
       "${interfaceProfile}/interface-profile.json"
     ];
+    candidateMachineImportProfiles = [
+      "${interfaceProfile}/interface-profile.json"
+    ];
     launchProfileTemplate =
       "${sdk.profiles}/pe32-win32-gui-launch-assumptions-v1.json";
     componentIntent = ./intent/components.json;
@@ -63,19 +66,8 @@ let
     maxUnits = 512;
     maxCandidatesPerSeed = 12;
   };
-  inherit (workflow) analysis components;
-  analysisV3 = workflow.authority;
-  hybrid = workflow.candidateFor {
-    configurationId = "startup-extended";
-    extraMachineImportProfiles = [
-      "${interfaceProfile}/interface-profile.json"
-    ];
-  };
-  hybridDiagnostic = workflow.diagnosticFor {
-    extraMachineImportProfiles = [
-      "${interfaceProfile}/interface-profile.json"
-    ];
-  };
+  components = workflow.components;
+  hybridDiagnostic = workflow.diagnosticFor { };
   diagnosticRun = sdk.candidate.headlessDiagnostic {
     namePrefix = "spaghetti-extractor-dxball-1.09";
     candidateBinary = "${hybridDiagnostic.candidate}/candidate.exe";
@@ -88,52 +80,15 @@ let
     screenshotAfterSeconds = 15;
   };
 in
-sdk.target.bundle {
+sdk.target.pe32Bundle {
   targetRoot = ./.;
-  artifacts = {
-    input = {
-      archive = archive;
-      installer = installer;
-      original = original;
-    };
-    profiles.interface = interfaceProfile;
-    analysis = {
-      inventory = analysis.originalInventory;
-      static-export = analysis.staticExport;
-      launch-assumptions = analysis.launchAnalysisAssumptions;
-      state-machine = analysis.stateMachine;
-      machine-ir = analysis.machineIr;
-      reconstruction-plan = analysis.reconstructionPlan;
-      component-proposals = analysis.componentProposals;
-    };
-    components = {
-      resolution = components.resolution;
-      contracts = components.contracts;
-      source-packages = components.sourcePackages;
-      evidence = components.evidences;
-      qualifications = components.qualifications;
-      contract-bundle = components.bundle;
-      configurations = components.activationPlans;
-      source-bundles = components.sourceBundles;
-    };
-    authority = {
-      final = analysisV3.finalAuthority;
-      gate = analysisV3.finalAuthorityGate;
-      transition-summaries =
-        analysisV3.graph.phases."transition-summaries-v3".derivation;
-      graph-metadata = analysisV3.graph.metadata;
-      diagnostics = analysisV3.diagnostics;
-    };
-    hybrid = {
-      interpreter = hybrid.interpreter;
-      fallback-coverage = hybrid.fallbackCoverageReceipt;
-      candidate-authority = hybrid.candidateAuthorityReport;
-      native-engine = hybrid.nativeEngine;
-      native-runtime = hybrid.nativeRuntime;
-      native-objects = hybrid.nativeObjects.package;
-      candidate = hybrid.candidate;
-    };
-    diagnostic = {
+  inherit workflow;
+  inputs = {
+    inherit archive installer original;
+  };
+  profiles.interface = interfaceProfile;
+  extraArtifacts = {
+    unconfigured-diagnostic = {
       native-engine = hybridDiagnostic.nativeEngine;
       native-runtime = hybridDiagnostic.nativeRuntime;
       candidate = hybridDiagnostic.candidate;
@@ -141,12 +96,6 @@ sdk.target.bundle {
     };
   };
   checks = {
-    component-resolution = components.resolution;
     component-contract = components.contracts.startup-extended;
-    component-configuration = components.activationPlans.startup-extended;
-  };
-  acceptanceChecks = {
-    final-authority = analysisV3.finalAuthorityGate;
-    static-candidate = hybrid.candidate;
   };
 }

@@ -33,10 +33,10 @@ from spaghetti_extractor.artifact_set_v3 import (
     canonical_json_bytes_v3,
     canonical_sha256_v3,
 )
-from spaghetti_extractor.stage_b_interpreter_backend import (
+from spaghetti_extractor.candidate.interpreter import (
     write_stage_b_interpreter_package,
 )
-from spaghetti_extractor.stage_b_interpreter_native_build import (
+from spaghetti_extractor.candidate.build import (
     INTERPRETER_NATIVE_BUILD_FORMAT,
     INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME,
     StageBInterpreterNativeBuildError,
@@ -46,24 +46,24 @@ from spaghetti_extractor.stage_b_interpreter_native_build import (
     compile_stage_b_interpreter_native_source_bundle,
     prepare_stage_b_interpreter_native_object_graph,
 )
-from spaghetti_extractor.stage_b_native_engine import (
+from spaghetti_extractor.candidate.engine import (
     _machine_ir_internal_call_preservation,
     write_stage_b_native_engine_package,
 )
-from spaghetti_extractor.stage_b_native_runtime import (
+from spaghetti_extractor.candidate.runtime import (
     write_stage_b_native_runtime_package,
 )
-from spaghetti_extractor.stage_b_pe_composer import (
+from spaghetti_extractor.candidate.pe import (
     EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
 )
 from spaghetti_extractor.candidate.authority import (
     build_candidate_authority,
 )
-from spaghetti_extractor.stage_b_candidate_modes import (
+from spaghetti_extractor.candidate.modes import (
     STATIC_CLOSED_CANDIDATE_MODE,
     STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
 )
-from spaghetti_extractor.stage_b_fallback_coverage import (
+from spaghetti_extractor.machine_ir.coverage import (
     FALLBACK_COVERAGE_RECEIPT_FORMAT,
 )
 from spaghetti_extractor.components.formats import (

@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.component_discovery import (
+from spaghetti_extractor.components.discovery import (
     MACHINE_IR_FORMAT,
     PROPOSAL_SET_FORMAT,
     RECONSTRUCTION_PLAN_FORMAT,

@@ -8,13 +8,13 @@ import unittest
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
-from spaghetti_extractor.stage_b_interpreter_backend import (
+from spaghetti_extractor.candidate.interpreter import (
     StageBInterpreterError,
     compile_stage_b_interpreter_machine_ir,
     compile_stage_b_interpreter_program,
     write_stage_b_interpreter_package,
 )
-from spaghetti_extractor.stage_b_typed_x87 import (
+from spaghetti_extractor.candidate.x87 import (
     typed_x87_operation_from_micro_op,
     typed_x87_operation_from_payload,
 )

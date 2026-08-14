@@ -42,18 +42,18 @@ let
   ];
   staticExportPythonSource = mkPythonClosure staticPythonSource "static-export" [
     "spaghetti_extractor.behavioral_roots"
-    "spaghetti_extractor.opaque_reconstruction"
+    "spaghetti_extractor.reconstruction.opaque"
   ];
   rootedControlPythonSource = mkPythonClosure staticPythonSource "rooted-control" [
-    "spaghetti_extractor.rooted_state_machine"
+    "spaghetti_extractor.reconstruction.rooted_state_machine"
   ];
   machineIrPreparationPythonSource = mkPythonClosure staticPythonSource
     "machine-ir-preparation" [
-    "spaghetti_extractor.reconstruction_ir"
+    "spaghetti_extractor.reconstruction.ir"
   ];
   machineIrExportPythonSource = mkPythonClosure staticPythonSource
     "machine-ir-export" [
-      "spaghetti_extractor.reconstruction_ir"
+      "spaghetti_extractor.reconstruction.ir"
       "spaghetti_extractor.finite_value_domain"
     ];
   launchAssumptionProjectionPythonSource = mkPythonClosure staticPythonSource
@@ -62,7 +62,7 @@ let
       "spaghetti_extractor.stage_binary"
     ];
   reconstructionPlanPythonSource = mkPythonClosure planningPythonSource "reconstruction-plan" [
-    "spaghetti_extractor.reconstruction_plan"
+    "spaghetti_extractor.reconstruction.plan"
   ];
   machineImportProfiles =
     [ externalProfile ]
@@ -177,7 +177,7 @@ let
         "$out" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.opaque_reconstruction import (
+      from spaghetti_extractor.reconstruction.opaque import (
           stage_a_export_opaque_reconstruction,
       )
       from spaghetti_extractor.behavioral_roots import generate_behavioral_roots
@@ -237,7 +237,7 @@ let
       import json
       import pathlib
       import sys
-      from spaghetti_extractor.rooted_state_machine import (
+      from spaghetti_extractor.reconstruction.rooted_state_machine import (
           close_state_machine_rooted_direct_control,
       )
 
@@ -283,7 +283,7 @@ let
       import pathlib
       import sys
       from spaghetti_extractor.finite_value_domain import FiniteU32Dataflow
-      from spaghetti_extractor.reconstruction_ir import export_machine_ir_package
+      from spaghetti_extractor.reconstruction.ir import export_machine_ir_package
 
       (
           state_machine,
@@ -366,7 +366,7 @@ let
         "$out" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.reconstruction_ir import (
+      from spaghetti_extractor.reconstruction.ir import (
           prepare_machine_ir_units_package,
       )
 
@@ -424,7 +424,7 @@ let
         "$out/reconstruction-plan.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.reconstruction_plan import (
+      from spaghetti_extractor.reconstruction.plan import (
           write_reconstruction_plan,
       )
 

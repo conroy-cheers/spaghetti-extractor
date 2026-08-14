@@ -9,11 +9,11 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from .isa_kernel_qualification import (
+from .isa.kernel_qualification import (
     parse_kernel_qualification,
     select_isa_kernel_qualification,
 )
-from .isa_kernel_selection import build_isa_kernel_selection_authority
+from .isa.kernel_selection import build_isa_kernel_selection_authority
 from .machine_ir_isa_requirements_v2 import (
     MachineIRISARequirementsV2,
     compare_selection_to_machine_ir_requirements_v2,
@@ -64,7 +64,7 @@ def build_machine_ir_isa_selection_certificate_v2(
 ) -> dict[str, Any]:
     """Project full qualification authority into a compact static-gate input."""
 
-    from .isa_kernel_selection import (
+    from .isa.kernel_selection import (
         ISAKernelSelectionAuthority,
         SelectionAuthorityStatus,
         parse_isa_kernel_selection_authority,
@@ -487,17 +487,18 @@ def build_machine_ir_isa_selection_authority_v2(
     qualification: Mapping[str, Any],
     binary_id: str = "original",
 ) -> dict[str, Any]:
-    """Select and localize checked semantic evidence for every reachable form."""
+    """Select and localize checked semantic evidence for every decoded form.
+
+    The returned generic authority covers only forms present in the exact
+    requirements. Downstream binary-bound comparison retains any unresolved
+    exact locations and therefore remains incomplete until coverage closes.
+    """
 
     try:
         typed_requirements = parse_machine_ir_isa_requirements_v2(requirements)
         typed_qualification = parse_kernel_qualification(qualification)
     except ValueError as exc:
         raise MachineIRISASelectionV2Error(str(exc)) from exc
-    if typed_requirements.status != "complete":
-        raise MachineIRISASelectionV2Error(
-            "exact machine-IR ISA requirements are not complete"
-        )
     try:
         selection = select_isa_kernel_qualification(
             binary_id=binary_id,

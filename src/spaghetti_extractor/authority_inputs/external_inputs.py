@@ -32,7 +32,7 @@ from ..behavioral_roots import (
     BehavioralRootsError,
     generate_behavioral_roots,
 )
-from ..machine_import_profiles import (
+from ..external.machine_import_profiles import (
     MACHINE_IMPORT_PROFILE_FORMATS,
     MachineImportProfileError,
     MachineImportProfileSet,

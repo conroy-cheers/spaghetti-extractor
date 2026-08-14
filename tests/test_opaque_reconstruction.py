@@ -8,7 +8,7 @@ from pathlib import Path
 from tests.pe_fixtures import pe32_image
 from spaghetti_extractor.extraction.binary_inventory import stage_a_inventory_binary
 from spaghetti_extractor.extraction.cutpoints import semantic_cutpoint_spans_for_side
-from spaghetti_extractor.opaque_reconstruction import (
+from spaghetti_extractor.reconstruction.opaque import (
     opaque_self_map_from_inventory,
     stage_a_export_opaque_reconstruction,
 )

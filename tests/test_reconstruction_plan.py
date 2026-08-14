@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.reconstruction_plan import MachineIRInput
+from spaghetti_extractor.reconstruction.plan import MachineIRInput
 
 
 class ReconstructionPlanTests(unittest.TestCase):

@@ -14,7 +14,7 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.stage_b_fallback_coverage" ];
+    modules = [ "spaghetti_extractor.machine_ir.coverage" ];
     name = "${namePrefix}-fallback-coverage-receipt-python-closure";
   };
   caAttrs = lib.optionalAttrs contentAddressed { __contentAddressed = true; };
@@ -46,7 +46,7 @@ pkgs.runCommand "${namePrefix}-fallback-coverage-receipt-v3" (
   import pathlib
   import sys
 
-  from spaghetti_extractor.stage_b_fallback_coverage import (
+  from spaghetti_extractor.machine_ir.coverage import (
       write_stage_b_fallback_coverage_receipt,
   )
 

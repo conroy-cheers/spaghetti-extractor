@@ -11,7 +11,7 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.stage_b_interpreter_backend" ];
+    modules = [ "spaghetti_extractor.candidate.interpreter" ];
     name = "${namePrefix}-interpreter-package-python-closure";
   };
 in
@@ -33,7 +33,7 @@ pkgs.runCommand
       ${machineIr}/machine-ir.jsonl "$out" <<'PY'
     import pathlib
     import sys
-    from spaghetti_extractor.stage_b_interpreter_backend import (
+    from spaghetti_extractor.candidate.interpreter import (
         write_stage_b_interpreter_package,
     )
 

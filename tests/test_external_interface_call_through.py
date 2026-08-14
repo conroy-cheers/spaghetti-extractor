@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from spaghetti_extractor.external_interface_profiles import (
+from spaghetti_extractor.external.interface_profiles import (
     EXTERNAL_INTERFACE_PROFILE_FORMAT,
     SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL,
     ExternalInterfaceProfileError,
@@ -16,8 +16,8 @@ from spaghetti_extractor.external_interface_profiles import (
     load_external_interface_profile,
     same_library_call_through_effect_json,
 )
-from spaghetti_extractor.machine_abi import resolve_machine_call_abi
-from spaghetti_extractor.machine_import_profiles import (
+from spaghetti_extractor.external.machine_abi import resolve_machine_call_abi
+from spaghetti_extractor.external.machine_import_profiles import (
     MachineImportProfileError,
     load_machine_import_profile_set,
 )

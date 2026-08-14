@@ -57,7 +57,35 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("sourcePackages", module)
         self.assertIn("evidences", module)
         self.assertIn("runtimeConfigurations", module)
+        self.assertIn("runtimeFor", module)
+        self.assertIn("runtimePackages", module)
+        self.assertIn("machineIr interpreterPackage", module)
         self.assertIn("implementation=pathlib.Path(sys.argv[2])", module)
+
+    def test_component_runtime_is_factored_out_of_candidate_construction(self) -> None:
+        candidate = (
+            ROOT / "nix" / "stage-b-hybrid-candidate.nix"
+        ).read_text(encoding="utf-8")
+        sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
+
+        self.assertIn("interpreterPackage,", candidate)
+        self.assertIn("componentRuntimePackage ? null", candidate)
+        self.assertNotIn("import ./stage-b-interpreter-package.nix", candidate)
+        self.assertNotIn("import ./stage-b-component-runtime-package.nix", candidate)
+        self.assertIn("componentRuntimeFor = components.runtimeFor", sdk)
+        self.assertIn("componentRuntimePackage = components.mkRuntime", sdk)
+        self.assertIn("interpreterPackage = interpreter", sdk)
+
+    def test_pe32_bundle_exports_standard_configuration_families(self) -> None:
+        sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
+
+        self.assertIn("mkPe32Bundle", sdk)
+        self.assertIn('"spaghetti-extractor-target-bundle-v2"', sdk)
+        self.assertIn("metadata.workflow.default_configuration", sdk)
+        self.assertIn("runtimes = workflow.componentRuntimes", sdk)
+        self.assertIn("static = lib.mapAttrs", sdk)
+        self.assertIn("diagnostic = lib.mapAttrs", sdk)
+        self.assertNotIn("target = {\n    bundle =", sdk)
 
     def test_interpreter_package_is_a_generic_content_addressed_phase(self) -> None:
         module = (ROOT / "nix" / "stage-b-interpreter-package.nix").read_text(encoding="utf-8")
@@ -263,10 +291,14 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("static_hybrid_final_audit_v2", final)
 
     def test_candidate_builder_validates_v3_authority_twice(self) -> None:
-        builder = (
-            ROOT / "src" / "spaghetti_extractor"
-            / "stage_b_interpreter_native_build.py"
-        ).read_text(encoding="utf-8")
+        builder = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted(
+                (ROOT / "src" / "spaghetti_extractor" / "candidate").glob(
+                    "build*.py"
+                )
+            )
+        )
         self.assertGreaterEqual(builder.count("_validate_candidate_authority_v3("), 3)
         self.assertNotIn("stage_b_candidate_authority_v2", builder)
         self.assertNotIn("final_static_hybrid_audit", builder)
@@ -317,7 +349,7 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             ROOT / "nix" / "stage-b-headless-diagnostic-run.nix"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("spaghetti_extractor.stage_b_native_diagnostic", module)
+        self.assertIn("spaghetti_extractor.candidate.diagnostic", module)
         self.assertIn("decode_stage_b_native_diagnostic_file", module)
         self.assertIn("diagnostic-decoded.json", module)
         self.assertIn("original_runtime_observations: $original_runtime_observations", module)
@@ -342,13 +374,11 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("write_static_hybrid_closure_receipt", module)
         self.assertNotIn("write_final_candidate_authorization", module)
         self.assertNotIn("stage-b-final-candidate-generation-authorization-v1", module)
-        self.assertIn("externalSiteProposals ? null", module)
-        self.assertIn("external_site_proposals=", module)
+        self.assertNotIn("externalSiteProposals", module)
+        self.assertNotIn("external_site_proposals=", module)
         self.assertIn("region_override_package=optional_path", module)
         self.assertIn("if ${if staticClosed then", module)
-        self.assertIn(
-            "proposal-only external-site evidence is diagnostic-only", module
-        )
+        self.assertNotIn("proposal-only external-site evidence", module)
 
     def test_checked_external_sites_and_callbacks_are_native_v3_phases(self) -> None:
         external = (
@@ -455,6 +485,24 @@ class StageBComponentAnalysisNixTests(unittest.TestCase):
             (ROOT / "nix" / "tests" / "stage-b-static-hybrid-authority-v2.nix").exists()
         )
 
+    def test_static_candidate_consumes_canonical_external_site_authority(self) -> None:
+        candidate = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
+            encoding="utf-8"
+        )
+        authority_workflow = (ROOT / "nix" / "authority-workflow.nix").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('graph.outputs."canonical-external-sites-v3"', candidate)
+        self.assertIn(
+            'outputs ? [ "canonical-external-sites-v3" "final-authority-v3" ]',
+            authority_workflow,
+        )
+        self.assertIn("canonical_external_sites=", candidate)
+        self.assertNotIn("callableExternalRuntimeContract", candidate)
+        self.assertNotIn("callable_external_contract=", candidate)
+        self.assertFalse(
+            (ROOT / "nix" / "callable-external-runtime-contract.py").exists()
+        )
 
 if __name__ == "__main__":
     unittest.main()

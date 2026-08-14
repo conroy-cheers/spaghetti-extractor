@@ -3,7 +3,11 @@
 The active Lean footprint is a compact IA-32 semantic kernel:
 
 - `StageA/X87.lean`
-- `StageA/Formal.lean`
+- `StageA/Bytes.lean`
+- `StageA/PE32.lean`
+- `StageA/Machine.lean`
+- `StageA/Decode.lean`
+- `StageA/Semantics.lean`
 - `StageA/ISAInventory.lean`
 - `StageA/ISAQualification.lean`
 - `StageA/ISAConformance.lean`
@@ -25,9 +29,9 @@ leaves that form unqualified. Content-addressed derivations allow expensive
 unchanged shards to be substituted from remote builders.
 
 ```console
-spaghetti-extractor stage-a-inventory-isa \
+spaghetti-extractor expert stage-a-inventory-isa \
   --binary app.exe --inventory inventory.json --out isa.json
-spaghetti-extractor stage-a-check-isa-conformance \
+spaghetti-extractor expert stage-a-check-isa-conformance \
   --corpus corpus.json --backend lean --out lean-report.json
 nix build .#isa-kernel --no-link
 ```

@@ -174,6 +174,7 @@ let
     componentProposals = fixture;
     inherit reviewRoot sourceRoot;
     namePrefix = "spaghetti-extractor-components-fixture";
+    interpreterPackage = interpreter;
   };
   base = mkDag ./fixtures/components/base ./fixtures/components/source-base;
   changed = mkDag ./fixtures/components/changed ./fixtures/components/source-base;
@@ -213,13 +214,7 @@ let
       }
       EOF
     '';
-  runtime = import ../stage-b-component-runtime-package.nix {
-    inherit pkgs pythonEnv pythonSource;
-    machineIr = fixture;
-    interpreterPackage = interpreter;
-    componentConfiguration = base.runtimeConfigurations."a-only";
-    namePrefix = "spaghetti-extractor-components-fixture";
-  };
+  runtime = base.runtimeFor "a-only";
   blocked = pkgs.runCommand "spaghetti-extractor-components-blocked-fixture"
     { nativeBuildInputs = [ pkgs.jq ]; __contentAddressed = true; } ''
       jq -e '
@@ -249,6 +244,7 @@ assert base.sourcePackages.a.drvPath != sourceChanged.sourcePackages.a.drvPath;
 assert base.sourcePackages.b.drvPath == sourceChanged.sourcePackages.b.drvPath;
 assert base.qualifications.a.drvPath != sourceChanged.qualifications.a.drvPath;
 assert base.activationPlans."a-only".drvPath != sourceChanged.activationPlans."a-only".drvPath;
+assert runtime.drvPath == base.runtimePackages."a-only".drvPath;
 pkgs.linkFarm "spaghetti-extractor-components-check" [
   { name = "resolution"; path = base.resolution; }
   { name = "contract-a"; path = base.contracts.a; }

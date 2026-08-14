@@ -1,5 +1,5 @@
 {
-  "format": "spaghetti-extractor-target-bundle-v1",
+  "format": "spaghetti-extractor-target-bundle-v2",
   "id": "jq",
   "display_name": "jq 1.8.1 PE32 frontend",
   "input": {
@@ -9,5 +9,8 @@
   "paths": {
     "nix": "default.nix",
     "components": "intent/components.json"
+  },
+  "workflow": {
+    "default_configuration": "operator-whole"
   }
 }

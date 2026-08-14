@@ -6,7 +6,7 @@ import struct
 import tempfile
 import unittest
 
-from spaghetti_extractor.stage_b_native_diagnostic import (
+from spaghetti_extractor.candidate.diagnostic import (
     StageBNativeDiagnosticError,
     decode_stage_b_native_diagnostic,
     decode_stage_b_native_diagnostic_file,

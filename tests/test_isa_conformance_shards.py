@@ -3,18 +3,18 @@ from __future__ import annotations
 import copy
 import unittest
 
-from spaghetti_extractor.isa_conformance import (
+from spaghetti_extractor.isa.conformance import (
     ISAConformanceCorpus,
     ISAConformanceError,
     serialize_isa_conformance_report,
 )
-from spaghetti_extractor.isa_conformance_shards import (
+from spaghetti_extractor.isa.conformance_shards import (
     lean_semantic_forms_payload,
     merge_isa_conformance_shards,
     merge_lean_semantic_form_shards,
     partition_isa_conformance_corpus,
 )
-from spaghetti_extractor.isa_conformance_unicorn import run_unicorn_corpus
+from spaghetti_extractor.isa.conformance_unicorn import run_unicorn_corpus
 from tests.test_stage_a_isa_conformance_unicorn import _case, _corpus
 
 

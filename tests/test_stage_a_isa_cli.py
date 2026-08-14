@@ -5,17 +5,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.isa_cli import (
+from spaghetti_extractor.isa.cli import (
     build_isa_kernel_qualification,
     generate_isa_corpus,
     normalize_isa_catalog,
     write_isa_qualification_campaign,
 )
-from spaghetti_extractor.isa_campaign import parse_isa_qualification_campaign
-from spaghetti_extractor.isa_conformance_bochs import BOCHS_BACKEND_ID
-from spaghetti_extractor.isa_conformance_lean import LEAN_ISA_BACKEND_ID
-from spaghetti_extractor.isa_conformance_unicorn import UNICORN_BACKEND_ID
-from spaghetti_extractor.isa_kernel_qualification import (
+from spaghetti_extractor.isa.campaign import parse_isa_qualification_campaign
+from spaghetti_extractor.isa.conformance_bochs import BOCHS_BACKEND_ID
+from spaghetti_extractor.isa.conformance_lean import LEAN_ISA_BACKEND_ID
+from spaghetti_extractor.isa.conformance_unicorn import UNICORN_BACKEND_ID
+from spaghetti_extractor.isa.kernel_qualification import (
     parse_kernel_qualification,
 )
 from tests.test_stage_a_isa_catalog import catalog_payload, xed_payload, xed_template
@@ -94,7 +94,7 @@ class StageAISACommandBoundaryTests(unittest.TestCase):
             corpus_payload = json.loads(
                 (generated_dir / "corpus.json").read_text(encoding="utf-8")
             )
-            from spaghetti_extractor.isa_conformance import (
+            from spaghetti_extractor.isa.conformance import (
                 parse_isa_conformance_corpus,
             )
 

@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from spaghetti_extractor.isa_conformance import ISAConformanceError, X87Mask
-from spaghetti_extractor.isa_conformance_lean import (
+from spaghetti_extractor.isa.conformance import ISAConformanceError, X87Mask
+from spaghetti_extractor.isa.conformance_lean import (
     LEAN_KERNEL_CACHE_ENV,
     X87DefinednessEvidence,
     _generated_module,

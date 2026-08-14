@@ -20,7 +20,7 @@ from typing import Any, Mapping
 import capstone
 from capstone import x86_const
 
-from ..isa_semantic_forms import (
+from ..isa.semantic_forms import (
     LEAN_ISA_REQUIREMENT_FORM_FORMAT,
     lean_semantic_form_classifier_sha256,
     lean_semantic_form_core,
@@ -30,7 +30,7 @@ from ..stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 from .instruction_support import instruction_supported
 from .region_inventory import request_payload as side_extraction_request_payload
-from .schema import ISA_KERNEL_MODULES, STATIC_ANALYSIS_MODEL_ID
+from .schema import ISA_FORM_EXTRACTION_MODULES, STATIC_ANALYSIS_MODEL_ID
 
 
 ISA_REQUIREMENT_INVENTORY_FORMAT = "stage-a-isa-requirement-inventory-v1"
@@ -548,7 +548,7 @@ def isa_requirement_replay_projection(
 def _lean_form_source_hashes() -> dict[str, str]:
     files = {
         f"{module}.lean": sha256_file(_LEAN_SOURCE_ROOT / f"{module}.lean")
-        for module in ISA_KERNEL_MODULES
+        for module in ISA_FORM_EXTRACTION_MODULES
     }
     classifier = lean_semantic_form_classifier_sha256(_LEAN_SOURCE_ROOT)
     extractor = _canonical_sha256({"ISAInventory.lean": files["ISAInventory.lean"]})
@@ -917,7 +917,7 @@ def extract_lean_instruction_forms_side(
         artifacts = lean_dir / "artifacts"
         stage_a.mkdir()
         artifacts.mkdir()
-        for module in ISA_KERNEL_MODULES:
+        for module in ISA_FORM_EXTRACTION_MODULES:
             shutil.copyfile(
                 _LEAN_SOURCE_ROOT / f"{module}.lean",
                 stage_a / f"{module}.lean",
@@ -925,7 +925,7 @@ def extract_lean_instruction_forms_side(
         kernel_cache = os.environ.get("SPAGHETTI_LEAN_KERNEL_CACHE")
         if kernel_cache:
             cache_stage_a = Path(kernel_cache) / "StageA"
-            for module in ISA_KERNEL_MODULES:
+            for module in ISA_FORM_EXTRACTION_MODULES:
                 cached = cache_stage_a / f"{module}.olean"
                 if cached.is_file():
                     shutil.copyfile(cached, stage_a / cached.name)

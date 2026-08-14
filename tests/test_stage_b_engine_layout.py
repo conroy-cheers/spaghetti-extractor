@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.stage_b_engine_layout import (
+from spaghetti_extractor.candidate.engine_layout import (
     EngineField,
     EngineFieldKind,
     EngineFlag,

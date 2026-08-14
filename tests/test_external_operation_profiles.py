@@ -6,11 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.external_interface_profiles import (
+from spaghetti_extractor.external.interface_profiles import (
     EXTERNAL_INTERFACE_PROFILE_FORMAT,
     load_external_interface_profile,
 )
-from spaghetti_extractor.external_operation_profiles import (
+from spaghetti_extractor.external.operation_profiles import (
     EXTERNAL_OPERATION_CONTRACT_FORMAT,
     EXTERNAL_OPERATION_PROFILE_FORMAT,
     ArgumentFootprintSize,
@@ -28,7 +28,7 @@ from spaghetti_extractor.external_operation_profiles import (
     parse_external_operation_contract,
     parse_external_operation_profile,
 )
-from spaghetti_extractor.machine_import_profiles import MachineImportIdentity
+from spaghetti_extractor.external.machine_import_profiles import MachineImportIdentity
 
 
 def environment_contract(

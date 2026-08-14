@@ -15,9 +15,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from .isa_kernel_qualification import BinaryFormRequirement, SourceLocation
-from .isa_kernel_selection import ISAKernelSelectionAuthority
-from .isa_semantic_forms import lean_semantic_form_id
+from .isa.kernel_qualification import BinaryFormRequirement, SourceLocation
+from .isa.kernel_selection import ISAKernelSelectionAuthority
+from .isa.semantic_forms import lean_semantic_form_id
 
 
 MACHINE_IR_ISA_REQUIREMENTS_V2_FORMAT = (
@@ -715,17 +715,19 @@ def parse_machine_ir_isa_requirements_v2(
 def build_machine_ir_isa_semantic_requirements_v2(
     value: Mapping[str, Any] | MachineIRISARequirementsV2,
 ) -> dict[str, Any]:
-    """Project authority-bound requirements onto reusable ISA semantics."""
+    """Project every decoded form onto reusable ISA semantics.
+
+    Exact binary coverage remains authoritative in the upstream requirements.
+    An incomplete exact inventory may still yield a complete semantic
+    projection for its decoded subset, allowing qualification to report useful
+    per-form evidence without treating undecoded locations as covered.
+    """
 
     requirements = (
         value
         if isinstance(value, MachineIRISARequirementsV2)
         else parse_machine_ir_isa_requirements_v2(value)
     )
-    if requirements.status != "complete":
-        raise MachineIRISARequirementsV2Error(
-            "only complete exact ISA requirements have a semantic projection"
-        )
     payload = requirements.to_payload()
     binding = _object(payload.get("binding"), "ISA requirements binding")
     checker = {

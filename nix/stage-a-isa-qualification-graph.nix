@@ -25,20 +25,20 @@ let
       import ./python-module-closure.nix {
         inherit pkgs;
         source = pythonSource;
-        modules = [ "spaghetti_extractor.isa_conformance_shards" ];
+        modules = [ "spaghetti_extractor.isa.conformance_shards" ];
         extraPaths = [ "spaghetti_extractor/lean/StageA" ];
         name = "${name}-shard-python-closure";
       };
   qualificationPythonSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.isa_qualification_worker" ];
+    modules = [ "spaghetti_extractor.isa.qualification_worker" ];
     name = "${name}-qualification-python-closure";
   };
   isaCliPythonSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.isa_cli" ];
+    modules = [ "spaghetti_extractor.isa.cli" ];
     name = "${name}-isa-cli-python-closure";
   };
   layeredArtifactSchemaPredicate = ''
@@ -240,11 +240,11 @@ let
       import pathlib
       import sys
 
-      from spaghetti_extractor.isa_conformance import (
+      from spaghetti_extractor.isa.conformance import (
           parse_isa_conformance_corpus,
           serialize_isa_conformance_corpus,
       )
-      from spaghetti_extractor.isa_conformance_shards import (
+      from spaghetti_extractor.isa.conformance_shards import (
           partition_isa_conformance_corpus,
       )
 
@@ -303,11 +303,11 @@ let
     import pathlib
     import sys
 
-    from spaghetti_extractor.isa_conformance import (
+    from spaghetti_extractor.isa.conformance import (
         parse_isa_conformance_corpus,
         serialize_isa_conformance_report,
     )
-    from spaghetti_extractor.isa_conformance_shards import (
+    from spaghetti_extractor.isa.conformance_shards import (
         merge_isa_conformance_shards,
         merge_lean_semantic_form_shards,
     )
@@ -405,7 +405,7 @@ let
       import pathlib
       import sys
 
-      from spaghetti_extractor.isa_qualification_worker import (
+      from spaghetti_extractor.isa.qualification_worker import (
           build_isa_kernel_qualification,
       )
 
@@ -475,7 +475,7 @@ let
         import json
         import pathlib
         import sys
-        from spaghetti_extractor.isa_cli import select_isa_kernel_qualification
+        from spaghetti_extractor.isa.cli import select_isa_kernel_qualification
 
         result = select_isa_kernel_qualification(
             requirements=pathlib.Path(sys.argv[1]),
@@ -613,7 +613,7 @@ let
           import json
           import pathlib
           import sys
-          from spaghetti_extractor.isa_cli import write_isa_qualification_campaign
+          from spaghetti_extractor.isa.cli import write_isa_qualification_campaign
 
           result = write_isa_qualification_campaign(
               catalog=pathlib.Path(sys.argv[1]),

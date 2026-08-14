@@ -11,16 +11,27 @@ from pathlib import Path
 
 import pefile
 
-from spaghetti_extractor.checked_external_site_contract import (
+from spaghetti_extractor.external.contracts import (
     ExternalSiteIdentity,
     checked_external_site_contract_from_event,
 )
-from spaghetti_extractor.external_site_proposals_v2 import (
-    build_external_site_proposals_v2,
+from spaghetti_extractor.artifact_set_v3 import (
+    ArtifactRecordV3,
+    ArtifactSetWriterV3,
+    CanonicalValueV3,
+    canonical_sha256_v3,
 )
-from spaghetti_extractor.authority_bindings_v2 import canonical_json_bytes
+from spaghetti_extractor.authority.external_site_records import (
+    CANONICAL_EXTERNAL_SITE_CODEC_V3,
+    CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+    CanonicalExternalSiteRecordV3,
+    CanonicalExternalSiteV3,
+    CallbackRequirementV3,
+    ExternalContractV3,
+    external_site_id_v3,
+)
 from spaghetti_extractor.stage_binary import StageAInputError
-from spaghetti_extractor.stage_b_native_engine import (
+from spaghetti_extractor.candidate.engine import (
     STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
     plan_stage_b_native_engine,
     write_stage_b_native_engine_package,
@@ -157,6 +168,107 @@ def _implementation_manifest(
             },
         },
     }
+
+
+def _canonical_external_sites(
+    root: Path,
+    *,
+    unit: dict,
+    event_index: int,
+    identity: dict,
+    contract,
+    callback_target_rvas: tuple[int, ...] = (),
+) -> Path:
+    event = unit["semantics"]["external_events"][event_index]
+    target_sha256 = canonical_sha256_v3(identity)
+    site_id = external_site_id_v3(
+        unit["id"], event_index, 0, identity
+    )
+    callbacks = tuple(
+        CallbackRequirementV3.create(
+            site_id=site_id,
+            ordinal=ordinal,
+            target_unit_id=f"semantic-transfer:typed-{rva:08x}",
+            target_rva=rva,
+            abi_sha256=canonical_sha256_v3(contract.callback_adapter.abi),
+            lifetime=str(contract.callback_adapter.lifetime),
+        )
+        for ordinal, rva in enumerate(callback_target_rvas)
+    )
+    machine_contract = {
+        "abi_template": contract.abi_template,
+        "result_register_relations": list(contract.result_register_relations),
+        "memory_footprints": list(contract.memory_footprints),
+        "out_pointer_relations": list(contract.out_pointer_relations),
+        "out_interface_relations": list(contract.out_interface_relations),
+    }
+    if contract.callback_adapter is not None:
+        machine_contract.update({
+            "callback_source": contract.callback_adapter.source,
+            "callback_abi": contract.callback_adapter.abi,
+            "callback_lifetime": contract.callback_adapter.lifetime,
+            "callback_behavior": contract.callback_adapter.behavior,
+            "callback_activation": contract.callback_adapter.activation,
+            "resource_binding": contract.callback_adapter.resource_binding,
+            "instance_binding": contract.callback_adapter.instance_binding,
+        })
+    authority_contract = ExternalContractV3.create(
+        identity=identity,
+        transfer_kind=contract.transfer_kind,
+        disposition=(
+            "tail_jump"
+            if contract.disposition == "tail_jump"
+            else (
+                "noreturn"
+                if contract.profile_disposition == "terminates"
+                else "returns"
+            )
+        ),
+        profile_id=str(contract.profile_binding["profile_id"]),
+        profile_sha256=str(contract.profile_binding["profile_sha256"]),
+        argument_words=contract.argument_words,
+        arguments=list(contract.arguments),
+        memory_effect=contract.memory_effect,
+        world_effect=contract.world_effect,
+        callback_effect=(
+            "registers" if contract.callback_effect == "explicit" else "none"
+        ),
+        machine_contract=machine_contract,
+        callbacks=callbacks,
+    )
+    site = CanonicalExternalSiteV3(
+        site_id=site_id,
+        unit_id=unit["id"],
+        event_index=event_index,
+        alternative_index=0,
+        event_sha256=canonical_sha256_v3(event),
+        target_sha256=target_sha256,
+        identity=CanonicalValueV3.of(identity),
+        status="complete",
+        authorizing=True,
+        contract=authority_contract,
+        primary_blocker=None,
+    )
+    record = CanonicalExternalSiteRecordV3(
+        record_id=unit["id"],
+        unit_sha256=canonical_sha256_v3(unit),
+        status="complete",
+        authorizing=True,
+        sites=(site,),
+        primary_blocker=None,
+        dependencies=(),
+    )
+    output = root / "canonical-external-sites"
+    ArtifactSetWriterV3(
+        artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+        bindings=(),
+    ).write(
+        output,
+        [ArtifactRecordV3.create(
+            unit["id"], CANONICAL_EXTERNAL_SITE_CODEC_V3.encode(record)
+        )],
+    )
+    return output
 
 
 def _machine_ir_x87_transfer(
@@ -1686,175 +1798,6 @@ class StageBNativeEngineTests(unittest.TestCase):
             self.assertEqual(plan.status, "ready", plan.blockers)
             self.assertEqual(plan.callback_targets[0].stack_cleanup_bytes, 8)
 
-    def test_diagnostic_site_proposal_supplies_receipted_callback_contract(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            callback_va = 0x403000
-            event = {
-                "kind": "external_call",
-                "instruction_rva": 0x2000,
-                "return_rva": 0x2006,
-                "dll": "kernel32.dll",
-                "symbol": "SetUnhandledExceptionFilter",
-                "ordinal": None,
-                "arguments": [
-                    {"op": "const", "value": callback_va, "width": 32}
-                ],
-                "stack_inputs": [{
-                    "offset": 0,
-                    "width": 4,
-                    "value": {
-                        "op": "const",
-                        "value": callback_va,
-                        "width": 32,
-                    },
-                }],
-            }
-            registration = _machine_ir_transfer(
-                rva=0x2000,
-                size=6,
-                event=event,
-            )
-            continuation = _machine_ir_transfer(
-                rva=0x2006, size=1, mnemonic="nop"
-            )
-            callback = _machine_ir_transfer(
-                rva=0x3000, size=1, mnemonic="ret"
-            )
-            callback["semantics"]["outcome"] = {"kind": "return"}
-            for row in (registration, continuation, callback):
-                row["control"] = {"direct_targets": []}
-            machine = self._write(
-                root, [registration, continuation, callback]
-            )
-            manifest_payload = _implementation_manifest(
-                machine,
-                roots=[registration["id"]],
-                reachable=[
-                    registration["id"],
-                    continuation["id"],
-                    callback["id"],
-                ],
-            )
-            manifest_payload["binary"] = {"sha256": "b" * 64}
-            manifest = root / "machine-ir-manifest.json"
-            manifest.write_text(
-                json.dumps(manifest_payload, sort_keys=True),
-                encoding="utf-8",
-            )
-            identity = ExternalSiteIdentity.imported(
-                event, context="fixture registration"
-            )
-            profile_binding = {
-                "profile_id": "fixture-kernel32",
-                "profile_sha256": "1" * 64,
-                "entry_key": "machine_import_signatures",
-                "entry_index": 0,
-            }
-            callback_source = {"kind": "argument_word", "argument": 0}
-            callback_abi = {
-                "kind": "generic_callback",
-                "argument_words": 1,
-                "stack_cleanup_bytes": 4,
-                "nullable": True,
-            }
-            contract = checked_external_site_contract_from_event(
-                event=event,
-                identity=identity,
-                transfer_kind="call",
-                disposition="returns_here",
-                callback_evidence={
-                    "status": "complete",
-                    "failure": None,
-                    "callback_source": callback_source,
-                    "callback_abi": callback_abi,
-                    "callback_lifetime": "until_replaced_or_process_exit",
-                    "callback_behavior": "registration",
-                    "target_rvas": [0x3000],
-                },
-                resolved_machine_contract={
-                    "id": "kernel32.dll!SetUnhandledExceptionFilter",
-                    "arity": {"kind": "fixed", "words": 1},
-                    "abi_template": "pe32-stdcall-v1",
-                    "profile_binding": profile_binding,
-                    "disposition": "returns",
-                    "result_register_relations": [{
-                        "register": "eax",
-                        "relation": "related_word",
-                    }],
-                    "memory_effect": "none",
-                    "memory_footprints": [],
-                    "world_effect": "callbackRegistration",
-                    "callback_effect": "explicit",
-                    "callback_source": callback_source,
-                    "callback_lifetime": "until_replaced_or_process_exit",
-                    "callback_abi": callback_abi,
-                },
-                context="fixture registration",
-            )
-            alternative_sha256 = hashlib.sha256(
-                canonical_json_bytes(identity.payload())
-            ).hexdigest()
-            proposals_payload = build_external_site_proposals_v2(
-                checked_sites=[{
-                    "unit_id": registration["id"],
-                    "event_index": 0,
-                    "target_alternative_index": 0,
-                    "target_alternative_sha256": alternative_sha256,
-                    "contract": contract.payload(),
-                }],
-                pe_sha256="b" * 64,
-                machine_ir_sha256=sha256_bytes(machine.read_bytes()),
-            )
-            proposals = root / "external-site-proposals-v2.json"
-            proposals.write_text(
-                json.dumps(proposals_payload, sort_keys=True),
-                encoding="utf-8",
-            )
-
-            plan = plan_stage_b_native_engine(
-                machine_ir=machine,
-                machine_ir_manifest=manifest,
-                entry_rva=0x2000,
-                import_iat_vas={
-                    ("kernel32.dll", "SetUnhandledExceptionFilter"): 0x432000
-                },
-                external_site_proposals=proposals,
-                candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-                fixed_image_base=0x400000,
-            )
-
-            self.assertEqual(plan.status, "ready", plan.blockers)
-            site = plan.external_sites[0]
-            self.assertEqual(site.checked_external_contract, contract)
-            self.assertEqual(
-                site.target_resolution_evidence["kind"],
-                "diagnostic-external-site-proposal-v2",
-            )
-            self.assertFalse(site.target_resolution_evidence["proof_authority"])
-            self.assertEqual([target.rva for target in plan.callback_targets], [0x3000])
-            self.assertEqual(len(plan.callback_adapters), 1)
-            self.assertEqual(len(plan.callback_adapter_receipts), 1)
-
-            with self.assertRaisesRegex(
-                StageAInputError, "restricted to structural-diagnostic"
-            ):
-                plan_stage_b_native_engine(
-                    machine_ir=machine,
-                    machine_ir_manifest=manifest,
-                    entry_rva=0x2000,
-                    import_iat_vas={
-                        (
-                            "kernel32.dll",
-                            "SetUnhandledExceptionFilter",
-                        ): 0x432000
-                    },
-                    external_site_proposals=proposals,
-                    fixed_image_base=0x400000,
-                )
-
     def test_callback_registration_without_checked_contract_cannot_authorize_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -2081,6 +2024,23 @@ class StageBNativeEngineTests(unittest.TestCase):
             callback["semantics"]["outcome"] = {"kind": "return"}
             machine = self._write(root, [registration, callback])
             manifest = root / "machine-ir-manifest.json"
+            callback_evidence = {
+                "format": "stage-a-callback-registration-provenance-v1",
+                "record_kind": "callback_registration",
+                "status": "complete",
+                "unit_id": registration["id"],
+                "event_index": 0,
+                "instruction_rva": 0x2000,
+                "callback_source": source,
+                "callback_abi": callback_abi,
+                "callback_lifetime": (
+                    "until_class_unregistered_or_process_exit"
+                ),
+                "callback_behavior": "registration",
+                "target_rvas": [0x3000],
+                "target_unit_ids": [callback["id"]],
+                "failure": None,
+            }
             manifest.write_text(json.dumps({
                 "format": "stage-a-machine-ir-v2",
                 "artifacts": {
@@ -2095,28 +2055,35 @@ class StageBNativeEngineTests(unittest.TestCase):
                         "summaries": [],
                     },
                     "external_interface_provenance": {
-                        "callback_registrations": [{
-                            "format": (
-                                "stage-a-callback-registration-provenance-v1"
-                            ),
-                            "record_kind": "callback_registration",
-                            "status": "complete",
-                            "unit_id": registration["id"],
-                            "event_index": 0,
-                            "instruction_rva": 0x2000,
-                            "callback_source": source,
-                            "callback_abi": callback_abi,
-                            "callback_lifetime": (
-                                "until_class_unregistered_or_process_exit"
-                            ),
-                            "callback_behavior": "registration",
-                            "target_rvas": [0x3000],
-                            "target_unit_ids": [callback["id"]],
-                            "failure": None,
-                        }],
+                        "callback_registrations": [callback_evidence],
                     },
                 },
             }), encoding="utf-8")
+
+            identity_payload = {
+                "kind": "import",
+                "dll": "user32.dll",
+                "symbol": "RegisterClassA",
+                "ordinal": None,
+            }
+            checked_contract = checked_external_site_contract_from_event(
+                event=registration["semantics"]["external_events"][0],
+                identity=ExternalSiteIdentity.imported(
+                    identity_payload, context="callback fixture"
+                ),
+                transfer_kind="call",
+                disposition="returns_here",
+                callback_evidence=callback_evidence,
+                context="callback fixture",
+            )
+            canonical_external_sites = _canonical_external_sites(
+                root,
+                unit=registration,
+                event_index=0,
+                identity=identity_payload,
+                contract=checked_contract,
+                callback_target_rvas=(0x3000,),
+            )
 
             plan = plan_stage_b_native_engine(
                 machine_ir=machine,
@@ -2126,6 +2093,7 @@ class StageBNativeEngineTests(unittest.TestCase):
                     ("user32.dll", "RegisterClassA"): 0x432000
                 },
                 base_relocation_evidence=_relocation_evidence([]),
+                canonical_external_sites=canonical_external_sites,
             )
 
             self.assertEqual(plan.status, "ready", plan.blockers)
@@ -2161,6 +2129,7 @@ class StageBNativeEngineTests(unittest.TestCase):
                     ("user32.dll", "RegisterClassA"): 0x432000
                 },
                 base_relocation_evidence=_relocation_evidence([]),
+                canonical_external_sites=canonical_external_sites,
                 out=package,
             )
             self.assertEqual(result["callback_adapter_receipts"], [receipt])

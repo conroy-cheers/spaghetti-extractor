@@ -9,7 +9,11 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Iterable, Mapping
 
-from ..python_module_index import build_python_module_index, declared_python_resources
+from ..python_module_index import (
+    build_python_module_index,
+    declared_public_command_roots,
+    declared_python_resources,
+)
 
 from .diagnostics import Diagnostic, TestkitError, fail_on_errors
 from .model import (
@@ -22,7 +26,9 @@ from .model import (
 
 
 HEAVY_CAPABILITIES = frozenset({"bochs", "compiler", "isa", "lean", "native", "nix", "wine"})
-ALLOWED_DIRECTIVE_KEYS = frozenset({"capabilities", "dependencies", "fixtures", "resources", "subsystem"})
+ALLOWED_DIRECTIVE_KEYS = frozenset(
+    {"capabilities", "commands", "dependencies", "fixtures", "resources", "subsystem"}
+)
 HEAVY_COMMANDS = {
     "bochs": "bochs-conformance",
     "cc": "compiler",
@@ -60,6 +66,7 @@ class _SourceModule:
 @dataclass(frozen=True, slots=True)
 class _Directive:
     capabilities: tuple[str, ...] = ()
+    commands: tuple[str, ...] = ()
     dependencies: tuple[str, ...] = ()
     fixtures: tuple[str, ...] = ()
     resources: tuple[str, ...] = ()
@@ -188,6 +195,7 @@ def _directive(tree: ast.Module, *, path: str) -> _Directive:
         raise TestkitError(Diagnostic("error", "invalid_testkit_directive", "TESTKIT['subsystem'] must be a nonempty string", location=path))
     return _Directive(
         capabilities=_literal_strings(value.get("capabilities", ()), path=path, key="capabilities"),
+        commands=_literal_strings(value.get("commands", ()), path=path, key="commands"),
         dependencies=_literal_strings(value.get("dependencies", ()), path=path, key="dependencies"),
         fixtures=_literal_strings(value.get("fixtures", ()), path=path, key="fixtures"),
         resources=tuple(
@@ -642,6 +650,15 @@ def build_impact_index(
             )
         )
     modules, aliases = _scan_modules(repository)
+    command_manifest = repository / "src/spaghetti_extractor/commands/manifest.py"
+    command_modules = (
+        {
+            root.owner.removeprefix("command:"): root.module
+            for root in declared_public_command_roots(repository)
+        }
+        if command_manifest.is_file()
+        else {}
+    )
     inferred_resource_cache: dict[str, tuple[str, ...]] = {}
     resource_hash_cache: dict[str, str] = {}
 
@@ -668,6 +685,39 @@ def build_impact_index(
         heavy_diagnostics = _heavy_tool_diagnostics(module.tree, path=path)
         diagnostics.extend(heavy_diagnostics)
         dependencies = set(_transitive_paths(path, modules))
+        requested_commands = (
+            tuple(sorted(command_modules))
+            if directive.commands == ("*",)
+            else directive.commands
+        )
+        unknown_commands = sorted(set(requested_commands) - set(command_modules))
+        if unknown_commands:
+            raise TestkitError(
+                Diagnostic(
+                    "error",
+                    "unknown_test_command",
+                    f"TESTKIT command names are not public commands: {', '.join(unknown_commands)}",
+                    location=path,
+                    remediation=(
+                        "Use exact names from the public command manifest, or '*' only "
+                        "for a test that intentionally exercises every command backend."
+                    ),
+                )
+            )
+        for command in requested_commands:
+            dependency = aliases.get(command_modules[command])
+            if dependency is None:
+                raise TestkitError(
+                    Diagnostic(
+                        "error",
+                        "test_command_backend_missing",
+                        f"public command {command!r} has no local backend module",
+                        location=path,
+                        remediation="Repair the command manifest and regenerate repository metadata.",
+                    )
+                )
+            dependencies.add(dependency)
+            dependencies.update(_transitive_paths(dependency, modules))
         for dependency in directive.dependencies:
             resolved = aliases.get(dependency)
             if resolved is None and dependency in modules:
@@ -689,9 +739,9 @@ def build_impact_index(
         direct_dependency_names = {
             modules[dependency].name for dependency in module.dependencies
         }
-        if any(name.endswith("isa_conformance_lean") or ".lean_runner" in name for name in direct_dependency_names):
+        if any(name.endswith("isa.conformance_lean") or ".lean_runner" in name for name in direct_dependency_names):
             capabilities.update(("isa", "lean"))
-        if any("isa_conformance_bochs" in name for name in direct_dependency_names):
+        if any("isa.conformance_bochs" in name for name in direct_dependency_names):
             capabilities.update(("bochs", "isa"))
         if any("native_build" in name or "pe_composer" in name for name in direct_dependency_names):
             capabilities.add("native")

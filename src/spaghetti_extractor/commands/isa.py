@@ -6,8 +6,8 @@ import argparse
 from typing import Any
 
 from ..extraction.isa_inventory import write_binary_isa_inventory
-from ..isa_catalog_enrichment import write_enriched_side_isa_catalog
-from ..isa_conformance_nix import stage_a_check_isa_conformance_nix
+from ..isa.catalog_enrichment import write_enriched_side_isa_catalog
+from ..isa.conformance_nix import stage_a_check_isa_conformance_nix
 from .common import Handler, path_argument
 
 

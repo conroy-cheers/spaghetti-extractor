@@ -1,5 +1,5 @@
 import Lean
-import StageA.Formal
+import StageA.Decode
 
 namespace StageA.Formal
 

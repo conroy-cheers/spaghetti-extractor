@@ -20,7 +20,7 @@ let
   diagnosticPythonSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.stage_b_native_diagnostic" ];
+    modules = [ "spaghetti_extractor.candidate.diagnostic" ];
     name = "${namePrefix}-native-diagnostic-python-closure";
   };
   python = "${pythonEnv}/bin/python3";
@@ -113,7 +113,7 @@ pkgs.runCommand "${namePrefix}-headless-diagnostic-run-v1" {
   import pathlib
   import sys
 
-  from spaghetti_extractor.stage_b_native_diagnostic import (
+  from spaghetti_extractor.candidate.diagnostic import (
       decode_stage_b_native_diagnostic_file,
   )
 

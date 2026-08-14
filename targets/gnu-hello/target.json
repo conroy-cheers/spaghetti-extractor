@@ -1,5 +1,5 @@
 {
-  "format": "spaghetti-extractor-target-bundle-v1",
+  "format": "spaghetti-extractor-target-bundle-v2",
   "id": "gnu-hello",
   "display_name": "GNU Hello 2.12.3 PE32",
   "input": {
@@ -9,5 +9,8 @@
   "paths": {
     "nix": "default.nix",
     "components": "intent/components.json"
+  },
+  "workflow": {
+    "default_configuration": "ascii-to-lower-enabled"
   }
 }

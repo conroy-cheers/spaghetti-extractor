@@ -3,11 +3,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 import unittest
 
-from spaghetti_extractor._contract_tools.common import BlockMapping
-from spaghetti_extractor._contract_tools.reference_contract import (
+from spaghetti_extractor.reference_contract.common import BlockMapping
+from spaghetti_extractor.reference_contract.reference_semantics import (
     _semantic_transfer_contract,
 )
-from spaghetti_extractor._contract_tools.symbolic_execution import _symbolic_execute
+from spaghetti_extractor.reference_contract.symbolic_execution import _symbolic_execute
 from spaghetti_extractor.stage_binary import BlockSide
 
 

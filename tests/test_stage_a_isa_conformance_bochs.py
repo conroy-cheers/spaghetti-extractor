@@ -9,14 +9,14 @@ import tempfile
 import textwrap
 import unittest
 
-from spaghetti_extractor.isa_conformance import (
+from spaghetti_extractor.isa.conformance import (
     ISAConformanceError,
     ObservationStatus,
     ReportQualification,
     isa_conformance_corpus_sha256,
     parse_isa_conformance_corpus,
 )
-from spaghetti_extractor.isa_conformance_bochs import (
+from spaghetti_extractor.isa.conformance_bochs import (
     BOCHS_BACKEND_ID,
     BOCHS_MACHINE_FORMAT,
     BOCHS_RESULT_FORMAT,

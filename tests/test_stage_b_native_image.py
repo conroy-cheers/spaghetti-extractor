@@ -9,7 +9,7 @@ from tests.pe_fixtures import pe32_import_image
 from spaghetti_extractor.roundtrip_fuzz.image_contract import (
     write_stage_a_load_image_contract,
 )
-from spaghetti_extractor.stage_b_native_image import (
+from spaghetti_extractor.candidate.image import (
     derive_native_image_inputs,
     select_native_termination_import,
 )

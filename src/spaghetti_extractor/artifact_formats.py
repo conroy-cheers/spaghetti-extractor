@@ -13,6 +13,8 @@ INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT = (
     "stage-a-instruction-ordered-effect-schedule-v1"
 )
 INTERPRETER_NATIVE_BUILD_FORMAT = "stage-b-interpreter-native-build-v1"
+STAGE_B_INTERPRETER_PROGRAM_FORMAT = "stage-b-semantic-interpreter-program-v1"
+STAGE_B_INTERPRETER_PACKAGE_FORMAT = "stage-b-semantic-interpreter-package-v1"
 NATIVE_ENGINE_PLAN_FORMAT = "stage-b-native-engine-plan-v1"
 NATIVE_ENGINE_PACKAGE_FORMAT = "stage-b-native-engine-package-v1"
 NATIVE_RUNTIME_PACKAGE_FORMAT = "stage-b-native-runtime-package-v1"
@@ -66,6 +68,8 @@ __all__ = [
     "COMPONENT_QUALIFICATION_FORMAT",
     "INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT",
     "INTERPRETER_NATIVE_BUILD_FORMAT",
+    "STAGE_B_INTERPRETER_PACKAGE_FORMAT",
+    "STAGE_B_INTERPRETER_PROGRAM_FORMAT",
     "LIBRARY_ARTIFACT_INDEX_FORMAT",
     "LIBRARY_ARTIFACT_INDEX_V2_FORMAT",
     "LIBRARY_ARTIFACT_INPUTS_FORMAT",

@@ -15,7 +15,7 @@ runner as a public executable. The runner:
 - injects each supported case through a private machine protocol;
 - executes exactly one instruction;
 - emits machine-readable observations for independent mask checking by
-  `isa_conformance_bochs.py`;
+  `isa/conformance_bochs.py`;
 - records the pinned package, CPU model, configuration, runner, guest, corpus,
   and report hashes in each Nix shard's execution manifest.
 

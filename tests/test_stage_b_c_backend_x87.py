@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.stage_b_c_backend import write_stage_b_semantic_c_backend
+from spaghetti_extractor.candidate.c_backend import write_stage_b_semantic_c_backend
 
 
 def _transfer(*, fpu_state: object = None) -> dict[str, object]:

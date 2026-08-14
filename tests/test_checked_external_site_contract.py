@@ -6,17 +6,19 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.checked_external_site_contract import (
+from spaghetti_extractor.external.contracts import (
     CheckedExternalSiteContractError,
     ExternalSiteIdentity,
     checked_external_site_contract_from_event,
+    checked_external_site_contract_from_authority,
     parse_checked_external_site_contract,
     require_profile_match,
 )
-from spaghetti_extractor.machine_import_profiles import (
+from spaghetti_extractor.authority.external_site_records import ExternalContractV3
+from spaghetti_extractor.external.machine_import_profiles import (
     load_machine_import_profile_set,
 )
-from spaghetti_extractor.stage_b_native_runtime import (
+from spaghetti_extractor.candidate.runtime import (
     StageBNativeRuntimeError,
     _external_range_rules,
 )
@@ -132,6 +134,36 @@ def _checked(profile: Path):
 
 
 class CheckedExternalSiteContractTests(unittest.TestCase):
+    def test_projects_checked_v3_authority_without_profile_lookup(self) -> None:
+        contract = ExternalContractV3.create(
+            identity={"kind": "import", "dll": "kernel32.dll", "symbol": "ExitProcess"},
+            transfer_kind="call",
+            disposition="noreturn",
+            profile_id="kernel32",
+            profile_sha256="1" * 64,
+            argument_words=1,
+            arguments=({"op": "register", "name": "eax"},),
+            memory_effect="none",
+            world_effect="processTermination",
+            callback_effect="none",
+            machine_contract={
+                "abi_template": "pe32-stdcall-v1",
+                "argument_words": 1,
+                "disposition": "noreturn",
+                "memory_effect": "none",
+                "memory_footprints": [],
+                "world_effect": "processTermination",
+                "callback_effect": "none",
+                "result_register_relations": [],
+                "out_pointer_relations": [],
+                "out_interface_relations": [],
+            },
+        )
+        projected = checked_external_site_contract_from_authority(contract)
+        self.assertEqual(projected.identity.symbol, "ExitProcess")
+        self.assertEqual(projected.profile_disposition, "terminates")
+        self.assertEqual(projected.arguments[0]["name"], "eax")
+
     def test_resolved_contract_derives_exact_stack_arguments(self) -> None:
         contract = _profile_entry()
         contract["profile_binding"] = {

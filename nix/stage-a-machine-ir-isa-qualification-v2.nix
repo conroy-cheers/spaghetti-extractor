@@ -113,13 +113,13 @@ let
       "incomplete_unresolved_encodings"
     ];
     pythonModules = [
-      "spaghetti_extractor.isa_catalog_enrichment"
+      "spaghetti_extractor.isa.catalog_enrichment"
     ];
     pythonExtraPaths = [ "spaghetti_extractor/lean/StageA" ];
     extraNativeBuildInputs = [ pkgs.lean4 ];
     inputs = { proposal = catalogProposal.artifact; };
     program = ''
-      from spaghetti_extractor.isa_catalog_enrichment import (
+      from spaghetti_extractor.isa.catalog_enrichment import (
           enrich_side_isa_catalog_with_lean,
       )
 
@@ -136,7 +136,7 @@ let
   corpusPythonSource = import ./python-module-closure.nix {
     inherit pkgs;
     source = pythonSource;
-    modules = [ "spaghetti_extractor.isa_cli" ];
+    modules = [ "spaghetti_extractor.isa.cli" ];
     extraPaths = [ "spaghetti_extractor/lean/StageA" ];
     name = "${name}-corpus-python-closure";
   };
@@ -154,7 +154,7 @@ let
       ${catalogEnrichment.artifact} "$out" <<'PY'
     import pathlib
     import sys
-    from spaghetti_extractor.isa_cli import generate_isa_corpus
+    from spaghetti_extractor.isa.cli import generate_isa_corpus
 
     generate_isa_corpus(
         catalog=pathlib.Path(sys.argv[1]),
