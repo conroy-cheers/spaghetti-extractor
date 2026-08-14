@@ -26,7 +26,6 @@ let
       import ./python-module-closure.nix {
     phaseRole = "authority";
         inherit pkgs;
-        source = pythonSource;
         modules = [ "spaghetti_extractor.isa.conformance_shards" ];
         extraPaths = [ "spaghetti_extractor/lean/StageA" ];
         name = "${name}-shard-python-closure";
@@ -34,14 +33,12 @@ let
   qualificationPythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.isa.qualification_worker" ];
     name = "${name}-qualification-python-closure";
   };
   isaCliPythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.isa.cli" ];
     name = "${name}-isa-cli-python-closure";
   };

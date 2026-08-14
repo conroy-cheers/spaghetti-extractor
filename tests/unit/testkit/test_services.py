@@ -21,7 +21,10 @@ from spaghetti_extractor.testkit import (
     plan_test_scaffold,
 )
 from spaghetti_extractor.testkit.cli import main as developer_main
-from spaghetti_extractor.testkit.fixtures import FIXTURE_MANIFEST_FORMAT
+from spaghetti_extractor.testkit.fixtures import (
+    BUILTIN_FIXTURES,
+    FIXTURE_MANIFEST_FORMAT,
+)
 
 
 def _record(identity: str, input_hash: str) -> TestRecord:
@@ -49,6 +52,7 @@ class TestDeveloperServices(unittest.TestCase):
             realized = root / "kernel"
             realized.mkdir()
             manifest = root / "fixtures.json"
+            lean = next(row for row in BUILTIN_FIXTURES if row.id == "lean-isa-runner")
             manifest.write_text(
                 json.dumps(
                     {
@@ -56,9 +60,9 @@ class TestDeveloperServices(unittest.TestCase):
                         "fixtures": {"lean-isa-runner": str(realized)},
                         "definitions": {
                             "lean-isa-runner": {
-                                "description": "shared kernel",
-                                "capabilities": ["lean"],
-                                "nix_attribute": "isa-kernel",
+                                "description": lean.description,
+                                "capabilities": list(lean.capabilities),
+                                "nix_attribute": lean.nix_attribute,
                             }
                         },
                     }
@@ -69,9 +73,39 @@ class TestDeveloperServices(unittest.TestCase):
             catalog = FixtureCatalog.from_environment({"SPAGHETTI_TEST_FIXTURES": str(manifest)})
 
             self.assertEqual(catalog.lookup("lean-isa-runner"), realized)
-            self.assertEqual(catalog.describe("lean-isa-runner")["description"], "shared kernel")
+            self.assertEqual(
+                catalog.describe("lean-isa-runner")["description"], lean.description
+            )
             with self.assertRaisesRegex(TestkitError, "fixture_not_realized"):
                 catalog.lookup("headless-wine")
+
+    def test_fixture_manifest_cannot_redefine_a_builtin_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            realized = root / "kernel"
+            realized.mkdir()
+            manifest = root / "fixtures.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "format": FIXTURE_MANIFEST_FORMAT,
+                        "fixtures": {"lean-isa-runner": str(realized)},
+                        "definitions": {
+                            "lean-isa-runner": {
+                                "description": "locally redefined",
+                                "capabilities": ["lean"],
+                                "nix_attribute": "test-fixture-lean-isa-runner",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(TestkitError, "fixture_definition_mismatch"):
+                FixtureCatalog.from_environment(
+                    {"SPAGHETTI_TEST_FIXTURES": str(manifest)}
+                )
 
     def test_rebuild_explanation_distinguishes_substitution_from_changed_input(self) -> None:
         old_index = ImpactIndex(repository=".", modules=(), tests=(_record("tests/unit/test_one", "1" * 64),))

@@ -14,7 +14,7 @@ from ..pe32.recursive_decode import (
     ROOTED_INSTRUCTION_VIEW_FORMAT,
     discover_rooted_instruction_views,
 )
-from ..candidate.state_machine import (
+from .state_machine import (
     STAGE_B_STATE_MACHINE_FORMAT,
     annotate_state_machine_import_contracts,
     load_stage_a_reference_contract_binding,

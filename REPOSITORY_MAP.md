@@ -27,8 +27,8 @@ experiments remain available in Git history and are not supported interfaces.
 PE bytes
   -> extraction/binary_inventory.py
   -> extraction/isa_inventory.py + ISA qualification
-  -> reference_contract/__init__.py / reconstruction/opaque.py
-  -> candidate/state_machine.py
+  -> reference_contract/generation.py / reconstruction/opaque.py
+  -> reconstruction/state_machine.py
   -> reconstruction/ir.py
   +-> authority_inputs/ exact-bound proposals -> authority/ checked graph
   +-> library/interface/component proposals
@@ -49,7 +49,7 @@ SDK through Nix; the root flake and generic modules never import `targets/`.
 |---|---|
 | `cli.py` | Canonical `spaghetti-extractor` command registry and exit policy. |
 | `commands/` | Lazy command groups behind the literal public command manifest. Internal workers are Python functions, not hidden CLI commands. |
-| `reference_contract/__init__.py` | Narrow facade over original-only contract export, smoke, explanation, and diff operations. |
+| `reference_contract/__init__.py` | Data-only model-identity facade; generation and diagnostics retain separate dependency closures. |
 | `__main__.py` | `python -m spaghetti_extractor`. |
 
 `pyproject.toml` installs three console scripts. `spaghetti-extractor` is the
@@ -63,11 +63,15 @@ separate flake packages and are not alternate production command surfaces.
 only the selected group; the Python module index reads roles without importing
 implementations. The operator surface is intentionally small:
 
+`testkit/fixture_catalog.json` is likewise the sole authored catalog for shared
+test fixtures. Python provides discovery and lookup, while Nix binds those
+definitions to reproducible realizations; either side rejects metadata drift.
+
 | Namespace | Commands |
 |---|---|
 | `project` | `analyze`, `status`, `check` (`--acceptance` selects the strict gate) |
 | `component` | `list`, `status`, `build`, `check` with unit/group/configuration selectors |
-| `candidate` | `build`, `test` |
+| `candidate` | `list`, `status`, `build`, `test` |
 | `expert` | Explicit low-level Stage A, ISA, reconstruction, authority, runtime, component, source, and validation leaves from `commands/*.py`. |
 
 `commands/workflows.py` maps operator commands only to stable target-SDK Nix
@@ -181,8 +185,10 @@ implementation or authorize work through a compatibility adapter.
 
 ## Reference Contracts
 
-`reference_contract/__init__.py` is the stable facade over phase-oriented
-implementation modules; there is no private compatibility package:
+`reference_contract/__init__.py` exports only the stable model identity.
+Generation and read-only diagnostics are imported from their owning modules,
+so a diagnostic command cannot acquire the full extraction graph through a
+package facade:
 
 | Module | Purpose |
 |---|---|
@@ -190,7 +196,7 @@ implementation modules; there is no private compatibility package:
 | `map_analysis.py`, `map_verification.py` | Explicit block-map analysis, padding verification, layout facts, and CFG proposals. |
 | `abi.py`, `abi_arguments.py`, `abi_control_flow.py`, `abi_instruction.py`, `abi_profile.py`, `abi_comparison.py`, `abi_clusters.py`, `abi_support.py` | Machine ABI/callsite evidence and repair clusters. |
 | `symbolic_execution.py`, `symbolic_expressions.py`, `symbolic_flags.py`, `symbolic_operands.py` | Bounded Z3-assisted local symbolic summaries. |
-| `reference_contract.py`, `reference_constraints.py`, `reference_semantics.py`, `reference_units.py`, `reference_sidecars.py`, `reference_gaps.py`, `reference_diagnostics.py`, `reference_utils.py` | Original-only contract families, semantic sidecars, gaps, diagnostics, and helpers. |
+| `generation.py`, `reference_constraints.py`, `reference_semantics.py`, `reference_units.py`, `reference_sidecars.py`, `reference_gaps.py`, `reference_diagnostics.py`, `diagnostics.py`, `reference_utils.py` | Original-only contract generation, semantic sidecars, gaps, read-only diagnostics, and helpers. |
 
 `reconstruction/opaque.py` converts a map-blind binary inventory into a
 conservative self-map used to emit a baseline contract and state machine.
@@ -201,7 +207,7 @@ unique domain-local formats remain with their owner.
 
 | Module | Purpose |
 |---|---|
-| `candidate/state_machine.py` | Normalizes static transfer contracts into the generated baseline state machine. |
+| `reconstruction/state_machine.py` | Normalizes static transfer contracts into the generated baseline state machine; proposal ownership is independent of candidate generation. |
 | `reconstruction/ir.py`, `reconstruction/ir_model.py` | Stable exact-machine-IR facade and shared typed values. |
 | `reconstruction/ir_decoding.py`, `reconstruction/ir_preparation.py`, `reconstruction/ir_evidence.py`, `reconstruction/ir_recovery.py` | Exact decoding, preparation, evidence validation, and recovered-control helpers. |
 | `reconstruction/ir_materialization.py`, `reconstruction/ir_inventory.py`, `reconstruction/ir_export.py` | Semantic materialization, structural inventory, and canonical machine-IR export. |
@@ -395,7 +401,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `authority-input-external-inputs.nix` | Content-addressed ingestion of exact machine-import profiles and PE/load-image roots into native-v3 input artifact sets. |
 | `authority-final-gate.nix` | Strict final-authority record gate used by candidate generation, target validation, and runtime suites. |
 | `authority-graph-v3.nix`, `authority-graph-v3-boundaries.nix`, `authority-graph-v3-packs.nix`, `authority-resource-classes-v3.nix` | Manifest-driven v3 authority DAG, independently checked structural/dependency planning boundaries, stable schedule packs, and one shared resource policy used by dynamic preparation and standalone fixtures. |
-| `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix`, `generated/test-suite-manifest.json` | Static, checked stable test shards and shared heavy fixtures; Nix evaluates no dynamic test discovery and unchanged shards substitute. |
+| `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix`, `test-fixture-catalog.nix`, `generated/test-suite-manifest.json` | Static, checked stable test shards and shared heavy fixtures; Nix evaluates no dynamic test discovery and unchanged shards substitute. |
 | `structural-diagnostics.nix` | Emits non-authorizing source, plans, and frontiers without object code, a PE, runtime packages, or Wine. |
 | `candidate-test-suite.nix` | Binds a final-authority candidate to curated expected-output cases and executes it through isolated headless Wine. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure with an explicit checked phase role. |

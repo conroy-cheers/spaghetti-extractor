@@ -16,7 +16,7 @@ from .architecture_manifest import (
 )
 
 
-FORMAT = "spaghetti-extractor-python-module-index-v2"
+FORMAT = "spaghetti-extractor-python-module-index-v3"
 PACKAGE = "spaghetti_extractor"
 RESOURCE_DECLARATION = "PYTHON_RESOURCES"
 COMMAND_MANIFEST_DECLARATION = "SUPPORTED_COMMAND_MANIFEST"
@@ -25,9 +25,13 @@ COMMAND_MANIFEST_PATH = Path("src/spaghetti_extractor/commands/manifest.py")
 _MODULE_REFERENCE = re.compile(
     r'["\'](spaghetti_extractor(?:\.[A-Za-z0-9_]+)+)["\']'
 )
-_NIX_PYTHON_INVOCATION = re.compile(
-    r"(?:(?:\bfrom|\bimport)\s+|(?:^|\s)-m\s+(?:\\\s*)?)"
+_NIX_PYTHON_IMPORT = re.compile(
+    r"(?:\bfrom|\bimport)\s+"
     r"(spaghetti_extractor(?:\.[A-Za-z0-9_]+)+)"
+)
+_NIX_MODULE_EXECUTION = re.compile(
+    r"(?:^|\s)-m\s+(?:\\\s*)?"
+    r"(spaghetti_extractor(?:\.[A-Za-z0-9_]+)*)"
 )
 
 
@@ -207,6 +211,19 @@ def declared_public_command_roots(repository: Path) -> tuple[ProductionRoot, ...
         roots.append(ProductionRoot(group, str(role), f"command:{name}"))
     if command_names != set(roles):
         raise ValueError("public command role inventory does not match commands")
+    roles_by_module: dict[str, set[str]] = {}
+    for root in roots:
+        roles_by_module.setdefault(root.module, set()).add(root.role)
+    mixed = {
+        module: sorted(module_roles)
+        for module, module_roles in roles_by_module.items()
+        if len(module_roles) != 1
+    }
+    if mixed:
+        raise ValueError(
+            "public command implementation modules must be role-pure: "
+            f"{mixed!r}"
+        )
     return tuple(sorted(set(roots)))
 
 
@@ -226,8 +243,17 @@ def nix_phase_roots(repository: Path) -> tuple[ProductionRoot, ...]:
             source = path.read_text(encoding="utf-8")
             modules = {
                 *(match.group(1) for match in _MODULE_REFERENCE.finditer(source)),
-                *(match.group(1) for match in _NIX_PYTHON_INVOCATION.finditer(source)),
+                *(match.group(1) for match in _NIX_PYTHON_IMPORT.finditer(source)),
             }
+            for match in _NIX_MODULE_EXECUTION.finditer(source):
+                module = match.group(1)
+                package_main = (
+                    repository
+                    / "src"
+                    / Path(*module.split("."))
+                    / "__main__.py"
+                )
+                modules.add(f"{module}.__main__" if package_main.is_file() else module)
             if not modules:
                 continue
             relative = PurePosixPath(path.relative_to(repository).as_posix())
@@ -303,12 +329,22 @@ def production_roots_by_role(
             raise ValueError(f"installed script {command!r} has no module:function target")
         role = "operator" if command == "spaghetti-extractor" else "developer"
         roots.add(ProductionRoot(reference.split(":", 1)[0], role, f"installed-script:{command}"))
+    module_entrypoints = (
+        project.get("tool", {})
+        .get("spaghetti-extractor", {})
+        .get("module-entrypoints", {})
+    )
+    if not isinstance(module_entrypoints, dict) or any(
+        not isinstance(module, str) or role not in ROOT_ROLES
+        for module, role in module_entrypoints.items()
+    ):
+        raise ValueError(
+            "pyproject tool.spaghetti-extractor.module-entrypoints must map "
+            "module names to supported roles"
+        )
     roots.update(
-        ProductionRoot(module, "operator", "python-module-entrypoint")
-        for module, row in modules.items()
-        if isinstance(module, str)
-        and isinstance(row, dict)
-        and str(row.get("path", "")).endswith("/__main__.py")
+        ProductionRoot(module, role, "declared-module-entrypoint")
+        for module, role in module_entrypoints.items()
     )
     missing = sorted({root.module for root in roots} - set(modules))
     if missing:

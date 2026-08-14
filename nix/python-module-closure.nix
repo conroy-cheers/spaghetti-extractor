@@ -1,6 +1,5 @@
 {
   pkgs,
-  source,
   modules,
   phaseRole,
   extraPaths ? [ ],
@@ -37,6 +36,26 @@ let
   selectedModules = builtins.sort builtins.lessThan (
     builtins.attrNames (visit modules { })
   );
+  roleClosures = index.role_closures or
+    (throw "Python module index has no checked role closures");
+  allowedModules = roleClosures.${phaseRole} or
+    (throw "Python module index has no closure for role ${phaseRole}");
+  unauthorizedModules = builtins.filter
+    (module: !(builtins.elem module allowedModules)) selectedModules;
+  staticPhaseRoles = [ "operator" "authority" "proposal" ];
+  phaseSourceClass =
+    if builtins.elem phaseRole staticPhaseRoles then "static" else "runtime";
+  forbiddenSourceModules = builtins.filter
+    (module:
+      phaseSourceClass == "static"
+      && lib.hasPrefix "src/spaghetti_extractor/candidate/"
+        moduleRecords.${module}.path)
+    selectedModules;
+  unauthorizedExtraPaths = builtins.filter
+    (path:
+      !(builtins.elem phaseRole [ "authority" "developer" ]
+        && lib.hasPrefix "spaghetti_extractor/lean/StageA" path))
+    extraPaths;
   sanitize = value: lib.replaceStrings [ "." "_" "/" ] [ "-" "-" "-" ] value;
   moduleFiles = map
     (module:
@@ -93,10 +112,16 @@ let
     "developer"
   ];
 in
-assert index.format == "spaghetti-extractor-python-module-index-v2";
+assert index.format == "spaghetti-extractor-python-module-index-v3";
 assert builtins.isList modules && modules != [ ];
 assert builtins.isList extraPaths;
 assert builtins.elem phaseRole supportedPhaseRoles;
+assert unauthorizedModules == [ ] || throw
+  "Python modules are outside the checked ${phaseRole} role closure: ${builtins.toJSON unauthorizedModules}";
+assert forbiddenSourceModules == [ ] || throw
+  "Python modules violate the ${phaseSourceClass} source class for role ${phaseRole}: ${builtins.toJSON forbiddenSourceModules}";
+assert unauthorizedExtraPaths == [ ] || throw
+  "Python extra paths are not permitted for role ${phaseRole}: ${builtins.toJSON unauthorizedExtraPaths}";
 pkgs.runCommand name {
   nativeBuildInputs = [ pkgs.python3 ];
   preferLocalBuild = false;
@@ -262,8 +287,10 @@ pkgs.runCommand name {
 
   rows.sort(key=lambda row: row["path"])
   manifest = {
-      "format": "spaghetti-extractor-python-module-closure-v1",
-      "dependency_source": "inline-checked-module-index-v1",
+      "format": "spaghetti-extractor-python-module-closure-v2",
+      "dependency_source": "role-checked-module-index-v3",
+      "source_class": ${builtins.toJSON phaseSourceClass},
+      "source_policy": "role-derived-source-class-v1",
       "phase_role": phase_role,
       "root_modules": roots,
       "module_resources": sorted(row["recordPath"] for row in module_resource_files),

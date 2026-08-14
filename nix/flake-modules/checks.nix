@@ -87,23 +87,28 @@
         { name = "python-suite"; path = benchmarkSuite.aggregate; }
       ];
       interpreterPythonClosure = import ../python-module-closure.nix {
-    phaseRole = "developer";
+        phaseRole = "developer";
         inherit pkgs;
-        source = testSource;
         modules = [ "spaghetti_extractor.candidate.interpreter" ];
         name = "spaghetti-extractor-interpreter-python-closure-smoke";
       };
       isaClassifierPythonClosure = import ../python-module-closure.nix {
-    phaseRole = "developer";
+        phaseRole = "developer";
         inherit pkgs;
-        source = testSource;
         modules = [ "spaghetti_extractor.isa.semantic_forms" ];
         name = "spaghetti-extractor-isa-classifier-python-closure-smoke";
       };
+      crossRoleClosure = builtins.tryEval (
+        (import ../python-module-closure.nix {
+          phaseRole = "operator";
+          inherit pkgs;
+          modules = [ "spaghetti_extractor.candidate.interpreter" ];
+          name = "spaghetti-extractor-invalid-cross-role-closure";
+        }).drvPath
+      );
       machineImportControlProfileFixture = import ../tests/machine-import-control-profile.nix {
         inherit pkgs;
         inherit (context) pythonEnv;
-        pythonSource = testSource;
       };
       targetSdkCheck = import ../tests/target-sdk.nix { inherit pkgs; };
       componentsCheck = import ../tests/components.nix {
@@ -141,7 +146,9 @@
         '';
         test-suite = fullGate;
         repository-metadata = repositoryMetadataFreshness;
-        python-module-closure = pkgs.runCommand
+        python-module-closure =
+          assert !crossRoleClosure.success;
+          pkgs.runCommand
           "spaghetti-extractor-python-module-closure-check"
           { nativeBuildInputs = [ context.pythonEnv ]; }
           ''

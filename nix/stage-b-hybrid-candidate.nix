@@ -37,7 +37,6 @@ let
   mkPythonClosure = suffix: modules: import ./python-module-closure.nix {
     phaseRole = "candidate";
     inherit pkgs modules;
-    source = pythonSource;
     name = "${namePrefix}-${suffix}-python-closure";
   };
   nativeEnginePythonSource = mkPythonClosure "native-engine" [

@@ -5,6 +5,12 @@ boundaries. Profiles are input data for static analysis, source rendering, and
 candidate runtime generation. They are not target bundles and do not qualify a
 candidate by themselves.
 
+`catalog.json` is a closed supported-profile inventory. Its role IDs and the
+validator permitted for each role are defined by the typed profile registry;
+adding an arbitrary role label or pairing a profile with an unrelated parser is
+rejected. Test-only profile fragments belong under `tests/`, and retired
+profiles belong in Git history rather than this directory.
+
 ## Profile Families
 
 - `pe32-win32-system-dll-abi-policy-v1.json` classifies Win32 import calling

@@ -17,14 +17,12 @@ let
   sourcePlanPythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.authority.source_plan" ];
     name = "${name}-source-plan-python-closure";
   };
   artifactSeedPythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.artifacts.artifact_set" ];
     name = "${name}-artifact-seed-python-closure";
   };

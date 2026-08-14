@@ -155,6 +155,65 @@ fixture = "spaghetti_extractor.missing:main"
             with self.assertRaisesRegex(ValueError, "must declare exactly one"):
                 nix_phase_module_roots(root)
 
+    def test_only_declared_module_entrypoints_become_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write(
+                root,
+                "pyproject.toml",
+                """
+[project]
+name = "fixture"
+version = "0"
+[tool.spaghetti-extractor.module-entrypoints]
+"spaghetti_extractor.__main__" = "operator"
+""".lstrip(),
+            )
+            _write(root, "flake.nix", "{}\n")
+            _write(root, "src/spaghetti_extractor/__init__.py", "")
+            _write(root, "src/spaghetti_extractor/__main__.py", "")
+            _write(root, "src/spaghetti_extractor/internal/__init__.py", "")
+            _write(root, "src/spaghetti_extractor/internal/__main__.py", "")
+            _write(root, "src/spaghetti_extractor/commands/__init__.py", "")
+            _write(
+                root,
+                "src/spaghetti_extractor/commands/manifest.py",
+                "SUPPORTED_COMMAND_MANIFEST = ()\nSUPPORTED_COMMAND_ROLES = {}\n",
+            )
+
+            roots = production_roots_by_role(root)
+            self.assertIn(
+                ("spaghetti_extractor.__main__", "operator"),
+                {(item.module, item.role) for item in roots},
+            )
+            self.assertNotIn(
+                "spaghetti_extractor.internal.__main__",
+                {item.module for item in roots},
+            )
+
+    def test_command_implementation_modules_must_be_role_pure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write(root, "pyproject.toml", "[project]\nname='fixture'\nversion='0'\n")
+            _write(root, "flake.nix", "{}\n")
+            _write(root, "src/spaghetti_extractor/__init__.py", "")
+            _write(root, "src/spaghetti_extractor/commands/__init__.py", "")
+            _write(root, "src/spaghetti_extractor/commands/mixed.py", "")
+            _write(
+                root,
+                "src/spaghetti_extractor/commands/manifest.py",
+                """
+SUPPORTED_COMMAND_MANIFEST = (
+    {"name": "expert one", "group": "spaghetti_extractor.commands.mixed", "help": "one"},
+    {"name": "expert two", "group": "spaghetti_extractor.commands.mixed", "help": "two"},
+)
+SUPPORTED_COMMAND_ROLES = {"expert one": "proposal", "expert two": "diagnostic"}
+""".lstrip(),
+            )
+
+            with self.assertRaisesRegex(ValueError, "role-pure"):
+                production_roots_by_role(root)
+
 
 if __name__ == "__main__":
     unittest.main()

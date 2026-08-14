@@ -19,7 +19,7 @@ from spaghetti_extractor.external.machine_import_profiles import (
 from spaghetti_extractor.authority_inputs.control_disposition import (
     build_control_disposition_profile,
 )
-from spaghetti_extractor.candidate.state_machine import (
+from spaghetti_extractor.reconstruction.state_machine import (
     _annotate_machine_import_arguments,
     _machine_import_contracts,
 )

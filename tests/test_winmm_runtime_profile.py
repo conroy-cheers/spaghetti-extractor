@@ -16,7 +16,7 @@ from spaghetti_extractor.external.machine_import_profiles import (
     NATIVE_DLL_CALLTHROUGH_PREREQUISITES,
     load_machine_import_profile_set,
 )
-from spaghetti_extractor.candidate.state_machine import (
+from spaghetti_extractor.reconstruction.state_machine import (
     _machine_import_contracts,
 )
 from spaghetti_extractor.pe32.stage_binary import StageAInputError

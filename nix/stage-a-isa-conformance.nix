@@ -16,7 +16,6 @@ let
   workerSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.isa.conformance_worker" ];
     extraPaths = [ "spaghetti_extractor/lean/StageA" ];
     name = "${name}-python-closure";

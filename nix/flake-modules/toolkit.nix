@@ -26,13 +26,7 @@
         isa-semantic-kernel = context.kernels.isaSemanticKernel;
         inductive-certificate-kernel = context.kernels.inductiveCertificateKernel;
         bochs-conformance = context.tools.bochsConformance;
-        test-fixture-bochs-conformance = context.tools.bochsConformance;
-        test-fixture-compiler = pkgs.pkgsCross.mingw32.stdenv.cc;
-        test-fixture-headless-wine = context.tools.headlessWine;
-        test-fixture-lean-isa-runner = context.kernels.isaConformanceKernel;
-        test-fixture-nix = pkgs.nix;
-        test-fixture-pe32-minimal-import-call = context.tools.minimalImportCall;
-      };
+      } // context.fixtureCatalog.packageAttributes context.fixtures;
 
       apps = {
         default = {

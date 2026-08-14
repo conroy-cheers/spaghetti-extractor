@@ -1,19 +1,14 @@
-"""Static extraction and reference-contract commands."""
+"""Non-authorizing static extraction and contract-proposal commands."""
 
 from __future__ import annotations
 
 import argparse
 
 from ..extraction.binary_inventory import stage_a_inventory_binary
-from ..pe32.behavioral_roots import generate_behavioral_roots
-from ..reference_contract import (
-    REFERENCE_CONTRACT_MODEL_ID,
-    stage_a_diff_obligations,
-    stage_a_explain_obligations,
-    stage_a_export_reference_contract,
-    stage_a_smoke_contract,
-)
 from ..external.import_abi import expand_import_abi_policy
+from ..pe32.behavioral_roots import generate_behavioral_roots
+from ..reference_contract.common import REFERENCE_CONTRACT_MODEL_ID
+from ..reference_contract.generation import stage_a_export_reference_contract
 from ..reconstruction.opaque import stage_a_export_opaque_reconstruction
 from ..util import write_json
 from .common import Handler, path_argument
@@ -56,29 +51,6 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             model=REFERENCE_CONTRACT_MODEL_ID,
         )
 
-    if name == "stage-a-smoke-contract":
-        path_argument(command, "reference_contract", required=True)
-        path_argument(command, "out")
-        return lambda a: stage_a_smoke_contract(
-            reference_contract=a.reference_contract, out=a.out
-        )
-
-    if name == "stage-a-explain-contract":
-        path_argument(command, "reference_contract", required=True)
-        command.add_argument("--focus", required=True)
-        path_argument(command, "out")
-        return lambda a: stage_a_explain_obligations(
-            reference_contract=a.reference_contract, focus=a.focus, out=a.out
-        )
-
-    if name == "stage-a-diff-contract":
-        path_argument(command, "before", required=True)
-        path_argument(command, "after", required=True)
-        path_argument(command, "out")
-        return lambda a: stage_a_diff_obligations(
-            before=a.before, after=a.after, out=a.out
-        )
-
     if name == "stage-a-expand-import-abi":
         path_argument(command, "original", required=True)
         path_argument(command, "policy", required=True)
@@ -87,7 +59,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             original_pe=a.original, policy=a.policy, out=a.out
         )
 
-    raise ValueError(f"unsupported static-analysis command: {name}")
+    raise ValueError(f"unsupported static proposal command: {name}")
 
 
 __all__ = ["configure_command"]

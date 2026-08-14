@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.candidate.state_machine import (
+from spaghetti_extractor.reconstruction.state_machine import (
     STAGE_A_SEMANTIC_IR_MODEL,
     STAGE_A_SEMANTIC_TRANSFER_FORMAT,
     StageAReferenceContractBinding,

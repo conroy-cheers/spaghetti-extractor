@@ -19,6 +19,7 @@ import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 import pefile
 
+from ..pe32.coff_symbols import coff_symbol_aliases_by_rva
 from ..pe32.stage_binary import (
     BlockSide,
     StageABinary,
@@ -26,7 +27,6 @@ from ..pe32.stage_binary import (
     StageAInputError,
     StageASection,
     _artifact_name,
-    _coff_symbol_aliases_by_rva,
     _executable_section_for_rva,
     _parse_linker_map_functions,
     _parse_linker_map_symbol_line,
@@ -351,8 +351,10 @@ def _reference_basic_blocks_and_cfg(
 ) -> dict[str, Any]:
     blocks = []
     cfg_edges = []
-    original_symbol_aliases = _coff_symbol_aliases_by_rva(original)
-    candidate_symbol_aliases = _coff_symbol_aliases_by_rva(candidate) if candidate is not None else {}
+    original_symbol_aliases = coff_symbol_aliases_by_rva(original)
+    candidate_symbol_aliases = (
+        coff_symbol_aliases_by_rva(candidate) if candidate is not None else {}
+    )
     for mapped in mappings:
         source = _mapping_source(mapped)
         proof = mapped.source.get("proof") if isinstance(mapped.source.get("proof"), dict) else {}

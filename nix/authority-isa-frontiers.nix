@@ -14,7 +14,6 @@ let
   pythonClosure = import ./python-module-closure.nix {
     phaseRole = "diagnostic";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.isa.frontier_report_v1" ];
     name = "${name}-python-closure";
   };

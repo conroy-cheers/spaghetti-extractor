@@ -102,7 +102,7 @@ class PublicCliTests(unittest.TestCase):
         )
         self.assertIn(
             (
-                "spaghetti_extractor.commands.static_analysis",
+                "spaghetti_extractor.commands.proposal_static",
                 "proposal",
                 "command:expert stage-a-inventory-binary",
             ),
@@ -178,7 +178,8 @@ import sys
 import spaghetti_extractor.cli
 forbidden = {
     "spaghetti_extractor.commands.workflows",
-    "spaghetti_extractor.commands.static_analysis",
+    "spaghetti_extractor.commands.proposal_static",
+    "spaghetti_extractor.commands.diagnostic_contracts",
     "spaghetti_extractor.commands.runtime",
     "spaghetti_extractor.candidate.engine",
     "spaghetti_extractor.candidate.interpreter",
@@ -206,11 +207,13 @@ with contextlib.redirect_stdout(io.StringIO()):
     except SystemExit as exc:
         if exc.code != 0:
             raise
-required = "spaghetti_extractor.commands.static_analysis"
+required = "spaghetti_extractor.commands.diagnostic_contracts"
 forbidden = {
     "spaghetti_extractor.commands.runtime",
-    "spaghetti_extractor.commands.components",
+    "spaghetti_extractor.commands.expert_components",
+    "spaghetti_extractor.commands.proposal_static",
     "spaghetti_extractor.candidate.engine",
+    "spaghetti_extractor.reference_contract.generation",
 }
 if required not in sys.modules:
     raise SystemExit("selected command group was not loaded")

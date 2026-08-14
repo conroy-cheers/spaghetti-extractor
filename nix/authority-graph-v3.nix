@@ -43,7 +43,6 @@ let
       moduleIndexFile
       repositoryRoot
       ;
-    source = pythonSource;
     modules = [
       "spaghetti_extractor.artifacts.artifact_set"
       "spaghetti_extractor.artifacts.io"
@@ -57,7 +56,6 @@ let
       moduleIndexFile
       repositoryRoot
       ;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.authority.planning" ];
     name = "authority-graph-v3-planning-python-closure";
   };
@@ -674,7 +672,6 @@ let
           moduleIndexFile
           repositoryRoot
           ;
-        source = pythonSource;
         modules = [ (phaseModule spec) ];
         name = "authority-graph-v3-${sanitize spec.phase_id}-python-closure";
       }

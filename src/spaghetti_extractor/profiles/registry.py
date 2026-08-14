@@ -453,6 +453,28 @@ _VALIDATORS: Mapping[str, ProfileValidator] = {
     "normal-call-abi-premise-v1": _validate_normal_call_abi,
 }
 PROFILE_VALIDATOR_IDS = frozenset(_VALIDATORS)
+PROFILE_ROLE_VALIDATORS: Mapping[str, frozenset[str]] = {
+    "callable-external-resolution": frozenset({"callable-external-v2"}),
+    "candidate-toolchain-policy": frozenset({"c0-toolchain-v1"}),
+    "console-launch-assumption-template": frozenset(
+        {"launch-assumption-template-v1"}
+    ),
+    "external-function-extraction": frozenset(
+        {"external-function-extraction-v1"}
+    ),
+    "external-interface-extraction": frozenset(
+        {"external-interface-extraction-v1"}
+    ),
+    "gui-launch-assumption-template": frozenset(
+        {"launch-assumption-template-v1"}
+    ),
+    "import-abi-policy": frozenset({"import-abi-policy-v1"}),
+    "indirect-target-assumption": frozenset({"indirect-target-profile-v1"}),
+    "machine-import-environment": frozenset({"machine-import-profile-v1"}),
+    "machine-import-runtime": frozenset({"machine-import-profile-v1"}),
+    "normal-call-abi-premise": frozenset({"normal-call-abi-premise-v1"}),
+}
+PROFILE_ROLE_IDS = frozenset(PROFILE_ROLE_VALIDATORS)
 
 
 def _read_json_object(path: Path, context: str) -> Mapping[str, Any]:
@@ -475,11 +497,15 @@ def _registration(value: Any, index: int) -> ProfileRegistration:
         )
     role = _nonempty_string(row.get("role"), f"{context}.role")
     validator_id = _nonempty_string(row.get("validator_id"), f"{context}.validator_id")
-    if _TOKEN.fullmatch(role) is None:
-        raise ProfileRegistryError(f"{context}.role is not a stable role ID")
+    if _TOKEN.fullmatch(role) is None or role not in PROFILE_ROLE_VALIDATORS:
+        raise ProfileRegistryError(f"{context}.role is not a supported profile role")
     if validator_id not in _VALIDATORS:
         raise ProfileRegistryError(
             f"{context}.validator_id is unknown: {validator_id!r}"
+        )
+    if validator_id not in PROFILE_ROLE_VALIDATORS[role]:
+        raise ProfileRegistryError(
+            f"{context}.validator_id {validator_id!r} cannot validate role {role!r}"
         )
     return ProfileRegistration(path=path, role=role, validator_id=validator_id)
 
@@ -550,6 +576,8 @@ def validate_profile_inventory(profiles_directory: Path | str) -> ProfileRegistr
 
 __all__ = [
     "PROFILE_CATALOG_FORMAT",
+    "PROFILE_ROLE_IDS",
+    "PROFILE_ROLE_VALIDATORS",
     "PROFILE_VALIDATOR_IDS",
     "ProfileRegistration",
     "ProfileRegistry",

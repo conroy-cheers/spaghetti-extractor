@@ -24,7 +24,6 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     phaseRole = "proposal";
     inherit pkgs;
-    source = pythonSource;
     modules = [
       "spaghetti_extractor.libraries.catalog"
       "spaghetti_extractor.libraries.interfaces"

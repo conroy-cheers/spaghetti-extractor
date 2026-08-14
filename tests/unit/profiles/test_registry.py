@@ -101,6 +101,36 @@ class ProfileRegistryTests(unittest.TestCase):
             ):
                 load_profile_registry(directory / "catalog.json")
 
+    def test_arbitrary_profile_role_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = self.copy_profiles(Path(raw))
+            self.rewrite_catalog(
+                directory,
+                lambda payload: payload["profiles"][0].update(
+                    {"role": "looks-plausible-but-unowned"}
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                ProfileRegistryError, "role is not a supported profile role"
+            ):
+                load_profile_registry(directory / "catalog.json")
+
+    def test_profile_role_rejects_an_unrelated_validator(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            directory = self.copy_profiles(Path(raw))
+            self.rewrite_catalog(
+                directory,
+                lambda payload: payload["profiles"][0].update(
+                    {"validator_id": "machine-import-profile-v1"}
+                ),
+            )
+
+            with self.assertRaisesRegex(
+                ProfileRegistryError, "cannot validate role"
+            ):
+                load_profile_registry(directory / "catalog.json")
+
     def test_registered_profile_must_pass_its_validator(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             directory = self.copy_profiles(Path(raw))

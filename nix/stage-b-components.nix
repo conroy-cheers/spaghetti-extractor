@@ -42,7 +42,6 @@ let
   mkPhaseSource = phase: modules: import ./python-module-closure.nix {
     phaseRole = "candidate";
     inherit pkgs modules;
-    source = pythonSource;
     name = "${namePrefix}-components-${phase}-python-closure";
   };
   resolutionSource = mkPhaseSource "resolution" [

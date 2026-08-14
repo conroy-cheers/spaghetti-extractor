@@ -14,7 +14,6 @@ let
   graphPythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.authority.graph" ];
     name = "${name}-python-closure";
   };

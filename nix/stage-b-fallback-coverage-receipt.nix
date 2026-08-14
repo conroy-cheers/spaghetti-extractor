@@ -15,7 +15,6 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     phaseRole = "candidate";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.machine_ir.coverage" ];
     name = "${namePrefix}-fallback-coverage-receipt-python-closure";
   };

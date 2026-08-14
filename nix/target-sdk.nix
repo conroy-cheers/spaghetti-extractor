@@ -4,7 +4,18 @@
 let
   context = import ./toolkit-context.nix { inherit pkgs; };
   lib = pkgs.lib;
-  callWith = path: common: args: import path (args // common);
+  callWith = path: common: args:
+    let
+      function = import path;
+      accepted = builtins.functionArgs function;
+      unknown = builtins.attrNames (
+        builtins.removeAttrs args (builtins.attrNames accepted)
+      );
+      selectedCommon = lib.filterAttrs
+        (name: _: builtins.hasAttr name accepted) common;
+    in
+      assert unknown == [ ];
+      function (args // selectedCommon);
   analysisCommon = {
     inherit pkgs;
     inherit (context) pythonEnv;
@@ -31,7 +42,6 @@ let
   progressPythonSource = import ./python-module-closure.nix {
     phaseRole = "operator";
     inherit pkgs;
-    source = context.sources.fullSource;
     modules = [ "spaghetti_extractor.target_bundles.progress" ];
     name = "spaghetti-extractor-target-progress-python-closure";
   };

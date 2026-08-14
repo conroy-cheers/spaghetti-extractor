@@ -12,7 +12,6 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     phaseRole = "candidate";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.candidate.interpreter" ];
     name = "${namePrefix}-interpreter-package-python-closure";
   };

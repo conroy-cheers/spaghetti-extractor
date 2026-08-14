@@ -2,10 +2,6 @@
 {
   pkgs,
   pythonEnv,
-  pythonSource,
-  staticPythonSource ? pythonSource,
-  planningPythonSource ? pythonSource,
-  componentDiscoveryPythonSource ? pythonSource,
   original,
   externalProfile,
   additionalMachineImportProfiles ? [ ],
@@ -33,37 +29,35 @@ let
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${source}/src
   '';
-  mkPythonClosure = source: suffix: modules:
+  mkPythonClosure = suffix: modules:
     import ./python-module-closure.nix {
-    phaseRole = "proposal";
-      inherit pkgs source modules;
+      phaseRole = "proposal";
+      inherit pkgs modules;
       name = "${namePrefix}-${suffix}-python-closure";
     };
-  inventoryPythonSource = mkPythonClosure staticPythonSource "inventory" [
+  inventoryPythonSource = mkPythonClosure "inventory" [
     "spaghetti_extractor.extraction.binary_inventory"
   ];
-  staticExportPythonSource = mkPythonClosure staticPythonSource "static-export" [
+  staticExportPythonSource = mkPythonClosure "static-export" [
     "spaghetti_extractor.pe32.behavioral_roots"
     "spaghetti_extractor.reconstruction.opaque"
   ];
-  rootedControlPythonSource = mkPythonClosure staticPythonSource "rooted-control" [
+  rootedControlPythonSource = mkPythonClosure "rooted-control" [
     "spaghetti_extractor.reconstruction.rooted_state_machine"
   ];
-  machineIrPreparationPythonSource = mkPythonClosure staticPythonSource
-    "machine-ir-preparation" [
+  machineIrPreparationPythonSource = mkPythonClosure "machine-ir-preparation" [
     "spaghetti_extractor.reconstruction.ir"
   ];
-  machineIrExportPythonSource = mkPythonClosure staticPythonSource
-    "machine-ir-export" [
+  machineIrExportPythonSource = mkPythonClosure "machine-ir-export" [
       "spaghetti_extractor.reconstruction.ir"
       "spaghetti_extractor.authority_inputs.finite_values"
     ];
-  launchAssumptionProjectionPythonSource = mkPythonClosure staticPythonSource
+  launchAssumptionProjectionPythonSource = mkPythonClosure
     "launch-assumption-projection" [
       "spaghetti_extractor.authority_inputs.launch_assumptions"
       "spaghetti_extractor.pe32.stage_binary"
     ];
-  reconstructionPlanPythonSource = mkPythonClosure planningPythonSource "reconstruction-plan" [
+  reconstructionPlanPythonSource = mkPythonClosure "reconstruction-plan" [
     "spaghetti_extractor.reconstruction.plan"
   ];
   machineImportProfiles =
@@ -76,7 +70,6 @@ let
   # an unrelated returning import contract changes.
   machineImportControlProfile = import ./machine-import-control-profile.nix {
     inherit pkgs pythonEnv;
-    pythonSource = staticPythonSource;
     profiles = machineImportProfiles;
     name = "${namePrefix}-machine-import-control-dispositions-v1";
   };
@@ -448,7 +441,6 @@ let
 
   componentProposals = import ./stage-b-component-discovery.nix {
     inherit pkgs pythonEnv machineIr;
-    pythonSource = componentDiscoveryPythonSource;
     reconstructionPlan = reconstructionPlan;
     inherit namePrefix maxUnits maxCandidatesPerSeed;
   };

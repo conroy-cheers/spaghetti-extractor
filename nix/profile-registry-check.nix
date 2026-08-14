@@ -10,7 +10,6 @@ let
   phaseSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.profiles.registry" ];
     name = "spaghetti-extractor-profile-registry-python-closure";
   };

@@ -1,0 +1,55 @@
+{
+  "format": "spaghetti-extractor-test-fixture-catalog-v1",
+  "fixtures": [
+    {
+      "capabilities": [
+        "bochs",
+        "isa"
+      ],
+      "description": "Batched pinned Bochs ISA executor",
+      "id": "bochs-conformance",
+      "nix_attribute": "test-fixture-bochs-conformance"
+    },
+    {
+      "capabilities": [
+        "compiler"
+      ],
+      "description": "Pinned PE32 cross-compiler toolchain",
+      "id": "compiler",
+      "nix_attribute": "test-fixture-compiler"
+    },
+    {
+      "capabilities": [
+        "wine"
+      ],
+      "description": "Candidate-only Wine runner in an isolated headless display",
+      "id": "headless-wine",
+      "nix_attribute": "test-fixture-headless-wine"
+    },
+    {
+      "capabilities": [
+        "isa",
+        "lean"
+      ],
+      "description": "Precompiled Lean ISA conformance runner",
+      "id": "lean-isa-runner",
+      "nix_attribute": "test-fixture-lean-isa-runner"
+    },
+    {
+      "capabilities": [
+        "nix"
+      ],
+      "description": "Pinned Nix evaluator and build client",
+      "id": "nix",
+      "nix_attribute": "test-fixture-nix"
+    },
+    {
+      "capabilities": [
+        "native"
+      ],
+      "description": "Small deterministic PE32 import-call fixture",
+      "id": "pe32-minimal-import-call",
+      "nix_attribute": "test-fixture-pe32-minimal-import-call"
+    }
+  ]
+}

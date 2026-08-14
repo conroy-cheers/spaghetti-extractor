@@ -2,7 +2,6 @@
 {
   pkgs,
   pythonEnv,
-  pythonSource,
   machineIr,
   reconstructionPlan,
   namePrefix,
@@ -14,7 +13,6 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     phaseRole = "proposal";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.components.discovery" ];
     name = "${namePrefix}-component-discovery-python-closure";
   };

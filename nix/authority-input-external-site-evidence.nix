@@ -16,7 +16,6 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [
       "spaghetti_extractor.authority_inputs.external_site_evidence"
       "spaghetti_extractor.artifacts.io"

@@ -18,7 +18,6 @@ let
   phaseSource = import ./python-module-closure.nix {
     phaseRole = "diagnostic";
     inherit pkgs;
-    source = pythonSource;
     modules = [
       "spaghetti_extractor.candidate.engine"
       "spaghetti_extractor.candidate.image"

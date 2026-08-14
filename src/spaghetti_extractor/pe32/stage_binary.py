@@ -1234,13 +1234,6 @@ def _parse_linker_map_functions(path: Path, binary: StageABinary) -> list[dict[s
     return functions
 
 
-def _coff_symbol_aliases_by_rva(binary: StageABinary) -> dict[int, list[str]]:
-    """Compatibility entry point; COFF parsing is owned by ``coff_symbols``."""
-    from .coff_symbols import coff_symbol_aliases_by_rva
-
-    return coff_symbol_aliases_by_rva(binary)
-
-
 def _parse_linker_map_text_boundary_line(line: str, binary: StageABinary) -> int | None:
     match = re.match(r"^\s*\.text\S*\s+(0x[0-9a-fA-F]+)\s+(0x[0-9a-fA-F]+)\b", line)
     if match is None:

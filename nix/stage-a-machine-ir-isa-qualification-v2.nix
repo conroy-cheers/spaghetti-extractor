@@ -15,7 +15,6 @@ let
   semanticRequirementsPythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = isaPythonSource;
     modules = [
       "spaghetti_extractor.authority_inputs.isa_requirements"
     ];
@@ -65,7 +64,6 @@ let
   mkPhase = args: import ./ca-python-json-phase.nix ({
     phaseRole = "authority";
     inherit pkgs pythonEnv;
-    pythonSource = isaPythonSource;
     name = "${name}-${args.derivationSuffix}";
     inherit (args)
       kind
@@ -139,7 +137,6 @@ let
   corpusPythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.isa.cli" ];
     extraPaths = [ "spaghetti_extractor/lean/StageA" ];
     name = "${name}-corpus-python-closure";

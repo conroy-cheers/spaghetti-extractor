@@ -20,7 +20,6 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [
       "spaghetti_extractor.authority_inputs.indexed_target_evidence"
     ];

@@ -200,39 +200,6 @@ def write_stage_b_native_runtime_binding(
     return result
 
 
-def bind_stage_b_native_runtime_obligations(
-    *,
-    native_engine_plan: Path,
-    runtime_call_obligations: Path,
-    out: Path | None = None,
-) -> dict[str, Any]:
-    """Compatibility entry point for building or writing the binding."""
-
-    if out is None:
-        return build_stage_b_native_runtime_binding(
-            native_engine_plan=native_engine_plan,
-            runtime_call_obligations=runtime_call_obligations,
-        )
-    return write_stage_b_native_runtime_binding(
-        native_engine_plan=native_engine_plan,
-        runtime_call_obligations=runtime_call_obligations,
-        out=out,
-    )
-
-
-def bind_stage_b_native_runtime(
-    *,
-    native_engine_plan: Path,
-    runtime_call_obligations: Path,
-) -> dict[str, Any]:
-    """Short alias for callers that do not need to write the artifact."""
-
-    return build_stage_b_native_runtime_binding(
-        native_engine_plan=native_engine_plan,
-        runtime_call_obligations=runtime_call_obligations,
-    )
-
-
 def _validate_native_engine_plan(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("format") != NATIVE_ENGINE_PLAN_FORMAT:
         raise StageAInputError(
@@ -741,8 +708,6 @@ def _blocker_sort_key(item: dict[str, Any]) -> str:
 __all__ = [
     "NATIVE_RUNTIME_BINDING_FORMAT",
     "RUNTIME_CALL_OBLIGATIONS_FORMAT",
-    "bind_stage_b_native_runtime",
-    "bind_stage_b_native_runtime_obligations",
     "build_stage_b_native_runtime_binding",
     "write_stage_b_native_runtime_binding",
 ]

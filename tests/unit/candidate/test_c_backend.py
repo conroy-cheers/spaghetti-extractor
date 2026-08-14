@@ -11,7 +11,7 @@ from spaghetti_extractor.candidate.c_backend import (
     write_stage_b_semantic_c_backend,
 )
 from spaghetti_extractor.candidate.api_catalog import load_machine_call_catalog
-from spaghetti_extractor.candidate.state_machine import normalize_stage_a_semantic_transfer
+from spaghetti_extractor.reconstruction.state_machine import normalize_stage_a_semantic_transfer
 
 
 def _transfer(**updates):

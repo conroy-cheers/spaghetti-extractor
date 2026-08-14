@@ -10,7 +10,7 @@ from ..reference_contract.common import BlockMapping
 from ..reference_contract.reference_semantics import _semantic_transfer_contract
 from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
 from ..pe32.recovered_executable_data import recover_executable_data_ranges
-from ..candidate.state_machine import (
+from .state_machine import (
     STAGE_A_REFERENCE_CONTRACT_FORMAT,
     normalize_stage_a_semantic_transfer,
 )

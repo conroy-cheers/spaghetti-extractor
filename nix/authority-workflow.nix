@@ -26,7 +26,6 @@ let
   artifactSeedPythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.artifacts.artifact_set" ];
     name = "${name}-artifact-seed-python-closure";
   };

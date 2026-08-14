@@ -2,7 +2,6 @@
 {
   pkgs,
   pythonEnv,
-  pythonSource,
   profiles,
   name ? "spaghetti-extractor-machine-import-control-dispositions-v1",
 }:
@@ -14,7 +13,6 @@ let
   closure = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.authority_inputs.control_disposition" ];
     name = "${name}-python-closure";
   };

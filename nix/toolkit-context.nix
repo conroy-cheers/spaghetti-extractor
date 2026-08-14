@@ -118,14 +118,13 @@ let
     EOF
     i686-w64-mingw32-gcc -Os -s fixture.c -o "$out/minimal-import-call.exe"
   '';
-  fixtures = {
+  fixtureCatalog = import ./test-fixture-catalog.nix { inherit (pkgs) lib; };
+  fixtures = fixtureCatalog.bind {
     bochs-conformance = {
       path = bochsConformance;
       nativeBuildInputs = [ bochsConformance ];
       environment.SPAGHETTI_BOCHS_INTEGRATION_RUNNER =
         "${bochsConformance}/bin/spaghetti-bochs-conformance-runner";
-      description = "Batched pinned Bochs ISA executor";
-      capabilities = [ "bochs" "isa" ];
     };
     compiler = {
       path = pkgs.pkgsCross.mingw32.stdenv.cc;
@@ -134,37 +133,27 @@ let
         pkgs.pkgsCross.mingw32.stdenv.cc
         pkgs.pkgsCross.mingw32.buildPackages.binutils
       ];
-      description = "Pinned PE32 cross-compiler toolchain";
-      capabilities = [ "compiler" ];
     };
     headless-wine = {
       path = headlessWine;
       nativeBuildInputs = [ headlessWine ];
-      description = "Candidate-only Wine runner in a headless X session";
-      capabilities = [ "wine" ];
     };
     lean-isa-runner = {
       path = isaConformanceKernel;
       nativeBuildInputs = [ pkgs.lean4 ];
       environment.SPAGHETTI_LEAN_KERNEL_CACHE = isaConformanceKernel;
-      description = "Precompiled Lean ISA conformance runner";
-      capabilities = [ "isa" "lean" ];
     };
     nix = {
       path = pkgs.nix;
       nativeBuildInputs = [ pkgs.nix ];
-      description = "Pinned Nix evaluator for pure fixture inspection";
-      capabilities = [ "nix" ];
     };
     pe32-minimal-import-call = {
       path = minimalImportCall;
-      description = "Small deterministic PE32 import-call fixture";
-      capabilities = [ "native" ];
     };
   };
 in
 {
-  inherit repositoryRoot pythonEnv package fixtures;
+  inherit repositoryRoot pythonEnv package fixtureCatalog fixtures;
   sources = {
     inherit
       packageSource

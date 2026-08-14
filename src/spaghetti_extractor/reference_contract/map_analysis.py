@@ -27,7 +27,6 @@ from ..pe32.stage_binary import (
     StageAInputError,
     StageASection,
     _artifact_name,
-    _coff_symbol_aliases_by_rva,
     _executable_section_for_rva,
     _parse_linker_map_functions,
     _parse_linker_map_symbol_line,

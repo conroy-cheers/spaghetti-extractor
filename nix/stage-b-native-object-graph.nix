@@ -20,7 +20,6 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     phaseRole = "candidate";
     inherit pkgs;
-    source = nativeBuildPythonSource;
     modules = [ "spaghetti_extractor.candidate.build" ];
     name = "${namePrefix}-native-object-python-closure";
   };

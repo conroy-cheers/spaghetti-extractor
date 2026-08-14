@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..authority_inputs.machine_ir_authority import build_machine_ir_authority_bindings
-from ..candidate.state_machine import (
+from .state_machine import (
     STAGE_B_STATE_MACHINE_FORMAT,
     load_stage_a_reference_contract_binding,
     normalize_stage_a_semantic_transfer,

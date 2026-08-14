@@ -29,7 +29,7 @@ from spaghetti_extractor.reconstruction.ir import (
     export_machine_ir_package,
     prepare_machine_ir_units_package,
 )
-from spaghetti_extractor.candidate.state_machine import (
+from spaghetti_extractor.reconstruction.state_machine import (
     normalize_stage_a_semantic_transfer,
 )
 from spaghetti_extractor.pe32.stage_binary import _parse_stage_a_pe

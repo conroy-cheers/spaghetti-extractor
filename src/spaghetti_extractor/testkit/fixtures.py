@@ -13,6 +13,11 @@ from .diagnostics import Diagnostic, TestkitError
 
 FIXTURE_MANIFEST_FORMAT = "spaghetti-extractor-test-fixtures-v1"
 FIXTURE_ENV = "SPAGHETTI_TEST_FIXTURES"
+FIXTURE_CATALOG_FORMAT = "spaghetti-extractor-test-fixture-catalog-v1"
+PYTHON_RESOURCES = [
+    "src/spaghetti_extractor/testkit/fixture_catalog.json",
+]
+_CATALOG_PATH = Path(__file__).with_name("fixture_catalog.json")
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,14 +38,56 @@ class FixtureDefinition:
         }
 
 
-BUILTIN_FIXTURES = (
-    FixtureDefinition("bochs-conformance", "Batched pinned Bochs ISA executor", ("bochs", "isa"), "test-fixture-bochs-conformance"),
-    FixtureDefinition("compiler", "Pinned PE32 cross-compiler toolchain", ("compiler",), "test-fixture-compiler"),
-    FixtureDefinition("headless-wine", "Candidate-only Wine runner in an isolated headless display", ("wine",), "test-fixture-headless-wine"),
-    FixtureDefinition("lean-isa-runner", "Precompiled Lean ISA conformance runner", ("isa", "lean"), "test-fixture-lean-isa-runner"),
-    FixtureDefinition("nix", "Pinned Nix evaluator and build client", ("nix",), "test-fixture-nix"),
-    FixtureDefinition("pe32-minimal-import-call", "Small deterministic PE32 import-call fixture", ("native",), "test-fixture-pe32-minimal-import-call"),
-)
+def _load_builtin_fixtures() -> tuple[FixtureDefinition, ...]:
+    try:
+        payload = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"cannot load checked fixture catalog: {exc}") from exc
+    if not isinstance(payload, Mapping) or set(payload) != {"format", "fixtures"}:
+        raise RuntimeError("fixture catalog must contain only format and fixtures")
+    if payload.get("format") != FIXTURE_CATALOG_FORMAT:
+        raise RuntimeError("fixture catalog has an unsupported format")
+    rows = payload.get("fixtures")
+    if not isinstance(rows, list):
+        raise RuntimeError("fixture catalog fixtures must be an array")
+    result: list[FixtureDefinition] = []
+    for index, raw in enumerate(rows):
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "id",
+            "description",
+            "capabilities",
+            "nix_attribute",
+        }:
+            raise RuntimeError(f"fixture catalog row {index} is malformed")
+        fixture_id = raw.get("id")
+        description = raw.get("description")
+        capabilities = raw.get("capabilities")
+        nix_attribute = raw.get("nix_attribute")
+        if (
+            not isinstance(fixture_id, str)
+            or not fixture_id
+            or not isinstance(description, str)
+            or not description
+            or not isinstance(capabilities, list)
+            or any(not isinstance(item, str) or not item for item in capabilities)
+            or capabilities != sorted(set(capabilities))
+            or nix_attribute != f"test-fixture-{fixture_id}"
+        ):
+            raise RuntimeError(f"fixture catalog row {index} is invalid")
+        result.append(
+            FixtureDefinition(
+                fixture_id,
+                description,
+                tuple(capabilities),
+                str(nix_attribute),
+            )
+        )
+    if [row.id for row in result] != sorted({row.id for row in result}):
+        raise RuntimeError("fixture catalog IDs must be unique and sorted")
+    return tuple(result)
+
+
+BUILTIN_FIXTURES = _load_builtin_fixtures()
 
 
 class FixtureCatalog:
@@ -134,12 +181,27 @@ class FixtureCatalog:
             capabilities = row.get("capabilities", [])
             if not isinstance(capabilities, list) or any(not isinstance(item, str) for item in capabilities):
                 raise TestkitError(Diagnostic("error", "invalid_fixture_manifest", "fixture capabilities must be strings", location=str(path)))
-            definitions[fixture_id] = FixtureDefinition(
+            definition = FixtureDefinition(
                 fixture_id,
                 str(row.get("description", fixture_id)),
                 tuple(sorted(set(capabilities))),
                 str(row.get("nix_attribute", f"test-fixture-{fixture_id}")),
             )
+            existing = definitions.get(fixture_id)
+            if existing is not None and existing != definition:
+                raise TestkitError(
+                    Diagnostic(
+                        "error",
+                        "fixture_definition_mismatch",
+                        f"fixture manifest redefines checked fixture {fixture_id!r}",
+                        location=str(path),
+                        remediation=(
+                            "Regenerate the Nix fixture manifest from the shared "
+                            "fixture catalog."
+                        ),
+                    )
+                )
+            definitions[fixture_id] = definition
         return cls(tuple(definitions.values()), paths=rows)
 
     def definitions(self) -> tuple[FixtureDefinition, ...]:
@@ -194,6 +256,7 @@ def fixture(fixture_id: str) -> Path:
 __all__ = [
     "BUILTIN_FIXTURES",
     "FIXTURE_ENV",
+    "FIXTURE_CATALOG_FORMAT",
     "FIXTURE_MANIFEST_FORMAT",
     "FixtureCatalog",
     "FixtureDefinition",

@@ -1,7 +1,6 @@
 {
   pkgs,
   pythonEnv,
-  pythonSource,
 }:
 
 let
@@ -28,7 +27,7 @@ let
   baseProfile = profile "control-profile-base" [ terminating ];
   extendedProfile = profile "control-profile-extended" [ returning terminating ];
   mkProjection = profiles: import ../machine-import-control-profile.nix {
-    inherit pkgs pythonEnv pythonSource profiles;
+    inherit pkgs pythonEnv profiles;
     name = "spaghetti-extractor-control-profile-invalidation-fixture";
   };
   baseProjection = mkProjection [ baseProfile ];

@@ -20,7 +20,6 @@ let
   requirementsPythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = isaPythonSource;
     modules = [
       "spaghetti_extractor.extraction.isa_requirements"
       "spaghetti_extractor.authority_inputs.isa_requirements"
@@ -117,7 +116,6 @@ let
   projectionPythonSource = import ./python-module-closure.nix {
     phaseRole = "authority";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.authority_inputs.isa_evidence" ];
     name = "${name}-projection-python-closure";
   };

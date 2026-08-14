@@ -1,7 +1,6 @@
 {
   pkgs,
   pythonEnv,
-  pythonSource,
   name,
   kind,
   artifactName,
@@ -33,7 +32,6 @@ let
   phasePythonSource = import ./python-module-closure.nix {
     phaseRole = phaseRole;
     inherit pkgs;
-    source = pythonSource;
     modules = pythonModules;
     extraPaths = pythonExtraPaths;
     name = "${name}-python-closure";
@@ -196,7 +194,7 @@ let
         if (
             not isinstance(closure_manifest, dict)
             or closure_manifest.get("format")
-            != "spaghetti-extractor-python-module-closure-v1"
+            != "spaghetti-extractor-python-module-closure-v2"
         ):
             raise SystemExit("Python module closure manifest is malformed")
         manifest = {

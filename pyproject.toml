@@ -26,8 +26,16 @@ spaghetti-extractor-dev = "spaghetti_extractor.testkit.cli:main"
 [project.urls]
 Repository = "https://github.com/conroy-cheers/spaghetti-extractor"
 
+[tool.spaghetti-extractor.module-entrypoints]
+"spaghetti_extractor.__main__" = "operator"
+"spaghetti_extractor.testkit.__main__" = "developer"
+
 [tool.setuptools.packages.find]
 where = [ "src" ]
 
 [tool.setuptools.package-data]
-spaghetti_extractor = [ "lean/**/*.lean", "resources/ghidra/*.java" ]
+spaghetti_extractor = [
+  "lean/**/*.lean",
+  "resources/ghidra/*.java",
+  "testkit/fixture_catalog.json",
+]

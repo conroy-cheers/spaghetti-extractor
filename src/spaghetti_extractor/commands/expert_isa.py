@@ -1,12 +1,10 @@
-"""ISA inventory and conformance commands."""
+"""Checked ISA conformance command."""
 
 from __future__ import annotations
 
 import argparse
 from typing import Any
 
-from ..extraction.isa_inventory import write_binary_isa_inventory
-from ..isa.catalog_enrichment import write_enriched_side_isa_catalog
 from ..isa.conformance_nix import stage_a_check_isa_conformance_nix
 from .common import Handler, path_argument
 
@@ -25,15 +23,6 @@ def _run_isa_conformance_nix(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name == "stage-a-inventory-isa":
-        path_argument(command, "binary", required=True)
-        path_argument(command, "inventory", required=True)
-        command.add_argument("--scope", choices=("base", "superset"), default="superset")
-        path_argument(command, "out", required=True)
-        return lambda a: write_binary_isa_inventory(
-            binary=a.binary, inventory=a.inventory, scope=a.scope, out=a.out
-        )
-
     if name == "stage-a-check-isa-conformance":
         path_argument(command, "corpus", required=True)
         command.add_argument(
@@ -47,15 +36,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         path_argument(command, "out", required=True)
         return _run_isa_conformance_nix
 
-    if name == "stage-a-enrich-isa-catalog":
-        path_argument(command, "proposal", required=True)
-        command.add_argument("--timeout-seconds", type=float, default=300.0)
-        path_argument(command, "out", required=True)
-        return lambda a: write_enriched_side_isa_catalog(
-            proposal=a.proposal, out=a.out, timeout_seconds=a.timeout_seconds
-        )
-
-    raise ValueError(f"unsupported ISA command: {name}")
+    raise ValueError(f"unsupported expert ISA command: {name}")
 
 
 __all__ = ["configure_command"]

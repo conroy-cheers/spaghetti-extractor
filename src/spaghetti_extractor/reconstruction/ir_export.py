@@ -12,7 +12,7 @@ from ..pe32.recovered_executable_data import (
     RECOVERED_EXECUTABLE_DATA_FORMAT,
     build_recovered_executable_data_contract,
 )
-from ..candidate.state_machine import (
+from .state_machine import (
     STAGE_A_REFERENCE_CONTRACT_FORMAT,
     load_stage_a_reference_contract_binding,
 )

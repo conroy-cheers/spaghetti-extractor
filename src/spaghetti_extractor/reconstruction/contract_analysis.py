@@ -123,32 +123,6 @@ def analyze_reconstruction_contracts(
     }
 
 
-def enrich_reconstruction_contracts(
-    units: Sequence[Mapping[str, Any]] | Mapping[str, Any],
-    signature_catalog: Any | None = None,
-    *,
-    cluster_id: str | None = None,
-) -> dict[str, Any]:
-    """Compatibility spelling for :func:`analyze_reconstruction_contracts`."""
-
-    return analyze_reconstruction_contracts(
-        units, signature_catalog, cluster_id=cluster_id
-    )
-
-
-def enrich_machine_ir_contracts(
-    units: Sequence[Mapping[str, Any]] | Mapping[str, Any],
-    signature_catalog: Any | None = None,
-    *,
-    cluster_id: str | None = None,
-) -> dict[str, Any]:
-    """Machine-IR-oriented spelling for the same deterministic analysis."""
-
-    return analyze_reconstruction_contracts(
-        units, signature_catalog, cluster_id=cluster_id
-    )
-
-
 def _normalize_units(
     units: Sequence[Mapping[str, Any]] | Mapping[str, Any],
 ) -> list[dict[str, Any]]:

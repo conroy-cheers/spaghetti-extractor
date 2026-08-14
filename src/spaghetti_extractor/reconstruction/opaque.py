@@ -12,11 +12,11 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..extraction.binary_inventory import parse_binary_cutpoint_inventory
-from ..reference_contract.reference_contract import stage_a_export_reference_contract
+from ..reference_contract.generation import stage_a_export_reference_contract
 from ..roundtrip_fuzz.image_io import (
     write_stage_a_load_image_contract,
 )
-from ..candidate.state_machine import write_stage_b_state_machine_from_stage_a_export
+from .state_machine import write_stage_b_state_machine_from_stage_a_export
 from ..pe32.stage_binary import StageAInputError, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 

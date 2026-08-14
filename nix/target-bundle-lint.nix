@@ -13,7 +13,6 @@ let
   phaseSource = import ./python-module-closure.nix {
     phaseRole = "operator";
     inherit pkgs;
-    source = pythonSource;
     modules = [ "spaghetti_extractor.target_bundles.lint" ];
     name = "${namePrefix}-target-bundle-lint-python-closure";
   };
