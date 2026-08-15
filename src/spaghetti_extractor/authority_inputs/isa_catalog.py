@@ -169,7 +169,6 @@ def build_machine_ir_isa_catalog_proposal_v2(
         "trust": {
             "role": "untrusted_executable_catalog_enrichment_proposal",
             "proof_authority": False,
-            "closes_stage_a_proof": False,
         },
     }
     return proposal

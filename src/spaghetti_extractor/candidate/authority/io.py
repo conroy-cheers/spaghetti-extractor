@@ -15,9 +15,11 @@ from .model import (
     AUTHORITY,
     CHECK_NAMES,
     POLICY,
-    STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT,
-    STAGE_B_CANDIDATE_AUTHORITY_V3_VERSION,
+    SPX_CANDIDATE_AUTHORITY_V3_FORMAT,
+    SPX_CANDIDATE_AUTHORITY_V3_VERSION,
     CandidateAuthorityV3Error,
+    CandidateAuthorityV3Checks,
+    CandidateAuthorityV3Inputs,
     CandidateAuthorityV3Issue,
     CandidateAuthorityV3Receipt,
     CandidateAuthorityV3Status,
@@ -27,7 +29,7 @@ from .model import (
 )
 
 
-_CONTENT_ID_RE = re.compile(r"stage-b-candidate-authority-v3:[0-9a-f]{64}")
+_CONTENT_ID_RE = re.compile(r"spaghetti-extractor-candidate-authority-v3:[0-9a-f]{64}")
 
 
 def parse_candidate_authority(
@@ -50,8 +52,8 @@ def parse_candidate_authority(
         "candidate receipt",
     )
     if (
-        row["format"] != STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT
-        or row["schema_version"] != STAGE_B_CANDIDATE_AUTHORITY_V3_VERSION
+        row["format"] != SPX_CANDIDATE_AUTHORITY_V3_FORMAT
+        or row["schema_version"] != SPX_CANDIDATE_AUTHORITY_V3_VERSION
     ):
         raise CandidateAuthorityV3Error("receipt is not candidate authority v3")
     if row["authority"] != AUTHORITY or row["policy"] != POLICY:
@@ -88,8 +90,8 @@ def parse_candidate_authority(
         raise CandidateAuthorityV3Error("candidate content ID is malformed")
     receipt = CandidateAuthorityV3Receipt(
         status=status,
-        inputs=json_value(inputs),
-        checks=json_value(checks),
+        inputs=CandidateAuthorityV3Inputs.parse(json_value(inputs)),
+        checks=CandidateAuthorityV3Checks(json_value(checks)),
         issues=issues,
         content_id=receipt_id,
     )

@@ -30,7 +30,8 @@ from ..artifacts.formats import (
     LINKED_ISLAND_REVIEW_FORMAT,
     MACHINE_IR_FORMAT,
 )
-from ..pe32.stage_binary import StageAInputError, _parse_stage_a_pe
+from ..errors import ToolkitInputError
+from ..pe32.image import parse_pe_image
 from .contracts import (
     validate_linked_island_manifest as _validate_linked_island_contract,
 )
@@ -605,7 +606,7 @@ def _omf_index(data: bytes, offset: int) -> tuple[int, int]:
 
 
 def _index_pe(path: Path) -> dict[str, Any]:
-    binary = _parse_stage_a_pe(path)
+    binary = parse_pe_image(path)
     debug = _pe_debug_identities(binary)
     return {
         "kind": "pe_image",

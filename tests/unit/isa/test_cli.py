@@ -18,8 +18,8 @@ from spaghetti_extractor.isa.conformance_unicorn import UNICORN_BACKEND_ID
 from spaghetti_extractor.isa.kernel_qualification import (
     parse_kernel_qualification,
 )
-from tests.test_stage_a_isa_catalog import catalog_payload, xed_payload, xed_template
-from tests.test_stage_a_isa_corpus_generator import _report_payload
+from tests.test_isa_catalog import catalog_payload, xed_payload, xed_template
+from tests.test_isa_corpus_generator import _report_payload
 
 
 def _write(path: Path, payload: object) -> None:
@@ -119,7 +119,7 @@ class ISACommandBoundaryTests(unittest.TestCase):
             _write(
                 lean_forms,
                 {
-                    "format": "stage-a-lean-isa-semantic-forms-v1",
+                    "format": "spaghetti-extractor-lean-isa-semantic-forms-v1",
                     "corpus_id": executor.corpus.id,
                     "classifier_sha256": "1" * 64,
                     "cases": [
@@ -132,7 +132,6 @@ class ISACommandBoundaryTests(unittest.TestCase):
                     "trust": {
                         "role": "isa_conformance_evidence_only",
                         "proof_authority": False,
-                        "closes_stage_a_proof": False,
                     },
                 },
             )
@@ -140,7 +139,7 @@ class ISACommandBoundaryTests(unittest.TestCase):
             _write(
                 kernel,
                 {
-                    "format": "stage-a-isa-semantic-kernel-binding-v1",
+                    "format": "spaghetti-extractor-isa-semantic-kernel-binding-v1",
                     "id": "fixture-kernel",
                     "decoder_sha256": "2" * 64,
                     "semantics_sha256": "3" * 64,
@@ -149,7 +148,6 @@ class ISACommandBoundaryTests(unittest.TestCase):
                     "trust": {
                         "role": "compiled_lean_semantic_kernel_identity",
                         "proof_authority": False,
-                        "closes_stage_a_proof": False,
                     },
                 },
             )

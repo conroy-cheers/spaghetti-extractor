@@ -1,4 +1,4 @@
-"""Bind Stage B runtime-call obligations to native engine call sites.
+"""Bind candidate reconstruction runtime-call obligations to native engine call sites.
 
 This artifact is an inventory and consistency check only.  It deliberately
 does not confer acceptance authority on a generated native candidate.
@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from ..artifacts.formats import NATIVE_ENGINE_PLAN_FORMAT
-from ..errors import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import json_dumps, sha256_file, sha256_text, write_json
 
 
-NATIVE_RUNTIME_BINDING_FORMAT = "stage-b-native-runtime-binding-v1"
-RUNTIME_CALL_OBLIGATIONS_FORMAT = "stage-b-runtime-call-obligations-v1"
+NATIVE_RUNTIME_BINDING_FORMAT = "spaghetti-extractor-native-runtime-binding-v1"
+RUNTIME_CALL_OBLIGATIONS_FORMAT = "spaghetti-extractor-runtime-call-obligations-v1"
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _HEX_BYTES_RE = re.compile(r"(?:[0-9a-f]{2})+")
@@ -34,7 +34,7 @@ _OBLIGATION_STATUSES = frozenset({"complete", "incomplete"})
 _Selector = tuple[str, int, int]
 
 
-def build_stage_b_native_runtime_binding(
+def build_spx_native_runtime_binding(
     *,
     native_engine_plan: Path,
     runtime_call_obligations: Path,
@@ -53,7 +53,7 @@ def build_stage_b_native_runtime_binding(
     plan_state_sha256 = parsed_plan["state_machine_sha256"]
     obligation_state_sha256 = parsed_obligations["state_machine_sha256"]
     if plan_state_sha256 != obligation_state_sha256:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "native engine plan and runtime-call obligations bind different "
             "source state-machine SHA-256 digests"
         )
@@ -90,7 +90,7 @@ def build_stage_b_native_runtime_binding(
             "runtime_call_inventory_incomplete",
             "the runtime-call obligation source does not claim a complete inventory",
             "regenerate the runtime-call obligations from a nonempty, canonical "
-            "Stage B state machine",
+            "candidate reconstruction state machine",
         ))
 
     bound_sites: list[dict[str, Any]] = []
@@ -184,7 +184,7 @@ def build_stage_b_native_runtime_binding(
     return result
 
 
-def write_stage_b_native_runtime_binding(
+def write_spx_native_runtime_binding(
     *,
     native_engine_plan: Path,
     runtime_call_obligations: Path,
@@ -192,7 +192,7 @@ def write_stage_b_native_runtime_binding(
 ) -> dict[str, Any]:
     """Build and canonically write a native runtime binding artifact."""
 
-    result = build_stage_b_native_runtime_binding(
+    result = build_spx_native_runtime_binding(
         native_engine_plan=native_engine_plan,
         runtime_call_obligations=runtime_call_obligations,
     )
@@ -202,12 +202,12 @@ def write_stage_b_native_runtime_binding(
 
 def _validate_native_engine_plan(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("format") != NATIVE_ENGINE_PLAN_FORMAT:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"native engine plan format must be {NATIVE_ENGINE_PLAN_FORMAT}"
         )
     status = payload.get("status")
     if status not in _PLAN_STATUSES:
-        raise StageAInputError("native engine plan status must be ready or incomplete")
+        raise ToolkitInputError("native engine plan status must be ready or incomplete")
     state_machine_sha256 = _required_sha256(
         payload.get("state_machine_sha256"),
         "native engine plan state_machine_sha256",
@@ -230,14 +230,14 @@ def _validate_native_engine_plan(payload: dict[str, Any]) -> dict[str, Any]:
         for index, value in enumerate(callbacks)
     ]
     if len(set(callback_targets)) != len(callback_targets):
-        raise StageAInputError("native engine plan has duplicate callback targets")
+        raise ToolkitInputError("native engine plan has duplicate callback targets")
 
     counts = _required_object(payload.get("counts"), "native engine plan counts")
     expected_count_fields = {
         "transfers", "external_sites", "indirect_calls", "callback_targets", "blockers"
     }
     if set(counts) != expected_count_fields:
-        raise StageAInputError("native engine plan counts have schema drift")
+        raise ToolkitInputError("native engine plan counts have schema drift")
     for field in expected_count_fields:
         _required_count(counts.get(field), f"native engine plan counts.{field}")
     expected_counts = {
@@ -248,11 +248,11 @@ def _validate_native_engine_plan(payload: dict[str, Any]) -> dict[str, Any]:
     }
     for field, expected in expected_counts.items():
         if counts[field] != expected:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"native engine plan counts.{field} does not match its inventory"
             )
     if (status == "ready") != (not blockers):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "native engine plan status does not match its blocker inventory"
         )
     _reject_duplicate_sites(sites)
@@ -266,17 +266,17 @@ def _validate_native_engine_plan(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _validate_runtime_call_obligations(payload: dict[str, Any]) -> dict[str, Any]:
     if payload.get("format") != RUNTIME_CALL_OBLIGATIONS_FORMAT:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "runtime-call obligations format must be "
             f"{RUNTIME_CALL_OBLIGATIONS_FORMAT}"
         )
     status = payload.get("status")
     if status not in _OBLIGATION_STATUSES:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "runtime-call obligations status must be complete or incomplete"
         )
-    if payload.get("authority") != "stage-a-semantic-transfer-contracts":
-        raise StageAInputError("runtime-call obligations authority is malformed")
+    if payload.get("authority") != "spaghetti-extractor-semantic-transfer-contracts":
+        raise ToolkitInputError("runtime-call obligations authority is malformed")
     state_machine = _required_object(
         payload.get("state_machine"), "runtime-call obligations state_machine"
     )
@@ -320,17 +320,17 @@ def _parse_native_site(value: Any, index: int) -> dict[str, Any]:
     )
     instruction_bytes = site.get("instruction_bytes")
     if not isinstance(instruction_bytes, str) or not _HEX_BYTES_RE.fullmatch(instruction_bytes):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"native engine site {index} instruction_bytes must be lowercase hexadecimal bytes"
         )
     disposition = site.get("disposition")
     if disposition not in {"returns_here", "tail_jump"}:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"native engine site {index} disposition is malformed"
         )
     site_kind = site.get("site_kind")
     if site_kind not in {"direct_import", "dynamic_target"}:
-        raise StageAInputError(f"native engine site {index} site_kind is malformed")
+        raise ToolkitInputError(f"native engine site {index} site_kind is malformed")
     if site_kind == "direct_import":
         import_identity = _parse_import_identity(
             site.get("import"), f"native engine site {index} import"
@@ -375,20 +375,20 @@ def _parse_call_boundary(value: Any, index: int) -> dict[str, Any]:
     )
     expected_id = f"runtime-call:{transfer_id}:{event_index}"
     if obligation_id != expected_id:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"runtime-call boundary {index} id does not match its transfer and event index"
         )
     status = boundary.get("status")
     if status not in _BOUNDARY_STATUSES:
-        raise StageAInputError(f"runtime-call boundary {index} status is malformed")
+        raise ToolkitInputError(f"runtime-call boundary {index} status is malformed")
     kind = boundary.get("kind")
     if kind not in _BOUNDARY_KINDS:
-        raise StageAInputError(f"runtime-call boundary {index} kind is unsupported")
+        raise ToolkitInputError(f"runtime-call boundary {index} kind is unsupported")
     binding = boundary.get("binding")
     if status == "bound":
         binding = _required_string(binding, f"runtime-call boundary {index} binding")
     elif binding is not None:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"unbound runtime-call boundary {index} must not claim a binding"
         )
     parsed: dict[str, Any] = {
@@ -425,7 +425,7 @@ def _parse_call_boundary(value: Any, index: int) -> dict[str, Any]:
 def _parse_import_identity(value: Any, field: str) -> dict[str, Any]:
     identity = _required_object(value, field)
     if set(identity) != {"dll", "symbol", "ordinal"}:
-        raise StageAInputError(f"{field} has schema drift")
+        raise ToolkitInputError(f"{field} has schema drift")
     dll = _required_string(identity.get("dll"), f"{field}.dll").lower()
     symbol = identity.get("symbol")
     ordinal = identity.get("ordinal")
@@ -436,11 +436,11 @@ def _parse_import_identity(value: Any, field: str) -> dict[str, Any]:
         and 0 <= ordinal < 2**32
     )
     if has_symbol == has_ordinal:
-        raise StageAInputError(f"{field} must name exactly one symbol or ordinal")
+        raise ToolkitInputError(f"{field} must name exactly one symbol or ordinal")
     if symbol is not None and not has_symbol:
-        raise StageAInputError(f"{field}.symbol is malformed")
+        raise ToolkitInputError(f"{field}.symbol is malformed")
     if ordinal is not None and not has_ordinal:
-        raise StageAInputError(f"{field}.ordinal is malformed")
+        raise ToolkitInputError(f"{field}.ordinal is malformed")
     return {
         "dll": dll,
         "symbol": symbol if has_symbol else None,
@@ -452,7 +452,7 @@ def _parse_plan_blocker(value: Any, index: int) -> dict[str, Any]:
     blocker = _required_object(value, f"native engine blocker {index}")
     _required_string(blocker.get("category"), f"native engine blocker {index} category")
     if blocker.get("severity") != "hard":
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"native engine blocker {index} severity must be hard"
         )
     _required_string(
@@ -467,11 +467,11 @@ def _reject_duplicate_sites(sites: list[dict[str, Any]]) -> None:
     seen_rvas: set[int] = set()
     for site in sites:
         if site["plan_site_id"] in seen_ids:
-            raise StageAInputError("native engine plan has duplicate site ids")
+            raise ToolkitInputError("native engine plan has duplicate site ids")
         if site["selector"] in seen_selectors:
-            raise StageAInputError("native engine plan has duplicate native site selectors")
+            raise ToolkitInputError("native engine plan has duplicate native site selectors")
         if site["instruction_rva"] in seen_rvas:
-            raise StageAInputError("native engine plan has duplicate native instruction RVAs")
+            raise ToolkitInputError("native engine plan has duplicate native instruction RVAs")
         seen_ids.add(site["plan_site_id"])
         seen_selectors.add(site["selector"])
         seen_rvas.add(site["instruction_rva"])
@@ -482,9 +482,9 @@ def _reject_duplicate_boundaries(boundaries: list[dict[str, Any]]) -> None:
     seen_selectors: set[_Selector] = set()
     for boundary in boundaries:
         if boundary["obligation_id"] in seen_ids:
-            raise StageAInputError("runtime-call obligations contain duplicate ids")
+            raise ToolkitInputError("runtime-call obligations contain duplicate ids")
         if boundary["selector"] in seen_selectors:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "runtime-call obligations contain duplicate boundary selectors"
             )
         seen_ids.add(boundary["obligation_id"])
@@ -499,7 +499,7 @@ def _validate_obligation_counts(
         "call_boundaries", "unbound_obligations", "by_status", "unbound_by_kind"
     }
     if set(counts) != expected_fields:
-        raise StageAInputError("runtime-call obligations counts have schema drift")
+        raise ToolkitInputError("runtime-call obligations counts have schema drift")
     expected_statuses = dict(sorted(Counter(
         boundary["status"] for boundary in boundaries
     ).items()))
@@ -517,7 +517,7 @@ def _validate_obligation_counts(
         "unbound_by_kind": expected_unbound_kinds,
     }
     if counts != expected:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "runtime-call obligations counts do not match the boundary inventory"
         )
 
@@ -647,47 +647,47 @@ def _read_json_object(path: Path, label: str) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise StageAInputError(f"cannot read {label}: {path}") from exc
+        raise ToolkitInputError(f"cannot read {label}: {path}") from exc
     except json.JSONDecodeError as exc:
-        raise StageAInputError(f"invalid {label} JSON: {exc}") from exc
+        raise ToolkitInputError(f"invalid {label} JSON: {exc}") from exc
     if not isinstance(value, dict):
-        raise StageAInputError(f"{label} must be a JSON object")
+        raise ToolkitInputError(f"{label} must be a JSON object")
     return value
 
 
 def _required_object(value: Any, field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise StageAInputError(f"{field} must be an object")
+        raise ToolkitInputError(f"{field} must be an object")
     return value
 
 
 def _required_list(value: Any, field: str) -> list[Any]:
     if not isinstance(value, list):
-        raise StageAInputError(f"{field} must be a list")
+        raise ToolkitInputError(f"{field} must be a list")
     return value
 
 
 def _required_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value:
-        raise StageAInputError(f"{field} must be a non-empty string")
+        raise ToolkitInputError(f"{field} must be a non-empty string")
     return value
 
 
 def _required_sha256(value: Any, field: str) -> str:
     if not isinstance(value, str) or not _SHA256_RE.fullmatch(value):
-        raise StageAInputError(f"{field} must be a lowercase SHA-256 digest")
+        raise ToolkitInputError(f"{field} must be a lowercase SHA-256 digest")
     return value
 
 
 def _required_count(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise StageAInputError(f"{field} must be a nonnegative integer")
+        raise ToolkitInputError(f"{field} must be a nonnegative integer")
     return value
 
 
 def _required_u32(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 2**32:
-        raise StageAInputError(f"{field} must be a 32-bit unsigned integer")
+        raise ToolkitInputError(f"{field} must be a 32-bit unsigned integer")
     return value
 
 
@@ -708,6 +708,6 @@ def _blocker_sort_key(item: dict[str, Any]) -> str:
 __all__ = [
     "NATIVE_RUNTIME_BINDING_FORMAT",
     "RUNTIME_CALL_OBLIGATIONS_FORMAT",
-    "build_stage_b_native_runtime_binding",
-    "write_stage_b_native_runtime_binding",
+    "build_spx_native_runtime_binding",
+    "write_spx_native_runtime_binding",
 ]

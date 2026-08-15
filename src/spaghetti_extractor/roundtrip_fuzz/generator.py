@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..artifacts.formats import STATIC_ANALYSIS_PROFILE_ID as SPIKE_CAPABILITY_PROFILE
-from ..extraction.binary_inventory import stage_a_inventory_binary
-from ..pe32.stage_binary import StageAInputError
+from ..extraction.binary_inventory import spx_inventory_binary
+from ..errors import ToolkitInputError
 from ..util import sha256_file, write_json
 from .lowering import (
     AssemblyLoweringVariant,
@@ -113,9 +113,9 @@ class GeneratedCaseSpec:
 
 def spike_case_specs(*, seed: int, count: int = SPIKE_CASES) -> tuple[GeneratedCaseSpec, ...]:
     if seed < 0:
-        raise StageAInputError("round-trip seed must be nonnegative")
+        raise ToolkitInputError("round-trip seed must be nonnegative")
     if count <= 0:
-        raise StageAInputError("round-trip count must be positive")
+        raise ToolkitInputError("round-trip count must be positive")
     specs: list[GeneratedCaseSpec] = []
     negative_ordinal = 0
     for index in range(count):
@@ -146,7 +146,7 @@ def semantic_program_for_spec(spec: GeneratedCaseSpec) -> SemanticProgram:
     try:
         return builders[spec.template](spec.seed)
     except KeyError as exc:
-        raise StageAInputError(f"unsupported semantic template {spec.template!r}") from exc
+        raise ToolkitInputError(f"unsupported semantic template {spec.template!r}") from exc
 
 
 def candidate_program_for_spec(
@@ -282,7 +282,7 @@ def lowering_variant_for_spec(
             "callee" if spec.template == "internal-call-stack" else arithmetic_block,
         )
     else:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"transformation {transformation!r} is not valid for template "
             f"{spec.template!r}"
         )
@@ -301,7 +301,7 @@ def original_lowering_variant_for_spec(
         order = ("entry", "header", "body", "exit", "terminal")
         branch = "header"
     else:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"branch inversion is not defined for template {spec.template!r}"
         )
     return AssemblyLoweringVariant(
@@ -324,13 +324,13 @@ def generate_spike_corpus(
     out = Path(out).resolve()
     if out.exists() and any(out.iterdir()):
         if not force:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"round-trip corpus output is not empty: {out}; use --force to replace it"
             )
         shutil.rmtree(out)
     out.mkdir(parents=True, exist_ok=True)
     if toolchain not in {"gnu", "llvm-msvc"}:
-        raise StageAInputError(f"unsupported round-trip toolchain {toolchain!r}")
+        raise ToolkitInputError(f"unsupported round-trip toolchain {toolchain!r}")
 
     specs = spike_case_specs(seed=seed, count=count)
     shard_count = min(SPIKE_SHARDS, count)
@@ -372,7 +372,7 @@ def generate_spike_corpus(
     write_corpus_manifest(corpus_path, corpus)
     corpus.load_cases(out)
     return {
-        "format": "stage-a-roundtrip-generation-v2",
+        "format": "spaghetti-extractor-roundtrip-generation-v2",
         "status": "generated",
         "corpus": str(corpus_path),
         "corpus_sha256": sha256_file(corpus_path),
@@ -414,20 +414,20 @@ def _generate_spike_case(
     candidate = build(candidate_source, case_root / "candidate.exe", case_root / "candidate.map")
     original_inventory = case_root / "original-inventory.json"
     candidate_inventory = case_root / "candidate-inventory.json"
-    original_inventory_result = stage_a_inventory_binary(
+    original_inventory_result = spx_inventory_binary(
         binary=original.binary,
         linker_map=original.linker_map,
         side="original",
         out=original_inventory,
     )
-    candidate_inventory_result = stage_a_inventory_binary(
+    candidate_inventory_result = spx_inventory_binary(
         binary=candidate.binary,
         linker_map=candidate.linker_map,
         side="candidate",
         out=candidate_inventory,
     )
     if original_inventory_result.get("status") != "pass" or candidate_inventory_result.get("status") != "pass":
-        raise StageAInputError(f"case {spec.case_id} could not be classified statically")
+        raise ToolkitInputError(f"case {spec.case_id} could not be classified statically")
     disposition = (
         ExpectedDisposition.QUALIFIED if mutation is None else ExpectedDisposition.VIOLATED
     )
@@ -516,7 +516,7 @@ def _terminal() -> SemanticBlock:
 def _straight_line_program(seed: int) -> SemanticProgram:
     amount = seed % 13 + 1
     return SemanticProgram.parse({
-        "format": "stage-a-roundtrip-semantic-program-v1",
+        "format": "spaghetti-extractor-roundtrip-semantic-program-v1",
         "id": f"straight-line-{seed}", "entry": "entry",
         "blocks": [
             SemanticBlock("entry", (
@@ -534,7 +534,7 @@ def _guarded_branch_program(seed: int) -> SemanticProgram:
     true_value = seed % 17 + 3
     false_value = true_value + 9
     return SemanticProgram.parse({
-        "format": "stage-a-roundtrip-semantic-program-v1",
+        "format": "spaghetti-extractor-roundtrip-semantic-program-v1",
         "id": f"guarded-branch-{seed}", "entry": "entry",
         "blocks": [
             SemanticBlock("entry", (CompareRegister("ecx", 0),),
@@ -555,7 +555,7 @@ def _bounded_loop_program(seed: int) -> SemanticProgram:
     bound = seed % 4 + 2
     step = seed % 5 + 1
     return SemanticProgram.parse({
-        "format": "stage-a-roundtrip-semantic-program-v1",
+        "format": "spaghetti-extractor-roundtrip-semantic-program-v1",
         "id": f"bounded-loop-{seed}", "entry": "entry",
         "blocks": [
             SemanticBlock("entry", (
@@ -582,7 +582,7 @@ def _internal_call_program(seed: int) -> SemanticProgram:
     value = seed % 19 + 1
     amount = seed % 7 + 1
     return SemanticProgram.parse({
-        "format": "stage-a-roundtrip-semantic-program-v1",
+        "format": "spaghetti-extractor-roundtrip-semantic-program-v1",
         "id": f"internal-call-{seed}", "entry": "entry",
         "blocks": [
             SemanticBlock("entry", (

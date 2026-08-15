@@ -10,13 +10,13 @@ from ..components.region_replacement import REGION_OVERRIDE_TABLE_FORMAT
 from ..util import sha256_file
 from . import native_build
 from .authority import (
-    STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT,
+    SPX_CANDIDATE_AUTHORITY_V3_FORMAT,
     CandidateAuthorityV3Error,
     CandidateAuthorityV3Receipt,
     validate_candidate_authority,
 )
 from .build_model import (
-    StageBInterpreterNativeBuildError,
+    CandidateNativeBuildError,
     _Artifact,
     _C_IDENTIFIER,
     _Package,
@@ -26,7 +26,7 @@ from .build_values import (
     _file,
     _read_json_object,
 )
-from .runtime import plan_stage_b_native_runtime
+from .runtime import plan_spx_native_runtime
 
 
 def _validate_candidate_authority_v3(
@@ -49,7 +49,7 @@ def _validate_candidate_authority_v3(
             require_authorized=True,
         )
     except CandidateAuthorityV3Error as exc:
-        raise StageBInterpreterNativeBuildError(str(exc)) from exc
+        raise CandidateNativeBuildError(str(exc)) from exc
 
 
 def _validate_candidate_authority_package_bindings(
@@ -63,7 +63,7 @@ def _validate_candidate_authority_package_bindings(
     )
     for package in (interpreter, engine):
         if package.payload.get("input_mode") != "sanitized_machine_ir_v2":
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{package.owner} package is not derived from strict machine IR"
             )
         machine_ir = package.payload.get("machine_ir")
@@ -71,12 +71,12 @@ def _validate_candidate_authority_package_bindings(
             not isinstance(machine_ir, Mapping)
             or machine_ir.get("sha256") != machine_ir_sha256
         ):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{package.owner} package binds a different machine IR than "
                 "the v3 candidate-authority receipt"
             )
         if package.payload.get("execution_policy") != "complete_transfer_inventory_v1":
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{package.owner} package does not require complete transfer coverage"
             )
         semantic_coverage = package.payload.get("semantic_coverage")
@@ -85,7 +85,7 @@ def _validate_candidate_authority_package_bindings(
             or semantic_coverage.get("status") != "complete"
             or semantic_coverage.get("acceptance_authority") is not False
         ):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{package.owner} package has incomplete semantic coverage"
             )
     manifest = engine.payload.get("machine_ir_manifest")
@@ -93,7 +93,7 @@ def _validate_candidate_authority_package_bindings(
         not isinstance(manifest, Mapping)
         or manifest.get("sha256") != machine_ir_manifest_sha256
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native_engine package binds a different machine-IR manifest than "
             "the v3 candidate-authority receipt"
         )
@@ -116,7 +116,7 @@ def _validate_static_candidate_package_bindings(
     manifest_sha256 = sha256_file(manifest_path)
     for package in (interpreter, engine):
         if package.payload.get("input_mode") != "sanitized_machine_ir_v2":
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{package.owner} package is not derived from strict machine IR"
             )
         binding = package.payload.get("machine_ir")
@@ -124,7 +124,7 @@ def _validate_static_candidate_package_bindings(
             not isinstance(binding, Mapping)
             or binding.get("sha256") != machine_ir_sha256
         ):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{package.owner} package binds a different machine IR"
             )
 
@@ -133,7 +133,7 @@ def _validate_static_candidate_package_bindings(
         not isinstance(engine_manifest, Mapping)
         or engine_manifest.get("sha256") != manifest_sha256
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native_engine package binds a different machine-IR manifest"
         )
     engine_policy = engine.payload.get("policy")
@@ -146,7 +146,7 @@ def _validate_static_candidate_package_bindings(
         or engine_policy.get("execution_scope") != "complete-static-authority"
         or runtime_policy.get("execution_scope") != "complete-static-authority"
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native package closure does not require complete static authority"
         )
 
@@ -155,12 +155,12 @@ def _validate_static_candidate_package_bindings(
     if not isinstance(interpreter_coverage, Mapping) or not isinstance(
         engine_coverage, Mapping
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "candidate package closure omits semantic coverage"
         )
     dispatch = engine.payload.get("implementation_dispatch_receipt")
     if not isinstance(dispatch, Mapping):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native_engine package omits its implementation-dispatch receipt"
         )
     dispatch_policy = dispatch.get("policy")
@@ -171,7 +171,7 @@ def _validate_static_candidate_package_bindings(
         or dispatch_policy.get("acceptance_authority") is not False
         or dispatch.get("blockers") != []
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "implementation-dispatch receipt is not a complete static binding"
         )
     if (
@@ -182,7 +182,7 @@ def _validate_static_candidate_package_bindings(
         or dispatch.get("status") != "complete"
         or reachability.get("status") != "complete"
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "candidate package closure retains incomplete execution scope"
         )
 
@@ -212,7 +212,7 @@ def _candidate_input_sha256(
         field = "sha256"
     value = binding.get(field) if isinstance(binding, Mapping) else None
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"v3 candidate-authority receipt has no exact {name} binding"
         )
     return value
@@ -226,7 +226,7 @@ def _candidate_manifest_pe_sha256(manifest_path: Path | str) -> str:
     binary = authority.get("binary") if isinstance(authority, Mapping) else None
     value = binary.get("pe_sha256") if isinstance(binary, Mapping) else None
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "machine-IR manifest has no exact PE binding"
         )
     return value
@@ -237,7 +237,7 @@ def _candidate_authority_manifest_binding(
 ) -> dict[str, Any]:
     path = _file(receipt_path, "v3 candidate-authority receipt")
     return {
-        "format": STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT,
+        "format": SPX_CANDIDATE_AUTHORITY_V3_FORMAT,
         "artifact_sha256": sha256_file(path),
         "content_id": receipt.content_id,
         "status": receipt.status.value,
@@ -267,19 +267,19 @@ def _load_package(
     root = manifest_path.parent
     payload = _read_json_object(manifest_path, f"{owner} package manifest")
     if payload.get("format") != expected_format:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"{owner} package has an unsupported format"
         )
     if payload.get("status") != "ready":
-        raise StageBInterpreterNativeBuildError(f"{owner} package is not ready")
+        raise CandidateNativeBuildError(f"{owner} package is not ready")
     blockers = payload.get("blockers", [] if owner == "native_runtime" else None)
     if not isinstance(blockers, list) or blockers:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"{owner} package has malformed or nonempty blockers"
         )
     sources = payload.get("sources")
     if not isinstance(sources, list) or not sources:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"{owner} package has no source inventory"
         )
     artifacts: list[_Artifact] = []
@@ -287,13 +287,13 @@ def _load_package(
     seen_roles: set[str] = set()
     for index, raw in enumerate(sources):
         if not isinstance(raw, Mapping):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{owner} source {index} is not an object"
             )
         role_value = raw.get("role")
         if require_roles:
             if not isinstance(role_value, str) or not role_value:
-                raise StageBInterpreterNativeBuildError(
+                raise CandidateNativeBuildError(
                     f"{owner} source {index} has no role"
                 )
             role = role_value
@@ -301,7 +301,7 @@ def _load_package(
             role = role_value if isinstance(role_value, str) else f"source_{index:03d}"
         artifact = _artifact(root, owner, role, raw)
         if artifact.relative_path in seen_paths or role in seen_roles:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{owner} source inventory has duplicate paths or roles"
             )
         seen_paths.add(artifact.relative_path)
@@ -316,12 +316,12 @@ def _load_package(
     )
     for role, raw in extra_bindings:
         if not isinstance(raw, Mapping):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{owner} package has no {role} binding"
             )
         artifact = _artifact(root, owner, role, raw)
         if artifact.relative_path in seen_paths or role in seen_roles:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{owner} artifact inventory has duplicate paths or roles"
             )
         seen_paths.add(artifact.relative_path)
@@ -345,34 +345,34 @@ def _load_region_override_package(value: Path | str) -> _Package:
     root = manifest_path.parent
     payload = _read_json_object(manifest_path, "region override package manifest")
     if payload.get("format") != REGION_OVERRIDE_TABLE_FORMAT:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "region override package has an unsupported format"
         )
     if payload.get("status") != "ready":
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "region override package is not ready"
         )
     if payload.get("executes_original_binary") is not False:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "region override package does not enforce zero original execution"
         )
     checks = payload.get("checks")
     if not isinstance(checks, Mapping) or not checks or any(
         value != "verified" for value in checks.values()
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "region override package checks are incomplete"
         )
     entries = payload.get("entries")
     if not isinstance(entries, list) or not entries:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "region override package has no entries"
         )
     artifacts_raw = payload.get("artifacts")
     if not isinstance(artifacts_raw, Mapping) or set(artifacts_raw) != {
         "header", "source"
     }:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "region override package artifact inventory is malformed"
         )
     artifacts = [
@@ -383,21 +383,21 @@ def _load_region_override_package(value: Path | str) -> _Package:
     seen_symbols: set[str] = set()
     for index, entry in enumerate(entries):
         if not isinstance(entry, Mapping):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"region override entry {index} is not an object"
             )
         source = entry.get("source")
         if not isinstance(source, Mapping):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"region override entry {index} has no source binding"
             )
         symbol = source.get("symbol")
         if not isinstance(symbol, str) or _C_IDENTIFIER.fullmatch(symbol) is None:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"region override entry {index} source symbol is malformed"
             )
         if symbol in seen_symbols:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "region override package has duplicate source symbols"
             )
         seen_symbols.add(symbol)
@@ -408,19 +408,19 @@ def _load_region_override_package(value: Path | str) -> _Package:
             source,
         )
         if artifact.relative_path in seen_paths:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "region override package has duplicate source paths"
             )
         seen_paths.add(artifact.relative_path)
         artifacts.append(artifact)
         support_sources = entry.get("support_sources", [])
         if not isinstance(support_sources, list):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"region override entry {index} support sources are malformed"
             )
         for support_index, support in enumerate(support_sources):
             if not isinstance(support, Mapping):
-                raise StageBInterpreterNativeBuildError(
+                raise CandidateNativeBuildError(
                     f"region override entry {index} support source {support_index} "
                     "is not an object"
                 )
@@ -431,7 +431,7 @@ def _load_region_override_package(value: Path | str) -> _Package:
                 support,
             )
             if support_artifact.relative_path in seen_paths:
-                raise StageBInterpreterNativeBuildError(
+                raise CandidateNativeBuildError(
                     "region override package has duplicate source paths"
                 )
             seen_paths.add(support_artifact.relative_path)
@@ -451,7 +451,7 @@ def _validate_region_override_closure(
 ) -> None:
     machine_ir = interpreter.payload.get("machine_ir")
     if not isinstance(machine_ir, Mapping):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "region overrides require a machine-IR interpreter package"
         )
     machine_ir_sha256 = native_build._digest(
@@ -461,7 +461,7 @@ def _validate_region_override_closure(
         (item for item in interpreter.artifacts if item.role == "program"), None
     )
     if program is None:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "interpreter package has no baseline program artifact"
         )
     if (
@@ -469,7 +469,7 @@ def _validate_region_override_closure(
         or region_overrides.payload.get("baseline_program_sha256")
         != program.sha256
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "region override package binds a different machine IR or baseline program"
         )
 
@@ -479,12 +479,12 @@ def _validate_package_closure(
 ) -> Any:
     runtime_inputs = runtime.payload.get("inputs")
     if not isinstance(runtime_inputs, Mapping):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native-runtime package has malformed inputs"
         )
     external_binding = runtime_inputs.get("external_range_contracts")
     if not isinstance(external_binding, Mapping):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native-runtime package has no external-range contract binding"
         )
     profile_binding = external_binding.get("profile")
@@ -495,12 +495,12 @@ def _validate_package_closure(
     external_profile: Path | None = None
     if profile_binding is None:
         if profile_artifacts:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "native-runtime package has an unbound external profile"
             )
     else:
         if not isinstance(profile_binding, Mapping) or len(profile_artifacts) != 1:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "native-runtime external profile binding is incomplete"
             )
         profile_artifact = profile_artifacts[0]
@@ -508,40 +508,40 @@ def _validate_package_closure(
             profile_binding.get("path") != profile_artifact.relative_path
             or profile_binding.get("sha256") != profile_artifact.sha256
         ):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "native-runtime external profile binding differs from its artifact"
             )
         external_profile = profile_artifact.path
     try:
-        plan = plan_stage_b_native_runtime(
+        plan = plan_spx_native_runtime(
             interpreter_package=interpreter.root,
             native_engine_package=engine.root,
             external_profile=external_profile,
         )
     except Exception as exc:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"interpreter/native-engine closure is incomplete: {exc}"
         ) from exc
 
     program_ref = interpreter.payload.get("program")
     if not isinstance(program_ref, Mapping):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "interpreter package has no program binding"
         )
     program = _artifact(interpreter.root, "interpreter", "program", program_ref)
     program_payload = _read_json_object(program.path, "interpreter program manifest")
     if program_payload.get("status") != "ready" or program_payload.get("blockers") != []:
-        raise StageBInterpreterNativeBuildError("interpreter program is incomplete")
+        raise CandidateNativeBuildError("interpreter program is incomplete")
     counts = program_payload.get("counts")
     if not isinstance(counts, Mapping):
-        raise StageBInterpreterNativeBuildError("interpreter program counts are malformed")
+        raise CandidateNativeBuildError("interpreter program counts are malformed")
     transfer_count = len(plan.transfer_rvas)
     if (
         counts.get("input_transfers") != transfer_count
         or counts.get("transfers") != transfer_count
         or counts.get("blocked_transfers") != 0
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "interpreter program transfer coverage is incomplete"
         )
     coverage = program_payload.get("semantic_coverage")
@@ -552,16 +552,16 @@ def _validate_package_closure(
         or coverage.get("acceptance_authority") is not False
         or execution_policy != "complete_transfer_inventory_v1"
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "interpreter complete-transfer policy is malformed"
         )
 
     if runtime.payload.get("acceptance_authority") is not False:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native-runtime package has unexpected acceptance authority"
         )
     if runtime.payload.get("inputs") != plan.payload():
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native-runtime package does not bind the exact interpreter/engine closure"
         )
     runtime_counts = runtime.payload.get("counts")
@@ -569,7 +569,7 @@ def _validate_package_closure(
         not isinstance(runtime_counts, Mapping)
         or runtime_counts.get("transfers") != transfer_count
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native-runtime transfer count differs from the interpreter"
         )
     return plan

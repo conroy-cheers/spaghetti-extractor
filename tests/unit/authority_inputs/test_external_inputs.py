@@ -1,4 +1,4 @@
-"""Tests for the Stage A source-to-native-v3 ingestion boundary."""
+"""Tests for the static analysis source-to-native-v3 ingestion boundary."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def _unit(
     instruction_digest: str,
 ) -> dict[str, object]:
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",
@@ -83,7 +83,7 @@ def _profile(*, variadic: bool = False) -> dict[str, object]:
         else {"kind": "fixed", "words": 1}
     )
     return {
-        "format": "stage-a-static-machine-import-profile-v1",
+        "format": "spaghetti-extractor-static-machine-import-profile-v1",
         "id": "fixture-profile",
         "default_callback_effect": "none",
         "machine_import_signatures": [

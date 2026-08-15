@@ -53,20 +53,20 @@ from ..extraction.isa_requirements import (
     ISARequirementInventory,
 )
 from .side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes, sha256_file, write_json
 
 
-ISA_GENERATED_CORPUS_MANIFEST_FORMAT = "stage-a-generated-isa-corpus-manifest-v1"
+ISA_GENERATED_CORPUS_MANIFEST_FORMAT = "spaghetti-extractor-generated-isa-corpus-manifest-v1"
 
 
 def _read_json(path: Path, context: str) -> Mapping[str, Any]:
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read {context} {path}: {exc}") from exc
+        raise ToolkitInputError(f"cannot read {context} {path}: {exc}") from exc
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     return value
 
 
@@ -110,15 +110,15 @@ def normalize_isa_catalog(*, catalog: Path, out: Path) -> dict[str, Any]:
     try:
         typed = parse_isa_catalog(_read_json(catalog, "ISA catalog"))
     except ISAConformanceError as exc:
-        raise StageAInputError(f"invalid ISA catalog: {exc}") from exc
+        raise ToolkitInputError(f"invalid ISA catalog: {exc}") from exc
     if not isinstance(typed, XEDInstructionCatalog):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "catalog normalization currently requires pinned XED metadata"
         )
     payload = serialize_xed_instruction_catalog(typed)
     write_json(out, payload)
     return {
-        "format": "stage-a-isa-catalog-normalization-result-v1",
+        "format": "spaghetti-extractor-isa-catalog-normalization-result-v1",
         "status": "complete",
         "profile": typed.profile.id,
         "source_sha256": sha256_file(Path(catalog)),
@@ -126,7 +126,6 @@ def normalize_isa_catalog(*, catalog: Path, out: Path) -> dict[str, Any]:
         "sha256": sha256_file(Path(out)),
         "counts": _catalog_summary(typed),
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }
 
 
@@ -141,7 +140,7 @@ def write_isa_qualification_campaign(
     try:
         typed_catalog = parse_isa_catalog(_read_json(catalog, "ISA catalog"))
         if not isinstance(typed_catalog, XEDInstructionCatalog):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "ISA qualification campaigns require the complete XED catalog"
             )
         typed_qualification = (
@@ -164,14 +163,14 @@ def write_isa_qualification_campaign(
                 crosswalk, "ISA XED-to-Lean form crosswalk"
             )
             if crosswalk_payload.get("format") != ISA_LEAN_FORM_CROSSWALK_FORMAT:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     "unsupported ISA XED-to-Lean form crosswalk format"
                 )
             rows = crosswalk_payload.get("cases")
             if not isinstance(rows, list) or any(
                 not isinstance(row, Mapping) for row in rows
             ):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     "ISA XED-to-Lean form crosswalk cases must be objects"
                 )
             for index, row in enumerate(rows):
@@ -180,14 +179,14 @@ def write_isa_qualification_campaign(
                 if not isinstance(catalog_form_id, str) or not isinstance(
                     lean_form_id, str
                 ):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"ISA XED-to-Lean form crosswalk case {index} is incomplete"
                     )
                 previous = form_crosswalk.setdefault(
                     catalog_form_id, lean_form_id
                 )
                 if previous != lean_form_id:
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         "one XED form maps to multiple Lean semantic forms"
                     )
         campaign = build_isa_qualification_campaign(
@@ -197,18 +196,17 @@ def write_isa_qualification_campaign(
             catalog_form_to_qualification_form=form_crosswalk,
         )
     except (ISAConformanceError, ISAKernelQualificationError) as exc:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"cannot build ISA qualification campaign: {exc}"
         ) from exc
     write_json(out, serialize_isa_qualification_campaign(campaign))
     return {
-        "format": "stage-a-isa-qualification-campaign-result-v1",
+        "format": "spaghetti-extractor-isa-qualification-campaign-result-v1",
         "status": "complete",
         "out": str(out),
         "sha256": sha256_file(Path(out)),
         "counts": dict(campaign.counts),
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }
 
 
@@ -222,7 +220,7 @@ def generate_isa_corpus(
             catalog_payload.get("format")
             == SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "cannot generate ISA corpus from a side-ISA catalog proposal: "
                 "effects, defined-output masks, and required features are not enriched"
             )
@@ -239,14 +237,14 @@ def generate_isa_corpus(
         else:
             typed = parse_isa_catalog(catalog_payload)
         if not isinstance(typed, ISAFormCatalog):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "raw XED metadata must first be enriched with exact encodings "
                 "and generic effect descriptors"
             )
         generated = generate_boundary_isa_corpus(typed, seed=seed)
         executor = generated_corpus_executor_input(generated)
     except (ISAConformanceError, ISAKernelQualificationError) as exc:
-        raise StageAInputError(f"cannot generate ISA corpus: {exc}") from exc
+        raise ToolkitInputError(f"cannot generate ISA corpus: {exc}") from exc
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     write_json(out / "generated-corpus.json", serialize_generated_isa_corpus(generated))
@@ -291,12 +289,11 @@ def generate_isa_corpus(
         "trust": {
             "role": "untrusted_isa_corpus_generation",
             "proof_authority": False,
-            "closes_stage_a_proof": False,
         },
     }
     write_json(out / "manifest.json", manifest)
     return {
-        "format": "stage-a-generated-isa-corpus-result-v1",
+        "format": "spaghetti-extractor-generated-isa-corpus-result-v1",
         "status": "generated",
         "out": str(out),
         "case_count": len(generated.cases),
@@ -321,7 +318,6 @@ def generate_isa_corpus(
         ),
         "manifest_sha256": sha256_file(out / "manifest.json"),
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }
 
 
@@ -334,14 +330,14 @@ def _binary_requirements(
 ) -> BinaryQualificationRequirements:
     inventory = ISARequirementInventory.parse(payload).to_payload()
     if side not in {"original", "candidate"}:
-        raise StageAInputError("ISA qualification side must be original or candidate")
+        raise ToolkitInputError("ISA qualification side must be original or candidate")
     binary_sha256 = inventory["inputs"][f"{side}_sha256"]
     if (
         not isinstance(binary_sha256, str)
         or len(binary_sha256) != 64
         or any(character not in "0123456789abcdef" for character in binary_sha256)
     ):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"ISA requirements do not contain a valid {side} binary identity"
         )
     semantic_forms = {
@@ -352,7 +348,7 @@ def _binary_requirements(
         if row["side"] != side:
             continue
         if row["form_id"] not in semantic_forms:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "ISA requirement occurrence references an unknown semantic form"
             )
         by_form.setdefault(row["form_id"], []).append(
@@ -382,7 +378,7 @@ def _binary_requirements(
         for form_id, locations in sorted(by_form.items())
     )
     if not forms:
-        raise StageAInputError(f"ISA requirements contain no {side} occurrences")
+        raise ToolkitInputError(f"ISA requirements contain no {side} occurrences")
     return BinaryQualificationRequirements(
         binary_id=side,
         binary_sha256=binary_sha256,
@@ -412,17 +408,16 @@ def select_isa_kernel_qualification(
             side=side,
         )
     except ISAKernelQualificationError as exc:
-        raise StageAInputError(f"cannot select ISA qualification: {exc}") from exc
+        raise ToolkitInputError(f"cannot select ISA qualification: {exc}") from exc
     write_json(out, serialize_kernel_selection(selection))
     return {
-        "format": "stage-a-isa-kernel-selection-result-v1",
+        "format": "spaghetti-extractor-isa-kernel-selection-result-v1",
         "status": selection.status.value,
         "side": side,
         "out": str(out),
         "sha256": sha256_file(Path(out)),
         "counts": dict(selection.counts),
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }
 
 
@@ -434,7 +429,7 @@ def select_isa_kernel_qualification_for_inventory(
     side: str,
 ) -> ISAKernelSelection:
     if qualification.semantic_kernel != semantic_kernel:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "ISA kernel qualification does not bind the expected semantic kernel"
         )
     typed_requirements = _binary_requirements(

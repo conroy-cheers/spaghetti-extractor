@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...pe32.stage_binary import StageAInputError
+from ...errors import ToolkitInputError
 
 from .expressions import (
     _bool_and,
@@ -102,7 +102,7 @@ def _logical_result(operator: str, left: tuple[Any, ...], right: tuple[Any, ...]
         return _expr_and(left, right)
     if operator == "or":
         return _expr_or(left, right)
-    raise StageAInputError(f"unsupported logical operator {operator!r}")
+    raise ToolkitInputError(f"unsupported logical operator {operator!r}")
 
 def _carry_arithmetic_flags(
     operator: str,

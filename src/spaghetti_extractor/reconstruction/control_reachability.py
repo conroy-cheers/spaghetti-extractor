@@ -264,7 +264,7 @@ def classify_overlapping_instruction_starts(
     excluded.sort(key=lambda row: (int(row["rva"]), str(row["unit_id"])))
     conflicts.sort(key=lambda row: (int(row["rva"]), str(row["unit_id"])))
     return {
-        "format": "stage-a-overlapping-instruction-start-classification-v1",
+        "format": "spaghetti-extractor-overlapping-instruction-start-classification-v1",
         "status": "violated" if conflicts else "complete",
         "excluded_units": excluded,
         "conflicts": conflicts,

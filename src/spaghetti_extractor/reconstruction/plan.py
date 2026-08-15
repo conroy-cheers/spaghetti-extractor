@@ -24,7 +24,7 @@ from .ir import (
     MACHINE_IR_FORMAT,
     MACHINE_IR_MANIFEST_FILENAME,
 )
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_file, write_json
 
 
@@ -183,7 +183,7 @@ def write_reconstruction_plan(
                 {
                     "code": "unqualified_machine_ir",
                     "message": "one or more cluster units are not qualified machine IR",
-                    "next_action": "close the Stage A machine-IR issue before source lifting",
+                    "next_action": "close the static analysis machine-IR issue before source lifting",
                 }
             )
         cluster_core = {
@@ -334,11 +334,11 @@ def _load_machine_ir(value: Path) -> MachineIRInput:
         machine_ir_path = value
         manifest_path = root / MACHINE_IR_MANIFEST_FILENAME
     else:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "machine IR input must be a package directory, manifest, or JSONL data file"
         )
     if not manifest_path.is_file() or not machine_ir_path.is_file():
-        raise StageAInputError("machine IR package requires its manifest and JSONL data")
+        raise ToolkitInputError("machine IR package requires its manifest and JSONL data")
     manifest = _read_object(manifest_path, "machine IR manifest")
     _require_format(manifest, MACHINE_IR_FORMAT, "machine IR manifest")
     units = []
@@ -348,12 +348,12 @@ def _load_machine_ir(value: Path) -> MachineIRInput:
         try:
             unit = json.loads(raw)
         except json.JSONDecodeError as exc:
-            raise StageAInputError(f"machine IR line {number} is invalid JSON: {exc}") from exc
+            raise ToolkitInputError(f"machine IR line {number} is invalid JSON: {exc}") from exc
         if not isinstance(unit, dict) or unit.get("record_kind") != "unit":
-            raise StageAInputError(f"machine IR line {number} is not a unit record")
+            raise ToolkitInputError(f"machine IR line {number} is not a unit record")
         units.append(unit)
     if not units:
-        raise StageAInputError("machine IR contains no units")
+        raise ToolkitInputError("machine IR contains no units")
     return MachineIRInput(
         root=root,
         manifest_path=manifest_path,
@@ -538,7 +538,7 @@ def _unit_reachability(unit: Mapping[str, Any]) -> str:
     value = unit.get("reachability")
     if value in {"reachable", "potential", "unreachable"}:
         return str(value)
-    raise StageAInputError(
+    raise ToolkitInputError(
         f"machine-IR unit {unit.get('id')!r} has no canonical reachability state"
     )
 
@@ -997,25 +997,25 @@ def _read_object(path: Path, context: str) -> dict[str, Any]:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read {context} {path}: {exc}") from exc
+        raise ToolkitInputError(f"cannot read {context} {path}: {exc}") from exc
     return _object(payload, context)
 
 
 def _object(value: Any, context: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     return value
 
 
 def _array(value: Any, context: str) -> list[Any]:
     if not isinstance(value, list):
-        raise StageAInputError(f"{context} must be an array")
+        raise ToolkitInputError(f"{context} must be an array")
     return value
 
 
 def _require_format(payload: Mapping[str, Any], expected: str, context: str) -> None:
     if payload.get("format") != expected:
-        raise StageAInputError(f"{context} must use format {expected}")
+        raise ToolkitInputError(f"{context} must use format {expected}")
 
 
 def _canonical_sha256(value: Any) -> str:

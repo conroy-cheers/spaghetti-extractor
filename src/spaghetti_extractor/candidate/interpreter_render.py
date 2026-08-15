@@ -1,10 +1,10 @@
-"""C source rendering for Stage B interpreter packages."""
+"""C source rendering for candidate reconstruction interpreter packages."""
 
 from __future__ import annotations
 
 from .c_backend import _runtime_header, _runtime_helpers
 from .interpreter_model import (
-    StageBInterpreterError,
+    CandidateInterpreterError,
     _Action,
     _Node,
     _Transfer,
@@ -14,9 +14,9 @@ from .interpreter_values import _c_string
 
 def _interpreter_runtime_header() -> str:
     header = _runtime_header()
-    replay_record = """#define STAGE_B_MACHINE_STATE_HAS_X87 1
+    replay_record = """#define SPX_MACHINE_STATE_HAS_X87 1
 
-typedef struct stage_b_typed_x87_operation {
+typedef struct spx_typed_x87_operation {
   uint32_t image_base, rva_start, rva_end, source_size;
   const char *operation_identity;
   const char *contract_sha256;
@@ -28,68 +28,68 @@ typedef struct stage_b_typed_x87_operation {
   uint32_t base_register, index_register, scale;
   int32_t displacement;
   uint32_t image_rva, has_image_rva;
-} stage_b_typed_x87_operation;
+} spx_typed_x87_operation;
 
 """
-    replay_handler = """typedef stage_b_call_status (*stage_b_typed_x87_handler)(
-    stage_b_runtime *runtime,
-    const stage_b_typed_x87_operation *program,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output);
+    replay_handler = """typedef spx_call_status (*spx_typed_x87_handler)(
+    spx_runtime *runtime,
+    const spx_typed_x87_operation *program,
+    const spx_machine_state *input,
+    spx_machine_state *output);
 
 """
     replacements = (
         (
-            "typedef struct stage_b_runtime stage_b_runtime;\n",
-            replay_record + "typedef struct stage_b_runtime stage_b_runtime;\n",
+            "typedef struct spx_runtime spx_runtime;\n",
+            replay_record + "typedef struct spx_runtime spx_runtime;\n",
         ),
         (
-            "typedef uint32_t (*stage_b_code_target_resolver)(\n",
-            replay_handler + "typedef uint32_t (*stage_b_code_target_resolver)(\n",
+            "typedef uint32_t (*spx_code_target_resolver)(\n",
+            replay_handler + "typedef uint32_t (*spx_code_target_resolver)(\n",
         ),
         (
-            "  stage_b_code_target_resolver resolve_code_target;\n",
-            "  stage_b_code_target_resolver resolve_code_target;\n"
-            "  stage_b_typed_x87_handler execute_typed_x87_operation;\n",
+            "  spx_code_target_resolver resolve_code_target;\n",
+            "  spx_code_target_resolver resolve_code_target;\n"
+            "  spx_typed_x87_handler execute_typed_x87_operation;\n",
         ),
     )
     for old, new in replacements:
         if old not in header:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 "shared runtime header changed before x87 replay ABI injection",
                 code="interpreter_runtime_abi_drift",
-                next_action="reconcile the interpreter replay ABI with stage_b_c_backend",
+                next_action="reconcile the interpreter replay ABI with spx_c_backend",
             )
         header = header.replace(old, new, 1)
     return header
 
 
 def _interpreter_header() -> str:
-    return """#ifndef STAGE_B_SEMANTIC_INTERPRETER_H
-#define STAGE_B_SEMANTIC_INTERPRETER_H
+    return """#ifndef SPX_SEMANTIC_INTERPRETER_H
+#define SPX_SEMANTIC_INTERPRETER_H
 
 #include "state-machine-runtime.h"
 
-typedef struct stage_b_program_transfer stage_b_program_transfer;
-typedef stage_b_step_result (*stage_b_region_override_fn)(
-    stage_b_runtime *, stage_b_machine_state *);
-typedef struct stage_b_region_override {
+typedef struct spx_program_transfer spx_program_transfer;
+typedef spx_step_result (*spx_region_override_fn)(
+    spx_runtime *, spx_machine_state *);
+typedef struct spx_region_override {
   uint32_t entry_rva;
-  stage_b_region_override_fn function;
+  spx_region_override_fn function;
   uint32_t fallback_on_unimplemented;
   const char *replacement_id;
   const char *cluster_id;
-} stage_b_region_override;
+} spx_region_override;
 
-const stage_b_program_transfer *stage_b_program_lookup(uint32_t source_rva);
-const stage_b_region_override *stage_b_region_override_lookup(uint32_t entry_rva);
-uint32_t stage_b_native_machine_fallback_allowed(uint32_t source_rva)
+const spx_program_transfer *spx_program_lookup(uint32_t source_rva);
+const spx_region_override *spx_region_override_lookup(uint32_t entry_rva);
+uint32_t spx_native_machine_fallback_allowed(uint32_t source_rva)
     __attribute__((weak));
-stage_b_step_result stage_b_interpreter_step(
-    stage_b_runtime *runtime, stage_b_machine_state *state, uint32_t source_rva);
-stage_b_call_status stage_b_run_function(
-    stage_b_runtime *runtime, uint32_t entry_rva,
-    const stage_b_machine_state *input, stage_b_machine_state *output);
+spx_step_result spx_interpreter_step(
+    spx_runtime *runtime, spx_machine_state *state, uint32_t source_rva);
+spx_call_status spx_run_function(
+    spx_runtime *runtime, uint32_t entry_rva,
+    const spx_machine_state *input, spx_machine_state *output);
 
 #endif
 """
@@ -139,14 +139,14 @@ def _program_source(transfers: tuple[_Transfer, ...]) -> str:
         "",
     ]
     for index, row in enumerate(transfers):
-        prefix = f"stage_b_t{index:04d}"
+        prefix = f"spx_t{index:04d}"
         lines.extend(_render_transfer_data(prefix, row))
     lines.extend([
         "",
-        "const stage_b_program_transfer stage_b_program_transfers[] = {",
+        "const spx_program_transfer spx_program_transfers[] = {",
     ])
     for index, row in enumerate(transfers):
-        prefix = f"stage_b_t{index:04d}"
+        prefix = f"spx_t{index:04d}"
         lines.append(
             f"  {{ 0x{row.rva_start:08x}U, {len(row.nodes)}U, {len(row.x87_nodes)}U, "
             f"{len(row.actions)}U, {len(row.x87_operations)}U, {prefix}_nodes, "
@@ -156,7 +156,7 @@ def _program_source(transfers: tuple[_Transfer, ...]) -> str:
         lines.append("  { 0U,0U,0U,0U,0U,0,0,0,0,0 },")
     lines.extend([
         "};",
-        f"const uint32_t stage_b_program_transfer_count = {len(transfers)}U;",
+        f"const uint32_t spx_program_transfer_count = {len(transfers)}U;",
         "",
     ])
     return "\n".join(lines)
@@ -164,12 +164,12 @@ def _program_source(transfers: tuple[_Transfer, ...]) -> str:
 
 def _render_transfer_data(prefix: str, row: _Transfer) -> list[str]:
     lines = [f"/* {row.identity.replace('*/', '* /')} */"]
-    lines.append(f"static const stage_b_word_node {prefix}_nodes[] = {{")
+    lines.append(f"static const spx_word_node {prefix}_nodes[] = {{")
     lines.extend("  " + _c_node(node, _WORD_OPS) + "," for node in row.nodes)
     if not row.nodes:
         lines.append("  { 0U, 0U, 0U, 0U, {0U,0U,0U,0U,0U} },")
     lines.append("};")
-    lines.append(f"static const stage_b_x87_node {prefix}_x87_nodes[] = {{")
+    lines.append(f"static const spx_x87_node {prefix}_x87_nodes[] = {{")
     lines.extend("  " + _c_node(node, _X87_OPS) + "," for node in row.x87_nodes)
     if not row.x87_nodes:
         lines.append("  { 0U, 0U, 0U, 0U, {0U,0U,0U,0U,0U} },")
@@ -183,8 +183,8 @@ def _render_transfer_data(prefix: str, row: _Transfer) -> list[str]:
         stack_values = ", ".join(
             f"{{ {offset}U, {width}U, {node}U }}" for offset, width, node in call.stack_inputs
         ) or "{ 0U, 0U, 0U }"
-        lines.append(f"static const stage_b_program_stack_input {name}_stack[] = {{ {stack_values} }};")
-    lines.append(f"static const stage_b_program_call {prefix}_calls[] = {{")
+        lines.append(f"static const spx_program_stack_input {name}_stack[] = {{ {stack_values} }};")
+    lines.append(f"static const spx_program_call {prefix}_calls[] = {{")
     for index, call in enumerate(row.calls):
         name = f"{prefix}_call_{index}"
         kind = {"external_call": 0, "internal_call": 1, "indirect_call": 2}[call.kind]
@@ -202,7 +202,7 @@ def _render_transfer_data(prefix: str, row: _Transfer) -> list[str]:
         lines.append("  { 0U,0U,0U,0U,0U,0U,0,0,0U,0U,0,0,0,0U,0,0U },")
     lines.append("};")
     lines.append(
-        f"static const stage_b_typed_x87_operation {prefix}_x87_operations[] = {{"
+        f"static const spx_typed_x87_operation {prefix}_x87_operations[] = {{"
     )
     for operation in row.x87_operations:
         operand = operation.operation.operand
@@ -239,7 +239,7 @@ def _render_transfer_data(prefix: str, row: _Transfer) -> list[str]:
     if not row.x87_operations:
         lines.append("  { 0 },")
     lines.append("};")
-    lines.append(f"static const stage_b_program_action {prefix}_actions[] = {{")
+    lines.append(f"static const spx_program_action {prefix}_actions[] = {{")
     lines.extend("  " + _c_action(action) + "," for action in row.actions)
     lines.append("};")
     lines.append("")
@@ -248,7 +248,7 @@ def _render_transfer_data(prefix: str, row: _Transfer) -> list[str]:
 
 def _c_node(node: _Node, inventory: tuple[str, ...]) -> str:
     if node.op not in inventory:
-        raise StageBInterpreterError(f"interpreter opcode inventory lacks {node.op}")
+        raise CandidateInterpreterError(f"interpreter opcode inventory lacks {node.op}")
     args = list(node.args) + [0] * (5 - len(node.args))
     return (
         f"{{ {inventory.index(node.op)}U, {len(node.args)}U, {node.aux}U, "
@@ -260,7 +260,7 @@ def _c_node(node: _Node, inventory: tuple[str, ...]) -> str:
 def _c_action(action: _Action) -> str:
     opcode_name = "replay_x87" if action.op == "typed_x87" else action.op
     if opcode_name not in _ACTIONS:
-        raise StageBInterpreterError(f"interpreter action inventory lacks {action.op}")
+        raise CandidateInterpreterError(f"interpreter action inventory lacks {action.op}")
     args = list(action.args) + [0] * (5 - len(action.args))
     return (
         f"{{ {_ACTIONS.index(opcode_name)}U, {len(action.args)}U, {action.aux}U, "
@@ -270,7 +270,7 @@ def _c_action(action: _Action) -> str:
 
 def _interpreter_source(*, max_word_nodes: int) -> str:
     if not 1 <= max_word_nodes <= 1024:
-        raise StageBInterpreterError(
+        raise CandidateInterpreterError(
             f"interpreter word-node capacity {max_word_nodes} is outside 1..1024",
             code="word_node_capacity_exceeded",
             next_action=(
@@ -280,7 +280,7 @@ def _interpreter_source(*, max_word_nodes: int) -> str:
         )
     return (
         '#include "state-machine-interpreter-internal.h"\n\n'
-        + f"#define STAGE_B_MAX_WORD_NODES {max_word_nodes}U\n"
+        + f"#define SPX_MAX_WORD_NODES {max_word_nodes}U\n"
         + _interpreter_runtime_helpers()
         + "\n"
         + _INTERPRETER_KERNEL
@@ -290,48 +290,48 @@ def _interpreter_source(*, max_word_nodes: int) -> str:
 def _interpreter_runtime_helpers() -> str:
     """Reuse the integer helper kernel without compiling host x87 arithmetic."""
     helpers = _runtime_helpers()
-    if "long double" in helpers or "stage_b_x87_" in helpers:
-        raise StageBInterpreterError(
+    if "long double" in helpers or "spx_x87_" in helpers:
+        raise CandidateInterpreterError(
             "host x87 arithmetic leaked into the interpreter helper kernel",
             code="interpreter_runtime_helper_drift",
         )
     return helpers
 
 
-_INTERPRETER_INTERNAL_HEADER = r'''#ifndef STAGE_B_SEMANTIC_INTERPRETER_INTERNAL_H
-#define STAGE_B_SEMANTIC_INTERPRETER_INTERNAL_H
+_INTERPRETER_INTERNAL_HEADER = r'''#ifndef SPX_SEMANTIC_INTERPRETER_INTERNAL_H
+#define SPX_SEMANTIC_INTERPRETER_INTERNAL_H
 
 #include "state-machine-interpreter.h"
 
-typedef struct stage_b_word_node {
+typedef struct spx_word_node {
   uint32_t op, arity, aux, immediate, args[5];
-} stage_b_word_node;
-typedef stage_b_word_node stage_b_x87_node;
-typedef struct stage_b_program_action {
+} spx_word_node;
+typedef spx_word_node spx_x87_node;
+typedef struct spx_program_action {
   uint32_t op, arity, aux, args[5];
-} stage_b_program_action;
-typedef struct stage_b_program_stack_input {
+} spx_program_action;
+typedef struct spx_program_stack_input {
   uint32_t offset, width, value_node;
-} stage_b_program_stack_input;
-typedef struct stage_b_program_call {
+} spx_program_stack_input;
+typedef struct spx_program_call {
   uint32_t kind, instruction_rva, call_index, target_node, target_rva, return_rva;
   const char *dll, *symbol;
   uint32_t ordinal, has_ordinal;
   const uint32_t *register_nodes, *flag_nodes, *argument_nodes;
   uint32_t argument_count;
-  const stage_b_program_stack_input *stack_inputs;
+  const spx_program_stack_input *stack_inputs;
   uint32_t stack_input_count;
-} stage_b_program_call;
-struct stage_b_program_transfer {
+} spx_program_call;
+struct spx_program_transfer {
   uint32_t source_rva, word_count, x87_count, action_count, x87_operation_count;
-  const stage_b_word_node *nodes;
-  const stage_b_x87_node *x87_nodes;
-  const stage_b_program_action *actions;
-  const stage_b_program_call *calls;
-  const stage_b_typed_x87_operation *x87_operations;
+  const spx_word_node *nodes;
+  const spx_x87_node *x87_nodes;
+  const spx_program_action *actions;
+  const spx_program_call *calls;
+  const spx_typed_x87_operation *x87_operations;
 };
-extern const stage_b_program_transfer stage_b_program_transfers[];
-extern const uint32_t stage_b_program_transfer_count;
+extern const spx_program_transfer spx_program_transfers[];
+extern const uint32_t spx_program_transfer_count;
 
 #endif
 '''
@@ -341,24 +341,24 @@ extern const uint32_t stage_b_program_transfer_count;
 # transition crosses the exact checked replay boundary; legacy x87-node opcodes
 # remain reserved in the stable data ABI and fail closed if encountered.
 _INTERPRETER_KERNEL = r'''
-#define STAGE_B_MAX_CALL_ARGUMENTS 64U
+#define SPX_MAX_CALL_ARGUMENTS 64U
 
-static uint32_t stage_b_state_reg(const stage_b_machine_state *state, uint32_t index) {
+static uint32_t spx_state_reg(const spx_machine_state *state, uint32_t index) {
   const uint32_t *registers = &state->eax;
   return registers[index];
 }
-static void stage_b_set_reg(stage_b_machine_state *state, uint32_t index, uint32_t value) {
+static void spx_set_reg(spx_machine_state *state, uint32_t index, uint32_t value) {
   uint32_t *registers = &state->eax;
   registers[index] = value;
 }
-static uint32_t stage_b_state_flag(const stage_b_machine_state *state, uint32_t index) {
+static uint32_t spx_state_flag(const spx_machine_state *state, uint32_t index) {
   static const uint32_t offsets[6] = { 0U,1U,2U,3U,4U,5U };
   const uint32_t *flags = &state->cf;
   if (index == 6U) return (state->eflags >> 4) & 1U;
   if (index >= 6U) return 0U;
   return flags[offsets[index]] & 1U;
 }
-static void stage_b_set_flag(stage_b_machine_state *state, uint32_t index, uint32_t value) {
+static void spx_set_flag(spx_machine_state *state, uint32_t index, uint32_t value) {
   uint32_t *flags = &state->cf;
   if (index == 6U) {
     state->eflags = (state->eflags & ~(1U << 4)) | ((value & 1U) << 4);
@@ -367,37 +367,37 @@ static void stage_b_set_flag(stage_b_machine_state *state, uint32_t index, uint3
   if (index >= 6U) return;
   flags[index] = value & 1U;
 }
-static uint32_t stage_b_eval_word_index(
-    stage_b_runtime *rt, const stage_b_machine_state *input,
-    const stage_b_machine_state *current,
-    const stage_b_machine_state *call_output, uint32_t *words,
-    uint8_t *word_valid, const stage_b_word_node *nodes,
+static uint32_t spx_eval_word_index(
+    spx_runtime *rt, const spx_machine_state *input,
+    const spx_machine_state *current,
+    const spx_machine_state *call_output, uint32_t *words,
+    uint8_t *word_valid, const spx_word_node *nodes,
     uint32_t node_count, uint32_t index, uint32_t *memory_fault,
     uint32_t *semantic_fault);
 
-#define W(i) stage_b_eval_word_index( \
+#define W(i) spx_eval_word_index( \
     rt, input, current, call_output, words, word_valid, nodes, node_count, \
     node->args[(i)], memory_fault, semantic_fault)
 
-static uint32_t stage_b_eval_word_uncached(
-    stage_b_runtime *rt, const stage_b_machine_state *input,
-    const stage_b_machine_state *current,
-    const stage_b_machine_state *call_output, uint32_t *words,
-    uint8_t *word_valid, const stage_b_word_node *nodes,
-    uint32_t node_count, const stage_b_word_node *node,
+static uint32_t spx_eval_word_uncached(
+    spx_runtime *rt, const spx_machine_state *input,
+    const spx_machine_state *current,
+    const spx_machine_state *call_output, uint32_t *words,
+    uint8_t *word_valid, const spx_word_node *nodes,
+    uint32_t node_count, const spx_word_node *node,
     uint32_t *memory_fault, uint32_t *semantic_fault) {
   uint32_t op = node->op;
   if (op == 0U) return node->immediate;
-  if (op == 1U) return stage_b_state_reg(node->immediate?current:input, node->aux);
-  if (op == 2U) return stage_b_state_flag(node->immediate?current:input, node->aux);
+  if (op == 1U) return spx_state_reg(node->immediate?current:input, node->aux);
+  if (op == 2U) return spx_state_flag(node->immediate?current:input, node->aux);
   if (op == 3U) return 1U;
   if (op == 4U) return 0U;
   if (op == 5U || op == 6U)
-    return stage_b_undefined(
+    return spx_undefined(
         rt, node->immediate, input, node->arity == 1U ? W(0) : 0U);
-  if (op == 7U) return stage_b_state_reg(call_output, node->aux);
-  if (op == 8U) return stage_b_state_flag(call_output, node->aux);
-  if (op == 9U) return stage_b_read(rt, W(0), node->aux, memory_fault);
+  if (op == 7U) return spx_state_reg(call_output, node->aux);
+  if (op == 8U) return spx_state_flag(call_output, node->aux);
+  if (op == 9U) return spx_read(rt, W(0), node->aux, memory_fault);
   if (op == 10U) return W(0) - W(1);
   if (op == 11U) return W(0) < W(1);
   if (op == 12U || op == 14U) return W(0) == W(1);
@@ -411,31 +411,31 @@ static uint32_t stage_b_eval_word_uncached(
   if (op == 21U) return 0U-W(0);
   if (op == 22U) return W(0) << (W(1)&31U);
   if (op == 23U) return W(0) >> (W(1)&31U);
-  if (op == 24U) return stage_b_sar(W(0),W(1),W(2));
-  if (op == 25U) return stage_b_sign_extend(W(0),W(1));
+  if (op == 24U) return spx_sar(W(0),W(1),W(2));
+  if (op == 25U) return spx_sign_extend(W(0),W(1));
   if (op == 26U) return W(0)?W(1):W(2);
-  if (op == 27U) return stage_b_msb(node->arity==2U?W(0):32U,node->arity==2U?W(1):W(0));
+  if (op == 27U) return spx_msb(node->arity==2U?W(0):32U,node->arity==2U?W(1):W(0));
   if (op == 28U) return !W(0);
   if (op == 29U) { uint32_t i; for(i=0;i<node->arity;++i)if(!W(i))return 0U;return 1U; }
   if (op == 30U) { uint32_t i; for(i=0;i<node->arity;++i)if(W(i))return 1U;return 0U; }
-  if (op == 31U) return stage_b_parity(W(1));
+  if (op == 31U) return spx_parity(W(1));
   if (op == 32U) return W(0)?1U:0U;
-  if (op == 33U) return stage_b_add_overflow(W(0),W(1),W(2),W(3));
-  if (op == 34U) return stage_b_sub_overflow(W(0),W(1),W(2),W(3));
+  if (op == 33U) return spx_add_overflow(W(0),W(1),W(2),W(3));
+  if (op == 34U) return spx_sub_overflow(W(0),W(1),W(2),W(3));
   if (op == 35U || op == 36U) return (uint32_t)((uint64_t)W(0)*(uint64_t)W(1));
-  if (op == 37U) return stage_b_imul_high(W(0),W(1));
-  if (op == 38U) return stage_b_mul_high(W(0),W(1));
+  if (op == 37U) return spx_imul_high(W(0),W(1));
+  if (op == 38U) return spx_mul_high(W(0),W(1));
   if (op == 39U) return W(4)!=((int32_t)W(3)<0?0xffffffffU:0U);
   if (op == 40U) return W(3)!=0U;
-  if (op == 41U) return stage_b_udiv_quot(W(0),W(1),W(2));
-  if (op == 42U) return stage_b_udiv_rem(W(0),W(1),W(2));
-  if (op == 43U) return stage_b_udiv_valid(W(0),W(1),W(2));
-  if (op == 44U) return stage_b_bsr(W(node->arity-1U));
-  if (op == 45U) return stage_b_tzcnt(W(node->arity-1U));
-  if (op == 46U) return stage_b_sbb_borrow(W(0),W(1),W(2),W(3),W(4));
-  if (op == 47U) return stage_b_sbb_overflow(W(0),W(1),W(2),W(3),W(4));
-  if (op == 48U) return stage_b_shift_cf(node->aux>>8,node->aux&255U,W(0),W(1));
-  if (op == 49U) return stage_b_shift_of(node->aux>>8,node->aux&255U,W(0),W(1),W(2));
+  if (op == 41U) return spx_udiv_quot(W(0),W(1),W(2));
+  if (op == 42U) return spx_udiv_rem(W(0),W(1),W(2));
+  if (op == 43U) return spx_udiv_valid(W(0),W(1),W(2));
+  if (op == 44U) return spx_bsr(W(node->arity-1U));
+  if (op == 45U) return spx_tzcnt(W(node->arity-1U));
+  if (op == 46U) return spx_sbb_borrow(W(0),W(1),W(2),W(3),W(4));
+  if (op == 47U) return spx_sbb_overflow(W(0),W(1),W(2),W(3),W(4));
+  if (op == 48U) return spx_shift_cf(node->aux>>8,node->aux&255U,W(0),W(1));
+  if (op == 49U) return spx_shift_of(node->aux>>8,node->aux&255U,W(0),W(1),W(2));
   if (op == 50U) return (node->immediate?current:input)->x87_control;
   if (op == 51U) return 0x037fU;
   if (op == 52U) return (node->immediate?current:input)->x87_status;
@@ -488,22 +488,22 @@ static uint32_t stage_b_eval_word_uncached(
 }
 #undef W
 
-static uint32_t stage_b_eval_word_index(
-    stage_b_runtime *rt, const stage_b_machine_state *input,
-    const stage_b_machine_state *current,
-    const stage_b_machine_state *call_output, uint32_t *words,
-    uint8_t *word_valid, const stage_b_word_node *nodes,
+static uint32_t spx_eval_word_index(
+    spx_runtime *rt, const spx_machine_state *input,
+    const spx_machine_state *current,
+    const spx_machine_state *call_output, uint32_t *words,
+    uint8_t *word_valid, const spx_word_node *nodes,
     uint32_t node_count, uint32_t index, uint32_t *memory_fault,
     uint32_t *semantic_fault) {
   uint32_t value;
-  const stage_b_word_node *node;
+  const spx_word_node *node;
   if (index >= node_count || words == 0 || word_valid == 0 || nodes == 0) {
     *semantic_fault = 1U;
     return 0U;
   }
   if (word_valid[index] != 0U) return words[index];
   node = &nodes[index];
-  value = stage_b_eval_word_uncached(
+  value = spx_eval_word_uncached(
       rt, input, current, call_output, words, word_valid, nodes, node_count,
       node, memory_fault, semantic_fault);
   words[index] = value;
@@ -511,202 +511,200 @@ static uint32_t stage_b_eval_word_index(
   return value;
 }
 
-__attribute__((weak)) const stage_b_region_override *
-stage_b_region_override_lookup(uint32_t entry_rva) {
+__attribute__((weak)) const spx_region_override *
+spx_region_override_lookup(uint32_t entry_rva) {
   (void)entry_rva;
-  return (const stage_b_region_override *)0;
+  return (const spx_region_override *)0;
 }
 
-static uint32_t stage_b_region_override_result_valid(stage_b_step_result result) {
-  if (result.kind > STAGE_B_EXTERNAL_JUMP) return 0U;
-  if (result.kind <= STAGE_B_BRANCH)
+static uint32_t spx_region_override_result_valid(spx_step_result result) {
+  if (result.kind > SPX_EXTERNAL_JUMP) return 0U;
+  if (result.kind <= SPX_BRANCH)
     return result.target_rva != 0U && result.value == 0U;
-  if (result.kind == STAGE_B_RETURN)
+  if (result.kind == SPX_RETURN)
     return result.target_rva == 0U;
-  if (result.kind == STAGE_B_INDIRECT_JUMP)
+  if (result.kind == SPX_INDIRECT_JUMP)
     return result.target_rva == 0U && result.value != 0U;
-  if (result.kind == STAGE_B_UNIMPLEMENTED)
+  if (result.kind == SPX_UNIMPLEMENTED)
     return result.value == 0U;
   return result.target_rva == 0U && result.value == 0U;
 }
 
-const stage_b_program_transfer *stage_b_program_lookup(uint32_t source_rva) {
-  uint32_t low=0U,high=stage_b_program_transfer_count;
-  while(low<high){uint32_t mid=low+(high-low)/2U;uint32_t r=stage_b_program_transfers[mid].source_rva;
+const spx_program_transfer *spx_program_lookup(uint32_t source_rva) {
+  uint32_t low=0U,high=spx_program_transfer_count;
+  while(low<high){uint32_t mid=low+(high-low)/2U;uint32_t r=spx_program_transfers[mid].source_rva;
     if(r<source_rva)low=mid+1U;else high=mid;}
-  return low<stage_b_program_transfer_count&&stage_b_program_transfers[low].source_rva==source_rva
-      ? &stage_b_program_transfers[low] : 0;
+  return low<spx_program_transfer_count&&spx_program_transfers[low].source_rva==source_rva
+      ? &spx_program_transfers[low] : 0;
 }
 
-stage_b_step_result stage_b_interpreter_step(
-    stage_b_runtime *rt, stage_b_machine_state *state, uint32_t source_rva) {
-  const stage_b_region_override *override;
-  const stage_b_program_transfer *t;
-  stage_b_machine_state input,call_output;
-  uint32_t words[STAGE_B_MAX_WORD_NODES],memory_fault=0U,semantic_fault=0U,i;
-  uint8_t word_valid[STAGE_B_MAX_WORD_NODES] = {0};
-  if(!state)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-  override=stage_b_region_override_lookup(source_rva);
+spx_step_result spx_interpreter_step(
+    spx_runtime *rt, spx_machine_state *state, uint32_t source_rva) {
+  const spx_region_override *override;
+  const spx_program_transfer *t;
+  spx_machine_state input,call_output;
+  uint32_t words[SPX_MAX_WORD_NODES],memory_fault=0U,semantic_fault=0U,i;
+  uint8_t word_valid[SPX_MAX_WORD_NODES] = {0};
+  if(!state)return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+  override=spx_region_override_lookup(source_rva);
   if(override){
-    stage_b_machine_state overridden=*state;
-    stage_b_step_result result;
+    spx_machine_state overridden=*state;
+    spx_step_result result;
     if(override->entry_rva!=source_rva||!override->function)
-      return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+      return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
     result=override->function(rt,&overridden);
-    if(!stage_b_region_override_result_valid(result))
-      return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-    if(result.kind==STAGE_B_UNIMPLEMENTED&&override->fallback_on_unimplemented){
+    if(!spx_region_override_result_valid(result))
+      return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+    if(result.kind==SPX_UNIMPLEMENTED&&override->fallback_on_unimplemented){
       if(result.target_rva!=source_rva||result.value!=0U)
-        return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+        return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
     }else{
       *state=overridden;
       return result;
     }
   }
-  if(stage_b_native_machine_fallback_allowed!=0&&
-      !stage_b_native_machine_fallback_allowed(source_rva))
-    return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-  t=stage_b_program_lookup(source_rva);
-  if(!t||t->word_count>STAGE_B_MAX_WORD_NODES||t->x87_count!=0U)
-    return (stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+  if(spx_native_machine_fallback_allowed!=0&&
+      !spx_native_machine_fallback_allowed(source_rva))
+    return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+  t=spx_program_lookup(source_rva);
+  if(!t||t->word_count>SPX_MAX_WORD_NODES||t->x87_count!=0U)
+    return (spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
   input=*state;call_output=input;state->original_rva=source_rva;
   for(i=0U;i<t->action_count;++i){
-    const stage_b_program_action *a=&t->actions[i];
-    if(a->op==0U)stage_b_eval_word_index(
+    const spx_program_action *a=&t->actions[i];
+    if(a->op==0U)spx_eval_word_index(
       rt,&input,state,&call_output,words,word_valid,t->nodes,t->word_count,
       a->args[0],&memory_fault,&semantic_fault);
-    else if(a->op==1U)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-    else if(a->op==2U)stage_b_write(rt,words[a->args[0]],a->aux,words[a->args[1]],&memory_fault);
+    else if(a->op==1U)return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+    else if(a->op==2U)spx_write(rt,words[a->args[0]],a->aux,words[a->args[1]],&memory_fault);
     else if(a->op==3U){
-      if(words[a->args[0]])return(stage_b_step_result){STAGE_B_DIVIDE_ERROR,0U,0U};
+      if(words[a->args[0]])return(spx_step_result){SPX_DIVIDE_ERROR,0U,0U};
     }
     else if(a->op==4U){
-      const stage_b_program_call*c=&t->calls[a->args[0]];stage_b_machine_state ci=*state;stage_b_call_event e;stage_b_stack_input si[64];uint32_t av[64],j;
-      if(c->argument_count>64U||c->stack_input_count>64U)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,0U,0U};
-      for(j=0U;j<8U;++j)stage_b_set_reg(&ci,j,words[c->register_nodes[j]]);
-      for(j=0U;j<6U;++j)stage_b_set_flag(&ci,j,words[c->flag_nodes[j]]);
+      const spx_program_call*c=&t->calls[a->args[0]];spx_machine_state ci=*state;spx_call_event e;spx_stack_input si[64];uint32_t av[64],j;
+      if(c->argument_count>64U||c->stack_input_count>64U)return(spx_step_result){SPX_UNIMPLEMENTED,0U,0U};
+      for(j=0U;j<8U;++j)spx_set_reg(&ci,j,words[c->register_nodes[j]]);
+      for(j=0U;j<6U;++j)spx_set_flag(&ci,j,words[c->flag_nodes[j]]);
       for(j=0U;j<c->argument_count;++j)av[j]=words[c->argument_nodes[j]];
       for(j=0U;j<c->stack_input_count;++j){si[j].offset=c->stack_inputs[j].offset;si[j].width=c->stack_inputs[j].width;si[j].value=words[c->stack_inputs[j].value_node];}
-      e.kind=(stage_b_call_event_kind)c->kind;e.instruction_rva=c->instruction_rva;e.call_index=c->call_index;
+      e.kind=(spx_call_event_kind)c->kind;e.instruction_rva=c->instruction_rva;e.call_index=c->call_index;
       e.target_rva=c->kind==2U?words[c->target_node]:c->target_rva;e.return_rva=c->return_rva;e.dll=c->dll;e.symbol=c->symbol;
       e.ordinal=c->ordinal;e.has_ordinal=c->has_ordinal;e.arguments=av;e.argument_count=c->argument_count;e.stack_inputs=si;e.stack_input_count=c->stack_input_count;
-      call_output=ci;{stage_b_call_status s=stage_b_invoke_call(rt,&e,&ci,&call_output);if(s!=STAGE_B_CALL_OK){*state=call_output;return(stage_b_step_result){s==STAGE_B_CALL_DIVIDE_ERROR?STAGE_B_DIVIDE_ERROR:s==STAGE_B_CALL_MEMORY_FAULT?STAGE_B_MEMORY_FAULT:s==STAGE_B_CALL_EXTERNAL_FAULT?STAGE_B_EXTERNAL_FAULT:STAGE_B_UNIMPLEMENTED,call_output.original_rva,0U};}}*state=call_output;
+      call_output=ci;{spx_call_status s=spx_invoke_call(rt,&e,&ci,&call_output);if(s!=SPX_CALL_OK){*state=call_output;return(spx_step_result){s==SPX_CALL_DIVIDE_ERROR?SPX_DIVIDE_ERROR:s==SPX_CALL_MEMORY_FAULT?SPX_MEMORY_FAULT:s==SPX_CALL_EXTERNAL_FAULT?SPX_EXTERNAL_FAULT:SPX_UNIMPLEMENTED,call_output.original_rva,0U};}}*state=call_output;
     } else if(a->op==5U){
       uint32_t s=words[a->args[0]],d=words[a->args[1]],n=words[a->args[2]],step=words[a->args[3]]?0xfffffffcU:4U;
-      stage_b_set_reg(state,4U,s);stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
-      while(n!=0U){uint32_t v=stage_b_read(rt,s,4U,&memory_fault);if(memory_fault)break;stage_b_write(rt,d,4U,v,&memory_fault);if(memory_fault)break;s+=step;d+=step;--n;stage_b_set_reg(state,4U,s);stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);}}
-    else if(a->op==6U)stage_b_set_reg(state,a->aux,words[a->args[0]]);
-    else if(a->op==7U)stage_b_set_flag(state,a->aux,words[a->args[0]]);
-    else if(a->op>=8U&&a->op<=17U)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-    else if(a->op==18U)stage_b_sync_eflags(state);
-    else if(a->op==19U)return(stage_b_step_result){STAGE_B_FALLTHROUGH,a->args[0],0U};
-    else if(a->op==20U)return(stage_b_step_result){STAGE_B_JUMP,a->args[0],0U};
-    else if(a->op==21U)return(stage_b_step_result){STAGE_B_BRANCH,words[a->args[0]]?a->args[1]:a->args[2],0U};
-    else if(a->op==22U)return(stage_b_step_result){STAGE_B_RETURN,0U,words[a->args[0]]};
-    else if(a->op==23U)return(stage_b_step_result){STAGE_B_INDIRECT_JUMP,0U,words[a->args[0]]};
-    else if(a->op==24U)return(stage_b_step_result){STAGE_B_EXTERNAL_JUMP,0U,0U};
+      spx_set_reg(state,4U,s);spx_set_reg(state,5U,d);spx_set_reg(state,2U,n);
+      while(n!=0U){uint32_t v=spx_read(rt,s,4U,&memory_fault);if(memory_fault)break;spx_write(rt,d,4U,v,&memory_fault);if(memory_fault)break;s+=step;d+=step;--n;spx_set_reg(state,4U,s);spx_set_reg(state,5U,d);spx_set_reg(state,2U,n);}}
+    else if(a->op==6U)spx_set_reg(state,a->aux,words[a->args[0]]);
+    else if(a->op==7U)spx_set_flag(state,a->aux,words[a->args[0]]);
+    else if(a->op>=8U&&a->op<=17U)return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+    else if(a->op==18U)spx_sync_eflags(state);
+    else if(a->op==19U)return(spx_step_result){SPX_FALLTHROUGH,a->args[0],0U};
+    else if(a->op==20U)return(spx_step_result){SPX_JUMP,a->args[0],0U};
+    else if(a->op==21U)return(spx_step_result){SPX_BRANCH,words[a->args[0]]?a->args[1]:a->args[2],0U};
+    else if(a->op==22U)return(spx_step_result){SPX_RETURN,0U,words[a->args[0]]};
+    else if(a->op==23U)return(spx_step_result){SPX_INDIRECT_JUMP,0U,words[a->args[0]]};
+    else if(a->op==24U)return(spx_step_result){SPX_EXTERNAL_JUMP,0U,0U};
     else if(a->op==25U){
-      const stage_b_typed_x87_operation*p;stage_b_machine_state operation_output;stage_b_call_status s;
+      const spx_typed_x87_operation*p;spx_machine_state operation_output;spx_call_status s;
       if(a->arity!=1U||a->args[0]>=t->x87_operation_count||!rt||!rt->execute_typed_x87_operation)
-        return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+        return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
       p=&t->x87_operations[a->args[0]];
       if(p->rva_end<=p->rva_start||p->source_size!=p->rva_end-p->rva_start||
           !p->operation_identity||!p->contract_sha256||
           !p->checked_decoder||!p->checked_executor)
-        return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+        return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
       operation_output=*state;s=rt->execute_typed_x87_operation(rt,p,state,&operation_output);
-      if(s!=STAGE_B_CALL_OK)return(stage_b_step_result){s==STAGE_B_CALL_DIVIDE_ERROR?STAGE_B_DIVIDE_ERROR:s==STAGE_B_CALL_MEMORY_FAULT?STAGE_B_MEMORY_FAULT:s==STAGE_B_CALL_EXTERNAL_FAULT?STAGE_B_EXTERNAL_FAULT:STAGE_B_UNIMPLEMENTED,source_rva,0U};
+      if(s!=SPX_CALL_OK)return(spx_step_result){s==SPX_CALL_DIVIDE_ERROR?SPX_DIVIDE_ERROR:s==SPX_CALL_MEMORY_FAULT?SPX_MEMORY_FAULT:s==SPX_CALL_EXTERNAL_FAULT?SPX_EXTERNAL_FAULT:SPX_UNIMPLEMENTED,source_rva,0U};
       *state=operation_output;
     } else if(a->op==26U){
       uint32_t d=words[a->args[0]],v=words[a->args[1]];
       uint32_t n=words[a->args[2]],step=words[a->args[3]]?0xfffffffcU:4U;
-      stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+      spx_set_reg(state,5U,d);spx_set_reg(state,2U,n);
       while(n!=0U){
-        stage_b_write(rt,d,4U,v,&memory_fault);
+        spx_write(rt,d,4U,v,&memory_fault);
         if(memory_fault)break;
         d+=step;
         --n;
-        stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+        spx_set_reg(state,5U,d);spx_set_reg(state,2U,n);
       }
     } else if(a->op==27U){
       uint32_t s=words[a->args[0]],d=words[a->args[1]],n=words[a->args[2]],w=a->aux;
       uint32_t step=words[a->args[3]]?0U-w:w;
-      if(w!=1U&&w!=2U&&w!=4U)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-      stage_b_set_reg(state,4U,s);stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+      if(w!=1U&&w!=2U&&w!=4U)return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+      spx_set_reg(state,4U,s);spx_set_reg(state,5U,d);spx_set_reg(state,2U,n);
       while(n!=0U){
-        uint32_t v=stage_b_read(rt,s,w,&memory_fault);
+        uint32_t v=spx_read(rt,s,w,&memory_fault);
         if(memory_fault)break;
-        stage_b_write(rt,d,w,v,&memory_fault);
+        spx_write(rt,d,w,v,&memory_fault);
         if(memory_fault)break;
         s+=step;d+=step;--n;
-        stage_b_set_reg(state,4U,s);stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+        spx_set_reg(state,4U,s);spx_set_reg(state,5U,d);spx_set_reg(state,2U,n);
       }
     } else if(a->op==28U){
       uint32_t d=words[a->args[0]],v=words[a->args[1]],n=words[a->args[2]],w=a->aux;
       uint32_t step=words[a->args[3]]?0U-w:w;
-      if(w!=1U&&w!=2U&&w!=4U)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-      stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+      if(w!=1U&&w!=2U&&w!=4U)return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+      spx_set_reg(state,5U,d);spx_set_reg(state,2U,n);
       while(n!=0U){
-        stage_b_write(rt,d,w,v,&memory_fault);
+        spx_write(rt,d,w,v,&memory_fault);
         if(memory_fault)break;
         d+=step;--n;
-        stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+        spx_set_reg(state,5U,d);spx_set_reg(state,2U,n);
       }
     } else if(a->op==29U){
       uint32_t d,al,n,step;
       if(a->arity!=4U||a->aux!=1U)
-        return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+        return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
       al=words[a->args[0]]&0xffU;d=words[a->args[1]];
       n=words[a->args[2]];step=words[a->args[3]]?0xffffffffU:1U;
-      stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
+      spx_set_reg(state,5U,d);spx_set_reg(state,2U,n);
       while(n!=0U){
-        uint32_t m=stage_b_read(rt,d,1U,&memory_fault)&0xffU,result;
+        uint32_t m=spx_read(rt,d,1U,&memory_fault)&0xffU,result;
         if(memory_fault)break;
         result=(al-m)&0xffU;d+=step;--n;
-        stage_b_set_reg(state,5U,d);stage_b_set_reg(state,2U,n);
-        stage_b_set_flag(state,0U,al<m);
-        stage_b_set_flag(state,1U,result==0U);
-        stage_b_set_flag(state,2U,(result>>7)&1U);
-        stage_b_set_flag(state,3U,((al^m)&(al^result)&0x80U)!=0U);
-        stage_b_set_flag(state,4U,stage_b_parity(result));
-        stage_b_set_flag(state,6U,((al^m^result)>>4)&1U);
-        stage_b_sync_eflags(state);
+        spx_set_reg(state,5U,d);spx_set_reg(state,2U,n);
+        spx_set_flag(state,0U,al<m);
+        spx_set_flag(state,1U,result==0U);
+        spx_set_flag(state,2U,(result>>7)&1U);
+        spx_set_flag(state,3U,((al^m)&(al^result)&0x80U)!=0U);
+        spx_set_flag(state,4U,spx_parity(result));
+        spx_set_flag(state,6U,((al^m^result)>>4)&1U);
+        spx_sync_eflags(state);
         if(result==0U)break;
       }
-    } else return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
-    if(memory_fault)return(stage_b_step_result){STAGE_B_MEMORY_FAULT,source_rva,0U};
-    if(semantic_fault)return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+    } else return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+    if(memory_fault)return(spx_step_result){SPX_MEMORY_FAULT,source_rva,0U};
+    if(semantic_fault)return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
   }
-  return(stage_b_step_result){STAGE_B_UNIMPLEMENTED,source_rva,0U};
+  return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
 }
 
-static stage_b_call_status stage_b_run_function_checked(
-    stage_b_runtime *rt, uint32_t rva, const stage_b_machine_state *in,
-    stage_b_machine_state *out, uint32_t expected_return_rva,
+static spx_call_status spx_run_function_checked(
+    spx_runtime *rt, uint32_t rva, const spx_machine_state *in,
+    spx_machine_state *out, uint32_t expected_return_rva,
     uint32_t check_return_rva) {
-  stage_b_machine_state s;
-  if (!in || !out) return STAGE_B_CALL_UNIMPLEMENTED;
+  spx_machine_state s;
+  if (!in || !out) return SPX_CALL_UNIMPLEMENTED;
   s = *in;
   for (;;) {
-    if (rt && rt->trace_transfer)
-      rt->trace_transfer(rt->context, rva, &s);
-    stage_b_step_result r = stage_b_interpreter_step(rt, &s, rva);
-    if (r.kind <= STAGE_B_BRANCH) {
+    spx_step_result r = spx_interpreter_step(rt, &s, rva);
+    if (r.kind <= SPX_BRANCH) {
       rva = r.target_rva;
       continue;
     }
-    if (r.kind == STAGE_B_INDIRECT_JUMP) {
+    if (r.kind == SPX_INDIRECT_JUMP) {
       uint32_t next_rva;
       if (!rt || !rt->resolve_code_target ||
           rt->resolve_code_target(rt, r.value, &next_rva)) {
-        stage_b_call_status external_status = STAGE_B_CALL_UNIMPLEMENTED;
-        stage_b_machine_state external_output = s;
+        spx_call_status external_status = SPX_CALL_UNIMPLEMENTED;
+        spx_machine_state external_output = s;
         if (rt && rt->invoke_callable_external_jump) {
           external_status = rt->invoke_callable_external_jump(
               rt, rva, r.value, &s, &external_output);
-          if (external_status == STAGE_B_CALL_OK) {
+          if (external_status == SPX_CALL_OK) {
             *out = external_output;
-            return STAGE_B_CALL_OK;
+            return SPX_CALL_OK;
           }
         }
         *out = s;
@@ -718,70 +716,63 @@ static stage_b_call_status stage_b_run_function_checked(
     }
     *out = s;
     out->original_rva = r.target_rva != 0U ? r.target_rva : rva;
-    if (r.kind == STAGE_B_RETURN) {
+    if (r.kind == SPX_RETURN) {
       if (check_return_rva && r.value != expected_return_rva) {
-        /* Failure-only payload consumed by the candidate diagnostic trap. */
+        /* Preserve the expected and observed return addresses for the caller. */
         out->esi = expected_return_rva;
         out->edi = r.value;
-        return STAGE_B_CALL_UNIMPLEMENTED;
+        return SPX_CALL_UNIMPLEMENTED;
       }
-      return STAGE_B_CALL_OK;
+      return SPX_CALL_OK;
     }
-    if (r.kind == STAGE_B_EXTERNAL_JUMP) return STAGE_B_CALL_OK;
-    if (r.kind == STAGE_B_DIVIDE_ERROR) return STAGE_B_CALL_DIVIDE_ERROR;
-    if (r.kind == STAGE_B_MEMORY_FAULT) return STAGE_B_CALL_MEMORY_FAULT;
-    if (r.kind == STAGE_B_EXTERNAL_FAULT) return STAGE_B_CALL_EXTERNAL_FAULT;
-    return STAGE_B_CALL_UNIMPLEMENTED;
+    if (r.kind == SPX_EXTERNAL_JUMP) return SPX_CALL_OK;
+    if (r.kind == SPX_DIVIDE_ERROR) return SPX_CALL_DIVIDE_ERROR;
+    if (r.kind == SPX_MEMORY_FAULT) return SPX_CALL_MEMORY_FAULT;
+    if (r.kind == SPX_EXTERNAL_FAULT) return SPX_CALL_EXTERNAL_FAULT;
+    return SPX_CALL_UNIMPLEMENTED;
   }
 }
 
-stage_b_call_status stage_b_run_function(
-    stage_b_runtime *rt, uint32_t rva, const stage_b_machine_state *in,
-    stage_b_machine_state *out) {
-  return stage_b_run_function_checked(rt, rva, in, out, 0U, 0U);
+spx_call_status spx_run_function(
+    spx_runtime *rt, uint32_t rva, const spx_machine_state *in,
+    spx_machine_state *out) {
+  return spx_run_function_checked(rt, rva, in, out, 0U, 0U);
 }
 
-static stage_b_call_status stage_b_invoke_internal_call(
-    stage_b_runtime *rt, const stage_b_call_event *event, uint32_t target_rva,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
-  stage_b_machine_state call_input;
-  stage_b_call_status status;
+static spx_call_status spx_invoke_internal_call(
+    spx_runtime *rt, const spx_call_event *event, uint32_t target_rva,
+    const spx_machine_state *input, spx_machine_state *output) {
+  spx_machine_state call_input;
+  spx_call_status status;
   uint32_t memory_fault = 0U;
   if (!rt || !event || !input || !output || input->esp < 4U)
-    return STAGE_B_CALL_UNIMPLEMENTED;
+    return SPX_CALL_UNIMPLEMENTED;
   call_input = *input;
   call_input.esp -= 4U;
-  stage_b_write(
+  spx_write(
       rt, call_input.esp, 4U, event->return_rva, &memory_fault);
   if (memory_fault) {
     *output = call_input;
     output->original_rva = event->instruction_rva;
-    return STAGE_B_CALL_MEMORY_FAULT;
+    return SPX_CALL_MEMORY_FAULT;
   }
-  status = stage_b_run_function_checked(
+  status = spx_run_function_checked(
       rt, target_rva, &call_input, output, event->return_rva, 1U);
-#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP
-  if (status == STAGE_B_CALL_OK && output->esp < input->esp) {
-    output->esi = input->esp;
-    output->edi = output->esp;
-    return STAGE_B_CALL_UNIMPLEMENTED;
-  }
-#endif
   return status;
 }
 
-stage_b_call_status stage_b_invoke_call(
-    stage_b_runtime *rt, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_invoke_call(
+    spx_runtime *rt, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   uint32_t target_rva;
-  if (!event) return STAGE_B_CALL_UNIMPLEMENTED;
-  if (event->kind == STAGE_B_CALL_INTERNAL_DIRECT)
-    return stage_b_invoke_internal_call(
+  if (!event) return SPX_CALL_UNIMPLEMENTED;
+  if (event->kind == SPX_CALL_INTERNAL_DIRECT)
+    return spx_invoke_internal_call(
         rt, event, event->target_rva, input, output);
-  if (event->kind == STAGE_B_CALL_INDIRECT && rt && rt->resolve_code_target &&
+  if (event->kind == SPX_CALL_INDIRECT && rt && rt->resolve_code_target &&
       !rt->resolve_code_target(rt, event->target_rva, &target_rva))
-    return stage_b_invoke_internal_call(
+    return spx_invoke_internal_call(
         rt, event, target_rva, input, output);
-  return stage_b_dispatch_external_call(rt, event, input, output);
+  return spx_dispatch_external_call(rt, event, input, output);
 }
 '''

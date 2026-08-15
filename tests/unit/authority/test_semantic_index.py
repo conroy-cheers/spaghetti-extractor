@@ -85,7 +85,7 @@ def _unit(
         control_kind = "indirect_jump"
         has_indirect_target = True
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": unit_id,
         "status": status,

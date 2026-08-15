@@ -30,7 +30,8 @@ from ..artifacts.formats import (
     LINKED_ISLAND_REVIEW_FORMAT,
     MACHINE_IR_FORMAT,
 )
-from ..pe32.stage_binary import StageAInputError, _parse_stage_a_pe
+from ..errors import ToolkitInputError
+from ..pe32.image import parse_pe_image
 from .contracts import (
     validate_linked_island_manifest as _validate_linked_island_contract,
 )
@@ -224,7 +225,7 @@ def _derive_dynamic_requirements_from_report(
     out: Path,
 ) -> dict[str, Any]:
     report = _read_object(report_path, "static machine import contract report")
-    if report.get("format") != "stage-a-static-machine-import-contracts-v1":
+    if report.get("format") != "spaghetti-extractor-static-machine-import-contracts-v1":
         raise LinkedLibraryError("unsupported static machine import report format")
     if report.get("status") != "ready":
         raise LinkedLibraryError("static machine import report is not ready")
@@ -435,7 +436,7 @@ def refine_linked_islands(
     """Materialize v2 ownership islands from checked constellation evidence."""
 
     original_path = Path(original)
-    binary = _parse_stage_a_pe(original_path)
+    binary = parse_pe_image(original_path)
     machine = _load_machine_package(Path(machine_ir))
     machine_binary = _object(machine.manifest.get("binary"), "machine IR binary")
     if machine_binary.get("sha256") != binary.sha256:

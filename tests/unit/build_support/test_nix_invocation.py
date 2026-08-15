@@ -8,8 +8,10 @@ from unittest.mock import patch
 
 from spaghetti_extractor.build_support.nix_invocation import (
     BUILDERS_FILE_ENV,
+    TRUSTED_PUBLIC_KEYS_FILE_ENV,
     NixInvocationError,
     builder_arguments,
+    select_builder_policy,
 )
 
 
@@ -19,7 +21,7 @@ class NixInvocationTests(unittest.TestCase):
             root = Path(temporary)
             (root / "nix").mkdir()
             (root / "targets").mkdir()
-            inventory = root / "nix/stage-a-builders"
+            inventory = root / "nix/builders.local"
             inventory.write_text("ssh-ng://builder x86_64-linux\n", encoding="ascii")
             arguments = builder_arguments(
                 target_flake="./targets",
@@ -74,6 +76,39 @@ class NixInvocationTests(unittest.TestCase):
                 local=False,
                 cwd=Path("/tmp"),
             )
+
+    def test_xdg_inventory_and_trusted_keys_are_discovered_together(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config/spaghetti-extractor"
+            config.mkdir(parents=True)
+            builders = config / "builders"
+            keys = config / "trusted-public-keys"
+            builders.write_text(
+                "ssh-ng://builder x86_64-linux - 1 1 ca-derivations -\n",
+                encoding="ascii",
+            )
+            keys.write_text("cache.example:abc=\n", encoding="ascii")
+            policy = select_builder_policy(
+                target_flake="github:example/targets",
+                cwd=root,
+                environment={"XDG_CONFIG_HOME": str(root / "config")},
+            )
+        self.assertEqual(policy.source, "xdg-config")
+        self.assertEqual(policy.builders_file, builders.resolve())
+        self.assertEqual(policy.trusted_public_keys_file, keys.resolve())
+        self.assertIn("trusted-public-keys", policy.nix_arguments())
+
+    def test_environment_trusted_keys_require_builders(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            keys = Path(temporary) / "keys"
+            keys.write_text("cache.example:abc=\n", encoding="ascii")
+            with self.assertRaisesRegex(NixInvocationError, "without a builders"):
+                select_builder_policy(
+                    target_flake="github:example/targets",
+                    cwd=Path(temporary),
+                    environment={TRUSTED_PUBLIC_KEYS_FILE_ENV: str(keys)},
+                )
 
 
 if __name__ == "__main__":

@@ -71,7 +71,7 @@ def _unit(
 ) -> dict[str, object]:
     events = external_events or []
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",

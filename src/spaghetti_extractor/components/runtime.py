@@ -403,7 +403,7 @@ def _render_component_adapter(
     for entry_id in entry_ids:
         if entry_id not in members:
             raise ComponentIntentError(f"component {identity} entry is not a member")
-        symbol = "stage_b_component_{identity}_{rva:08x}".format(
+        symbol = "spx_component_{identity}_{rva:08x}".format(
             identity=_c_identifier(identity), rva=_unit_rva(members[entry_id])
         )
         symbols.append((_unit_rva(members[entry_id]), entry_id, symbol))
@@ -474,11 +474,11 @@ def _render_component_adapter(
             "",
             prototype,
             "",
-            "static uint32_t component_read(stage_b_runtime *rt, uint32_t address, uint32_t width, uint32_t *fault) {",
+            "static uint32_t component_read(spx_runtime *rt, uint32_t address, uint32_t width, uint32_t *fault) {",
             "  if (rt == 0 || rt->read == 0) { *fault = 1U; return 0U; }",
             "  return rt->read(rt->context, address, width, fault);",
             "}",
-            "static void component_write(stage_b_runtime *rt, uint32_t address, uint32_t width, uint32_t value, uint32_t *fault) {",
+            "static void component_write(spx_runtime *rt, uint32_t address, uint32_t width, uint32_t value, uint32_t *fault) {",
             "  if (rt == 0 || rt->write == 0) { *fault = 1U; return; }",
             "  rt->write(rt->context, address, width, value, fault);",
             "}",
@@ -493,7 +493,7 @@ def _render_component_adapter(
             "  return (((~(left ^ right)) & (left ^ result)) >> 31U) & 1U;",
             "}",
             "typedef struct component_ro_bytes_context {",
-            "  stage_b_runtime *runtime; uint32_t base; uint32_t extent; uint32_t bounded; uint32_t fault;",
+            "  spx_runtime *runtime; uint32_t base; uint32_t extent; uint32_t bounded; uint32_t fault;",
             "} component_ro_bytes_context;",
             "static uint32_t component_read_u8(void *opaque, uint32_t index, uint8_t *out) {",
             "  component_ro_bytes_context *view = (component_ro_bytes_context *)opaque;",
@@ -523,7 +523,7 @@ def _render_scalar_entry_adapter(
     path: Sequence[Mapping[str, object]],
 ) -> str:
     lines = [
-        f"stage_b_step_result {symbol}(stage_b_runtime *rt, stage_b_machine_state *state) {{",
+        f"spx_step_result {symbol}(spx_runtime *rt, spx_machine_state *state) {{",
         "  (void)rt;",
         "  uint32_t memory_fault = 0U;",
     ]
@@ -560,7 +560,7 @@ def _render_scalar_entry_adapter(
             f"({renderer.render(expression)});"
         )
         argument_names.append(name)
-    lines.append("  if (memory_fault != 0U) return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };")
+    lines.append("  if (memory_fault != 0U) return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };")
     lines.append(
         f"  {_c_type(result.get('type'), source_abi='logical-c-v1')} "
         f"logical_result = {logical_symbol}({', '.join(argument_names)});"
@@ -603,22 +603,22 @@ def _render_scalar_entry_adapter(
         outcome = _object(semantics.get("outcome"), "machine outcome")
         kind = _string(outcome.get("kind"), "machine outcome kind")
         if kind == "return":
-            terminal_kind = "STAGE_B_RETURN"
+            terminal_kind = "SPX_RETURN"
             terminal_value = f"{prefix}_return_value"
             lines.append(
                 f"  uint32_t {terminal_value} = "
                 f"{block_renderer.render(outcome.get('value'))};"
             )
         elif kind == "branch":
-            terminal_kind = "STAGE_B_BRANCH"
+            terminal_kind = "SPX_BRANCH"
             terminal_target = (
                 "((uint32_t)logical_result != 0U) ? "
                 f"{int(outcome.get('true_target_rva') or 0)}U : "
                 f"{int(outcome.get('false_target_rva') or 0)}U"
             )
         lines.append(
-            "  if (memory_fault != 0U) return (stage_b_step_result)"
-            "{ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+            "  if (memory_fault != 0U) return (spx_step_result)"
+            "{ SPX_MEMORY_FAULT, 0U, 0U };"
         )
         lines.extend(f"  state->{name} = {value};" for name, value in assignments)
     if terminal_kind is None:
@@ -626,7 +626,7 @@ def _render_scalar_entry_adapter(
     if result_register is not None:
         lines.append(f"  state->{result_register} = (uint32_t)logical_result;")
     lines.append(
-        f"  return (stage_b_step_result){{ {terminal_kind}, {terminal_target}, {terminal_value} }};"
+        f"  return (spx_step_result){{ {terminal_kind}, {terminal_target}, {terminal_value} }};"
     )
     lines.append("}")
     return "\n".join(lines)
@@ -644,8 +644,8 @@ def _render_object_entry_adapter(
     members: Mapping[str, Mapping[str, object]],
 ) -> str:
     lines = [
-        f"stage_b_step_result {symbol}(stage_b_runtime *rt, "
-        "stage_b_machine_state *state) {",
+        f"spx_step_result {symbol}(spx_runtime *rt, "
+        "spx_machine_state *state) {",
         "  uint32_t memory_fault = 0U;",
     ]
     lines.extend(f"  uint32_t entry_{name} = state->{name};" for name in _STATE_FIELDS)
@@ -664,8 +664,8 @@ def _render_object_entry_adapter(
         )
         raw_names[identity] = raw_name
     lines.append(
-        "  if (memory_fault != 0U) return (stage_b_step_result)"
-        "{ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+        "  if (memory_fault != 0U) return (spx_step_result)"
+        "{ SPX_MEMORY_FAULT, 0U, 0U };"
     )
     external_result_names: dict[tuple[str, int, str], str] = {}
     if external_replay is not None:
@@ -695,7 +695,7 @@ def _render_object_entry_adapter(
                     f"{{ rt, {raw_names[identity]}, {raw_names[extent_id]}, 1U, 0U }};"
                 )
                 lines.append(
-                    f"  stage_b_ro_bytes_v1 {logical_view} = "
+                    f"  spx_ro_bytes_v1 {logical_view} = "
                     f"{{ &{context}, {raw_names[extent_id]}, component_read_u8 }};"
                 )
             else:
@@ -704,7 +704,7 @@ def _render_object_entry_adapter(
                     f"{{ rt, {raw_names[identity]}, 0U, 0U, 0U }};"
                 )
                 lines.append(
-                    f"  stage_b_c_string_v1 {logical_view} = "
+                    f"  spx_c_string_v1 {logical_view} = "
                     f"{{ &{context}, component_read_u8 }};"
                 )
             call_arguments.append(f"&{logical_view}")
@@ -722,7 +722,7 @@ def _render_object_entry_adapter(
         lines.append(
             "  if ("
             + " || ".join(f"{name}.fault != 0U" for name in view_contexts)
-            + ") return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+            + ") return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };"
         )
     state_completion = _object(completion.get("state"), "adapter completion state")
     completion_renderer = _CompletionExpression(
@@ -755,8 +755,8 @@ def _render_object_entry_adapter(
             f"{completion_renderer.render(write.get('value'))};"
         )
     lines.append(
-        "  if (memory_fault != 0U) return (stage_b_step_result)"
-        "{ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+        "  if (memory_fault != 0U) return (spx_step_result)"
+        "{ SPX_MEMORY_FAULT, 0U, 0U };"
     )
     for index, write in enumerate(memory_writes):
         lines.append(
@@ -767,12 +767,12 @@ def _render_object_entry_adapter(
         )
     if memory_writes:
         lines.append(
-            "  if (memory_fault != 0U) return (stage_b_step_result)"
-            "{ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+            "  if (memory_fault != 0U) return (spx_step_result)"
+            "{ SPX_MEMORY_FAULT, 0U, 0U };"
         )
     lines.extend(f"  state->{name} = completed_{name};" for name in _STATE_FIELDS)
     lines.append(
-        "  return (stage_b_step_result){ STAGE_B_RETURN, 0U, "
+        "  return (spx_step_result){ SPX_RETURN, 0U, "
         "completed_return_target };"
     )
     lines.append("}")
@@ -821,7 +821,7 @@ def _render_linear_external_replay(
     ):
         raise ComponentIntentError("component external replay prefix is stale")
 
-    lines = ["  stage_b_machine_state external_replay_state = *state;"]
+    lines = ["  spx_machine_state external_replay_state = *state;"]
     read_index = 0
     for block_index, prefix_id in enumerate(prefix_ids):
         unit = members[prefix_id]
@@ -868,8 +868,8 @@ def _render_linear_external_replay(
                         "component external replay memory event is unsupported"
                     )
                 lines.append(
-                    "  if (memory_fault != 0U) return (stage_b_step_result)"
-                    "{ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+                    "  if (memory_fault != 0U) return (spx_step_result)"
+                    "{ SPX_MEMORY_FAULT, 0U, 0U };"
                 )
                 continue
             if family != "external":
@@ -931,7 +931,7 @@ def _render_external_call(
 ) -> dict[tuple[str, int, str], str]:
     identity = contract.identity
     call_name = "external_call_0"
-    lines.append(f"  stage_b_machine_state {call_name}_input = external_replay_state;")
+    lines.append(f"  spx_machine_state {call_name}_input = external_replay_state;")
     for field, expression in _object(
         event.get("register_inputs"), "external register inputs"
     ).items():
@@ -965,21 +965,21 @@ def _render_external_call(
     ordinal = 0 if identity.ordinal is None else identity.ordinal
     lines.extend(
         [
-            f"  stage_b_call_event {call_name}_event = {{",
-            "    STAGE_B_CALL_EXTERNAL_IMPORT,",
+            f"  spx_call_event {call_name}_event = {{",
+            "    SPX_CALL_EXTERNAL_IMPORT,",
             f"    {instruction_rva}U, {event_index}U, 0U, {return_rva}U,",
             f"    {_c_string(identity.dll or '')}, {symbol}, {ordinal}U, "
             f"{1 if identity.ordinal is not None else 0}U,",
             f"    {argument_pointer}, {len(arguments)}U, 0, 0U",
             "  };",
-            f"  stage_b_machine_state {call_name}_output;",
-            f"  stage_b_call_status {call_name}_status = stage_b_invoke_call(",
+            f"  spx_machine_state {call_name}_output;",
+            f"  spx_call_status {call_name}_status = spx_invoke_call(",
             f"      rt, &{call_name}_event, &{call_name}_input, &{call_name}_output);",
-            f"  if ({call_name}_status != STAGE_B_CALL_OK) return (stage_b_step_result){{",
-            f"    {call_name}_status == STAGE_B_CALL_DIVIDE_ERROR ? STAGE_B_DIVIDE_ERROR :",
-            f"    {call_name}_status == STAGE_B_CALL_MEMORY_FAULT ? STAGE_B_MEMORY_FAULT :",
-            f"    {call_name}_status == STAGE_B_CALL_EXTERNAL_FAULT ? STAGE_B_EXTERNAL_FAULT :",
-            "    STAGE_B_UNIMPLEMENTED, 0U, 0U };",
+            f"  if ({call_name}_status != SPX_CALL_OK) return (spx_step_result){{",
+            f"    {call_name}_status == SPX_CALL_DIVIDE_ERROR ? SPX_DIVIDE_ERROR :",
+            f"    {call_name}_status == SPX_CALL_MEMORY_FAULT ? SPX_MEMORY_FAULT :",
+            f"    {call_name}_status == SPX_CALL_EXTERNAL_FAULT ? SPX_EXTERNAL_FAULT :",
+            "    SPX_UNIMPLEMENTED, 0U, 0U };",
         ]
     )
     results: dict[tuple[str, int, str], str] = {}
@@ -1151,27 +1151,27 @@ def _write_override_package(
     header = output / "region-overrides.h"
     source = output / "region-overrides.c"
     prototypes = "\n".join(
-        f"stage_b_step_result {row['symbol']}(stage_b_runtime *, stage_b_machine_state *);"
+        f"spx_step_result {row['symbol']}(spx_runtime *, spx_machine_state *);"
         for row in entries
     )
     header.write_text(
-        """#ifndef STAGE_B_REGION_OVERRIDES_H
-#define STAGE_B_REGION_OVERRIDES_H
+        """#ifndef SPX_REGION_OVERRIDES_H
+#define SPX_REGION_OVERRIDES_H
 #include <stdint.h>
 #include "state-machine-runtime.h"
-typedef stage_b_step_result (*stage_b_region_override_fn)(stage_b_runtime *, stage_b_machine_state *);
-typedef struct stage_b_region_override {
+typedef spx_step_result (*spx_region_override_fn)(spx_runtime *, spx_machine_state *);
+typedef struct spx_region_override {
   uint32_t entry_rva;
-  stage_b_region_override_fn function;
+  spx_region_override_fn function;
   uint32_t fallback_on_unimplemented;
   const char *replacement_id;
   const char *cluster_id;
-} stage_b_region_override;
+} spx_region_override;
 """
         + prototypes
-        + "\nextern const stage_b_region_override stage_b_region_overrides[];\n"
-        + "extern const uint32_t stage_b_region_override_count;\n"
-        + "const stage_b_region_override *stage_b_region_override_lookup(uint32_t entry_rva);\n"
+        + "\nextern const spx_region_override spx_region_overrides[];\n"
+        + "extern const uint32_t spx_region_override_count;\n"
+        + "const spx_region_override *spx_region_override_lookup(uint32_t entry_rva);\n"
         + "#endif\n",
         encoding="ascii",
     )
@@ -1187,19 +1187,19 @@ typedef struct stage_b_region_override {
     )
     source.write_text(
         '#include "region-overrides.h"\n'
-        "const stage_b_region_override stage_b_region_overrides[] = {\n"
+        "const spx_region_override spx_region_overrides[] = {\n"
         + table
         + "\n};\n"
-        + "const uint32_t stage_b_region_override_count = "
-        + "(uint32_t)(sizeof(stage_b_region_overrides) / sizeof(stage_b_region_overrides[0]));\n"
-        + "const stage_b_region_override *stage_b_region_override_lookup(uint32_t entry_rva) {\n"
-        + "  uint32_t low = 0U, high = stage_b_region_override_count;\n"
+        + "const uint32_t spx_region_override_count = "
+        + "(uint32_t)(sizeof(spx_region_overrides) / sizeof(spx_region_overrides[0]));\n"
+        + "const spx_region_override *spx_region_override_lookup(uint32_t entry_rva) {\n"
+        + "  uint32_t low = 0U, high = spx_region_override_count;\n"
         + "  while (low < high) { uint32_t middle = low + (high - low) / 2U;\n"
-        + "    uint32_t observed = stage_b_region_overrides[middle].entry_rva;\n"
+        + "    uint32_t observed = spx_region_overrides[middle].entry_rva;\n"
         + "    if (observed < entry_rva) low = middle + 1U;\n"
         + "    else if (observed > entry_rva) high = middle;\n"
-        + "    else return &stage_b_region_overrides[middle]; }\n"
-        + "  return (const stage_b_region_override *)0;\n}\n",
+        + "    else return &spx_region_overrides[middle]; }\n"
+        + "  return (const spx_region_override *)0;\n}\n",
         encoding="ascii",
     )
     core = {

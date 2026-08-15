@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 
 from tests.pe_fixtures import pe32_image
-from spaghetti_extractor.extraction.binary_inventory import stage_a_inventory_binary
+from spaghetti_extractor.extraction.binary_inventory import spx_inventory_binary
 from spaghetti_extractor.extraction.cutpoints import semantic_cutpoint_spans_for_side
 from spaghetti_extractor.reconstruction.static_export import (
     export_static_reconstruction,
@@ -18,7 +18,7 @@ from spaghetti_extractor.static_program.codec import (
     parse_static_program_contract,
 )
 from spaghetti_extractor.static_program.model import StaticProgramContractError
-from spaghetti_extractor.pe32.stage_binary import _parse_stage_a_pe
+from spaghetti_extractor.pe32.image import parse_pe_image
 from spaghetti_extractor.util import sha256_bytes
 
 
@@ -31,7 +31,7 @@ def _inventory() -> dict[str, object]:
         "source": {"kind": "static_executable_section_block"},
     }
     return {
-        "format": "stage-a-binary-cutpoint-inventory-v1",
+        "format": "spaghetti-extractor-binary-cutpoint-inventory-v1",
         "profile": "x86-pe32-static-reconstruction-v1",
         "model": "x86-pe32-machine-ir-v1",
         "status": "pass",
@@ -82,9 +82,8 @@ class OpaqueReconstructionTests(unittest.TestCase):
             "counts": {"units": 1},
             "trust": {
                 "executes_original_binary": False,
-                "uses_candidate_binary": False,
-                "uses_binary_mapping": False,
-                "claims_whole_program_equivalence": False,
+                "input_image_count": 1,
+                "uses_cross_image_mapping": False,
                 "behavioral_reachability_separate": True,
             },
         }
@@ -132,7 +131,7 @@ class OpaqueReconstructionTests(unittest.TestCase):
             inventory = root / "inventory.json"
             output = root / "opaque"
             original.write_bytes(pe32_image(b"\x31\xc0\xc3", virtual_size=16))
-            stage_a_inventory_binary(
+            spx_inventory_binary(
                 binary=original,
                 linker_map=None,
                 side="original",
@@ -182,7 +181,7 @@ class OpaqueReconstructionTests(unittest.TestCase):
                 pe32_image(b"\x90\x90\x90\x56\xc3", virtual_size=5)
             )
 
-            payload = stage_a_inventory_binary(
+            payload = spx_inventory_binary(
                 binary=original,
                 linker_map=None,
                 side="original",
@@ -203,7 +202,7 @@ class OpaqueReconstructionTests(unittest.TestCase):
             original.write_bytes(
                 pe32_image(b"\x90\x83\x39\x41\xc3", virtual_size=5)
             )
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 spans = semantic_cutpoint_spans_for_side(
                     binary,

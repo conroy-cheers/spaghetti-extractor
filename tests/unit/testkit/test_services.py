@@ -18,6 +18,7 @@ from spaghetti_extractor.testkit import (
     build_suite_plan,
     explain_plan_rebuild,
     plan_phase_scaffold,
+    plan_target_scaffold,
     plan_test_scaffold,
 )
 from spaghetti_extractor.testkit.cli import main as developer_main
@@ -128,6 +129,17 @@ class TestDeveloperServices(unittest.TestCase):
         self.assertIn("nix run .#test -- affected", test.next_commands[0])
         self.assertEqual(phase.files[0].path, "src/spaghetti_extractor/authority/alias_summary.py")
         self.assertIn("artifacts.phases", phase.files[0].content)
+
+        target = plan_target_scaffold(target_id="sample-app")
+        self.assertEqual(
+            [row.path for row in target.files],
+            ["targets/sample-app/target.json", "targets/sample-app/default.nix"],
+        )
+        self.assertIn(
+            'throw "configure the sample-app original PE derivation"',
+            target.files[1].content,
+        )
+        self.assertNotIn("candidateTests", target.files[1].content)
 
     def test_scaffold_apply_creates_files_and_refuses_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

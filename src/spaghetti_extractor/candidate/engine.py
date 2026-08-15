@@ -23,7 +23,7 @@ from ..pe32.recovered_executable_data import (
     RecoveredExecutableDataRange,
     load_recovered_executable_data_contract,
 )
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes, sha256_file
 from .engine_analysis import (
     _RegisterImportSiteAnalysis,
@@ -90,7 +90,7 @@ from .x87 import (
 )
 
 
-def plan_stage_b_native_engine(
+def plan_spx_native_engine(
     *,
     machine_ir: Path,
     machine_ir_manifest: Path,
@@ -121,11 +121,11 @@ def plan_stage_b_native_engine(
     checked_zero_ranges: list[tuple[int, int]] = []
     for index, value in enumerate(initial_zero_ranges):
         if not isinstance(value, tuple) or len(value) != 2:
-            raise StageAInputError(f"initial zero range {index} must be a pair")
+            raise ToolkitInputError(f"initial zero range {index} must be a pair")
         start = _required_u32(value[0], f"initial zero range {index} start")
         end = _required_u32(value[1], f"initial zero range {index} end")
         if end <= start:
-            raise StageAInputError(f"initial zero range {index} must be nonempty")
+            raise ToolkitInputError(f"initial zero range {index} must be nonempty")
         checked_zero_ranges.append((start, end))
     normalized_zero_ranges = tuple(sorted(checked_zero_ranges))
     raw_rows = _read_jsonl_objects(
@@ -154,7 +154,7 @@ def plan_stage_b_native_engine(
             recovered_executable_data
         )
         if recovered_data.machine_ir_sha256 != sha256_file(input_path):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "recovered executable-data contract binds a different machine IR"
             )
         manifest_binary = (
@@ -167,14 +167,14 @@ def plan_stage_b_native_engine(
             or manifest_binary.get("sha256") != recovered_data.original_pe_sha256
             or manifest_binary.get("image_base") != recovered_data.image_base
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "recovered executable-data contract binds a different original image"
             )
         if (
             preferred_image_base is not None
             and recovered_data.image_base != preferred_image_base
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "recovered executable-data image base differs from native inputs"
             )
         recovered_data_ranges = recovered_data.ranges
@@ -212,15 +212,15 @@ def plan_stage_b_native_engine(
         ):
             iat_va = _required_u32(raw_iat_va, "import IAT VA")
             if iat_va < preferred_image_base:
-                raise StageAInputError("import IAT VA precedes the preferred image base")
+                raise ToolkitInputError("import IAT VA precedes the preferred image base")
             if not isinstance(dll, str) or not dll:
-                raise StageAInputError("import binding DLL must be nonempty")
+                raise ToolkitInputError("import binding DLL must be nonempty")
             if isinstance(identity, str) and identity:
                 symbol, ordinal = identity, None
             elif isinstance(identity, int) and not isinstance(identity, bool) and identity >= 0:
                 symbol, ordinal = None, identity
             else:
-                raise StageAInputError("import binding must use one symbol or ordinal")
+                raise ToolkitInputError("import binding must use one symbol or ordinal")
             import_bindings.append(NativeImportBinding(
                 dll=dll.lower(),
                 symbol=symbol,
@@ -266,16 +266,16 @@ def plan_stage_b_native_engine(
     for row_index, row in enumerate(rows):
         transfer_id = _required_string(row.get("id"), f"transfer {row_index} id")
         if transfer_id in transfer_ids:
-            raise StageAInputError(f"duplicate state-machine transfer id {transfer_id}")
+            raise ToolkitInputError(f"duplicate state-machine transfer id {transfer_id}")
         transfer_ids.add(transfer_id)
         original = row.get("original")
         if not isinstance(original, dict):
-            raise StageAInputError(f"{transfer_id} has no original span")
+            raise ToolkitInputError(f"{transfer_id} has no original span")
         transfer_rva = _required_u32(
             original.get("rva_start"), f"{transfer_id} original.rva_start"
         )
         if transfer_rva in transfer_rvas:
-            raise StageAInputError(f"duplicate state-machine transfer RVA {transfer_rva:#x}")
+            raise ToolkitInputError(f"duplicate state-machine transfer RVA {transfer_rva:#x}")
         transfer_rvas.add(transfer_rva)
         transfer_rows[transfer_rva] = (
             transfer_id,
@@ -283,10 +283,10 @@ def plan_stage_b_native_engine(
         )
         ordered = row.get("ordered_events")
         if not isinstance(ordered, list):
-            raise StageAInputError(f"{transfer_id} ordered_events must be a list")
+            raise ToolkitInputError(f"{transfer_id} ordered_events must be a list")
         instructions = row.get("instructions")
         if not isinstance(instructions, list):
-            raise StageAInputError(f"{transfer_id} instructions must be a list")
+            raise ToolkitInputError(f"{transfer_id} instructions must be a list")
         instruction_by_rva = _instruction_inventory(transfer_id, instructions)
         transfer_details[transfer_rva] = (row, instruction_by_rva)
 
@@ -296,18 +296,18 @@ def plan_stage_b_native_engine(
             if relocation_evidence is not None:
                 export = row.get("static_program_export")
                 if not isinstance(export, Mapping):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"transfer {row_index} lacks its static-program export binding"
                     )
                 bound_contract = _required_sha256(
                     export.get("static_program_contract_sha256"),
-                    f"transfer {row_index} Stage A static-program SHA-256",
+                    f"transfer {row_index} static analysis static-program SHA-256",
                 )
                 if (
                     bound_contract
                     != relocation_evidence.static_program_contract_sha256
                 ):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"transfer {row_index} and PE relocation evidence bind "
                         "different static-program contracts"
                     )
@@ -329,7 +329,7 @@ def plan_stage_b_native_engine(
                         fixed_image_base=fixed_image_base,
                     )
                 )
-            except StageAInputError as exc:
+            except ToolkitInputError as exc:
                 aslr_unsafe = isinstance(exc, _X87ReplayASLRUnsafe)
                 blockers.append(_blocker(
                     (
@@ -544,7 +544,7 @@ def plan_stage_b_native_engine(
                 if (isinstance(symbol, str) and symbol) == (
                     isinstance(ordinal, int) and not isinstance(ordinal, bool)
                 ):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"{transfer_id} external event must name exactly one symbol or ordinal"
                     )
                 identity: str | int = symbol if isinstance(symbol, str) else int(ordinal)
@@ -669,13 +669,13 @@ def plan_stage_b_native_engine(
             if authority_sites:
                 event_sha256 = _canonical_sha256(event)
                 if any(site.event_sha256 != event_sha256 for site in authority_sites):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"{transfer_id} external event {event_index} disagrees "
                         "with canonical authority"
                     )
                 unit_sha256 = transfer_rows[transfer_rva][1]
                 if any(site.unit_sha256 != unit_sha256 for site in authority_sites):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"{transfer_id} external event {event_index} unit bytes "
                         "disagree with canonical authority"
                     )
@@ -769,7 +769,7 @@ def plan_stage_b_native_engine(
                     and checked_registration is not None
                     and callback_registration != checked_registration
                 ):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"{transfer_id} external event {event_index} callback "
                         "metadata disagrees with its checked site contract"
                     )
@@ -778,7 +778,7 @@ def plan_stage_b_native_engine(
                     adapter = checked_external_contract.callback_adapter
                     assert adapter is not None
                     proposal_callback_evidence = {
-                        "format": "stage-a-callback-registration-provenance-v1",
+                        "format": "spaghetti-extractor-callback-registration-provenance-v1",
                         "record_kind": "callback_registration",
                         "status": "complete",
                         "unit_id": transfer_id,
@@ -808,7 +808,7 @@ def plan_stage_b_native_engine(
                             != proposal_callback_evidence["target_rvas"]
                         )
                     ):
-                        raise StageAInputError(
+                        raise ToolkitInputError(
                             f"{transfer_id} external event {event_index} checked "
                             "callback evidence is contradictory"
                         )
@@ -900,7 +900,7 @@ def plan_stage_b_native_engine(
             )
             prior_site = seen_sites.get(instruction_rva)
             if prior_site is not None and prior_site != site:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"ambiguous external bridge at RVA {instruction_rva:#x}"
                 )
             prior_return = seen_returns.get(return_rva)
@@ -955,7 +955,7 @@ def plan_stage_b_native_engine(
     for index, value in enumerate(callback_targets):
         try:
             callback_rva, callback_kind, stack_cleanup = _callback_spec(value, index)
-        except StageAInputError as exc:
+        except ToolkitInputError as exc:
             blockers.append(_blocker(
                 "callback_abi_ambiguous",
                 callback_index=index,
@@ -976,7 +976,7 @@ def plan_stage_b_native_engine(
             ))
             continue
         if callback_rva in callback_specs:
-            raise StageAInputError(f"duplicate callback target RVA {callback_rva:#x}")
+            raise ToolkitInputError(f"duplicate callback target RVA {callback_rva:#x}")
         transfer_id, transfer_sha256 = binding
         callback_specs[callback_rva] = (
             transfer_id, transfer_sha256, callback_kind, stack_cleanup
@@ -1049,7 +1049,7 @@ def plan_stage_b_native_engine(
                     for rva in target_rvas
                 )
             ):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{site.transfer_id} callback target inventory is malformed"
                 )
             if callback_image_base is None:
@@ -1360,7 +1360,7 @@ def plan_stage_b_native_engine(
     )
 
 
-from .engine_package import write_stage_b_native_engine_package  # noqa: E402
+from .engine_package import write_spx_native_engine_package  # noqa: E402
 
 
 
@@ -1379,6 +1379,6 @@ __all__ = [
     "TYPED_NATIVE_X87_OPERATION_FORMAT",
     "extract_typed_x87_operation",
     "typed_x87_operation_from_micro_op",
-    "plan_stage_b_native_engine",
-    "write_stage_b_native_engine_package",
+    "plan_spx_native_engine",
+    "write_spx_native_engine_package",
 ]

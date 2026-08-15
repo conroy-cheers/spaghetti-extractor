@@ -19,7 +19,7 @@ from spaghetti_extractor.external.machine_import_profiles import (
 from spaghetti_extractor.reconstruction.state_machine import (
     _machine_import_contracts,
 )
-from spaghetti_extractor.pe32.stage_binary import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -168,7 +168,7 @@ class WinmmRuntimeProfileTests(unittest.TestCase):
                 assert isinstance(behavior, dict)
                 behavior[field] = value
                 row["callback_behavior"] = behavior
-                with self.assertRaises(StageAInputError):
+                with self.assertRaises(ToolkitInputError):
                     _load_mutated(payload)
 
 

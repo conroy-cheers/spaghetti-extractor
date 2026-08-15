@@ -9,7 +9,7 @@ class InterpreterExecutionModelTests(unittest.TestCase):
             machine = Path(temporary) / "machine-ir.jsonl"
             _write_machine(machine, [_machine_ir_pre_call_tail_unit()])
 
-            transfer = compile_stage_b_interpreter_machine_ir(machine)[0]
+            transfer = compile_spx_interpreter_machine_ir(machine)[0]
             set_esp = next(
                 index
                 for index, action in enumerate(transfer.actions)
@@ -40,7 +40,7 @@ class InterpreterExecutionModelTests(unittest.TestCase):
                 [_machine_ir_stack_call_after_register_reuse_unit()],
             )
             package_dir = root / "package"
-            write_stage_b_interpreter_package(machine_ir=machine, out=package_dir)
+            write_spx_interpreter_package(machine_ir=machine, out=package_dir)
             harness = root / "harness.c"
             harness.write_text(
                 r'''
@@ -71,37 +71,37 @@ static void write_word(
   *fault = 1U;
 }
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   fixture_context *context = (fixture_context *)runtime->context;
-  if (event->stack_input_count != 2U) return STAGE_B_CALL_UNIMPLEMENTED;
+  if (event->stack_input_count != 2U) return SPX_CALL_UNIMPLEMENTED;
   if (event->stack_inputs[0].offset != 12U ||
       event->stack_inputs[0].value != 0xaaaaaaaaU ||
       event->stack_inputs[1].offset != 16U ||
       event->stack_inputs[1].value != 0xbbbbbbbbU)
-    return STAGE_B_CALL_UNIMPLEMENTED;
+    return SPX_CALL_UNIMPLEMENTED;
   context->observed = 1U;
   *output = *input;
-  return STAGE_B_CALL_OK;
+  return SPX_CALL_OK;
 }
 
 int main(void) {
   fixture_context context = {0U, 0U, 0U};
-  stage_b_runtime runtime = {0};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result;
+  spx_runtime runtime = {0};
+  spx_machine_state state = {0};
+  spx_step_result result;
   runtime.context = &context;
   runtime.read = read_word;
   runtime.write = write_word;
   state.esp = 0x1000U;
   state.edx = 0xaaaaaaaaU;
-  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
+  result = spx_interpreter_step(&runtime, &state, 0x1000U);
   if (context.observed != 1U) return 1;
   if (context.word_12 != 0xaaaaaaaaU ||
       context.word_16 != 0xbbbbbbbbU) return 2;
-  if (result.kind == STAGE_B_MEMORY_FAULT ||
-      result.kind == STAGE_B_UNIMPLEMENTED) return 3;
+  if (result.kind == SPX_MEMORY_FAULT ||
+      result.kind == SPX_UNIMPLEMENTED) return 3;
   return 0;
 }
 ''',
@@ -136,14 +136,14 @@ int main(void) {
             machine = root / "machine-ir.jsonl"
             _write_machine(machine, [_machine_ir_load_compare_branch_unit()])
 
-            transfer = compile_stage_b_interpreter_machine_ir(machine)[0]
+            transfer = compile_spx_interpreter_machine_ir(machine)[0]
             branch = next(action for action in transfer.actions if action.op == "outcome_branch")
             condition = transfer.nodes[branch.args[0]]
             self.assertEqual(condition.op, "flag")
             self.assertEqual(condition.immediate, 1)
 
             package_dir = root / "package"
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine, out=package_dir
             )
             self.assertEqual(package["status"], "ready")
@@ -167,30 +167,30 @@ static void write_word(
   (void)raw; (void)address; (void)width; (void)value; *fault = 1U;
 }
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 
 int main(void) {
   fixture_context context = {0U};
-  stage_b_runtime runtime = {0};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result;
+  spx_runtime runtime = {0};
+  spx_machine_state state = {0};
+  spx_step_result result;
   runtime.context = &context;
   runtime.read = read_word;
   runtime.write = write_word;
 
   state.zf = 1U;
-  result = stage_b_interpreter_step(&runtime, &state, 0x1063U);
-  if (result.kind != STAGE_B_BRANCH || result.target_rva != 0x1071U) return 1;
+  result = spx_interpreter_step(&runtime, &state, 0x1063U);
+  if (result.kind != SPX_BRANCH || result.target_rva != 0x1071U) return 1;
 
   context.value = 1U;
   state.zf = 0U;
-  result = stage_b_interpreter_step(&runtime, &state, 0x1063U);
-  if (result.kind != STAGE_B_BRANCH || result.target_rva != 0x13f2U) return 2;
+  result = spx_interpreter_step(&runtime, &state, 0x1063U);
+  if (result.kind != SPX_BRANCH || result.target_rva != 0x13f2U) return 2;
   return 0;
 }
 ''',
@@ -222,7 +222,7 @@ int main(void) {
             machine = root / "state-machine.jsonl"
             _write_machine(machine, [_row()])
 
-            write_stage_b_interpreter_package(
+            write_spx_interpreter_package(
                 machine_ir=machine, out=root / "package"
             )
             program = json.loads(
@@ -236,10 +236,10 @@ int main(void) {
             ).read_text(encoding="ascii")
             self.assertGreater(maximum, 0)
             self.assertIn(
-                f"#define STAGE_B_MAX_WORD_NODES {maximum}U",
+                f"#define SPX_MAX_WORD_NODES {maximum}U",
                 source,
             )
-            self.assertNotIn("#define STAGE_B_MAX_WORD_NODES 1024U", source)
+            self.assertNotIn("#define SPX_MAX_WORD_NODES 1024U", source)
 
     def test_external_call_stack_inputs_lower_to_fixed_program_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -279,12 +279,12 @@ int main(void) {
             row["outcome"] = {"kind": "fallthrough", "target_rva": 0x1005}
             _write_machine(machine, [row])
 
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
 
             self.assertEqual(len(transfer.calls), 1)
             self.assertEqual(len(transfer.calls[0].stack_inputs), 1)
             self.assertEqual(transfer.calls[0].stack_inputs[0][:2], (0, 4))
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine, out=root / "package"
             )
             self.assertEqual(package["status"], "ready")
@@ -307,7 +307,7 @@ int main(void) {
             ]
             _write_machine(machine, [row])
 
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
             read_nodes = [
                 action.args[0]
                 for action in transfer.actions
@@ -369,7 +369,7 @@ int main(void) {
             ]
             _write_machine(machine, [row])
 
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
             read_nodes = [
                 action.args[0]
                 for action in transfer.actions

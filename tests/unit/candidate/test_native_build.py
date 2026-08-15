@@ -14,11 +14,11 @@ import pefile
 from tests.pe_fixtures import pe32_image
 
 from spaghetti_extractor.roundtrip_fuzz.image_io import (
-    write_stage_a_load_image_contract,
+    write_spx_load_image_contract,
 )
 from spaghetti_extractor.candidate.engine_layout import (
     EngineLayoutFeature,
-    render_stage_b_engine_layout_c,
+    render_spx_engine_layout_c,
 )
 from spaghetti_extractor.candidate.native_build import (
     BUILD_MANIFEST_FILENAME,
@@ -30,11 +30,11 @@ from spaghetti_extractor.candidate.native_build import (
     PAYLOAD_FILENAME,
     PAYLOAD_RELOCATION_INVENTORY_FILENAME,
     PREPARE_MANIFEST_FILENAME,
-    StageBNativeBuildError,
-    build_stage_b_native_candidate,
-    compile_stage_b_native_payload,
-    compose_stage_b_native_candidate,
-    prepare_stage_b_native_build,
+    CandidateNativeBuildError,
+    build_spx_native_candidate,
+    compile_spx_native_payload,
+    compose_spx_native_candidate,
+    prepare_spx_native_build,
 )
 from spaghetti_extractor.candidate.pe import (
     EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
@@ -65,17 +65,17 @@ def _expanded_header_pe() -> bytes:
 
 def _runtime_header(*, include_tags: bool = True) -> str:
     tag = "  uint8_t tag;\n" if include_tags else ""
-    return f"""#ifndef STAGE_B_STATE_MACHINE_RUNTIME_H
-#define STAGE_B_STATE_MACHINE_RUNTIME_H
+    return f"""#ifndef SPX_STATE_MACHINE_RUNTIME_H
+#define SPX_STATE_MACHINE_RUNTIME_H
 #include <stdint.h>
-typedef struct stage_b_x87_value {{
+typedef struct spx_x87_value {{
   uint8_t value_bytes[10];
   uint32_t empty;
-{tag}}} stage_b_x87_value;
-typedef struct stage_b_machine_state {{
+{tag}}} spx_x87_value;
+typedef struct spx_machine_state {{
   uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp;
   uint32_t cf, zf, sf, of, pf, df;
-  stage_b_x87_value x87_stack[8];
+  spx_x87_value x87_stack[8];
   uint16_t x87_control;
   uint16_t x87_status;
   uint8_t x87_pending_exception;
@@ -87,7 +87,7 @@ typedef struct stage_b_machine_state {{
   uint32_t eflags;
   uint32_t fs_base;
   uint32_t original_rva;
-}} stage_b_machine_state;
+}} spx_machine_state;
 #endif
 """
 
@@ -103,7 +103,7 @@ class _Packages:
         self.contract = root / "load-image-contract.json"
         self.anchors = root / "anchors.json"
         self.original.write_bytes(_expanded_header_pe())
-        contract = write_stage_a_load_image_contract(
+        contract = write_spx_load_image_contract(
             original_pe=self.original, out=self.contract
         )
         payload_rva = contract.identity.image_size
@@ -133,18 +133,18 @@ class _Packages:
             "state-machine-transfers.h": "#include \"state-machine-runtime.h\"\n",
             "state-machine-transfers.c": (
                 "#include \"state-machine-transfers.h\"\n"
-                "uint32_t stage_b_generated_transfer(void) { return 7U; }\n"
+                "uint32_t spx_generated_transfer(void) { return 7U; }\n"
             ),
             "state-machine-repairs.c": "#include \"state-machine-transfers.h\"\n",
             "state-machine-dispatch.h": "#include \"state-machine-runtime.h\"\n",
             "state-machine-dispatch.c": (
                 "#include \"state-machine-dispatch.h\"\n"
-                "uint32_t stage_b_generated_dispatch(void) { return 11U; }\n"
+                "uint32_t spx_generated_dispatch(void) { return 11U; }\n"
             ),
             "state-machine-engine.h": "#include \"state-machine-runtime.h\"\n",
             "state-machine-engine.c": (
                 "#include \"state-machine-engine.h\"\n"
-                "uint32_t stage_b_generated_engine(void) { return 13U; }\n"
+                "uint32_t spx_generated_engine(void) { return 13U; }\n"
             ),
             "state-machine-api-adapters.h": "#include \"state-machine-runtime.h\"\n",
             "state-machine-api-adapters.c": (
@@ -156,9 +156,9 @@ class _Packages:
         _write_json(self.semantic / "state-machine-api-adapters.json", {})
         _write_json(self.semantic / "state-machine-source-map.json", {})
         obligations = {
-            "format": "stage-b-runtime-call-obligations-v1",
+            "format": "spaghetti-extractor-runtime-call-obligations-v1",
             "status": "complete",
-            "authority": "stage-a-semantic-transfer-contracts",
+            "authority": "spaghetti-extractor-semantic-transfer-contracts",
             "state_machine": {
                 "path": "state-machine.jsonl",
                 "sha256": STATE_MACHINE_SHA256,
@@ -171,7 +171,7 @@ class _Packages:
                 "unbound_by_kind": {},
             },
             "call_boundaries": [],
-            "acceptance": "candidate generation remains subject to Stage A",
+            "acceptance": "candidate generation remains subject to static analysis",
         }
         _write_json(
             self.semantic / "state-machine-runtime-obligations.json", obligations
@@ -198,8 +198,8 @@ class _Packages:
         _write_json(
             self.semantic / "state-machine-implementation.json",
             {
-                "format": "stage-b-semantic-c-implementation-v1",
-                "authority": "stage-a-semantic-transfer-contracts",
+                "format": "spaghetti-extractor-semantic-c-implementation-v1",
+                "authority": "spaghetti-extractor-semantic-transfer-contracts",
                 "status": "complete",
                 "state_machine": {
                     "path": "state-machine.jsonl",
@@ -211,7 +211,7 @@ class _Packages:
                         "id": "semantic-transfer:entry",
                         "contract_sha256": "6" * 64,
                         "rva_start": 0x1000,
-                        "symbol": "stage_b_generated_transfer",
+                        "symbol": "spx_generated_transfer",
                         "implementation": "generated_semantic_c",
                     }
                 ],
@@ -231,7 +231,7 @@ class _Packages:
         )
         (self.native / "native-engine-wrapper.c").write_text(
             "#include \"native-engine-wrapper.h\"\n"
-            "uint32_t stage_b_native_marker(void) { return 17U; }\n",
+            "uint32_t spx_native_marker(void) { return 17U; }\n",
             encoding="ascii",
         )
         (self.native / "native-engine-bridges.S").write_text(
@@ -240,14 +240,14 @@ class _Packages:
             else (
                 ".intel_syntax noprefix\n"
                 ".text\n"
-                ".globl _stage_b_payload_entry\n"
-                "_stage_b_payload_entry:\n"
-                "  jmp _stage_b_payload_entry\n"
+                ".globl _spx_payload_entry\n"
+                "_spx_payload_entry:\n"
+                "  jmp _spx_payload_entry\n"
             ),
             encoding="ascii",
         )
         (self.native / "native-engine-layout.c").write_text(
-            render_stage_b_engine_layout_c(
+            render_spx_engine_layout_c(
                 flag_storage="split-and-packed",
                 include_fs_base=True,
                 include_original_rva=True,
@@ -255,7 +255,7 @@ class _Packages:
             encoding="ascii",
         )
         plan = {
-            "format": "stage-b-native-engine-plan-v1",
+            "format": "spaghetti-extractor-native-engine-plan-v1",
             "status": "ready",
             "state_machine_sha256": STATE_MACHINE_SHA256,
             "entry_rva": 0x1000,
@@ -281,7 +281,7 @@ class _Packages:
         _write_json(
             self.native / "native-engine-package.json",
             {
-                "format": "stage-b-native-engine-package-v1",
+                "format": "spaghetti-extractor-native-engine-package-v1",
                 "status": "ready",
                 "plan": {
                     "path": "native-engine-plan.json",
@@ -308,14 +308,14 @@ class NativeBuildTests(unittest.TestCase):
     def test_prepare_is_deterministic_and_has_no_acceptance_authority(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             packages = _Packages(Path(temporary) / "inputs")
-            first = prepare_stage_b_native_build(
+            first = prepare_spx_native_build(
                 semantic_c_package=packages.semantic,
                 native_engine_package=packages.native,
                 load_image_contract=packages.contract,
                 anchor_manifest=packages.anchors,
                 out_dir=Path(temporary) / "first",
             )
-            second = prepare_stage_b_native_build(
+            second = prepare_spx_native_build(
                 semantic_c_package=packages.semantic,
                 native_engine_package=packages.native,
                 load_image_contract=packages.contract,
@@ -334,7 +334,7 @@ class NativeBuildTests(unittest.TestCase):
         cases = (
             (
                 ".intel_syntax noprefix\n.text\n"
-                ".globl _stage_b_payload_entry\n_stage_b_payload_entry:\n int3\n",
+                ".globl _spx_payload_entry\n_spx_payload_entry:\n int3\n",
                 "placeholder INT3 bridge source",
             ),
             (".intel_syntax noprefix\n.text\n nop\n", "does not define payload entry"),
@@ -343,8 +343,8 @@ class NativeBuildTests(unittest.TestCase):
             with self.subTest(message=message), tempfile.TemporaryDirectory() as temporary:
                 packages = _Packages(Path(temporary) / "inputs")
                 packages.rewrite_native(bridge)
-                with self.assertRaisesRegex(StageBNativeBuildError, message):
-                    prepare_stage_b_native_build(
+                with self.assertRaisesRegex(CandidateNativeBuildError, message):
+                    prepare_spx_native_build(
                         semantic_c_package=packages.semantic,
                         native_engine_package=packages.native,
                         load_image_contract=packages.contract,
@@ -356,7 +356,7 @@ class NativeBuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             packages = _Packages(root / "inputs")
-            prepare_stage_b_native_build(
+            prepare_spx_native_build(
                 semantic_c_package=packages.semantic,
                 native_engine_package=packages.native,
                 load_image_contract=packages.contract,
@@ -366,8 +366,8 @@ class NativeBuildTests(unittest.TestCase):
             source = packages.semantic / "state-machine-engine.c"
             source.write_text(source.read_text(encoding="ascii") + "\n", encoding="ascii")
 
-            with self.assertRaisesRegex(StageBNativeBuildError, "changed after preparation"):
-                compile_stage_b_native_payload(
+            with self.assertRaisesRegex(CandidateNativeBuildError, "changed after preparation"):
+                compile_spx_native_payload(
                     prepare_manifest=root / "prepare" / PREPARE_MANIFEST_FILENAME,
                     semantic_c_package=packages.semantic,
                     native_engine_package=packages.native,
@@ -378,7 +378,7 @@ class NativeBuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             packages = _Packages(root / "inputs", include_tags=False)
-            prepare_stage_b_native_build(
+            prepare_spx_native_build(
                 semantic_c_package=packages.semantic,
                 native_engine_package=packages.native,
                 load_image_contract=packages.contract,
@@ -386,9 +386,9 @@ class NativeBuildTests(unittest.TestCase):
                 out_dir=root / "prepare",
             )
             with self.assertRaisesRegex(
-                StageBNativeBuildError, "compile native:source_.*failed"
+                CandidateNativeBuildError, "compile native:source_.*failed"
             ):
-                compile_stage_b_native_payload(
+                compile_spx_native_payload(
                     prepare_manifest=root / "prepare" / PREPARE_MANIFEST_FILENAME,
                     semantic_c_package=packages.semantic,
                     native_engine_package=packages.native,
@@ -399,14 +399,14 @@ class NativeBuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             packages = _Packages(root / "inputs")
-            first = build_stage_b_native_candidate(
+            first = build_spx_native_candidate(
                 semantic_c_package=packages.semantic,
                 native_engine_package=packages.native,
                 load_image_contract=packages.contract,
                 anchor_manifest=packages.anchors,
                 out_dir=root / "first",
             )
-            second = build_stage_b_native_candidate(
+            second = build_spx_native_candidate(
                 semantic_c_package=packages.semantic,
                 native_engine_package=packages.native,
                 load_image_contract=packages.contract,
@@ -495,14 +495,14 @@ class NativeBuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             packages = _Packages(root / "inputs")
-            prepare_stage_b_native_build(
+            prepare_spx_native_build(
                 semantic_c_package=packages.semantic,
                 native_engine_package=packages.native,
                 load_image_contract=packages.contract,
                 anchor_manifest=packages.anchors,
                 out_dir=root / "prepare",
             )
-            compile_stage_b_native_payload(
+            compile_spx_native_payload(
                 prepare_manifest=root / "prepare" / PREPARE_MANIFEST_FILENAME,
                 semantic_c_package=packages.semantic,
                 native_engine_package=packages.native,
@@ -514,10 +514,10 @@ class NativeBuildTests(unittest.TestCase):
             _write_json(inventory_path, inventory)
 
             with self.assertRaisesRegex(
-                StageBNativeBuildError,
+                CandidateNativeBuildError,
                 "relocation inventory changed after qualification",
             ):
-                compose_stage_b_native_candidate(
+                compose_spx_native_candidate(
                     prepare_manifest=root / "prepare" / PREPARE_MANIFEST_FILENAME,
                     compile_manifest=root / "compile" / COMPILE_MANIFEST_FILENAME,
                     load_image_contract=packages.contract,
@@ -533,8 +533,8 @@ class NativeBuildTests(unittest.TestCase):
             bad = copy.deepcopy(anchors)
             bad["anchors"][0]["bytes_hex"] = "e900000000"
             _write_json(packages.anchors, bad)
-            with self.assertRaisesRegex(StageBNativeBuildError, "entry anchor"):
-                build_stage_b_native_candidate(
+            with self.assertRaisesRegex(CandidateNativeBuildError, "entry anchor"):
+                build_spx_native_candidate(
                     semantic_c_package=packages.semantic,
                     native_engine_package=packages.native,
                     load_image_contract=packages.contract,

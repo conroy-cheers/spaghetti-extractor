@@ -1,0 +1,2 @@
+# Copy to nix/trusted-public-keys.local or the matching XDG config path.
+builder-cache.example-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=

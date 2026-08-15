@@ -30,9 +30,9 @@ from spaghetti_extractor.reconstruction.ir import (
     prepare_machine_ir_units_package,
 )
 from spaghetti_extractor.reconstruction.state_machine import (
-    normalize_stage_a_semantic_transfer,
+    normalize_spx_semantic_transfer,
 )
-from spaghetti_extractor.pe32.stage_binary import _parse_stage_a_pe
+from spaghetti_extractor.pe32.image import parse_pe_image
 from spaghetti_extractor.util import sha256_bytes
 from spaghetti_extractor.util import sha256_file
 
@@ -155,7 +155,7 @@ def _row(
     }
     if control_disposition is not None:
         transfer["control_disposition"] = control_disposition
-    return normalize_stage_a_semantic_transfer(transfer)
+    return normalize_spx_semantic_transfer(transfer)
 
 
 def _x87_state(rva: int, encoded: bytes) -> dict[str, object]:
@@ -163,7 +163,7 @@ def _x87_state(rva: int, encoded: bytes) -> dict[str, object]:
     return {
         "model": "native_exact_x87_command_replay_obligation_v1",
         "status": "required",
-        "authoritative_state_type": "StageA.X87.PhysicalState",
+        "authoritative_state_type": "SpaghettiExtractor.ISA.X87.PhysicalState",
         "required_fields": list(_X87_FIELDS),
         "missing_or_invalid_fields": [
             "tags",
@@ -180,9 +180,9 @@ def _x87_state(rva: int, encoded: bytes) -> dict[str, object]:
             "status": {"op": "fpu_status", "args": []},
         },
         "replay": {
-            "format": "stage-a-native-exact-x87-command-replay-obligation-v1",
-            "checked_decoder": "StageA.Formal.decodeInstructionExact",
-            "checked_executor": "StageA.Formal.executeInstruction",
+            "format": "spaghetti-extractor-native-exact-x87-command-replay-obligation-v1",
+            "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+            "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             "architecture": "x86",
             "bitness": 32,
             "image_base": 0x400000,
@@ -225,7 +225,9 @@ def _write_static_program_contract(path: Path, original: Path) -> None:
         "structural_universe": {
             "units": [{"id": "return", "kind": "code"}],
             "padding": [],
-            "roots": [{"kind": "pe_entrypoint", "block_id": "return"}],
+            "roots": [
+                {"kind": "pe_entrypoint", "rva": 0x1000, "block_id": "return"}
+            ],
             "cfg_edges": [],
         },
         "families": {
@@ -246,9 +248,8 @@ def _write_static_program_contract(path: Path, original: Path) -> None:
         "counts": {"units": 1},
         "trust": {
             "executes_original_binary": False,
-            "uses_candidate_binary": False,
-            "uses_binary_mapping": False,
-            "claims_whole_program_equivalence": False,
+            "input_image_count": 1,
+            "uses_cross_image_mapping": False,
             "behavioral_reachability_separate": True,
         },
     }

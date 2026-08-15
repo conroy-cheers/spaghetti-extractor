@@ -35,15 +35,15 @@ from .engine_x87 import (
 
 
 def _wrapper_header() -> str:
-    return """#ifndef STAGE_B_NATIVE_ENGINE_WRAPPER_H
-#define STAGE_B_NATIVE_ENGINE_WRAPPER_H
+    return """#ifndef SPX_NATIVE_ENGINE_WRAPPER_H
+#define SPX_NATIVE_ENGINE_WRAPPER_H
 
 #include <stddef.h>
 #include "state-machine-runtime.h"
 
 /* Intel 32-bit protected-mode FNSAVE/FRSTOR image.  The register array is
  * physical R0..R7 and tag_word is the complete architectural tag word. */
-typedef struct __attribute__((packed, aligned(4))) stage_b_x87_fnsave_image {
+typedef struct __attribute__((packed, aligned(4))) spx_x87_fnsave_image {
   uint16_t control_word, reserved_02;
   uint16_t status_word, reserved_06;
   uint16_t tag_word, reserved_0a;
@@ -52,94 +52,94 @@ typedef struct __attribute__((packed, aligned(4))) stage_b_x87_fnsave_image {
   uint32_t data_pointer;
   uint16_t data_selector, reserved_1a;
   uint8_t physical_registers[8][10];
-} stage_b_x87_fnsave_image;
+} spx_x87_fnsave_image;
 
-typedef struct stage_b_native_bridge_frame {
-  struct stage_b_native_bridge_frame *parent;
-  const stage_b_machine_state *input;
-  stage_b_machine_state *output;
+typedef struct spx_native_bridge_frame {
+  struct spx_native_bridge_frame *parent;
+  const spx_machine_state *input;
+  spx_machine_state *output;
   uint32_t private_esp;
   uint32_t call_target;
-  stage_b_call_status status;
+  spx_call_status status;
   uint32_t saved_continuation;
   uint32_t continuation_replaced;
-  stage_b_x87_fnsave_image input_x87;
-  stage_b_x87_fnsave_image output_x87;
-} stage_b_native_bridge_frame;
+  spx_x87_fnsave_image input_x87;
+  spx_x87_fnsave_image output_x87;
+} spx_native_bridge_frame;
 
-typedef struct stage_b_native_callback_frame {
-  struct stage_b_native_callback_frame *parent;
-  stage_b_native_bridge_frame *parent_bridge;
+typedef struct spx_native_callback_frame {
+  struct spx_native_callback_frame *parent;
+  spx_native_bridge_frame *parent_bridge;
   uint32_t physical_esp;
   uint32_t return_target;
-  stage_b_call_status status;
-  stage_b_machine_state input;
-  stage_b_machine_state output;
-  stage_b_x87_fnsave_image input_x87;
-  stage_b_x87_fnsave_image output_x87;
-} stage_b_native_callback_frame;
+  spx_call_status status;
+  spx_machine_state input;
+  spx_machine_state output;
+  spx_x87_fnsave_image input_x87;
+  spx_x87_fnsave_image output_x87;
+} spx_native_callback_frame;
 
-typedef struct stage_b_native_x87_frame {
-  struct stage_b_native_x87_frame *parent;
-  const stage_b_machine_state *input;
-  stage_b_machine_state *output;
+typedef struct spx_native_x87_frame {
+  struct spx_native_x87_frame *parent;
+  const spx_machine_state *input;
+  spx_machine_state *output;
   uint32_t private_esp;
-  stage_b_call_status status;
-  stage_b_x87_fnsave_image input_x87;
-  stage_b_x87_fnsave_image output_x87;
-} stage_b_native_x87_frame;
+  spx_call_status status;
+  spx_x87_fnsave_image input_x87;
+  spx_x87_fnsave_image output_x87;
+} spx_native_x87_frame;
 
-extern stage_b_native_bridge_frame *stage_b_native_active_bridge;
-extern stage_b_native_callback_frame *stage_b_native_active_callback;
-extern stage_b_native_x87_frame *stage_b_native_active_x87;
-extern stage_b_machine_state stage_b_native_launch_state;
-extern stage_b_machine_state stage_b_native_launch_output;
-extern uint32_t stage_b_native_launch_return;
-extern stage_b_x87_fnsave_image stage_b_native_launch_x87;
-extern stage_b_x87_fnsave_image stage_b_native_launch_output_x87;
-extern uint8_t stage_b_native_callback_stack[65536];
-extern volatile stage_b_call_status stage_b_native_root_callback_fault;
-extern volatile uint32_t stage_b_native_root_callback_fault_rva;
-extern volatile uint32_t stage_b_native_diagnostic_reason;
-extern volatile uint32_t stage_b_native_diagnostic_value;
-extern volatile uint32_t stage_b_native_diagnostic_aux;
-extern volatile uint32_t stage_b_native_diagnostic_detail;
-extern stage_b_machine_state stage_b_native_root_callback_fault_state;
-extern stage_b_runtime stage_b_native_runtime_instance;
+extern spx_native_bridge_frame *spx_native_active_bridge;
+extern spx_native_callback_frame *spx_native_active_callback;
+extern spx_native_x87_frame *spx_native_active_x87;
+extern spx_machine_state spx_native_launch_state;
+extern spx_machine_state spx_native_launch_output;
+extern uint32_t spx_native_launch_return;
+extern spx_x87_fnsave_image spx_native_launch_x87;
+extern spx_x87_fnsave_image spx_native_launch_output_x87;
+extern uint8_t spx_native_callback_stack[65536];
+extern volatile spx_call_status spx_native_root_callback_fault;
+extern volatile uint32_t spx_native_root_callback_fault_rva;
+extern volatile uint32_t spx_native_diagnostic_reason;
+extern volatile uint32_t spx_native_diagnostic_value;
+extern volatile uint32_t spx_native_diagnostic_aux;
+extern volatile uint32_t spx_native_diagnostic_detail;
+extern spx_machine_state spx_native_root_callback_fault_state;
+extern spx_runtime spx_native_runtime_instance;
 
-stage_b_call_status stage_b_native_runtime_run_at_rva(
-    uint32_t entry_rva, const stage_b_machine_state *input,
-    stage_b_machine_state *output);
-stage_b_call_status stage_b_native_runtime_run_nested_callback(
+spx_call_status spx_native_runtime_run_at_rva(
+    uint32_t entry_rva, const spx_machine_state *input,
+    spx_machine_state *output);
+spx_call_status spx_native_runtime_run_nested_callback(
     uint32_t callback_rva, uint32_t stack_cleanup_bytes,
-    const stage_b_machine_state *input, stage_b_machine_state *output);
-stage_b_call_status stage_b_native_runtime_capture_external_call(
-    const stage_b_call_event *event, const stage_b_machine_state *input,
-    stage_b_external_call_snapshot *snapshot);
-stage_b_call_status stage_b_native_runtime_record_external_result(
-    const stage_b_call_event *event,
-    const stage_b_external_call_snapshot *snapshot,
-    const stage_b_machine_state *output);
-stage_b_call_status stage_b_native_run_entry(
-    stage_b_machine_state *input, stage_b_machine_state *output);
-stage_b_call_status stage_b_native_run_callback(
+    const spx_machine_state *input, spx_machine_state *output);
+spx_call_status spx_native_runtime_capture_external_call(
+    const spx_call_event *event, const spx_machine_state *input,
+    spx_external_call_snapshot *snapshot);
+spx_call_status spx_native_runtime_record_external_result(
+    const spx_call_event *event,
+    const spx_external_call_snapshot *snapshot,
+    const spx_machine_state *output);
+spx_call_status spx_native_run_entry(
+    spx_machine_state *input, spx_machine_state *output);
+spx_call_status spx_native_run_callback(
     uint32_t callback_rva, uint32_t stack_cleanup_bytes,
-    stage_b_machine_state *input, stage_b_machine_state *output,
-    const stage_b_x87_fnsave_image *input_x87,
-    stage_b_x87_fnsave_image *output_x87);
+    spx_machine_state *input, spx_machine_state *output,
+    const spx_x87_fnsave_image *input_x87,
+    spx_x87_fnsave_image *output_x87);
 
 #endif
 """
 
 
 def _wrapper_source(plan: NativeEnginePlan) -> str:
-    declarations = ["extern void stage_b_native_bridge(void);"]
+    declarations = ["extern void spx_native_bridge(void);"]
     callback_declarations = [
         f"extern void {target.symbol}(void);"
         for target in plan.callback_targets
     ]
     x87_declarations = [
-        f"extern void stage_b_native_x87_bridge_{operation.id:04d}(void);"
+        f"extern void spx_native_x87_bridge_{operation.id:04d}(void);"
         for operation in plan.x87_operations
     ]
     table = [
@@ -157,36 +157,36 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         for site in plan.external_sites
     ]
     state_assertions = [
-        f'_Static_assert(offsetof(stage_b_machine_state, {field}) == {offset}U, '
+        f'_Static_assert(offsetof(spx_machine_state, {field}) == {offset}U, '
         f'"assembly offset for {field} is stale");'
         for field, offset in _STATE_OFFSETS.items()
         if field != "x87_stack"
     ]
     state_assertions.extend([
-        f'_Static_assert(offsetof(stage_b_machine_state, x87_stack) == '
+        f'_Static_assert(offsetof(spx_machine_state, x87_stack) == '
         f'{_STATE_OFFSETS["x87_stack"]}U, '
         '"assembly offset for x87_stack is stale");',
-        f'_Static_assert(sizeof(stage_b_x87_value) == {_X87_VALUE_SIZE}U, '
+        f'_Static_assert(sizeof(spx_x87_value) == {_X87_VALUE_SIZE}U, '
         '"assembly x87-value stride is stale");',
-        f'_Static_assert(offsetof(stage_b_x87_value, empty) == '
+        f'_Static_assert(offsetof(spx_x87_value, empty) == '
         f'{_X87_VALUE_EMPTY_OFFSET}U, '
         '"assembly x87 empty offset is stale");',
-        f'_Static_assert(offsetof(stage_b_x87_value, tag) == '
+        f'_Static_assert(offsetof(spx_x87_value, tag) == '
         f'{_X87_VALUE_TAG_OFFSET}U, '
         '"assembly x87 tag offset is stale");',
     ])
     frame_assertions = [
-        f'_Static_assert(offsetof(stage_b_native_bridge_frame, {field}) == {offset}U, '
+        f'_Static_assert(offsetof(spx_native_bridge_frame, {field}) == {offset}U, '
         f'"assembly bridge-frame offset for {field} is stale");'
         for field, offset in _FRAME_OFFSETS.items()
     ]
     callback_frame_assertions = [
-        f'_Static_assert(offsetof(stage_b_native_callback_frame, {field}) == {offset}U, '
+        f'_Static_assert(offsetof(spx_native_callback_frame, {field}) == {offset}U, '
         f'"assembly callback-frame offset for {field} is stale");'
         for field, offset in _CALLBACK_FRAME_OFFSETS.items()
     ]
     x87_frame_assertions = [
-        f'_Static_assert(offsetof(stage_b_native_x87_frame, {field}) == {offset}U, '
+        f'_Static_assert(offsetof(spx_native_x87_frame, {field}) == {offset}U, '
         f'"assembly x87-frame offset for {field} is stale");'
         for field, offset in _X87_FRAME_OFFSETS.items()
     ]
@@ -213,13 +213,13 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
             f"0x{operation.rva_end:08x}U, {operation.operation.source_size}U, "
             f"{json.dumps(operation.operation.identity)}, "
             f"{json.dumps(operation.contract_sha256)}, "
-            f"stage_b_native_x87_bridge_{operation.id:04d} }},"
+            f"spx_native_x87_bridge_{operation.id:04d} }},"
         )
         for operation in plan.x87_operations
     ]
     bridge_dispatch = [
-        "static void stage_b_native_dispatch_bridge(void) {",
-        "  stage_b_native_bridge();",
+        "static void spx_native_dispatch_bridge(void) {",
+        "  spx_native_bridge();",
         "}",
     ]
     return "\n".join([
@@ -228,142 +228,133 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         *declarations,
         *callback_declarations,
         *x87_declarations,
-        "#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP",
-        "void stage_b_native_runtime_write_diagnostic(",
-        "    uint32_t status, uint32_t failure_rva,",
-        "    const stage_b_machine_state *state);",
-        "void stage_b_native_runtime_write_external_probe(",
-        "    const stage_b_call_event *event,",
-        "    const stage_b_machine_state *state);",
-        "#endif",
-        "",
         "extern const unsigned char __ImageBase[];",
         "",
-        "stage_b_native_bridge_frame *stage_b_native_active_bridge;",
-        "stage_b_native_callback_frame *stage_b_native_active_callback;",
-        "stage_b_native_x87_frame *stage_b_native_active_x87;",
-        "stage_b_machine_state stage_b_native_launch_state;",
-        "stage_b_machine_state stage_b_native_launch_output;",
-        "uint32_t stage_b_native_launch_return;",
-        "stage_b_x87_fnsave_image stage_b_native_launch_x87;",
-        "stage_b_x87_fnsave_image stage_b_native_launch_output_x87;",
-        "uint8_t stage_b_native_callback_stack[65536] __attribute__((aligned(16)));",
-        "volatile stage_b_call_status stage_b_native_root_callback_fault = STAGE_B_CALL_OK;",
-        "volatile uint32_t stage_b_native_root_callback_fault_rva;",
-        "stage_b_machine_state stage_b_native_root_callback_fault_state;",
+        "spx_native_bridge_frame *spx_native_active_bridge;",
+        "spx_native_callback_frame *spx_native_active_callback;",
+        "spx_native_x87_frame *spx_native_active_x87;",
+        "spx_machine_state spx_native_launch_state;",
+        "spx_machine_state spx_native_launch_output;",
+        "uint32_t spx_native_launch_return;",
+        "spx_x87_fnsave_image spx_native_launch_x87;",
+        "spx_x87_fnsave_image spx_native_launch_output_x87;",
+        "uint8_t spx_native_callback_stack[65536] __attribute__((aligned(16)));",
+        "volatile spx_call_status spx_native_root_callback_fault = SPX_CALL_OK;",
+        "volatile uint32_t spx_native_root_callback_fault_rva;",
+        "spx_machine_state spx_native_root_callback_fault_state;",
         "",
         *state_assertions,
         *frame_assertions,
         *callback_frame_assertions,
         *x87_frame_assertions,
-        f'_Static_assert(sizeof(stage_b_machine_state) == {_MACHINE_STATE_SIZE}U, '
+        f'_Static_assert(sizeof(spx_machine_state) == {_MACHINE_STATE_SIZE}U, '
         '"assembly machine-state size is stale");',
-        f'_Static_assert(sizeof(stage_b_native_callback_frame) == {_CALLBACK_FRAME_SIZE}U, '
+        f'_Static_assert(sizeof(spx_native_callback_frame) == {_CALLBACK_FRAME_SIZE}U, '
         '"assembly callback-frame size is stale");',
-        f'_Static_assert(sizeof(stage_b_x87_fnsave_image) == {_FNSAVE_IMAGE_SIZE}U, '
+        f'_Static_assert(sizeof(spx_x87_fnsave_image) == {_FNSAVE_IMAGE_SIZE}U, '
         '"FNSAVE image must be 108 bytes in i686 mode");',
-        '_Static_assert(offsetof(stage_b_x87_fnsave_image, control_word) == 0U, '
+        '_Static_assert(offsetof(spx_x87_fnsave_image, control_word) == 0U, '
         '"FNSAVE control offset changed");',
-        '_Static_assert(offsetof(stage_b_x87_fnsave_image, status_word) == 4U, '
+        '_Static_assert(offsetof(spx_x87_fnsave_image, status_word) == 4U, '
         '"FNSAVE status offset changed");',
-        '_Static_assert(offsetof(stage_b_x87_fnsave_image, tag_word) == 8U, '
+        '_Static_assert(offsetof(spx_x87_fnsave_image, tag_word) == 8U, '
         '"FNSAVE tag offset changed");',
-        '_Static_assert(offsetof(stage_b_x87_fnsave_image, physical_registers) == 28U, '
+        '_Static_assert(offsetof(spx_x87_fnsave_image, physical_registers) == 28U, '
         '"FNSAVE physical-register offset changed");',
-        '_Static_assert(STAGE_B_CALL_OK == 0, "assembly status encoding is stale");',
+        '_Static_assert(SPX_CALL_OK == 0, "assembly status encoding is stale");',
         "",
-        "typedef void (*stage_b_native_assembly_fn)(void);",
-        "typedef struct stage_b_native_bridge_entry {",
+        "typedef void (*spx_native_assembly_fn)(void);",
+        "typedef struct spx_native_bridge_entry {",
         "  uint32_t instruction_rva;",
         "  uint32_t iat_va;",
         "  uint32_t dynamic_target, tail_jump;",
         "  uint32_t callback_registration, callback_argument_index;",
         "  uint32_t callback_argument_offset, callback_pointee_offset;",
         "  uint32_t callback_nullable;",
-        "} stage_b_native_bridge_entry;",
-        "typedef struct stage_b_native_callback_entry {",
+        "} spx_native_bridge_entry;",
+        "typedef struct spx_native_callback_entry {",
         "  uint32_t rva, stack_cleanup_bytes;",
         "  const char *kind, *transfer_id, *transfer_sha256;",
-        "  stage_b_native_assembly_fn bridge;",
-        "} stage_b_native_callback_entry;",
-        "typedef struct stage_b_native_callback_adapter {",
+        "  spx_native_assembly_fn bridge;",
+        "} spx_native_callback_entry;",
+        "typedef struct spx_native_callback_adapter {",
         "  uint32_t instruction_rva, argument_index, original_rva;",
-        "  stage_b_native_assembly_fn bridge;",
-        "} stage_b_native_callback_adapter;",
-        "typedef struct stage_b_native_x87_entry {",
+        "  spx_native_assembly_fn bridge;",
+        "} spx_native_callback_adapter;",
+        "typedef struct spx_native_x87_entry {",
         "  uint32_t image_base, rva_start, rva_end, source_size;",
         "  const char *operation_identity, *contract_sha256;",
-        "  stage_b_native_assembly_fn bridge;",
-        "} stage_b_native_x87_entry;",
+        "  spx_native_assembly_fn bridge;",
+        "} spx_native_x87_entry;",
         "",
-        "static const stage_b_native_bridge_entry stage_b_native_bridges[] = {",
+        "static const spx_native_bridge_entry spx_native_bridges[] = {",
         *table,
         "};",
-        f"static const uint32_t stage_b_native_bridge_count = {len(table)}U;",
+        f"static const uint32_t spx_native_bridge_count = {len(table)}U;",
         "",
-        "static const stage_b_native_callback_entry stage_b_native_callbacks[] = {",
+        "static const spx_native_callback_entry spx_native_callbacks[] = {",
         *callback_table,
         "};",
-        f"static const uint32_t stage_b_native_callback_count = {len(callback_table)}U;",
+        f"static const uint32_t spx_native_callback_count = {len(callback_table)}U;",
         "",
-        "static const stage_b_native_callback_adapter stage_b_native_callback_adapters[] = {",
+        "static const spx_native_callback_adapter spx_native_callback_adapters[] = {",
         *callback_adapter_table,
         "};",
-        f"static const uint32_t stage_b_native_callback_adapter_count = {len(callback_adapter_table)}U;",
+        f"static const uint32_t spx_native_callback_adapter_count = {len(callback_adapter_table)}U;",
         "",
-        "static const stage_b_native_x87_entry stage_b_native_x87_entries[] = {",
+        "static const spx_native_x87_entry spx_native_x87_entries[] = {",
         *x87_table,
         "};",
-        f"static const uint32_t stage_b_native_x87_count = {len(x87_table)}U;",
+        f"static const uint32_t spx_native_x87_count = {len(x87_table)}U;",
         "",
-        "static const stage_b_native_bridge_entry *stage_b_native_bridge_entry_for(",
+        "static const spx_native_bridge_entry *spx_native_bridge_entry_for(",
         "    uint32_t instruction_rva) {",
         "  uint32_t i;",
-        "  for (i = 0; i < stage_b_native_bridge_count; ++i)",
-        "    if (stage_b_native_bridges[i].instruction_rva == instruction_rva)",
-        "      return &stage_b_native_bridges[i];",
-        "  return (const stage_b_native_bridge_entry *)0;",
+        "  for (i = 0; i < spx_native_bridge_count; ++i)",
+        "    if (spx_native_bridges[i].instruction_rva == instruction_rva)",
+        "      return &spx_native_bridges[i];",
+        "  return (const spx_native_bridge_entry *)0;",
         "}",
         "",
-        "static const stage_b_native_callback_entry *stage_b_native_callback_entry_for(",
+        "static const spx_native_callback_entry *spx_native_callback_entry_for(",
         "    uint32_t rva) {",
         "  uint32_t i;",
-        "  for (i = 0; i < stage_b_native_callback_count; ++i)",
-        "    if (stage_b_native_callbacks[i].rva == rva)",
-        "      return &stage_b_native_callbacks[i];",
-        "  return (const stage_b_native_callback_entry *)0;",
+        "  for (i = 0; i < spx_native_callback_count; ++i)",
+        "    if (spx_native_callbacks[i].rva == rva)",
+        "      return &spx_native_callbacks[i];",
+        "  return (const spx_native_callback_entry *)0;",
         "}",
         "",
-        "static const stage_b_native_callback_adapter *",
-        "stage_b_native_callback_adapter_for(",
+        "static const spx_native_callback_adapter *",
+        "spx_native_callback_adapter_for(",
         "    uint32_t instruction_rva, uint32_t argument_index,",
         "    uint32_t observed_target) {",
         "  const uint32_t image_base = (uint32_t)(uintptr_t)&__ImageBase;",
         "  uint32_t i;",
-        "  for (i = 0; i < stage_b_native_callback_adapter_count; ++i) {",
-        "    const stage_b_native_callback_adapter *adapter =",
-        "        &stage_b_native_callback_adapters[i];",
+        "  for (i = 0; i < spx_native_callback_adapter_count; ++i) {",
+        "    const spx_native_callback_adapter *adapter =",
+        "        &spx_native_callback_adapters[i];",
         "    if (adapter->instruction_rva == instruction_rva &&",
         "        adapter->argument_index == argument_index &&",
         "        image_base + adapter->original_rva == observed_target)",
         "      return adapter;",
         "  }",
-        "  return (const stage_b_native_callback_adapter *)0;",
+        "  return (const spx_native_callback_adapter *)0;",
         "}",
         "",
-        "static __attribute__((unused)) const stage_b_native_x87_entry *",
-        "stage_b_native_x87_entry_for(",
+        "static __attribute__((unused)) const spx_native_x87_entry *",
+        "spx_native_x87_entry_for(",
         "    uint32_t rva) {",
         "  uint32_t i;",
-        "  for (i = 0; i < stage_b_native_x87_count; ++i)",
-        "    if (stage_b_native_x87_entries[i].rva_start == rva)",
-        "      return &stage_b_native_x87_entries[i];",
-        "  return (const stage_b_native_x87_entry *)0;",
+        "  for (i = 0; i < spx_native_x87_count; ++i)",
+        "    if (spx_native_x87_entries[i].rva_start == rva)",
+        "      return &spx_native_x87_entries[i];",
+        "  return (const spx_native_x87_entry *)0;",
         "}",
         "",
         *bridge_dispatch,
         "",
-        "static __attribute__((unused)) uint32_t stage_b_native_bytes_equal(",
+        "static __attribute__((unused)) uint32_t spx_native_bytes_equal(",
         "    const uint8_t *left, const uint8_t *right, uint32_t count) {",
         "  uint32_t i;",
         "  if (left == 0 || right == 0) return 0U;",
@@ -371,7 +362,7 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  return 1U;",
         "}",
         "",
-        "static __attribute__((unused)) uint32_t stage_b_native_string_equal(",
+        "static __attribute__((unused)) uint32_t spx_native_string_equal(",
         "    const char *left, const char *right) {",
         "  if (left == 0 || right == 0) return 0U;",
         "  while (*left != '\\0' && *right != '\\0')",
@@ -379,7 +370,7 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  return *left == *right;",
         "}",
         "",
-        "static uint32_t stage_b_native_fixed_flat_read_u32(",
+        "static uint32_t spx_native_fixed_flat_read_u32(",
         "    uint32_t address, uint32_t *value) {",
         "  const volatile uint8_t *bytes;",
         "  if (value == 0 || address > 0xffffffffU - 3U) return 0U;",
@@ -389,7 +380,7 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  return 1U;",
         "}",
         "",
-        "static uint32_t stage_b_native_fixed_flat_write_u32(",
+        "static uint32_t spx_native_fixed_flat_write_u32(",
         "    uint32_t address, uint32_t value) {",
         "  volatile uint8_t *bytes;",
         "  if (address > 0xffffffffU - 3U) return 0U;",
@@ -401,8 +392,8 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  return 1U;",
         "}",
         "",
-        "static __attribute__((unused)) uint32_t stage_b_native_state_to_fnsave(",
-        "    const stage_b_machine_state *state, stage_b_x87_fnsave_image *image) {",
+        "static __attribute__((unused)) uint32_t spx_native_state_to_fnsave(",
+        "    const spx_machine_state *state, spx_x87_fnsave_image *image) {",
         "  uint32_t i, j, top; uint16_t tags = 0U;",
         "  if (state == 0 || image == 0 || state->x87_last_opcode > 0x7ffU)",
         "    return 1U;",
@@ -432,8 +423,8 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  return 0U;",
         "}",
         "",
-        "static __attribute__((unused)) uint32_t stage_b_native_fnsave_to_state(",
-        "    const stage_b_x87_fnsave_image *image, stage_b_machine_state *state) {",
+        "static __attribute__((unused)) uint32_t spx_native_fnsave_to_state(",
+        "    const spx_x87_fnsave_image *image, spx_machine_state *state) {",
         "  uint32_t i, j, top;",
         "  if (image == 0 || state == 0 || image->last_opcode > 0x7ffU) return 1U;",
         "  top = (image->status_word >> 11U) & 7U;",
@@ -458,7 +449,7 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  return 0U;",
         "}",
         "",
-        "static void stage_b_native_unpack_flags(stage_b_machine_state *state) {",
+        "static void spx_native_unpack_flags(spx_machine_state *state) {",
         "  const uint32_t flags = state->eflags;",
         "  state->cf = (flags >> 0) & 1U;",
         "  state->pf = (flags >> 2) & 1U;",
@@ -468,7 +459,7 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  state->of = (flags >> 11) & 1U;",
         "}",
         "",
-        "static void stage_b_native_pack_flags(stage_b_machine_state *state) {",
+        "static void spx_native_pack_flags(spx_machine_state *state) {",
         "  /* The supported machine model carries exactly these six flags.",
         "   * Do not replay unmodeled control bits such as TF, NT, RF, or VM. */",
         "  state->eflags = 2U |",
@@ -477,27 +468,7 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "      ((state->df & 1U) << 10) | ((state->of & 1U) << 11);",
         "}",
         "",
-        "#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP",
-        "static __attribute__((noinline)) void stage_b_native_diagnostic_trap(",
-        "    stage_b_call_status status, const stage_b_machine_state *state) {",
-        "  const uint32_t rva = state != 0 ? state->original_rva : 0U;",
-        "  const uint32_t modeled_eax = stage_b_native_diagnostic_reason != 0U",
-        "      ? stage_b_native_diagnostic_value : state != 0 ? state->eax : 0U;",
-        "  const uint32_t modeled_esp = stage_b_native_diagnostic_reason != 0U",
-        "      ? stage_b_native_diagnostic_aux : state != 0 ? state->esp : 0U;",
-        "  const uint32_t expected_return = stage_b_native_diagnostic_reason != 0U",
-        "      ? stage_b_native_diagnostic_detail : state != 0 ? state->esi : 0U;",
-        "  const uint32_t observed_return = stage_b_native_diagnostic_reason != 0U",
-        "      ? stage_b_native_diagnostic_reason : state != 0 ? state->edi : 0U;",
-        "  stage_b_native_runtime_write_diagnostic((uint32_t)status, rva, state);",
-        "  __asm__ volatile (\"int3\" : : \"a\" (rva),",
-        "      \"d\" ((uint32_t)status), \"c\" (modeled_eax),",
-        "      \"b\" (modeled_esp), \"S\" (expected_return),",
-        "      \"D\" (observed_return) : \"memory\");",
-        "}",
-        "#endif",
-        "",
-        "static uint32_t stage_b_native_original_iat_target(uint32_t iat_va) {",
+        "static uint32_t spx_native_original_iat_target(uint32_t iat_va) {",
         "  const uint32_t image_base = (uint32_t)(uintptr_t)&__ImageBase;",
         "  uint32_t nt_offset, preferred_base, iat_address;",
         "  if (image_base == 0U ||",
@@ -516,84 +487,77 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
         "  return *(volatile const uint32_t *)(uintptr_t)iat_address;",
         "}",
         "",
-        "stage_b_call_status stage_b_native_run_entry(",
-        "    stage_b_machine_state *input, stage_b_machine_state *output) {",
-        "  stage_b_call_status status;",
-        "  if (input == 0 || output == 0) return STAGE_B_CALL_UNIMPLEMENTED;",
-        "  if (stage_b_native_root_callback_fault != STAGE_B_CALL_OK)",
-        "    return stage_b_native_root_callback_fault;",
+        "spx_call_status spx_native_run_entry(",
+        "    spx_machine_state *input, spx_machine_state *output) {",
+        "  spx_call_status status;",
+        "  if (input == 0 || output == 0) return SPX_CALL_UNIMPLEMENTED;",
+        "  if (spx_native_root_callback_fault != SPX_CALL_OK)",
+        "    return spx_native_root_callback_fault;",
         *(
             [
-                "  if (stage_b_native_fnsave_to_state(",
-                "          &stage_b_native_launch_x87, input) != 0U)",
-                "    return STAGE_B_CALL_UNIMPLEMENTED;",
+                "  if (spx_native_fnsave_to_state(",
+                "          &spx_native_launch_x87, input) != 0U)",
+                "    return SPX_CALL_UNIMPLEMENTED;",
             ]
             if plan.x87_operations
             else []
         ),
-        "  stage_b_native_unpack_flags(input);",
+        "  spx_native_unpack_flags(input);",
         f"  input->original_rva = 0x{plan.entry_rva:08x}U;",
         "  *output = *input;",
-        "  status = stage_b_native_runtime_run_at_rva(",
+        "  status = spx_native_runtime_run_at_rva(",
         f"      0x{plan.entry_rva:08x}U, input, output);",
-        "#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP",
-        "  if (status != STAGE_B_CALL_OK)",
-        "    stage_b_native_diagnostic_trap(status, output);",
-        "  else",
-        "    stage_b_native_runtime_write_diagnostic(",
-        "        (uint32_t)status, output->original_rva, output);",
-        "#endif",
-        "  if (status != STAGE_B_CALL_OK) return status;",
-        "  stage_b_native_pack_flags(output);",
+        "  if (status != SPX_CALL_OK) return status;",
+        "  spx_native_pack_flags(output);",
         *(
             [
-                "  if (stage_b_native_state_to_fnsave(",
-                "          output, &stage_b_native_launch_output_x87) != 0U)",
-                "    return STAGE_B_CALL_UNIMPLEMENTED;",
+                "  if (spx_native_state_to_fnsave(",
+                "          output, &spx_native_launch_output_x87) != 0U)",
+                "    return SPX_CALL_UNIMPLEMENTED;",
             ]
             if plan.x87_operations
             else []
         ),
-        "  return STAGE_B_CALL_OK;",
+        "  return SPX_CALL_OK;",
         "}",
         "",
-        "stage_b_call_status stage_b_native_run_callback(",
+        "spx_call_status spx_native_run_callback(",
         "    uint32_t callback_rva, uint32_t stack_cleanup_bytes,",
-        "    stage_b_machine_state *input, stage_b_machine_state *output,",
-        "    const stage_b_x87_fnsave_image *input_x87,",
-        "    stage_b_x87_fnsave_image *output_x87) {",
-        "  const stage_b_native_callback_entry *entry =",
-        "      stage_b_native_callback_entry_for(callback_rva);",
-        "  stage_b_call_status status = STAGE_B_CALL_UNIMPLEMENTED;",
+        "    spx_machine_state *input, spx_machine_state *output,",
+        "    const spx_x87_fnsave_image *input_x87,",
+        "    spx_x87_fnsave_image *output_x87) {",
+        "  const spx_native_callback_entry *entry =",
+        "      spx_native_callback_entry_for(callback_rva);",
+        "  spx_call_status status = SPX_CALL_UNIMPLEMENTED;",
         "  if (entry == 0 || input == 0 || output == 0 ||",
         "      entry->stack_cleanup_bytes != stack_cleanup_bytes)",
-        "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "    return SPX_CALL_UNIMPLEMENTED;",
         "  *output = *input;",
         *(
             [
-                "  if (stage_b_native_fnsave_to_state(input_x87, input) != 0U)",
+                "  if (spx_native_fnsave_to_state(input_x87, input) != 0U)",
                 "    goto record_result;",
             ]
             if plan.x87_operations
             else ["  (void)input_x87;", "  (void)output_x87;"]
         ),
-        "  stage_b_native_unpack_flags(input);",
+        "  spx_native_unpack_flags(input);",
         "  input->original_rva = callback_rva;",
         "  *output = *input;",
-        "  status = stage_b_native_active_bridge != 0",
-        "      ? stage_b_native_runtime_run_nested_callback(",
+        "  status = spx_native_active_bridge != 0",
+        "      ? spx_native_runtime_run_nested_callback(",
         "          callback_rva, stack_cleanup_bytes, input, output)",
-        "      : stage_b_native_runtime_run_at_rva(callback_rva, input, output);",
-        "  if (status != STAGE_B_CALL_OK) goto record_result;",
+        "      : spx_native_runtime_run_at_rva(callback_rva, input, output);",
+        "  if (status != SPX_CALL_OK) goto record_result;",
         "  if (output->esp != input->esp + 4U + stack_cleanup_bytes) {",
-        "    status = STAGE_B_CALL_UNIMPLEMENTED;",
+        "    status = SPX_CALL_UNIMPLEMENTED;",
         "    goto record_result;",
         "  }",
-        "  stage_b_native_pack_flags(output);",
+        "  spx_native_pack_flags(output);",
         *(
             [
-                "  if (stage_b_native_state_to_fnsave(output, output_x87) != 0U) {",
-                "    status = STAGE_B_CALL_UNIMPLEMENTED;",
+                "  if (spx_native_state_to_fnsave(output, output_x87) != 0U) {",
+                "    status = SPX_CALL_UNIMPLEMENTED;",
                 "    goto record_result;",
                 "  }",
             ]
@@ -601,10 +565,10 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
             else []
         ),
         "record_result:",
-        "  if (status != STAGE_B_CALL_OK && stage_b_native_active_bridge == 0 &&",
-        "      stage_b_native_root_callback_fault_rva == 0U) {",
-        "    stage_b_native_root_callback_fault_rva = callback_rva;",
-        "    stage_b_native_root_callback_fault_state = *output;",
+        "  if (status != SPX_CALL_OK && spx_native_active_bridge == 0 &&",
+        "      spx_native_root_callback_fault_rva == 0U) {",
+        "    spx_native_root_callback_fault_rva = callback_rva;",
+        "    spx_native_root_callback_fault_state = *output;",
         "  }",
         "  return status;",
         "}",
@@ -614,151 +578,148 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
             if plan.x87_operations
             else []
         ),
-        "stage_b_call_status stage_b_dispatch_external_call(",
-        "    stage_b_runtime *runtime,",
-        "    const stage_b_call_event *event,",
-        "    const stage_b_machine_state *input,",
-        "    stage_b_machine_state *output) {",
-        "  stage_b_native_bridge_frame frame;",
-        "  stage_b_external_call_snapshot external_snapshot;",
-        "  const stage_b_native_bridge_entry *entry;",
-        "  const stage_b_native_callback_adapter *callback_adapter = 0;",
+        "spx_call_status spx_dispatch_external_call(",
+        "    spx_runtime *runtime,",
+        "    const spx_call_event *event,",
+        "    const spx_machine_state *input,",
+        "    spx_machine_state *output) {",
+        "  spx_native_bridge_frame frame;",
+        "  spx_external_call_snapshot external_snapshot;",
+        "  const spx_native_bridge_entry *entry;",
+        "  const spx_native_callback_adapter *callback_adapter = 0;",
         "  uint32_t callback_argument_address = 0U;",
         "  uint32_t callback_container_address = 0U;",
         "  uint32_t callback_argument_original = 0U;",
         "  uint32_t callback_argument_patched = 0U;",
         "  uint32_t preserved_ebx, preserved_esi, preserved_edi, preserved_ebp;",
-        "  if (runtime != &stage_b_native_runtime_instance ||",
+        "  if (runtime != &spx_native_runtime_instance ||",
         "      event == 0 || input == 0 || output == 0)",
-        "    return STAGE_B_CALL_UNIMPLEMENTED;",
-        "  stage_b_native_diagnostic_reason = 0U;",
-        "  stage_b_native_diagnostic_value = 0U;",
-        "  stage_b_native_diagnostic_aux = 0U;",
-        "  stage_b_native_diagnostic_detail = 0U;",
-        "  entry = stage_b_native_bridge_entry_for(event->instruction_rva);",
-        "  if (entry == 0) return STAGE_B_CALL_UNIMPLEMENTED;",
-        "  if ((entry->dynamic_target && event->kind != STAGE_B_CALL_INDIRECT) ||",
-        "      (!entry->dynamic_target && event->kind != STAGE_B_CALL_EXTERNAL_IMPORT))",
-        "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "    return SPX_CALL_UNIMPLEMENTED;",
+        "  spx_native_diagnostic_reason = 0U;",
+        "  spx_native_diagnostic_value = 0U;",
+        "  spx_native_diagnostic_aux = 0U;",
+        "  spx_native_diagnostic_detail = 0U;",
+        "  entry = spx_native_bridge_entry_for(event->instruction_rva);",
+        "  if (entry == 0) return SPX_CALL_UNIMPLEMENTED;",
+        "  if ((entry->dynamic_target && event->kind != SPX_CALL_INDIRECT) ||",
+        "      (!entry->dynamic_target && event->kind != SPX_CALL_EXTERNAL_IMPORT))",
+        "    return SPX_CALL_UNIMPLEMENTED;",
         "  if (entry->dynamic_target != 0U && entry->iat_va != 0U &&",
-        "      event->target_rva != stage_b_native_original_iat_target(entry->iat_va)) {",
-        "    stage_b_native_diagnostic_reason = 0x1003U;",
-        "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "      event->target_rva != spx_native_original_iat_target(entry->iat_va)) {",
+        "    spx_native_diagnostic_reason = 0x1003U;",
+        "    return SPX_CALL_UNIMPLEMENTED;",
         "  }",
         "  preserved_ebx = input->ebx;",
         "  preserved_esi = input->esi;",
         "  preserved_edi = input->edi;",
         "  preserved_ebp = input->ebp;",
-        "  if (stage_b_native_runtime_capture_external_call(",
-        "          event, input, &external_snapshot) != STAGE_B_CALL_OK)",
-        "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "  if (spx_native_runtime_capture_external_call(",
+        "          event, input, &external_snapshot) != SPX_CALL_OK)",
+        "    return SPX_CALL_UNIMPLEMENTED;",
         "  if (input->df != 0U) {",
-        "    stage_b_native_diagnostic_reason = 0x1006U;",
-        "    stage_b_native_diagnostic_value = input->df;",
-        "    stage_b_native_diagnostic_aux = event->instruction_rva;",
-        "    stage_b_native_diagnostic_detail = event->target_rva;",
-        "    return STAGE_B_CALL_UNIMPLEMENTED;",
+        "    spx_native_diagnostic_reason = 0x1006U;",
+        "    spx_native_diagnostic_value = input->df;",
+        "    spx_native_diagnostic_aux = event->instruction_rva;",
+        "    spx_native_diagnostic_detail = event->target_rva;",
+        "    return SPX_CALL_UNIMPLEMENTED;",
         "  }",
-        "#ifdef STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP",
-        "  stage_b_native_runtime_write_external_probe(event, input);",
-        "#endif",
-        "  frame.parent = stage_b_native_active_bridge;",
+        "  frame.parent = spx_native_active_bridge;",
         "  frame.output = output;",
         "  frame.private_esp = 0U;",
         "  frame.call_target = entry->dynamic_target",
-        "      ? event->target_rva : stage_b_native_original_iat_target(entry->iat_va);",
-        "  frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
+        "      ? event->target_rva : spx_native_original_iat_target(entry->iat_va);",
+        "  frame.status = SPX_CALL_UNIMPLEMENTED;",
         "  frame.saved_continuation = 0U;",
         "  frame.continuation_replaced = entry->tail_jump != 0U;",
-        "  if (frame.call_target == 0U) return STAGE_B_CALL_UNIMPLEMENTED;",
+        "  if (frame.call_target == 0U) return SPX_CALL_UNIMPLEMENTED;",
         "  if (entry->tail_jump != 0U) {",
         "    if (runtime->context == 0)",
-        "      return STAGE_B_CALL_UNIMPLEMENTED;",
-        "    if (stage_b_native_fixed_flat_read_u32(",
+        "      return SPX_CALL_UNIMPLEMENTED;",
+        "    if (spx_native_fixed_flat_read_u32(",
         "            input->esp, &frame.saved_continuation) == 0U ||",
         "        frame.saved_continuation == 0U)",
-        "      return STAGE_B_CALL_MEMORY_FAULT;",
+        "      return SPX_CALL_MEMORY_FAULT;",
         "  }",
         "  if (entry->callback_registration != 0U) {",
         "    if (input->esp > 0xffffffffU - entry->callback_argument_offset)",
-        "      return STAGE_B_CALL_MEMORY_FAULT;",
+        "      return SPX_CALL_MEMORY_FAULT;",
         "    callback_argument_address =",
         "        input->esp + entry->callback_argument_offset;",
         "    if (entry->callback_registration == 2U) {",
-        "      if (stage_b_native_fixed_flat_read_u32(",
+        "      if (spx_native_fixed_flat_read_u32(",
         "              callback_argument_address,",
         "              &callback_container_address) == 0U ||",
         "          callback_container_address == 0U ||",
         "          callback_container_address >",
         "              0xffffffffU - entry->callback_pointee_offset)",
-        "        return STAGE_B_CALL_MEMORY_FAULT;",
+        "        return SPX_CALL_MEMORY_FAULT;",
         "      callback_argument_address =",
         "          callback_container_address + entry->callback_pointee_offset;",
         "    } else if (entry->callback_registration != 1U) {",
-        "      return STAGE_B_CALL_UNIMPLEMENTED;",
+        "      return SPX_CALL_UNIMPLEMENTED;",
         "    }",
-        "    if (stage_b_native_fixed_flat_read_u32(",
+        "    if (spx_native_fixed_flat_read_u32(",
         "            callback_argument_address, &callback_argument_original) == 0U)",
-        "      return STAGE_B_CALL_MEMORY_FAULT;",
+        "      return SPX_CALL_MEMORY_FAULT;",
         "    if (callback_argument_original == 0U) {",
         "      if (entry->callback_nullable == 0U)",
-        "        return STAGE_B_CALL_UNIMPLEMENTED;",
+        "        return SPX_CALL_UNIMPLEMENTED;",
         "    } else {",
-        "      callback_adapter = stage_b_native_callback_adapter_for(",
+        "      callback_adapter = spx_native_callback_adapter_for(",
         "          entry->instruction_rva, entry->callback_argument_index,",
         "          callback_argument_original);",
         "      if (callback_adapter == 0)",
-        "        return STAGE_B_CALL_UNIMPLEMENTED;",
-        "      if (stage_b_native_fixed_flat_write_u32(",
+        "        return SPX_CALL_UNIMPLEMENTED;",
+        "      if (spx_native_fixed_flat_write_u32(",
         "              callback_argument_address,",
         "              (uint32_t)(uintptr_t)callback_adapter->bridge) == 0U)",
-        "        return STAGE_B_CALL_MEMORY_FAULT;",
+        "        return SPX_CALL_MEMORY_FAULT;",
         "      callback_argument_patched = 1U;",
         "    }",
         "  }",
         "  *output = *input;",
-        "  stage_b_native_pack_flags(output);",
+        "  spx_native_pack_flags(output);",
         *(
             [
-                "  if (stage_b_native_state_to_fnsave(input, &frame.input_x87) != 0U)",
-                "    return STAGE_B_CALL_UNIMPLEMENTED;",
+                "  if (spx_native_state_to_fnsave(input, &frame.input_x87) != 0U)",
+                "    return SPX_CALL_UNIMPLEMENTED;",
             ]
             if plan.x87_operations
             else []
         ),
         "  frame.input = output;",
-        "  stage_b_native_active_bridge = &frame;",
-        "  stage_b_native_dispatch_bridge();",
+        "  spx_native_active_bridge = &frame;",
+        "  spx_native_dispatch_bridge();",
         "  if (callback_argument_patched != 0U &&",
-        "      stage_b_native_fixed_flat_write_u32(",
+        "      spx_native_fixed_flat_write_u32(",
         "          callback_argument_address, callback_argument_original) == 0U)",
-        "    frame.status = STAGE_B_CALL_MEMORY_FAULT;",
-        "  if (stage_b_native_active_bridge != &frame)",
-        "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
-        "  stage_b_native_active_bridge = frame.parent;",
+        "    frame.status = SPX_CALL_MEMORY_FAULT;",
+        "  if (spx_native_active_bridge != &frame)",
+        "    frame.status = SPX_CALL_UNIMPLEMENTED;",
+        "  spx_native_active_bridge = frame.parent;",
         "  if (entry->tail_jump != 0U && frame.continuation_replaced != 0U)",
-        "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
-        "  if (frame.status == STAGE_B_CALL_OK && entry->iat_va != 0U &&",
+        "    frame.status = SPX_CALL_UNIMPLEMENTED;",
+        "  if (frame.status == SPX_CALL_OK && entry->iat_va != 0U &&",
         "      (output->ebx != preserved_ebx || output->esi != preserved_esi ||",
         "       output->edi != preserved_edi || output->ebp != preserved_ebp)) {",
-        "    stage_b_native_diagnostic_reason = 0x1005U;",
-        "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
+        "    spx_native_diagnostic_reason = 0x1005U;",
+        "    frame.status = SPX_CALL_UNIMPLEMENTED;",
         "  }",
-        "  if (frame.status == STAGE_B_CALL_OK) {",
+        "  if (frame.status == SPX_CALL_OK) {",
         "    output->df = 0U;",
         "    output->eflags &= ~(1U << 10);",
         "  }",
         *(
             [
-                "  if (frame.status == STAGE_B_CALL_OK &&",
-                "      stage_b_native_fnsave_to_state(&frame.output_x87, output) != 0U)",
-                "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
+                "  if (frame.status == SPX_CALL_OK &&",
+                "      spx_native_fnsave_to_state(&frame.output_x87, output) != 0U)",
+                "    frame.status = SPX_CALL_UNIMPLEMENTED;",
             ]
             if plan.x87_operations
             else []
         ),
-        "  if (frame.status == STAGE_B_CALL_OK)",
-        "    frame.status = stage_b_native_runtime_record_external_result(",
+        "  if (frame.status == SPX_CALL_OK)",
+        "    frame.status = spx_native_runtime_record_external_result(",
         "        event, &external_snapshot, output);",
         "  return frame.status;",
         "}",
@@ -768,42 +729,42 @@ def _wrapper_source(plan: NativeEnginePlan) -> str:
 
 def _x87_handler_source_lines() -> list[str]:
     return [
-        "stage_b_call_status stage_b_native_execute_typed_x87_operation(",
-        "    stage_b_runtime *runtime, const stage_b_typed_x87_operation *program,",
-        "    const stage_b_machine_state *input, stage_b_machine_state *output) {",
-        "  const stage_b_native_x87_entry *entry;",
-        "  stage_b_native_x87_frame frame;",
-        "  if (runtime != &stage_b_native_runtime_instance || program == 0 ||",
+        "spx_call_status spx_native_execute_typed_x87_operation(",
+        "    spx_runtime *runtime, const spx_typed_x87_operation *program,",
+        "    const spx_machine_state *input, spx_machine_state *output) {",
+        "  const spx_native_x87_entry *entry;",
+        "  spx_native_x87_frame frame;",
+        "  if (runtime != &spx_native_runtime_instance || program == 0 ||",
         "      input == 0 || output == 0)",
-        "    return STAGE_B_CALL_UNIMPLEMENTED;",
-        "  entry = stage_b_native_x87_entry_for(program->rva_start);",
+        "    return SPX_CALL_UNIMPLEMENTED;",
+        "  entry = spx_native_x87_entry_for(program->rva_start);",
         "  if (entry == 0 || entry->image_base != program->image_base ||",
         "      entry->rva_end != program->rva_end ||",
         "      entry->source_size != program->source_size ||",
-        "      !stage_b_native_string_equal(entry->operation_identity,",
+        "      !spx_native_string_equal(entry->operation_identity,",
         "          program->operation_identity) ||",
-        "      !stage_b_native_string_equal(entry->contract_sha256,",
+        "      !spx_native_string_equal(entry->contract_sha256,",
         "          program->contract_sha256) ||",
-        f"      !stage_b_native_string_equal(program->checked_decoder, {json.dumps(_X87_CHECKED_DECODER)}) ||",
-        f"      !stage_b_native_string_equal(program->checked_executor, {json.dumps(_X87_CHECKED_EXECUTOR)}))",
-        "    return STAGE_B_CALL_UNIMPLEMENTED;",
-        "  frame.parent = stage_b_native_active_x87;",
+        f"      !spx_native_string_equal(program->checked_decoder, {json.dumps(_X87_CHECKED_DECODER)}) ||",
+        f"      !spx_native_string_equal(program->checked_executor, {json.dumps(_X87_CHECKED_EXECUTOR)}))",
+        "    return SPX_CALL_UNIMPLEMENTED;",
+        "  frame.parent = spx_native_active_x87;",
         "  frame.input = output;",
         "  frame.output = output;",
         "  frame.private_esp = 0U;",
-        "  frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
+        "  frame.status = SPX_CALL_UNIMPLEMENTED;",
         "  *output = *input;",
-        "  stage_b_native_pack_flags(output);",
-        "  if (stage_b_native_state_to_fnsave(input, &frame.input_x87) != 0U)",
-        "    return STAGE_B_CALL_UNIMPLEMENTED;",
-        "  stage_b_native_active_x87 = &frame;",
+        "  spx_native_pack_flags(output);",
+        "  if (spx_native_state_to_fnsave(input, &frame.input_x87) != 0U)",
+        "    return SPX_CALL_UNIMPLEMENTED;",
+        "  spx_native_active_x87 = &frame;",
         "  entry->bridge();",
-        "  if (stage_b_native_active_x87 != &frame)",
-        "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
-        "  stage_b_native_active_x87 = frame.parent;",
-        "  if (frame.status == STAGE_B_CALL_OK &&",
-        "      stage_b_native_fnsave_to_state(&frame.output_x87, output) != 0U)",
-        "    frame.status = STAGE_B_CALL_UNIMPLEMENTED;",
+        "  if (spx_native_active_x87 != &frame)",
+        "    frame.status = SPX_CALL_UNIMPLEMENTED;",
+        "  spx_native_active_x87 = frame.parent;",
+        "  if (frame.status == SPX_CALL_OK &&",
+        "      spx_native_fnsave_to_state(&frame.output_x87, output) != 0U)",
+        "    frame.status = SPX_CALL_UNIMPLEMENTED;",
         "  return frame.status;",
         "}",
         "",
@@ -821,13 +782,13 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
         "    .text",
         "",
         "/* The PE entry snapshot is made before C code can disturb launch state. */",
-        "    .globl _stage_b_payload_entry",
-        "    .globl stage_b_payload_entry",
-        "_stage_b_payload_entry:",
-        "stage_b_payload_entry:",
+        "    .globl _spx_payload_entry",
+        "    .globl spx_payload_entry",
+        "_spx_payload_entry:",
+        "spx_payload_entry:",
         "    pushfd",
         "    pushad",
-        "    mov edx, OFFSET FLAT:_stage_b_native_launch_state",
+        "    mov edx, OFFSET FLAT:_spx_native_launch_state",
         *_capture_pushad_registers("edx"),
         f"    mov DWORD PTR [edx + {_STATE_OFFSETS['esp']}], ecx",
         "    mov eax, DWORD PTR [esp + 32]",
@@ -839,47 +800,47 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
         f"0x{plan.entry_rva:08x}",
         "    lea eax, [esp + 36]",
         "    mov eax, DWORD PTR [eax]",
-        "    mov DWORD PTR [_stage_b_native_launch_return], eax",
+        "    mov DWORD PTR [_spx_native_launch_return], eax",
         *(
             [
-                "    fnsave [_stage_b_native_launch_x87]",
-                "    frstor [_stage_b_native_launch_x87]",
-                "    mov esi, OFFSET FLAT:_stage_b_native_launch_x87",
+                "    fnsave [_spx_native_launch_x87]",
+                "    frstor [_spx_native_launch_x87]",
+                "    mov esi, OFFSET FLAT:_spx_native_launch_x87",
                 *_capture_fnsave_state("esi", "edx", "eax", "ecx"),
             ]
             if plan.x87_operations
             else []
         ),
         "    cld",
-        "    mov esp, OFFSET FLAT:_stage_b_native_callback_stack + 65536",
+        "    mov esp, OFFSET FLAT:_spx_native_callback_stack + 65536",
         "    and esp, -16",
-        "    mov eax, OFFSET FLAT:_stage_b_native_launch_output",
+        "    mov eax, OFFSET FLAT:_spx_native_launch_output",
         "    push eax",
         "    push edx",
-        "    call _stage_b_native_run_entry",
-        "    .globl _stage_b_native_entry_dispatch_return",
-        "_stage_b_native_entry_dispatch_return:",
+        "    call _spx_native_run_entry",
+        "    .globl _spx_native_entry_dispatch_return",
+        "_spx_native_entry_dispatch_return:",
         "    add esp, 8",
         "    test eax, eax",
-        "    jne _stage_b_native_termination",
-        "    .globl _stage_b_native_entry_return",
-        "_stage_b_native_entry_return:",
+        "    jne _spx_native_termination",
+        "    .globl _spx_native_entry_return",
+        "_spx_native_entry_return:",
         *(
-            ["    frstor [_stage_b_native_launch_output_x87]"]
+            ["    frstor [_spx_native_launch_output_x87]"]
             if plan.x87_operations
             else []
         ),
-        "    mov ecx, OFFSET FLAT:_stage_b_native_launch_output",
+        "    mov ecx, OFFSET FLAT:_spx_native_launch_output",
         f"    mov esp, DWORD PTR [ecx + {_STATE_OFFSETS['esp']}]",
-        "    push DWORD PTR [_stage_b_native_launch_return]",
+        "    push DWORD PTR [_spx_native_launch_return]",
         *_restore_pushes("ecx"),
         "    popad",
         "    popfd",
         "    ret",
         "",
-        "_stage_b_native_halt:",
-        "    .globl _stage_b_native_termination",
-        "_stage_b_native_termination:",
+        "_spx_native_halt:",
+        "    .globl _spx_native_termination",
+        "_spx_native_termination:",
         *(
             [
                 "    push eax",
@@ -889,33 +850,33 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             if termination_iat is not None
             else [
                 "    ud2",
-                "    jmp _stage_b_native_halt",
+                "    jmp _spx_native_halt",
             ]
         ),
         "",
-        "    .globl _stage_b_native_terminate",
-        "_stage_b_native_terminate:",
+        "    .globl _spx_native_terminate",
+        "_spx_native_terminate:",
         *(
             [f"    jmp DWORD PTR ds:{termination_iat}"]
             if termination_iat is not None
             else [
                 "    ud2",
-                "    jmp _stage_b_native_terminate",
+                "    jmp _spx_native_terminate",
             ]
         ),
         "",
         "/* The data-driven bridge preserves its private C frame, restores the",
         " * complete logical ABI state, enters the checked target with CALL stack",
         " * semantics, captures the result, and resumes C dispatch. */",
-        "    .globl _stage_b_native_bridge",
-        "_stage_b_native_bridge:",
+        "    .globl _spx_native_bridge",
+        "_spx_native_bridge:",
         "    push ebp",
         "    push ebx",
         "    push esi",
         "    push edi",
-        "    mov eax, DWORD PTR [_stage_b_native_active_bridge]",
+        "    mov eax, DWORD PTR [_spx_native_active_bridge]",
         "    test eax, eax",
-        "    je _stage_b_native_bridge_unavailable",
+        "    je _spx_native_bridge_unavailable",
         f"    mov DWORD PTR [eax + {_FRAME_OFFSETS['private_esp']}], esp",
         f"    mov ecx, DWORD PTR [eax + {_FRAME_OFFSETS['input']}]",
         f"    mov edx, DWORD PTR [eax + {_FRAME_OFFSETS['call_target']}]",
@@ -926,39 +887,39 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
         ),
         f"    mov esp, DWORD PTR [ecx + {_STATE_OFFSETS['esp']}]",
         f"    cmp DWORD PTR [eax + {_FRAME_OFFSETS['continuation_replaced']}], 0",
-        "    jne _stage_b_native_bridge_tail",
+        "    jne _spx_native_bridge_tail",
         "    sub esp, 8",
         "    mov DWORD PTR [esp], edx",
-        "    mov DWORD PTR [esp + 4], OFFSET FLAT:_stage_b_native_capture",
-        "    jmp _stage_b_native_bridge_restore",
-        "_stage_b_native_bridge_tail:",
+        "    mov DWORD PTR [esp + 4], OFFSET FLAT:_spx_native_capture",
+        "    jmp _spx_native_bridge_restore",
+        "_spx_native_bridge_tail:",
         "    mov ebx, DWORD PTR [esp]",
         f"    cmp ebx, DWORD PTR [eax + {_FRAME_OFFSETS['saved_continuation']}]",
-        "    jne _stage_b_native_bridge_tail_unavailable",
-        "    mov DWORD PTR [esp], OFFSET FLAT:_stage_b_native_capture",
+        "    jne _spx_native_bridge_tail_unavailable",
+        "    mov DWORD PTR [esp], OFFSET FLAT:_spx_native_capture",
         "    sub esp, 4",
         "    mov DWORD PTR [esp], edx",
-        "_stage_b_native_bridge_restore:",
+        "_spx_native_bridge_restore:",
         *_restore_pushes("ecx"),
         "    popad",
         "    popfd",
         "    ret",
-        "_stage_b_native_bridge_tail_unavailable:",
+        "_spx_native_bridge_tail_unavailable:",
         f"    mov esp, DWORD PTR [eax + {_FRAME_OFFSETS['private_esp']}]",
-        "_stage_b_native_bridge_unavailable:",
+        "_spx_native_bridge_unavailable:",
         "    pop edi",
         "    pop esi",
         "    pop ebx",
         "    pop ebp",
         "    ret",
         "",
-        "    .globl _stage_b_native_capture",
-        "_stage_b_native_capture:",
+        "    .globl _spx_native_capture",
+        "_spx_native_capture:",
         "    pushfd",
         "    pushad",
-        "    mov eax, DWORD PTR [_stage_b_native_active_bridge]",
+        "    mov eax, DWORD PTR [_spx_native_active_bridge]",
         "    test eax, eax",
-        "    je _stage_b_native_halt",
+        "    je _spx_native_halt",
         *(
             [f"    fnsave [eax + {_FRAME_OFFSETS['output_x87']}]" ]
             if plan.x87_operations
@@ -967,19 +928,19 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
         f"    mov edx, DWORD PTR [eax + {_FRAME_OFFSETS['output']}]",
         *_capture_pushad_registers("edx"),
         f"    cmp DWORD PTR [eax + {_FRAME_OFFSETS['continuation_replaced']}], 0",
-        "    je _stage_b_native_capture_continuation_ready",
+        "    je _spx_native_capture_continuation_ready",
         f"    mov ebx, DWORD PTR [eax + {_FRAME_OFFSETS['saved_continuation']}]",
         "    mov DWORD PTR [ecx - 4], ebx",
         f"    mov DWORD PTR [eax + {_FRAME_OFFSETS['continuation_replaced']}], 0",
-        "_stage_b_native_capture_continuation_ready:",
+        "_spx_native_capture_continuation_ready:",
         f"    mov DWORD PTR [edx + {_STATE_OFFSETS['esp']}], ecx",
         "    mov ecx, DWORD PTR [esp + 32]",
         f"    mov DWORD PTR [edx + {_STATE_OFFSETS['eflags']}], ecx",
         *_capture_split_flags("edx"),
         f"    cmp DWORD PTR [eax + {_FRAME_OFFSETS['call_target']}], 0",
-        "    je _stage_b_native_capture_preserve_status",
+        "    je _spx_native_capture_preserve_status",
         f"    mov DWORD PTR [eax + {_FRAME_OFFSETS['status']}], 0",
-        "_stage_b_native_capture_preserve_status:",
+        "_spx_native_capture_preserve_status:",
         f"    mov esp, DWORD PTR [eax + {_FRAME_OFFSETS['private_esp']}]",
         "    cld",
         "    pop edi",
@@ -1007,14 +968,14 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    pushfd",
             "    pushad",
             "    mov esi, esp",
-            "    mov eax, DWORD PTR [_stage_b_native_active_bridge]",
+            "    mov eax, DWORD PTR [_spx_native_active_bridge]",
             "    test eax, eax",
-            f"    je _stage_b_native_callback_root_stack_{target.id:04d}",
+            f"    je _spx_native_callback_root_stack_{target.id:04d}",
             f"    mov esp, DWORD PTR [eax + {_FRAME_OFFSETS['private_esp']}]",
-            f"    jmp _stage_b_native_callback_stack_ready_{target.id:04d}",
-            f"_stage_b_native_callback_root_stack_{target.id:04d}:",
-            "    mov esp, OFFSET FLAT:_stage_b_native_callback_stack + 65536",
-            f"_stage_b_native_callback_stack_ready_{target.id:04d}:",
+            f"    jmp _spx_native_callback_stack_ready_{target.id:04d}",
+            f"_spx_native_callback_root_stack_{target.id:04d}:",
+            "    mov esp, OFFSET FLAT:_spx_native_callback_stack + 65536",
+            f"_spx_native_callback_stack_ready_{target.id:04d}:",
             "    and esp, -16",
             f"    sub esp, {_CALLBACK_FRAME_SIZE}",
             "    mov ebp, esp",
@@ -1023,25 +984,25 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             f"    mov ecx, {_CALLBACK_FRAME_SIZE // 4}",
             "    cld",
             "    rep stosd",
-            "    mov eax, DWORD PTR [_stage_b_native_active_callback]",
+            "    mov eax, DWORD PTR [_spx_native_active_callback]",
             f"    mov DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['parent']}], eax",
-            "    mov eax, DWORD PTR [_stage_b_native_active_bridge]",
+            "    mov eax, DWORD PTR [_spx_native_active_bridge]",
             f"    mov DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['parent_bridge']}], eax",
             "    lea edi, [esi + 36]",
             f"    mov DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['physical_esp']}], edi",
             "    mov eax, DWORD PTR [edi]",
             f"    mov DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['return_target']}], eax",
-            "    mov DWORD PTR [_stage_b_native_active_callback], ebp",
+            "    mov DWORD PTR [_spx_native_active_callback], ebp",
             f"    mov eax, DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['parent_bridge']}]",
             "    test eax, eax",
-            f"    je _stage_b_native_callback_root_buffers_{target.id:04d}",
+            f"    je _spx_native_callback_root_buffers_{target.id:04d}",
             f"    lea edx, [ebp + {_CALLBACK_FRAME_OFFSETS['input']}]",
             f"    lea ebx, [ebp + {_CALLBACK_FRAME_OFFSETS['output']}]",
-            f"    jmp _stage_b_native_callback_buffers_ready_{target.id:04d}",
-            f"_stage_b_native_callback_root_buffers_{target.id:04d}:",
-            "    mov edx, OFFSET FLAT:_stage_b_native_launch_state",
-            "    mov ebx, OFFSET FLAT:_stage_b_native_launch_output",
-            f"_stage_b_native_callback_buffers_ready_{target.id:04d}:",
+            f"    jmp _spx_native_callback_buffers_ready_{target.id:04d}",
+            f"_spx_native_callback_root_buffers_{target.id:04d}:",
+            "    mov edx, OFFSET FLAT:_spx_native_launch_state",
+            "    mov ebx, OFFSET FLAT:_spx_native_launch_output",
+            f"_spx_native_callback_buffers_ready_{target.id:04d}:",
             *_capture_pushad_registers_from("esi", "edx"),
             f"    mov DWORD PTR [edx + {_STATE_OFFSETS['esp']}], edi",
             "    mov eax, DWORD PTR [esi + 32]",
@@ -1055,14 +1016,14 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
                 [
                     f"    mov eax, DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['parent_bridge']}]",
                     "    test eax, eax",
-                    f"    je _stage_b_native_callback_root_x87_buffers_{target.id:04d}",
+                    f"    je _spx_native_callback_root_x87_buffers_{target.id:04d}",
                     f"    lea ecx, [ebp + {_CALLBACK_FRAME_OFFSETS['input_x87']}]",
                     f"    lea eax, [ebp + {_CALLBACK_FRAME_OFFSETS['output_x87']}]",
-                    f"    jmp _stage_b_native_callback_x87_buffers_ready_{target.id:04d}",
-                    f"_stage_b_native_callback_root_x87_buffers_{target.id:04d}:",
-                    "    mov ecx, OFFSET FLAT:_stage_b_native_launch_x87",
-                    "    mov eax, OFFSET FLAT:_stage_b_native_launch_output_x87",
-                    f"_stage_b_native_callback_x87_buffers_ready_{target.id:04d}:",
+                    f"    jmp _spx_native_callback_x87_buffers_ready_{target.id:04d}",
+                    f"_spx_native_callback_root_x87_buffers_{target.id:04d}:",
+                    "    mov ecx, OFFSET FLAT:_spx_native_launch_x87",
+                    "    mov eax, OFFSET FLAT:_spx_native_launch_output_x87",
+                    f"_spx_native_callback_x87_buffers_ready_{target.id:04d}:",
                     "    fnsave [ecx]",
                     "    frstor [ecx]",
                     "    mov esi, ecx",
@@ -1070,13 +1031,13 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
                     f"    mov eax, DWORD PTR [ebp + "
                     f"{_CALLBACK_FRAME_OFFSETS['parent_bridge']}]",
                     "    test eax, eax",
-                    f"    je _stage_b_native_callback_root_output_x87_{target.id:04d}",
+                    f"    je _spx_native_callback_root_output_x87_{target.id:04d}",
                     f"    lea eax, [ebp + "
                     f"{_CALLBACK_FRAME_OFFSETS['output_x87']}]",
-                    f"    jmp _stage_b_native_callback_output_x87_ready_{target.id:04d}",
-                    f"_stage_b_native_callback_root_output_x87_{target.id:04d}:",
-                    "    mov eax, OFFSET FLAT:_stage_b_native_launch_output_x87",
-                    f"_stage_b_native_callback_output_x87_ready_{target.id:04d}:",
+                    f"    jmp _spx_native_callback_output_x87_ready_{target.id:04d}",
+                    f"_spx_native_callback_root_output_x87_{target.id:04d}:",
+                    "    mov eax, OFFSET FLAT:_spx_native_launch_output_x87",
+                    f"_spx_native_callback_output_x87_ready_{target.id:04d}:",
                 ]
                 if plan.x87_operations
                 else []
@@ -1090,51 +1051,51 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    push edx",
             f"    push {target.stack_cleanup_bytes}",
             f"    push 0x{target.rva:08x}",
-            "    call _stage_b_native_run_callback",
+            "    call _spx_native_run_callback",
             f"    .globl _{target.dispatch_return_symbol}",
             f"_{target.dispatch_return_symbol}:",
             "    add esp, 24",
             f"    mov DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['status']}], eax",
             "    test eax, eax",
-            f"    jne _stage_b_native_callback_failure_{target.id:04d}",
-            "    cmp DWORD PTR [_stage_b_native_active_callback], ebp",
-            f"    jne _stage_b_native_callback_failure_{target.id:04d}",
-            f"    jmp _stage_b_native_callback_success_{target.id:04d}",
-            f"_stage_b_native_callback_failure_{target.id:04d}:",
+            f"    jne _spx_native_callback_failure_{target.id:04d}",
+            "    cmp DWORD PTR [_spx_native_active_callback], ebp",
+            f"    jne _spx_native_callback_failure_{target.id:04d}",
+            f"    jmp _spx_native_callback_success_{target.id:04d}",
+            f"_spx_native_callback_failure_{target.id:04d}:",
             f"    mov eax, DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['status']}]",
             "    test eax, eax",
-            f"    jne _stage_b_native_callback_failure_status_{target.id:04d}",
+            f"    jne _spx_native_callback_failure_status_{target.id:04d}",
             "    mov eax, 1",
-            f"_stage_b_native_callback_failure_status_{target.id:04d}:",
+            f"_spx_native_callback_failure_status_{target.id:04d}:",
             f"    mov edx, DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['parent_bridge']}]",
             "    test edx, edx",
-            f"    je _stage_b_native_callback_root_failure_{target.id:04d}",
+            f"    je _spx_native_callback_root_failure_{target.id:04d}",
             f"    mov DWORD PTR [edx + {_FRAME_OFFSETS['status']}], eax",
             f"    mov DWORD PTR [edx + {_FRAME_OFFSETS['call_target']}], 0",
-            f"    jmp _stage_b_native_callback_failure_recorded_{target.id:04d}",
-            f"_stage_b_native_callback_root_failure_{target.id:04d}:",
-            "    mov DWORD PTR [_stage_b_native_root_callback_fault], eax",
-            f"_stage_b_native_callback_failure_recorded_{target.id:04d}:",
+            f"    jmp _spx_native_callback_failure_recorded_{target.id:04d}",
+            f"_spx_native_callback_root_failure_{target.id:04d}:",
+            "    mov DWORD PTR [_spx_native_root_callback_fault], eax",
+            f"_spx_native_callback_failure_recorded_{target.id:04d}:",
             f"    mov eax, DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['parent']}]",
-            "    mov DWORD PTR [_stage_b_native_active_callback], eax",
+            "    mov DWORD PTR [_spx_native_active_callback], eax",
             f"    mov eax, DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['parent_bridge']}]",
             "    test eax, eax",
-            f"    je _stage_b_native_callback_root_failure_buffers_{target.id:04d}",
+            f"    je _spx_native_callback_root_failure_buffers_{target.id:04d}",
             f"    lea ecx, [ebp + {_CALLBACK_FRAME_OFFSETS['input']}]",
             *(
                 [f"    lea ebx, [ebp + {_CALLBACK_FRAME_OFFSETS['input_x87']}]"]
                 if plan.x87_operations
                 else []
             ),
-            f"    jmp _stage_b_native_callback_failure_buffers_ready_{target.id:04d}",
-            f"_stage_b_native_callback_root_failure_buffers_{target.id:04d}:",
-            "    mov ecx, OFFSET FLAT:_stage_b_native_launch_state",
+            f"    jmp _spx_native_callback_failure_buffers_ready_{target.id:04d}",
+            f"_spx_native_callback_root_failure_buffers_{target.id:04d}:",
+            "    mov ecx, OFFSET FLAT:_spx_native_launch_state",
             *(
-                ["    mov ebx, OFFSET FLAT:_stage_b_native_launch_x87"]
+                ["    mov ebx, OFFSET FLAT:_spx_native_launch_x87"]
                 if plan.x87_operations
                 else []
             ),
-            f"_stage_b_native_callback_failure_buffers_ready_{target.id:04d}:",
+            f"_spx_native_callback_failure_buffers_ready_{target.id:04d}:",
             *(
                 ["    frstor [ebx]"]
                 if plan.x87_operations
@@ -1148,27 +1109,27 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    popad",
             "    popfd",
             "    ret",
-            f"_stage_b_native_callback_success_{target.id:04d}:",
+            f"_spx_native_callback_success_{target.id:04d}:",
             f"    mov eax, DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['parent']}]",
-            "    mov DWORD PTR [_stage_b_native_active_callback], eax",
+            "    mov DWORD PTR [_spx_native_active_callback], eax",
             f"    mov eax, DWORD PTR [ebp + {_CALLBACK_FRAME_OFFSETS['parent_bridge']}]",
             "    test eax, eax",
-            f"    je _stage_b_native_callback_root_success_buffers_{target.id:04d}",
+            f"    je _spx_native_callback_root_success_buffers_{target.id:04d}",
             f"    lea ecx, [ebp + {_CALLBACK_FRAME_OFFSETS['output']}]",
             *(
                 [f"    lea ebx, [ebp + {_CALLBACK_FRAME_OFFSETS['output_x87']}]"]
                 if plan.x87_operations
                 else []
             ),
-            f"    jmp _stage_b_native_callback_success_buffers_ready_{target.id:04d}",
-            f"_stage_b_native_callback_root_success_buffers_{target.id:04d}:",
-            "    mov ecx, OFFSET FLAT:_stage_b_native_launch_output",
+            f"    jmp _spx_native_callback_success_buffers_ready_{target.id:04d}",
+            f"_spx_native_callback_root_success_buffers_{target.id:04d}:",
+            "    mov ecx, OFFSET FLAT:_spx_native_launch_output",
             *(
-                ["    mov ebx, OFFSET FLAT:_stage_b_native_launch_output_x87"]
+                ["    mov ebx, OFFSET FLAT:_spx_native_launch_output_x87"]
                 if plan.x87_operations
                 else []
             ),
-            f"_stage_b_native_callback_success_buffers_ready_{target.id:04d}:",
+            f"_spx_native_callback_success_buffers_ready_{target.id:04d}:",
             *(
                 ["    frstor [ebx]"]
                 if plan.x87_operations
@@ -1190,13 +1151,13 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
     for replay in plan.x87_operations:
         lines.extend([
             "",
-            f"    .globl _stage_b_native_x87_bridge_{replay.id:04d}",
-            f"_stage_b_native_x87_bridge_{replay.id:04d}:",
+            f"    .globl _spx_native_x87_bridge_{replay.id:04d}",
+            f"_spx_native_x87_bridge_{replay.id:04d}:",
             "    push ebp",
             "    push ebx",
             "    push esi",
             "    push edi",
-            "    mov eax, DWORD PTR [_stage_b_native_active_x87]",
+            "    mov eax, DWORD PTR [_spx_native_active_x87]",
             f"    mov DWORD PTR [eax + {_X87_FRAME_OFFSETS['private_esp']}], esp",
             f"    frstor [eax + {_X87_FRAME_OFFSETS['input_x87']}]",
             f"    mov eax, DWORD PTR [eax + {_X87_FRAME_OFFSETS['input']}]",
@@ -1211,33 +1172,33 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             f"    mov edx, DWORD PTR [eax + {_STATE_OFFSETS['edx']}]",
             "    pop eax",
             "    popfd",
-            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"    .if (. - _spx_native_x87_bridge_{replay.id:04d}) "
             f"> {_X87_REPLAY_INLINE_INSTRUCTION_OFFSET}",
             '    .error "x87 replay prologue exceeds its fixed bridge slot"',
             "    .endif",
             f"    .fill {_X87_REPLAY_INLINE_INSTRUCTION_OFFSET} - "
-            f"(. - _stage_b_native_x87_bridge_{replay.id:04d}), 1, 0x90",
-            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"(. - _spx_native_x87_bridge_{replay.id:04d}), 1, 0x90",
+            f"    .if (. - _spx_native_x87_bridge_{replay.id:04d}) "
             f"!= {_X87_REPLAY_INLINE_INSTRUCTION_OFFSET}",
             '    .error "x87 replay instruction offset changed"',
             "    .endif",
-            f"    .globl _stage_b_native_x87_instruction_{replay.id:04d}",
-            f"_stage_b_native_x87_instruction_{replay.id:04d}:",
+            f"    .globl _spx_native_x87_instruction_{replay.id:04d}",
+            f"_spx_native_x87_instruction_{replay.id:04d}:",
             f"    {_render_typed_x87_instruction(replay)}",
-            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"    .if (. - _spx_native_x87_bridge_{replay.id:04d}) "
             f"> {_X87_REPLAY_INLINE_CAPTURE_OFFSET}",
             '    .error "x87 replay instruction exceeds its fixed bridge slot"',
             "    .endif",
             f"    .fill {_X87_REPLAY_INLINE_CAPTURE_OFFSET} - "
-            f"(. - _stage_b_native_x87_bridge_{replay.id:04d}), 1, 0x90",
-            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"(. - _spx_native_x87_bridge_{replay.id:04d}), 1, 0x90",
+            f"    .if (. - _spx_native_x87_bridge_{replay.id:04d}) "
             f"!= {_X87_REPLAY_INLINE_CAPTURE_OFFSET}",
             '    .error "x87 replay capture offset changed"',
             "    .endif",
-            f"_stage_b_native_x87_capture_{replay.id:04d}:",
+            f"_spx_native_x87_capture_{replay.id:04d}:",
             "    pushfd",
             "    push eax",
-            "    mov eax, DWORD PTR [_stage_b_native_active_x87]",
+            "    mov eax, DWORD PTR [_spx_native_active_x87]",
             f"    fnsave [eax + {_X87_FRAME_OFFSETS['output_x87']}]",
             f"    mov edx, DWORD PTR [eax + {_X87_FRAME_OFFSETS['output']}]",
             "    mov ecx, DWORD PTR [esp]",
@@ -1261,21 +1222,21 @@ def _bridge_assembly(plan: NativeEnginePlan) -> str:
             "    pop esi",
             "    pop ebx",
             "    pop ebp",
-            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"    .if (. - _spx_native_x87_bridge_{replay.id:04d}) "
             f"> {_X87_REPLAY_INLINE_RETURN_OFFSET}",
             '    .error "x87 replay capture exceeds its fixed bridge slot"',
             "    .endif",
             f"    .fill {_X87_REPLAY_INLINE_RETURN_OFFSET} - "
-            f"(. - _stage_b_native_x87_bridge_{replay.id:04d}), 1, 0x90",
-            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"(. - _spx_native_x87_bridge_{replay.id:04d}), 1, 0x90",
+            f"    .if (. - _spx_native_x87_bridge_{replay.id:04d}) "
             f"!= {_X87_REPLAY_INLINE_RETURN_OFFSET}",
             '    .error "x87 replay return offset changed"',
             "    .endif",
-            f"_stage_b_native_x87_return_{replay.id:04d}:",
+            f"_spx_native_x87_return_{replay.id:04d}:",
             "    ret",
             f"    .fill {_X87_REPLAY_INLINE_BODY_SIZE} - "
-            f"(. - _stage_b_native_x87_bridge_{replay.id:04d}), 1, 0x90",
-            f"    .if (. - _stage_b_native_x87_bridge_{replay.id:04d}) "
+            f"(. - _spx_native_x87_bridge_{replay.id:04d}), 1, 0x90",
+            f"    .if (. - _spx_native_x87_bridge_{replay.id:04d}) "
             f"!= {_X87_REPLAY_INLINE_BODY_SIZE}",
             '    .error "x87 replay bridge size changed"',
             "    .endif",

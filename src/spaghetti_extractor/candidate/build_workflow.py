@@ -10,11 +10,11 @@ from ..artifacts.formats import (
     INTERPRETER_NATIVE_BUILD_FORMAT,
     NATIVE_ENGINE_PACKAGE_FORMAT,
     NATIVE_RUNTIME_PACKAGE_FORMAT,
-    STAGE_B_INTERPRETER_PACKAGE_FORMAT,
+    SPX_INTERPRETER_PACKAGE_FORMAT,
 )
 from ..pe32.recovered_executable_data import load_recovered_executable_data_contract
 from ..roundtrip_fuzz.image_io import (
-    load_stage_a_load_image_contract,
+    load_spx_load_image_contract,
 )
 from ..util import sha256_file
 from . import native_build
@@ -25,7 +25,7 @@ from .build_model import (
     INTERPRETER_NATIVE_OBJECT_FORMAT,
     INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT,
     INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT,
-    StageBInterpreterNativeBuildError,
+    CandidateNativeBuildError,
     _Artifact,
     _C_IDENTIFIER,
     _ENGINE_LAYOUT_FILENAME,
@@ -77,12 +77,12 @@ from .pe import (
     CANDIDATE_FILENAME,
     COMPOSITION_MANIFEST_FILENAME,
     ExecutableAnchorManifest,
-    compose_stage_b_pe,
+    compose_spx_pe,
 )
 from .runtime import NATIVE_RUNTIME_MANIFEST_FILENAME
 
 
-def prepare_stage_b_interpreter_native_object_graph(
+def prepare_spx_interpreter_native_object_graph(
     *,
     interpreter_package: Path | str,
     native_engine_package: Path | str,
@@ -90,19 +90,19 @@ def prepare_stage_b_interpreter_native_object_graph(
     out_dir: Path | str,
     region_override_package: Path | str | None = None,
     compiler: Path | str = "i686-w64-mingw32-gcc",
-    entry_symbol: str = "stage_b_payload_entry",
+    entry_symbol: str = "spx_payload_entry",
 ) -> dict[str, Any]:
     """Emit a deterministic per-source compile graph for Nix CA derivations."""
 
     if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "payload entry symbol is not a C identifier"
         )
     interpreter = _load_package(
         interpreter_package,
         filename=_INTERPRETER_MANIFEST_FILENAME,
         owner="interpreter",
-        expected_format=STAGE_B_INTERPRETER_PACKAGE_FORMAT,
+        expected_format=SPX_INTERPRETER_PACKAGE_FORMAT,
         require_roles=True,
     )
     engine = _load_package(
@@ -228,7 +228,7 @@ def prepare_stage_b_interpreter_native_object_graph(
     return payload
 
 
-def compile_stage_b_interpreter_native_object(
+def compile_spx_interpreter_native_object(
     *, graph: Path | str, unit_id: str, out_dir: Path | str
 ) -> dict[str, Any]:
     """Compile exactly one graph unit and bind the object to its checked row."""
@@ -236,7 +236,7 @@ def compile_stage_b_interpreter_native_object(
     graph_path, graph_payload = _load_native_object_graph(graph)
     matches = [row for row in graph_payload["units"] if row.get("id") == unit_id]
     if len(matches) != 1:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"native object graph has {len(matches)} matches for {unit_id}"
         )
     row = matches[0]
@@ -248,10 +248,10 @@ def compile_stage_b_interpreter_native_object(
         "native object source",
     )
     if sha256_file(source) != row["source"]["sha256"]:
-        raise StageBInterpreterNativeBuildError("native object source binding is stale")
+        raise CandidateNativeBuildError("native object source binding is stale")
     compiler = _file(row["compiler"]["path"], "native object compiler")
     if _native_compiler_binding(compiler) != row["compiler"]:
-        raise StageBInterpreterNativeBuildError("native object compiler binding is stale")
+        raise CandidateNativeBuildError("native object compiler binding is stale")
     output = Path(out_dir)
     output.mkdir(parents=True, exist_ok=True)
     object_path = output / "object.o"
@@ -263,10 +263,10 @@ def compile_stage_b_interpreter_native_object(
             env=native_build._deterministic_environment(),
             cwd=graph_path.parent,
         )
-    except native_build.StageBNativeBuildError as exc:
-        raise StageBInterpreterNativeBuildError(str(exc)) from exc
+    except native_build.CandidateNativeBuildError as exc:
+        raise CandidateNativeBuildError(str(exc)) from exc
     if not object_path.is_file():
-        raise StageBInterpreterNativeBuildError("compiler omitted cached native object")
+        raise CandidateNativeBuildError("compiler omitted cached native object")
     core = {
         "format": INTERPRETER_NATIVE_OBJECT_FORMAT,
         "status": "compiled",
@@ -284,7 +284,7 @@ def compile_stage_b_interpreter_native_object(
     return payload
 
 
-def compile_stage_b_interpreter_native_source_bundle(
+def compile_spx_interpreter_native_source_bundle(
     *,
     source_bundle: Path | str,
     compiler: Path | str,
@@ -311,7 +311,7 @@ def compile_stage_b_interpreter_native_source_bundle(
     if {
         key: value for key, value in compiler_binding.items() if key != "path"
     } != payload["compiler"]:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native source bundle compiler binding is stale"
         )
     roots = [
@@ -336,10 +336,10 @@ def compile_stage_b_interpreter_native_source_bundle(
             env=native_build._deterministic_environment(),
             cwd=bundle_root,
         )
-    except native_build.StageBNativeBuildError as exc:
-        raise StageBInterpreterNativeBuildError(str(exc)) from exc
+    except native_build.CandidateNativeBuildError as exc:
+        raise CandidateNativeBuildError(str(exc)) from exc
     if not object_path.is_file():
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "compiler omitted bundled native object"
         )
     core = {
@@ -363,7 +363,7 @@ def compile_stage_b_interpreter_native_source_bundle(
     return result
 
 
-def assemble_stage_b_interpreter_native_objects(
+def assemble_spx_interpreter_native_objects(
     *,
     graph: Path | str,
     object_packages: Sequence[Path | str],
@@ -380,16 +380,16 @@ def assemble_stage_b_interpreter_native_objects(
         core = dict(receipt)
         expected = core.pop("object_receipt_sha256", None)
         if expected != native_build._canonical_sha256(core):
-            raise StageBInterpreterNativeBuildError("native object receipt self-hash is stale")
+            raise CandidateNativeBuildError("native object receipt self-hash is stale")
         unit_id = str(receipt.get("unit_id"))
         if unit_id in receipts:
-            raise StageBInterpreterNativeBuildError("duplicate native object receipt")
+            raise CandidateNativeBuildError("duplicate native object receipt")
         if receipt.get("format") != INTERPRETER_NATIVE_OBJECT_FORMAT:
-            raise StageBInterpreterNativeBuildError("unsupported native object receipt format")
+            raise CandidateNativeBuildError("unsupported native object receipt format")
         receipts[unit_id] = (receipt_path.parent, receipt)
     expected_ids = [str(row["id"]) for row in graph_payload["units"]]
     if set(receipts) != set(expected_ids):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native object receipts do not exactly cover the compile graph"
         )
     output = Path(out_dir)
@@ -401,10 +401,10 @@ def assemble_stage_b_interpreter_native_objects(
         root, receipt = receipts[unit_id]
         graph_row = by_id[unit_id]
         if receipt.get("compile_key_sha256") != graph_row["compile_key_sha256"]:
-            raise StageBInterpreterNativeBuildError("native object compile-key binding is stale")
+            raise CandidateNativeBuildError("native object compile-key binding is stale")
         source = root / str(receipt["object"]["path"])
         if not source.is_file() or sha256_file(source) != receipt["object"]["sha256"]:
-            raise StageBInterpreterNativeBuildError("native object artifact binding is stale")
+            raise CandidateNativeBuildError("native object artifact binding is stale")
         target = objects_dir / f"{index:03d}.o"
         shutil.copyfile(source, target)
         rows.append(
@@ -439,7 +439,7 @@ def assemble_stage_b_interpreter_native_objects(
     return payload
 
 
-def build_stage_b_interpreter_native_candidate(
+def build_spx_interpreter_native_candidate(
     *,
     interpreter_package: Path | str,
     native_engine_package: Path | str,
@@ -456,14 +456,14 @@ def build_stage_b_interpreter_native_candidate(
     out_dir: Path | str,
     anchor_manifest: Path | str | None = None,
     compiler: Path | str = "i686-w64-mingw32-gcc",
-    entry_symbol: str = "stage_b_payload_entry",
+    entry_symbol: str = "spx_payload_entry",
     payload_rva: int | None = None,
     precompiled_objects: Path | str | None = None,
 ) -> dict[str, Any]:
     """Compile and compose one explicitly classified interpreter candidate."""
 
     if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "payload entry symbol is not a C identifier"
         )
 
@@ -473,7 +473,7 @@ def build_stage_b_interpreter_native_candidate(
         fallback_coverage_receipt,
         component_runtime_package,
     )):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "static-closed candidates require complete v3 authority inputs"
         )
     receipt: CandidateAuthorityV3Receipt = _validate_candidate_authority_v3(
@@ -489,7 +489,7 @@ def build_stage_b_interpreter_native_candidate(
         interpreter_package,
         filename=_INTERPRETER_MANIFEST_FILENAME,
         owner="interpreter",
-        expected_format=STAGE_B_INTERPRETER_PACKAGE_FORMAT,
+        expected_format=SPX_INTERPRETER_PACKAGE_FORMAT,
         require_roles=True,
     )
     engine = _load_package(
@@ -529,12 +529,12 @@ def build_stage_b_interpreter_native_candidate(
 
     contract_path = _file(load_image_contract, "load-image contract")
     contract_artifact_sha256 = sha256_file(contract_path)
-    contract = load_stage_a_load_image_contract(contract_path)
+    contract = load_spx_load_image_contract(contract_path)
     native_build._require_pe32_contract(contract)
     if contract.identity.pe_sha256 != _candidate_manifest_pe_sha256(
         machine_ir_manifest
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "load-image contract binds a different PE than the v2 "
             "candidate-authority receipt"
         )
@@ -559,7 +559,7 @@ def build_stage_b_interpreter_native_candidate(
             or engine_machine_ir.get("sha256")
             != executable_data.machine_ir_sha256
         ):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "recovered executable-data contract binds a different machine IR"
             )
     anchor_path: Path | None = None
@@ -573,9 +573,9 @@ def build_stage_b_interpreter_native_candidate(
                 _read_json_object(anchor_path, "executable-anchor manifest")
             )
         except Exception as exc:
-            raise StageBInterpreterNativeBuildError(str(exc)) from exc
+            raise CandidateNativeBuildError(str(exc)) from exc
         if anchors.image_base != contract.identity.preferred_base:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "executable-anchor manifest image base differs from the load-image contract"
             )
 
@@ -601,7 +601,7 @@ def build_stage_b_interpreter_native_candidate(
     minimum_rva = _align_up(contract.identity.image_size, section_alignment)
     selected_rva = minimum_rva if payload_rva is None else _u32(payload_rva, "payload RVA")
     if selected_rva < minimum_rva or selected_rva % section_alignment:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "payload RVA must be section-aligned and outside the contracted image"
         )
 
@@ -717,10 +717,10 @@ def build_stage_b_interpreter_native_candidate(
                     phase=f"compile {artifact.owner}:{artifact.role}",
                     env=environment,
                 )
-            except native_build.StageBNativeBuildError as exc:
-                raise StageBInterpreterNativeBuildError(str(exc)) from exc
+            except native_build.CandidateNativeBuildError as exc:
+                raise CandidateNativeBuildError(str(exc)) from exc
             if not object_path.is_file():
-                raise StageBInterpreterNativeBuildError(
+                raise CandidateNativeBuildError(
                     f"compiler omitted object for {artifact.owner}:{artifact.role}"
                 )
             object_paths.append(object_path)
@@ -763,10 +763,10 @@ def build_stage_b_interpreter_native_candidate(
             env=environment,
             cwd=output,
         )
-    except native_build.StageBNativeBuildError as exc:
-        raise StageBInterpreterNativeBuildError(str(exc)) from exc
+    except native_build.CandidateNativeBuildError as exc:
+        raise CandidateNativeBuildError(str(exc)) from exc
     if not raw_payload.is_file() or not linker_map.is_file():
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "linker omitted the payload PE or linker map"
         )
 
@@ -780,7 +780,7 @@ def build_stage_b_interpreter_native_candidate(
             toolchain.nm, payload_path, environment
         )
         if unresolved:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "payload has unresolved CRT/helper symbols: " + ", ".join(unresolved)
             )
         payload_pe = native_build._qualify_payload_pe(
@@ -809,10 +809,10 @@ def build_stage_b_interpreter_native_candidate(
             int(file_header.Characteristics) & native_build._IMAGE_FILE_RELOCS_STRIPPED
         )
         payload_pe.close()
-    except StageBInterpreterNativeBuildError:
+    except CandidateNativeBuildError:
         raise
     except Exception as exc:
-        raise StageBInterpreterNativeBuildError(str(exc)) from exc
+        raise CandidateNativeBuildError(str(exc)) from exc
 
     layout_path = output / _ENGINE_LAYOUT_FILENAME
     layout_path.write_bytes(layout_payload)
@@ -826,25 +826,25 @@ def build_stage_b_interpreter_native_candidate(
     if region_overrides is not None:
         _revalidate_package(region_overrides)
     if sha256_file(contract_path) != contract_artifact_sha256:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "load-image contract changed during compilation"
         )
     if (
         executable_data_path is not None
         and sha256_file(executable_data_path) != executable_data_artifact_sha256
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "recovered executable-data contract changed during compilation"
         )
     assert anchor_path is not None
     assert anchors is not None
     assert anchor_artifact_sha256 is not None
     if sha256_file(anchor_path) != anchor_artifact_sha256:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "executable-anchor manifest changed during compilation"
         )
     if sha256_file(compiler_runtime) != compiler_runtime_sha256:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "compiler runtime changed during compilation"
         )
     assert candidate_authority is not None
@@ -860,7 +860,7 @@ def build_stage_b_interpreter_native_candidate(
         component_runtime_package=component_runtime_package,
     )
     if repeated_receipt != receipt:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "v3 candidate-authority inputs changed during compilation"
         )
     repeated_structural_binding = _validate_static_candidate_package_bindings(
@@ -872,10 +872,10 @@ def build_stage_b_interpreter_native_candidate(
         runtime_plan=runtime_plan,
     )
     if repeated_structural_binding != structural_binding:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "candidate execution-scope inputs changed during compilation"
         )
-    composition = compose_stage_b_pe(
+    composition = compose_spx_pe(
         load_image_contract=contract_path,
         payload_pe=payload_path,
         anchor_manifest=anchor_path,

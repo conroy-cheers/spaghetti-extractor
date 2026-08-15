@@ -81,13 +81,13 @@ let
     export PYTHONPATH=${fullSource}/src
     exec ${pythonEnv}/bin/python -m spaghetti_extractor.testkit "$@"
   '';
-  isaConformanceKernel = import ./stage-a-isa-conformance-kernel.nix {
+  isaConformanceKernel = import ./isa-conformance-kernel.nix {
     inherit pkgs leanSource;
   };
-  isaSemanticKernel = import ./stage-a-isa-semantic-kernel.nix {
+  isaSemanticKernel = import ./isa-semantic-kernel.nix {
     inherit pkgs leanSource;
   };
-  inductiveCertificateKernel = import ./stage-a-inductive-certificate-kernel.nix {
+  inductiveCertificateKernel = import ./inductive-certificate-kernel.nix {
     inherit pkgs leanSource;
   };
   bochsConformance = pkgs.callPackage ./bochs-conformance.nix {

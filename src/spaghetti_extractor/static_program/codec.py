@@ -10,11 +10,19 @@ from ..artifacts.formats import (
     STATIC_ANALYSIS_PROFILE_ID,
     STATIC_PROGRAM_CONTRACT_FORMAT,
 )
+from ..pe32.model import BlockSide
 from ..util import sha256_file
 from .model import (
+    StaticBinaryIdentity,
+    StaticCFGEdge,
+    StaticIssue,
     StaticProgramContract,
     StaticProgramContractBinding,
     StaticProgramContractError,
+    StaticRoot,
+    StaticSidecar,
+    StaticStructuralUnit,
+    StaticStructuralUniverse,
 )
 
 
@@ -45,9 +53,8 @@ def parse_static_program_contract(value: Any) -> StaticProgramContract:
     trust = value.get("trust")
     expected_trust = {
         "executes_original_binary": False,
-        "uses_candidate_binary": False,
-        "uses_binary_mapping": False,
-        "claims_whole_program_equivalence": False,
+        "input_image_count": 1,
+        "uses_cross_image_mapping": False,
         "behavioral_reachability_separate": True,
     }
     if trust != expected_trust:
@@ -61,15 +68,153 @@ def parse_static_program_contract(value: Any) -> StaticProgramContract:
     issues = value.get("issues")
     if not isinstance(issues, list) or any(not isinstance(row, Mapping) for row in issues):
         raise StaticProgramContractError("static-program issues are malformed")
+    binary = mappings["binary"]
+    structure = mappings["structural_universe"]
+    if "mapping" in structure:
+        raise StaticProgramContractError(
+            "static-program contracts cannot contain binary-pair fields"
+        )
+    units_value = structure.get("units")
+    if not isinstance(units_value, list):
+        raise StaticProgramContractError("static-program structural units are malformed")
+    units = tuple(_parse_unit(row) for row in units_value)
+    roots = tuple(_parse_root(row) for row in _object_list(structure, "roots"))
+    cfg_edges = tuple(
+        _parse_cfg_edge(row) for row in _object_list(structure, "cfg_edges")
+    )
+    padding = tuple(_object_list(structure, "padding"))
+    sidecars = mappings["sidecars"]
+    if set(sidecars) != {"semantic_transfers"}:
+        raise StaticProgramContractError("static-program sidecars are malformed")
+    semantic = sidecars.get("semantic_transfers")
+    if not isinstance(semantic, Mapping) or set(semantic) != {"path", "sha256"}:
+        raise StaticProgramContractError(
+            "static-program contract has no canonical semantic-transfer sidecar"
+        )
+    counts = mappings["counts"]
+    if any(
+        not isinstance(name, str)
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or count < 0
+        for name, count in counts.items()
+    ):
+        raise StaticProgramContractError("static-program counts are malformed")
     return StaticProgramContract(
-        binary=mappings["binary"],
-        structural_universe=mappings["structural_universe"],
+        binary=StaticBinaryIdentity(
+            machine=_string(binary.get("machine"), "binary machine"),
+            bitness=_integer(binary.get("bitness"), "binary bitness"),
+            sha256=_string(binary.get("sha256"), "binary SHA-256"),
+            details={
+                key: item
+                for key, item in binary.items()
+                if key not in {"machine", "bitness", "sha256"}
+            },
+        ),
+        structural_universe=StaticStructuralUniverse(
+            units=units,
+            roots=roots,
+            cfg_edges=cfg_edges,
+            padding=padding,
+        ),
         families=mappings["families"],
-        sidecars=mappings["sidecars"],
-        issues=tuple(issues),
-        counts=mappings["counts"],
+        semantic_transfers=StaticSidecar(
+            path=_string(semantic.get("path"), "semantic sidecar path"),
+            sha256=_string(semantic.get("sha256"), "semantic sidecar SHA-256"),
+        ),
+        issues=tuple(_parse_issue(row) for row in issues),
+        counts=dict(counts),
         status=str(value.get("status")),
     )
+
+
+def _parse_unit(value: Any) -> StaticStructuralUnit:
+    if not isinstance(value, Mapping):
+        raise StaticProgramContractError("static structural unit is malformed")
+    span_value = value.get("span")
+    span = None
+    if span_value is not None:
+        if not isinstance(span_value, Mapping):
+            raise StaticProgramContractError("static structural unit span is malformed")
+        start = _integer(span_value.get("rva_start"), "unit start RVA")
+        end = _integer(span_value.get("rva_end"), "unit end RVA")
+        size = _integer(span_value.get("size"), "unit size")
+        if end - start != size or size <= 0:
+            raise StaticProgramContractError("static structural unit span is invalid")
+        span = BlockSide(start, end)
+    return StaticStructuralUnit(
+        id=_string(value.get("id"), "unit id"),
+        kind=_string(value.get("kind"), "unit kind"),
+        span=span,
+        details={
+            key: item for key, item in value.items() if key not in {"id", "kind", "span"}
+        },
+    )
+
+
+def _parse_root(value: Any) -> StaticRoot:
+    if not isinstance(value, Mapping):
+        raise StaticProgramContractError("static root is malformed")
+    return StaticRoot(
+        kind=_string(value.get("kind"), "root kind"),
+        rva=_integer(value.get("rva"), "root RVA"),
+        details={key: item for key, item in value.items() if key not in {"kind", "rva"}},
+    )
+
+
+def _parse_cfg_edge(value: Any) -> StaticCFGEdge:
+    if not isinstance(value, Mapping) or set(value) != {
+        "source_unit_id",
+        "target_rvas",
+        "indirect",
+    }:
+        raise StaticProgramContractError("static CFG edge is malformed")
+    targets = value.get("target_rvas")
+    if not isinstance(targets, list):
+        raise StaticProgramContractError("static CFG targets are malformed")
+    return StaticCFGEdge(
+        source_unit_id=_string(value.get("source_unit_id"), "CFG source unit"),
+        target_rvas=tuple(_integer(item, "CFG target RVA") for item in targets),
+        indirect=_boolean(value.get("indirect"), "CFG indirect flag"),
+    )
+
+
+def _parse_issue(value: Mapping[str, Any]) -> StaticIssue:
+    return StaticIssue(
+        id=_string(value.get("id"), "issue id"),
+        status=_string(value.get("status"), "issue status"),
+        category=_string(value.get("category"), "issue category"),
+        details={
+            key: item
+            for key, item in value.items()
+            if key not in {"id", "status", "category"}
+        },
+    )
+
+
+def _object_list(value: Mapping[str, Any], field: str) -> list[Mapping[str, Any]]:
+    rows = value.get(field, [])
+    if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+        raise StaticProgramContractError(f"static-program {field} are malformed")
+    return rows
+
+
+def _string(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise StaticProgramContractError(f"static-program {label} is invalid")
+    return value
+
+
+def _integer(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise StaticProgramContractError(f"static-program {label} is invalid")
+    return value
+
+
+def _boolean(value: Any, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise StaticProgramContractError(f"static-program {label} is invalid")
+    return value
 
 
 def load_static_program_contract_binding(
@@ -86,29 +231,13 @@ def load_static_program_contract_binding(
         )
     except (OSError, json.JSONDecodeError) as exc:
         raise StaticProgramContractError(f"cannot read static-program contract: {exc}") from exc
-    binary_sha256 = typed.binary.get("sha256")
-    if not isinstance(binary_sha256, str) or len(binary_sha256) != 64:
-        raise StaticProgramContractError("static-program binary hash is invalid")
+    binary_sha256 = typed.binary.sha256
     if original_pe is not None and sha256_file(Path(original_pe)) != binary_sha256:
         raise StaticProgramContractError(
             "static-program contract is not bound to the supplied original PE"
         )
-    semantic = typed.sidecars.get("semantic_transfers")
-    if not isinstance(semantic, Mapping) or set(semantic) != {"path", "sha256"}:
-        raise StaticProgramContractError(
-            "static-program contract has no canonical semantic-transfer sidecar"
-        )
-    relative = semantic.get("path")
-    if (
-        not isinstance(relative, str)
-        or not relative
-        or Path(relative).is_absolute()
-        or Path(relative).name != relative
-    ):
-        raise StaticProgramContractError("static-program semantic path is invalid")
-    semantic_sha256 = semantic.get("sha256")
-    if not isinstance(semantic_sha256, str) or len(semantic_sha256) != 64:
-        raise StaticProgramContractError("static-program semantic hash is invalid")
+    relative = typed.semantic_transfers.path
+    semantic_sha256 = typed.semantic_transfers.sha256
     semantic_path = path.parent / relative
     if not semantic_path.is_file() or semantic_path.is_symlink():
         raise StaticProgramContractError(

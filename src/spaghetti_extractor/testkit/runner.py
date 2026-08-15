@@ -21,6 +21,7 @@ from .evaluation_receipts import evaluation_receipt_directory
 from .model import SuitePlan
 from .planning import build_suite_plan, changed_paths_from_git
 from .static_manifest import check_repository_metadata, nix_execution_plan_payload
+from ..build_support.nix_invocation import select_builder_policy
 
 
 Run = Callable[[Sequence[str], Path], int]
@@ -441,18 +442,12 @@ def build_commands(
 
 
 def _builder_arguments(repository: Path, *, remote: bool) -> tuple[str, ...]:
-    if not remote:
-        return ("--builders", "")
-    machines = repository / "nix" / "stage-a-builders"
-    if not machines.is_file():
-        return ()
-    return (
-        "--builders",
-        f"@{machines.resolve()}",
-        "--option",
-        "builders-use-substitutes",
-        "true",
+    policy = select_builder_policy(
+        target_flake=str(repository),
+        local=not remote,
+        cwd=repository,
     )
+    return policy.nix_arguments()
 
 
 def _source_expression(repository: Path) -> str:

@@ -81,7 +81,7 @@ def _unit(
         else {"kind": "direct_jump", "target_rva": target_rva}
     )
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",

@@ -10,8 +10,8 @@ ROOT = Path(__file__).resolve().parents[3]
 
 class ComponentAnalysisNixTests(unittest.TestCase):
     def test_generic_analysis_is_static_content_addressed_and_candidate_free(self) -> None:
-        analysis = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(encoding="utf-8")
-        discovery = (ROOT / "nix" / "stage-b-component-discovery.nix").read_text(encoding="utf-8")
+        analysis = (ROOT / "nix" / "component-analysis.nix").read_text(encoding="utf-8")
+        discovery = (ROOT / "nix" / "component-discovery.nix").read_text(encoding="utf-8")
 
         for phase in (
             "originalInventory",
@@ -40,7 +40,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn('"$out/proposal-index.json"', discovery)
 
     def test_component_dag_has_granular_phase_inputs(self) -> None:
-        module = (ROOT / "nix" / "stage-b-components.nix").read_text(
+        module = (ROOT / "nix" / "component-workflow.nix").read_text(
             encoding="utf-8"
         )
         for declaration in (
@@ -75,7 +75,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn('.status == "violated"', contract_gate)
 
         proposal_input = (
-            ROOT / "nix" / "stage-b-component-proposal-input.nix"
+            ROOT / "nix" / "component-proposal-input.nix"
         ).read_text(encoding="utf-8")
         self.assertIn("builtins.readFile", proposal_input)
         self.assertIn("builtins.toFile", proposal_input)
@@ -83,15 +83,15 @@ class ComponentAnalysisNixTests(unittest.TestCase):
 
     def test_component_runtime_is_factored_out_of_candidate_construction(self) -> None:
         candidate = (
-            ROOT / "nix" / "stage-b-hybrid-candidate.nix"
+            ROOT / "nix" / "candidate-hybrid.nix"
         ).read_text(encoding="utf-8")
         sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
 
         self.assertIn("interpreterPackage,", candidate)
         self.assertIn("componentRuntimePackage,", candidate)
         self.assertIn("static-closed candidates require a component runtime", candidate)
-        self.assertNotIn("import ./stage-b-interpreter-package.nix", candidate)
-        self.assertNotIn("import ./stage-b-component-runtime-package.nix", candidate)
+        self.assertNotIn("import ./candidate-interpreter-package.nix", candidate)
+        self.assertNotIn("import ./component-runtime-package.nix", candidate)
         self.assertIn(
             "componentRuntimeFor = if hasComponents then components.runtimeFor else null",
             sdk,
@@ -113,11 +113,11 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("target = {\n    bundle =", sdk)
 
     def test_interpreter_package_is_a_generic_content_addressed_phase(self) -> None:
-        module = (ROOT / "nix" / "stage-b-interpreter-package.nix").read_text(encoding="utf-8")
+        module = (ROOT / "nix" / "candidate-interpreter-package.nix").read_text(encoding="utf-8")
         self.assertIn("machineIr", module)
         self.assertIn("capabilityAnalysis", module)
         self.assertIn("finalAuthorityGate", module)
-        self.assertIn("write_stage_b_interpreter_package", module)
+        self.assertIn("write_spx_interpreter_package", module)
         for digest in (
             "program_source_sha256",
             "interpreter_source_sha256",
@@ -127,7 +127,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         ):
             self.assertIn(digest, module)
         self.assertIn("__contentAddressed = true;", module)
-        self.assertNotIn("stage-b-jq", module.lower())
+        self.assertNotIn("spaghetti-extractor-jq", module.lower())
         self.assertNotIn("wine", module.lower())
 
     def test_fallback_authority_does_not_use_ifd_or_prebuild_executable_code(self) -> None:
@@ -152,7 +152,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("--implementation-file", implementation)
 
     def test_native_object_graph_normalizes_ifd_inputs_into_ca_units(self) -> None:
-        module = (ROOT / "nix" / "stage-b-native-object-graph.nix").read_text(
+        module = (ROOT / "nix" / "candidate-native-object-graph.nix").read_text(
             encoding="utf-8"
         )
         self.assertIn("builtins.readFile", module)
@@ -160,19 +160,19 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("unsafeDiscardStringContext", module)
         self.assertIn("native-source-bundle-v1", module)
         self.assertIn(
-            "compile_stage_b_interpreter_native_source_bundle", module
+            "compile_spx_interpreter_native_source_bundle", module
         )
-        self.assertIn("assemble_stage_b_interpreter_native_objects", module)
+        self.assertIn("assemble_spx_interpreter_native_objects", module)
         self.assertIn("__contentAddressed = true;", module)
         self.assertIn("compiledObjects", module)
-        self.assertIn("stage-b-interpreter-native-object-graph-v2", module)
+        self.assertIn("spaghetti-extractor-interpreter-native-object-graph-v2", module)
         graph_declaration = module[
             module.index('graph = pkgs.runCommand') : module.index("graphPayload =")
         ]
         self.assertNotIn("__contentAddressed = true;", graph_declaration)
 
     def test_machine_ir_preparation_is_a_distinct_reusable_phase(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
+        module = (ROOT / "nix" / "component-analysis.nix").read_text(
             encoding="utf-8"
         )
 
@@ -195,7 +195,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("finite_dataflow_factory=FiniteU32Dataflow", module)
 
     def test_component_analysis_contains_no_legacy_authority_loop(self) -> None:
-        module = (ROOT / "nix" / "stage-b-component-analysis.nix").read_text(
+        module = (ROOT / "nix" / "component-analysis.nix").read_text(
             encoding="utf-8"
         )
         for forbidden in (
@@ -353,7 +353,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
             )
         )
         self.assertGreaterEqual(builder.count("_validate_candidate_authority_v3("), 3)
-        self.assertNotIn("stage_b_candidate_authority_v2", builder)
+        self.assertNotIn("spx_candidate_authority_v2", builder)
         self.assertNotIn("final_static_hybrid_audit", builder)
 
     def test_isa_and_fallback_bindings_are_v3_native(self) -> None:
@@ -370,7 +370,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn('unit_aligned_inputs=("isa_qualification",)', fallback)
 
     def test_hybrid_candidate_uses_phase_specific_python_closures(self) -> None:
-        module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
+        module = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
             encoding="utf-8"
         )
         closure = (ROOT / "nix" / "python-module-closure.nix").read_text(
@@ -385,7 +385,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         ):
             self.assertIn(name, module)
         interpreter = (
-            ROOT / "nix" / "stage-b-interpreter-package.nix"
+            ROOT / "nix" / "candidate-interpreter-package.nix"
         ).read_text(encoding="utf-8")
         self.assertIn("phasePythonSource", interpreter)
         self.assertIn("__contentAddressed = true;", closure)
@@ -422,7 +422,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("original_binary_executed: false", module)
 
     def test_candidate_generation_has_only_v3_authority(self) -> None:
-        module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
+        module = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
             encoding="utf-8"
         )
 
@@ -439,7 +439,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn('execution_scope == "complete-static-authority"', module)
         self.assertNotIn("write_static_hybrid_closure_receipt", module)
         self.assertNotIn("write_final_candidate_authorization", module)
-        self.assertNotIn("stage-b-final-candidate-generation-authorization-v1", module)
+        self.assertNotIn("spaghetti-extractor-final-candidate-generation-authorization-v1", module)
         self.assertNotIn("externalSiteProposals", module)
         self.assertNotIn("external_site_proposals=", module)
         self.assertIn("region_override_package=optional_path", module)
@@ -460,18 +460,18 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("callback_entry_contract_v2", callbacks)
 
     def test_fallback_coverage_is_v3_and_has_no_v1_authority_dependency(self) -> None:
-        module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
+        module = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
             encoding="utf-8"
         )
         start = module.index("fallbackCoverageReceipt =")
         end = module.index("candidateAuthorityReport =", start)
         phase = module[start:end]
         receipt = (
-            ROOT / "nix" / "stage-b-fallback-coverage-receipt.nix"
+            ROOT / "nix" / "fallback-coverage-receipt.nix"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("stage-b-fallback-coverage-receipt.nix", phase)
-        self.assertIn("stage-b-fallback-coverage-receipt-v3", receipt)
+        self.assertIn("fallback-coverage-receipt.nix", phase)
+        self.assertIn("spaghetti-extractor-fallback-coverage-receipt-v3", receipt)
         self.assertIn("structural_units_require_lowering", receipt)
         self.assertIn("rooted_containment_authority", receipt)
         self.assertNotIn("static_completeness_report", phase)
@@ -506,7 +506,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
 
     def test_sdk_interface_profile_is_a_generic_content_addressed_phase(self) -> None:
         module = (
-            ROOT / "nix" / "stage-a-external-interface-profile.nix"
+            ROOT / "nix" / "external-interface-profile.nix"
         ).read_text(encoding="utf-8")
 
         self.assertIn("sdkHeaders ?", module)
@@ -545,13 +545,13 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("phaseSourceMutation", fixture)
 
     def test_legacy_nix_authority_graph_is_removed(self) -> None:
-        self.assertFalse((ROOT / "nix" / "stage-b-static-hybrid-authority-v2.nix").exists())
+        self.assertFalse((ROOT / "nix" / "spaghetti-extractor-static-hybrid-authority-v2.nix").exists())
         self.assertFalse(
-            (ROOT / "nix" / "tests" / "stage-b-static-hybrid-authority-v2.nix").exists()
+            (ROOT / "nix" / "tests" / "spaghetti-extractor-static-hybrid-authority-v2.nix").exists()
         )
 
     def test_static_candidate_consumes_canonical_external_site_authority(self) -> None:
-        candidate = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
+        candidate = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
             encoding="utf-8"
         )
         authority_workflow = (ROOT / "nix" / "authority-workflow.nix").read_text(

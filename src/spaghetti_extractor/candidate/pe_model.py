@@ -1,8 +1,8 @@
-"""Deterministic PE32 image composition from opaque Stage A artifacts.
+"""Deterministic PE32 image composition from opaque static analysis artifacts.
 
 This module never accepts an original PE path.  The original image layout and
 all reusable runtime bytes must come from a validated
-``stage-a-load-image-contract-v1`` artifact.
+``spaghetti-extractor-load-image-contract-v1`` artifact.
 """
 
 from __future__ import annotations
@@ -19,11 +19,11 @@ from ..artifacts.formats import (
     PAYLOAD_RELOCATION_INVENTORY_FORMAT,
 )
 from ..roundtrip_fuzz.image_io import (
-    load_stage_a_load_image_contract,
+    load_spx_load_image_contract,
 )
 from ..roundtrip_fuzz.image_model import (
-    STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT,
-    StageALoadImageContract,
+    SPX_LOAD_IMAGE_CONTRACT_FORMAT,
+    LoadImageContract,
 )
 from ..pe32.recovered_executable_data import (
     RecoveredExecutableDataContract,
@@ -33,7 +33,7 @@ from ..pe32.recovered_executable_data import (
 from ..util import sha256_bytes
 
 
-EXECUTABLE_ANCHOR_MANIFEST_FORMAT = "stage-b-pe-executable-anchor-manifest-v1"
+EXECUTABLE_ANCHOR_MANIFEST_FORMAT = "spaghetti-extractor-pe-executable-anchor-manifest-v1"
 CANDIDATE_FILENAME = "candidate.exe"
 COMPOSITION_MANIFEST_FILENAME = "composition-manifest.json"
 
@@ -79,7 +79,7 @@ _UINT16_MAX = (1 << 16) - 1
 _UINT32_MAX = (1 << 32) - 1
 
 
-class StageBPECompositionError(ValueError):
+class PECompositionError(ValueError):
     """The requested PE composition is malformed or structurally unsafe."""
 
 
@@ -94,11 +94,11 @@ def _canonical_bytes(value: Any) -> bytes:
 
 def _integer(value: Any, context: str, *, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             f"{context} must be an integer greater than or equal to {minimum}"
         )
     if value > _UINT32_MAX:
-        raise StageBPECompositionError(f"{context} exceeds PE32 address width")
+        raise PECompositionError(f"{context} exceeds PE32 address width")
     return value
 
 
@@ -106,7 +106,7 @@ def _exact_fields(
     payload: Mapping[str, Any], expected: set[str], context: str
 ) -> None:
     if not all(isinstance(key, str) for key in payload):
-        raise StageBPECompositionError(f"{context} field names must be strings")
+        raise PECompositionError(f"{context} field names must be strings")
     actual = set(payload)
     if actual == expected:
         return
@@ -117,30 +117,30 @@ def _exact_fields(
         details.append(f"missing fields: {', '.join(missing)}")
     if unexpected:
         details.append(f"unexpected fields: {', '.join(unexpected)}")
-    raise StageBPECompositionError(f"{context} has {'; '.join(details)}")
+    raise PECompositionError(f"{context} has {'; '.join(details)}")
 
 
 def _mapping(value: Any, context: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageBPECompositionError(f"{context} must be an object")
+        raise PECompositionError(f"{context} must be an object")
     return value
 
 
 def _list(value: Any, context: str) -> list[Any]:
     if not isinstance(value, list):
-        raise StageBPECompositionError(f"{context} must be a list")
+        raise PECompositionError(f"{context} must be a list")
     return value
 
 
 def _hex_bytes(value: Any, context: str) -> bytes:
     if not isinstance(value, str) or not value:
-        raise StageBPECompositionError(f"{context} must be nonempty hexadecimal")
+        raise PECompositionError(f"{context} must be nonempty hexadecimal")
     try:
         result = bytes.fromhex(value)
     except ValueError as exc:
-        raise StageBPECompositionError(f"{context} must be canonical hexadecimal") from exc
+        raise PECompositionError(f"{context} must be canonical hexadecimal") from exc
     if result.hex() != value:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             f"{context} must be lowercase canonical hexadecimal"
         )
     return result
@@ -152,7 +152,7 @@ def _sha256(value: Any, context: str) -> str:
         or len(value) != 64
         or any(character not in "0123456789abcdef" for character in value)
     ):
-        raise StageBPECompositionError(
+        raise PECompositionError(
             f"{context} must be a lowercase SHA-256 digest"
         )
     return value
@@ -164,7 +164,7 @@ def _unique_rva_list(value: Any, context: str) -> tuple[int, ...]:
         for index, item in enumerate(_list(value, context))
     )
     if len(set(result)) != len(result):
-        raise StageBPECompositionError(f"{context} contains duplicate RVAs")
+        raise PECompositionError(f"{context} contains duplicate RVAs")
     return result
 
 
@@ -224,7 +224,7 @@ class ExecutableAnchorManifest:
             context,
         )
         if value["format"] != EXECUTABLE_ANCHOR_MANIFEST_FORMAT:
-            raise StageBPECompositionError("unsupported executable-anchor manifest format")
+            raise PECompositionError("unsupported executable-anchor manifest format")
         parsed_anchors = tuple(
             ExecutableAnchor.parse(
                 _mapping(item, f"{context}.anchors[{index}]"),
@@ -233,7 +233,7 @@ class ExecutableAnchorManifest:
             for index, item in enumerate(_list(value["anchors"], f"{context}.anchors"))
         )
         if not parsed_anchors:
-            raise StageBPECompositionError("executable-anchor manifest has no anchors")
+            raise PECompositionError("executable-anchor manifest has no anchors")
         anchors = tuple(sorted(parsed_anchors, key=lambda item: item.rva))
         return cls(
             image_base=_integer(value["image_base"], f"{context}.image_base"),
@@ -289,7 +289,7 @@ class PayloadRelocation:
             "highlow",
             4,
         ):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"{context} must be a PE32 HIGHLOW relocation"
             )
         return relocation
@@ -327,11 +327,11 @@ class PayloadRelocationInventory:
             context,
         )
         if value["format"] != PAYLOAD_RELOCATION_INVENTORY_FORMAT:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "unsupported payload relocation inventory format"
             )
         if value["complete"] is not True:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "payload relocation inventory must assert complete coverage"
             )
         parsed = tuple(
@@ -345,7 +345,7 @@ class PayloadRelocationInventory:
         )
         relocations = tuple(sorted(parsed, key=lambda item: item.rva))
         if len({item.rva for item in relocations}) != len(relocations):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "payload relocation inventory contains duplicate target RVAs"
             )
         return cls(
@@ -462,7 +462,7 @@ class _FileOffsetRewrite:
 class PECompositionPlan:
     """A fully validated, write-free PE32 composition plan."""
 
-    contract: StageALoadImageContract
+    contract: LoadImageContract
     anchor_manifest: ExecutableAnchorManifest
     recovered_executable_data: RecoveredExecutableDataContract | None
     relocation_inventory: PayloadRelocationInventory
@@ -492,7 +492,7 @@ class PECompositionPlan:
 
 def _align_up(value: int, alignment: int) -> int:
     if alignment <= 0 or alignment & (alignment - 1):
-        raise StageBPECompositionError("PE alignment is not a power of two")
+        raise PECompositionError("PE alignment is not a power of two")
     return (value + alignment - 1) // alignment * alignment
 
 
@@ -504,7 +504,7 @@ def _require_disjoint(
         ordered, ordered[1:]
     ):
         if start < previous_end:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"{context} ranges {previous} and {current} overlap"
             )
 
@@ -513,7 +513,7 @@ def _pe_from_bytes(data: bytes, *, context: str) -> pefile.PE:
     try:
         return pefile.PE(data=data, fast_load=True)
     except (pefile.PEFormatError, OSError, ValueError, struct.error) as exc:
-        raise StageBPECompositionError(f"{context} is not a parseable PE: {exc}") from exc
+        raise PECompositionError(f"{context} is not a parseable PE: {exc}") from exc
 
 
 def _sections_from_pe(pe: pefile.PE) -> tuple[_Section, ...]:
@@ -534,7 +534,7 @@ def _sections_from_pe(pe: pefile.PE) -> tuple[_Section, ...]:
 def _directories(pe: pefile.PE, *, context: str) -> tuple[tuple[int, int], ...]:
     count = int(pe.OPTIONAL_HEADER.NumberOfRvaAndSizes)
     if count < 16 or len(pe.OPTIONAL_HEADER.DATA_DIRECTORY) < 16:
-        raise StageBPECompositionError(f"{context} does not carry all 16 PE directories")
+        raise PECompositionError(f"{context} does not carry all 16 PE directories")
     return tuple(
         (int(item.VirtualAddress), int(item.Size))
         for item in pe.OPTIONAL_HEADER.DATA_DIRECTORY[:16]
@@ -543,25 +543,25 @@ def _directories(pe: pefile.PE, *, context: str) -> tuple[tuple[int, int], ...]:
 
 def _validate_pe32_identity(pe: pefile.PE, *, context: str) -> None:
     if int(pe.FILE_HEADER.Machine) != 0x14C:
-        raise StageBPECompositionError(f"{context} is not i386")
+        raise PECompositionError(f"{context} is not i386")
     if int(pe.OPTIONAL_HEADER.Magic) != 0x10B:
-        raise StageBPECompositionError(f"{context} is not PE32")
+        raise PECompositionError(f"{context} is not PE32")
     if int(pe.FILE_HEADER.SizeOfOptionalHeader) < 224:
-        raise StageBPECompositionError(f"{context} PE32 optional header is truncated")
+        raise PECompositionError(f"{context} PE32 optional header is truncated")
 
 
 def _load_contract(
-    source: Path | str | Mapping[str, Any] | StageALoadImageContract,
-) -> StageALoadImageContract:
-    if isinstance(source, StageALoadImageContract):
+    source: Path | str | Mapping[str, Any] | LoadImageContract,
+) -> LoadImageContract:
+    if isinstance(source, LoadImageContract):
         source.validate()
         return source
     if isinstance(source, Mapping):
-        return StageALoadImageContract.parse(source)
+        return LoadImageContract.parse(source)
     if isinstance(source, (str, Path)):
-        return load_stage_a_load_image_contract(Path(source))
-    raise StageBPECompositionError(
-        "load-image contract must be a path, object, or StageALoadImageContract"
+        return load_spx_load_image_contract(Path(source))
+    raise PECompositionError(
+        "load-image contract must be a path, object, or LoadImageContract"
     )
 
 
@@ -569,7 +569,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise StageBPECompositionError(f"JSON object contains duplicate field {key!r}")
+            raise PECompositionError(f"JSON object contains duplicate field {key!r}")
         result[key] = value
     return result
 
@@ -582,7 +582,7 @@ def _load_anchor_manifest(
     if isinstance(source, Mapping):
         return ExecutableAnchorManifest.parse(source)
     if not isinstance(source, (str, Path)):
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "anchor manifest must be a path, object, or ExecutableAnchorManifest"
         )
     path = Path(source)
@@ -590,10 +590,10 @@ def _load_anchor_manifest(
         payload = json.loads(
             path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys
         )
-    except StageBPECompositionError:
+    except PECompositionError:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StageBPECompositionError(f"cannot read anchor manifest {path}: {exc}") from exc
+        raise PECompositionError(f"cannot read anchor manifest {path}: {exc}") from exc
     return ExecutableAnchorManifest.parse(_mapping(payload, "executable-anchor manifest"))
 
 
@@ -608,7 +608,7 @@ def _load_recovered_executable_data(
         return RecoveredExecutableDataContract.parse(source)
     if isinstance(source, (str, Path)):
         return load_recovered_executable_data_contract(source)
-    raise StageBPECompositionError(
+    raise PECompositionError(
         "recovered executable-data contract must be a path, object, or contract"
     )
 
@@ -621,7 +621,7 @@ def _load_relocation_inventory(
     if isinstance(source, Mapping):
         return PayloadRelocationInventory.parse(source)
     if not isinstance(source, (str, Path)):
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "payload relocation inventory must be a path, object, or "
             "PayloadRelocationInventory"
         )
@@ -631,10 +631,10 @@ def _load_relocation_inventory(
             path.read_text(encoding="utf-8"),
             object_pairs_hook=_reject_duplicate_keys,
         )
-    except StageBPECompositionError:
+    except PECompositionError:
         raise
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             f"cannot read payload relocation inventory {path}: {exc}"
         ) from exc
     return PayloadRelocationInventory.parse(
@@ -650,16 +650,16 @@ def _load_payload(source: Path | str | bytes | bytearray) -> bytes:
         try:
             data = path.read_bytes()
         except OSError as exc:
-            raise StageBPECompositionError(f"cannot read payload PE {path}: {exc}") from exc
+            raise PECompositionError(f"cannot read payload PE {path}: {exc}") from exc
     else:
-        raise StageBPECompositionError("payload PE must be a path or bytes")
+        raise PECompositionError("payload PE must be a path or bytes")
     if not data:
-        raise StageBPECompositionError("payload PE is empty")
+        raise PECompositionError("payload PE is empty")
     return data
 
 
 def _validate_original_layout(
-    contract: StageALoadImageContract,
+    contract: LoadImageContract,
 ) -> tuple[
     pefile.PE,
     tuple[_Section, ...],
@@ -668,26 +668,26 @@ def _validate_original_layout(
     int,
     tuple[tuple[int, int], ...],
 ]:
-    if contract.format != STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT:
-        raise StageBPECompositionError("unsupported Stage A load-image contract format")
+    if contract.format != SPX_LOAD_IMAGE_CONTRACT_FORMAT:
+        raise PECompositionError("unsupported static analysis load-image contract format")
     if (
         contract.identity.machine != "i386"
         or contract.identity.bitness != 32
         or contract.identity.pointer_width != 4
     ):
-        raise StageBPECompositionError("Stage B PE composition requires an i386 PE32 contract")
+        raise PECompositionError("candidate reconstruction PE composition requires an i386 PE32 contract")
 
     header_bytes = contract.runtime_headers.data
     pe = _pe_from_bytes(header_bytes, context="contract runtime headers")
     _validate_pe32_identity(pe, context="contract runtime headers")
     sections = _sections_from_pe(pe)
     if len(sections) != len(contract.sections):
-        raise StageBPECompositionError("contract raw section layout is missing or incomplete")
+        raise PECompositionError("contract raw section layout is missing or incomplete")
 
     symbol_pointer = int(pe.FILE_HEADER.PointerToSymbolTable)
     symbol_count = int(pe.FILE_HEADER.NumberOfSymbols)
     if bool(symbol_pointer) != bool(symbol_count):
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "contract COFF symbol-table pointer/count are inconsistent"
         )
 
@@ -701,7 +701,7 @@ def _validate_original_layout(
                 raw_section.NumberOfLinenumbers,
             )
         ):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"contract section {section.index} has unsupported COFF file records"
             )
         observed = (
@@ -725,25 +725,25 @@ def _validate_original_layout(
             typed.executable,
         )
         if observed != expected:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"contract section {typed.index} raw layout disagrees with typed metadata"
             )
         if section.raw_size:
             if section.raw_pointer == 0:
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     f"contract section {section.index} is missing its raw file pointer"
                 )
             if section.raw_end > contract.identity.file_size:
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     f"contract section {section.index} raw layout exceeds bound file size"
                 )
         elif section.raw_pointer != 0:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"contract section {section.index} has a raw pointer without raw bytes"
             )
         if not section.executable and section.raw_size:
             if len(typed.initialized) != 1 or len(typed.initialized[0].data) != section.raw_size:
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     f"contract section {section.index} lacks exact initialized raw bytes"
                 )
 
@@ -759,18 +759,18 @@ def _validate_original_layout(
     section_alignment = int(pe.OPTIONAL_HEADER.SectionAlignment)
     size_of_headers = int(pe.OPTIONAL_HEADER.SizeOfHeaders)
     if size_of_headers != len(header_bytes):
-        raise StageBPECompositionError("contract runtime headers do not exactly cover SizeOfHeaders")
+        raise PECompositionError("contract runtime headers do not exactly cover SizeOfHeaders")
     if size_of_headers % file_alignment:
-        raise StageBPECompositionError("contract SizeOfHeaders is not file aligned")
+        raise PECompositionError("contract SizeOfHeaders is not file aligned")
 
     section_table_offset = (
         int(pe.DOS_HEADER.e_lfanew) + 4 + 20 + int(pe.FILE_HEADER.SizeOfOptionalHeader)
     )
     if section_table_offset + len(sections) * 40 > size_of_headers:
-        raise StageBPECompositionError("contract section table lies outside SizeOfHeaders")
+        raise PECompositionError("contract section table lies outside SizeOfHeaders")
     directories = _directories(pe, context="contract runtime headers")
     if directories[_DIRECTORY_SECURITY] != (0, 0):
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "contract security directory needs original file bytes absent from the load-image contract"
         )
     return (
@@ -786,7 +786,7 @@ def _validate_original_layout(
 def _validate_payload(
     payload: bytes,
     *,
-    contract: StageALoadImageContract,
+    contract: LoadImageContract,
     original_sections: tuple[_Section, ...],
     file_alignment: int,
     section_alignment: int,
@@ -794,11 +794,11 @@ def _validate_payload(
     pe = _pe_from_bytes(payload, context="payload")
     _validate_pe32_identity(pe, context="payload")
     if int(pe.OPTIONAL_HEADER.ImageBase) != contract.identity.preferred_base:
-        raise StageBPECompositionError("payload image base differs from the Stage A contract")
+        raise PECompositionError("payload image base differs from the static analysis contract")
     if int(pe.OPTIONAL_HEADER.FileAlignment) != file_alignment:
-        raise StageBPECompositionError("payload FileAlignment differs from the contract")
+        raise PECompositionError("payload FileAlignment differs from the contract")
     if int(pe.OPTIONAL_HEADER.SectionAlignment) != section_alignment:
-        raise StageBPECompositionError("payload SectionAlignment differs from the contract")
+        raise PECompositionError("payload SectionAlignment differs from the contract")
     directories = _directories(pe, context="payload")
     forbidden = (
         (_DIRECTORY_IMPORT, "imports"),
@@ -808,39 +808,39 @@ def _validate_payload(
     )
     for index, name in forbidden:
         if directories[index] != (0, 0):
-            raise StageBPECompositionError(f"payload has forbidden {name}")
+            raise PECompositionError(f"payload has forbidden {name}")
 
     sections = _sections_from_pe(pe)
     if not sections:
-        raise StageBPECompositionError("payload has no sections")
+        raise PECompositionError("payload has no sections")
     if len(sections) != int(pe.FILE_HEADER.NumberOfSections):
-        raise StageBPECompositionError("payload section table is truncated")
+        raise PECompositionError("payload section table is truncated")
     for section in sections:
         if section.mapped_size == 0:
-            raise StageBPECompositionError(f"payload section {section.index} has no mapped extent")
+            raise PECompositionError(f"payload section {section.index} has no mapped extent")
         if section.rva < contract.identity.image_size:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"payload section {section.index} is not at a high RVA"
             )
         if section.rva % section_alignment:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"payload section {section.index} RVA is not section aligned"
             )
         if section.mapped_end > _UINT32_MAX:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"payload section {section.index} exceeds PE32 RVA space"
             )
         if section.raw_size:
             if section.raw_pointer == 0 or section.raw_pointer % file_alignment:
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     f"payload section {section.index} has an invalid raw pointer"
                 )
             if section.raw_size % file_alignment or section.raw_end > len(payload):
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     f"payload section {section.index} raw bytes are unavailable"
                 )
         elif section.raw_pointer != 0:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"payload section {section.index} has a pointer without raw bytes"
             )
 
@@ -871,7 +871,7 @@ def _validate_payload(
         max(section.mapped_end for section in sections), section_alignment
     )
     if int(pe.OPTIONAL_HEADER.SizeOfImage) != expected_payload_size:
-        raise StageBPECompositionError("payload SizeOfImage does not exactly cover its sections")
+        raise PECompositionError("payload SizeOfImage does not exactly cover its sections")
     entry_rva = int(pe.OPTIONAL_HEADER.AddressOfEntryPoint)
     if entry_rva and len(
         [
@@ -880,13 +880,13 @@ def _validate_payload(
             if section.executable and section.rva <= entry_rva < section.mapped_end
         ]
     ) != 1:
-        raise StageBPECompositionError("payload entry point is not in one executable section")
+        raise PECompositionError("payload entry point is not in one executable section")
     relocation_present = directories[_DIRECTORY_BASE_RELOCATION] != (0, 0)
     relocations_stripped = bool(
         int(pe.FILE_HEADER.Characteristics) & _IMAGE_FILE_RELOCS_STRIPPED
     )
     if relocation_present == relocations_stripped:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "payload relocation directory disagrees with RELOCS_STRIPPED"
         )
     return pe, sections, directories
@@ -904,7 +904,7 @@ def _anchor_section(
         and anchor.end_rva <= section.rva + section.raw_size
     ]
     if len(matches) != 1:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             f"anchor at RVA 0x{anchor.rva:x} is not bounded by exactly one executable raw section"
         )
     return matches[0]
@@ -913,14 +913,14 @@ def _anchor_section(
 def _validate_anchors(
     manifest: ExecutableAnchorManifest,
     *,
-    contract: StageALoadImageContract,
+    contract: LoadImageContract,
     sections: tuple[_Section, ...],
 ) -> dict[int, tuple[ExecutableAnchor, _Section]]:
     if manifest.image_base != contract.identity.preferred_base:
-        raise StageBPECompositionError("anchor manifest image base differs from the contract")
+        raise PECompositionError("anchor manifest image base differs from the contract")
     starts = [anchor.rva for anchor in manifest.anchors]
     if len(set(starts)) != len(starts):
-        raise StageBPECompositionError("anchor RVAs are not unique")
+        raise PECompositionError("anchor RVAs are not unique")
     _require_disjoint(
         [(anchor.rva, anchor.end_rva, f"0x{anchor.rva:x}") for anchor in manifest.anchors],
         context="executable anchor",
@@ -936,14 +936,14 @@ def _validate_anchors(
     )
     for rva, kind in required_roots:
         if rva not in indexed:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"{kind} RVA 0x{rva:x} does not name an exact supplied anchor"
             )
     expected_tls = tuple(
         callback.rva for callback in (() if contract.tls is None else contract.tls.callbacks)
     )
     if manifest.tls_callback_anchor_rvas != expected_tls:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "anchor manifest TLS callback order differs from the load-image contract"
         )
     all_roots = (
@@ -952,31 +952,31 @@ def _validate_anchors(
         + manifest.callback_anchor_rvas
     )
     if len(set(all_roots)) != len(all_roots):
-        raise StageBPECompositionError("entry/TLS/callback root RVAs are not unique")
+        raise PECompositionError("entry/TLS/callback root RVAs are not unique")
     return indexed
 
 
 def _validate_recovered_executable_data(
     recovered: RecoveredExecutableDataContract | None,
     *,
-    contract: StageALoadImageContract,
+    contract: LoadImageContract,
     sections: tuple[_Section, ...],
     indexed_anchors: Mapping[int, tuple[ExecutableAnchor, _Section]],
 ) -> tuple[RecoveredExecutableDataRange, ...]:
     if recovered is None:
         return ()
     if recovered.original_pe_sha256 != contract.identity.pe_sha256:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "recovered executable-data contract binds a different original PE"
         )
     if recovered.image_base != contract.identity.preferred_base:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "recovered executable-data image base differs from the load-image contract"
         )
     anchors = tuple(anchor for anchor, _section in indexed_anchors.values())
     for item in recovered.ranges:
         if item.section_index >= len(sections):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"recovered executable-data range {item.identity} has an invalid section"
             )
         section = sections[item.section_index]
@@ -995,7 +995,7 @@ def _validate_recovered_executable_data(
                 and item.rva_end <= section.rva + logical_size
             )
         ):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"recovered executable-data range {item.identity} is not immutable "
                 "initialized data in its declared executable section"
             )
@@ -1003,7 +1003,7 @@ def _validate_recovered_executable_data(
             item.rva_start < anchor.end_rva and anchor.rva < item.rva_end
             for anchor in anchors
         ):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"recovered executable-data range {item.identity} overlaps an anchor"
             )
     return recovered.ranges
@@ -1074,7 +1074,7 @@ def _classify_executable_bytes(
         cursor = section.rva
         for start, end, kind, data in classified_ranges:
             if start < cursor or end - start != len(data):
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     f"executable section {section.index} has overlapping classifications"
                 )
             append_default(cursor, start)
@@ -1085,14 +1085,14 @@ def _classify_executable_bytes(
             item.size for item in result if item.section_index == section.index
         )
         if classified_size != section.raw_size:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"executable section {section.index} raw bytes are not totally classified"
             )
     expected = sum(
         section.raw_size for section in sections if section.executable
     )
     if sum(item.size for item in result) != expected:
-        raise StageBPECompositionError("not all executable raw bytes are classified")
+        raise PECompositionError("not all executable raw bytes are classified")
     return tuple(result)
 
 
@@ -1105,7 +1105,7 @@ def _section_containing_rva(
     require_raw: bool,
 ) -> _Section:
     if size <= 0 or rva > _UINT32_MAX - size:
-        raise StageBPECompositionError(f"{context} has an invalid RVA span")
+        raise PECompositionError(f"{context} has an invalid RVA span")
     matches = [
         section
         for section in sections
@@ -1121,7 +1121,7 @@ def _section_containing_rva(
     ]
     if len(matches) != 1:
         backing = "raw-backed " if require_raw else "mapped "
-        raise StageBPECompositionError(
+        raise PECompositionError(
             f"{context} is not contained by exactly one {backing}section"
         )
     return matches[0]
@@ -1141,7 +1141,7 @@ def _read_payload_rva(
     offset = section.raw_pointer + rva - section.rva
     result = payload[offset : offset + size]
     if len(result) != size:
-        raise StageBPECompositionError(f"{context} raw bytes are truncated")
+        raise PECompositionError(f"{context} raw bytes are truncated")
     return result
 
 
@@ -1149,14 +1149,14 @@ def _shift_original_raw_pointers(
     sections: tuple[_Section, ...], delta: int
 ) -> tuple[_Section, ...]:
     if delta < 0:
-        raise StageBPECompositionError("original raw-pointer shift is negative")
+        raise PECompositionError("original raw-pointer shift is negative")
     shifted: list[_Section] = []
     for section in sections:
         raw_pointer = 0
         if section.raw_size:
             raw_pointer = section.raw_pointer + delta
             if raw_pointer > _UINT32_MAX - section.raw_size:
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     f"shifted original section {section.index} exceeds PE32 file offsets"
                 )
         shifted.append(
@@ -1174,7 +1174,7 @@ def _shift_original_raw_pointers(
 
 
 def _read_contract_rva(
-    contract: StageALoadImageContract,
+    contract: LoadImageContract,
     sections: tuple[_Section, ...],
     rva: int,
     size: int,
@@ -1182,7 +1182,7 @@ def _read_contract_rva(
     context: str,
 ) -> bytes:
     if rva < 0 or size < 0 or rva > _UINT32_MAX - size:
-        raise StageBPECompositionError(f"{context} exceeds PE32 RVA space")
+        raise PECompositionError(f"{context} exceeds PE32 RVA space")
     headers = contract.runtime_headers.data
     if rva + size <= len(headers):
         return headers[rva : rva + size]
@@ -1194,24 +1194,24 @@ def _read_contract_rva(
         and rva + size <= section.rva + section.raw_size
     ]
     if len(matches) != 1:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             f"{context} is not contained by exactly one contracted raw section"
         )
     section, typed = matches[0]
     if section.executable or len(typed.initialized) != 1:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             f"{context} bytes are unavailable from the load-image contract"
         )
     initialized = typed.initialized[0]
     offset = rva - initialized.rva
     result = initialized.data[offset : offset + size]
     if offset < 0 or len(result) != size:
-        raise StageBPECompositionError(f"{context} contracted bytes are truncated")
+        raise PECompositionError(f"{context} contracted bytes are truncated")
     return result
 
 
 def _plan_file_offset_rewrites(
-    contract: StageALoadImageContract,
+    contract: LoadImageContract,
     sections: tuple[_Section, ...],
     directories: tuple[tuple[int, int], ...],
     *,
@@ -1221,7 +1221,7 @@ def _plan_file_offset_rewrites(
     if (debug_rva, debug_size) == (0, 0):
         return ()
     if not debug_rva or not debug_size or debug_size % 28:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "contract debug directory is partial or has an invalid size"
         )
     raw = _read_contract_rva(
@@ -1240,7 +1240,7 @@ def _plan_file_offset_rewrites(
         if pointer_to_raw_data == 0:
             continue
         if address_of_raw_data == 0 or size_of_data == 0:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"contract debug entry {index} has unbound file-only data"
             )
         section = _section_containing_rva(
@@ -1254,12 +1254,12 @@ def _plan_file_offset_rewrites(
             section.raw_pointer + address_of_raw_data - section.rva
         )
         if pointer_to_raw_data != expected_pointer:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"contract debug entry {index} file pointer disagrees with its RVA"
             )
         new_pointer = pointer_to_raw_data + raw_pointer_shift
         if new_pointer > _UINT32_MAX:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"shifted debug entry {index} exceeds PE32 file offsets"
             )
         field_rva = debug_rva + entry_offset + 24
@@ -1297,7 +1297,7 @@ def _parse_payload_relocation_directory(
             relocations=(),
         )
     if not directory_rva or directory_size < 8:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "payload base-relocation directory is partial or too small"
         )
     raw = _read_payload_rva(
@@ -1313,16 +1313,16 @@ def _parse_payload_relocation_directory(
     seen_targets: set[int] = set()
     while cursor < len(raw):
         if len(raw) - cursor < 8:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "payload base-relocation directory has a partial block"
             )
         page_rva, block_size = struct.unpack_from("<II", raw, cursor)
         if page_rva % 0x1000:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "payload base-relocation block page is not 4 KiB aligned"
             )
         if page_rva <= previous_page:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "payload base-relocation blocks are duplicated or unordered"
             )
         if (
@@ -1330,7 +1330,7 @@ def _parse_payload_relocation_directory(
             or block_size % 4
             or cursor + block_size > len(raw)
         ):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "payload base-relocation block has an invalid size"
             )
         slot_count = (block_size - 8) // 2
@@ -1343,13 +1343,13 @@ def _parse_payload_relocation_directory(
             if relocation_type == _IMAGE_REL_BASED_ABSOLUTE:
                 continue
             if relocation_type != _IMAGE_REL_BASED_HIGHLOW:
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     "payload base-relocation directory contains unsupported "
                     f"PE32 relocation type {relocation_type}"
                 )
             target_rva = page_rva + offset
             if target_rva in seen_targets:
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     "payload base-relocation target is duplicated"
                 )
             preferred = int.from_bytes(
@@ -1386,11 +1386,11 @@ def _validate_payload_relocation_inventory(
     image_base: int,
 ) -> None:
     if inventory.payload_sha256 != sha256_bytes(payload):
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "payload relocation inventory hash does not bind the payload PE"
         )
     if inventory.image_base != image_base:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "payload relocation inventory image base differs from the payload"
         )
     spans: list[tuple[int, int, str]] = []
@@ -1413,7 +1413,7 @@ def _validate_payload_relocation_inventory(
             "little",
         )
         if observed != relocation.preferred_value:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"payload relocation inventory entry {index} preferred value "
                 "disagrees with payload bytes"
             )
@@ -1457,12 +1457,12 @@ def _translate_payload_preferred_value(
     if not matches:
         return value
     if len(matches) != 1:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "payload relocation preferred value has ambiguous section ownership"
         )
     translated = image_base + output_sections[matches[0].index].rva + rva - matches[0].rva
     if translated > _UINT32_MAX:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "translated payload relocation preferred value exceeds PE32"
         )
     return translated
@@ -1470,7 +1470,7 @@ def _translate_payload_preferred_value(
 
 def _merge_relocations(
     *,
-    contract: StageALoadImageContract,
+    contract: LoadImageContract,
     anchor_manifest: ExecutableAnchorManifest,
     original_sections: tuple[_Section, ...],
     payload_inventory: PayloadRelocationInventory,
@@ -1491,7 +1491,7 @@ def _merge_relocations(
                 or relocation.preferred_value is None
                 or relocation.adjustment is not None
             ):
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     "original image contains an unsupported non-HIGHLOW PE32 relocation"
                 )
             _section_containing_rva(
@@ -1513,7 +1513,7 @@ def _merge_relocations(
                     and relocation.target_rva + relocation.width
                     <= overlapping[0].end_rva
                 ):
-                    raise StageBPECompositionError(
+                    raise PECompositionError(
                         "original HIGHLOW relocation target is only partially covered "
                         "by an executable anchor"
                     )

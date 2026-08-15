@@ -54,7 +54,7 @@ _EXCLUDED_MIDI_CALLBACK_APIS = {
 
 def _profile_payload(entry: dict[str, object]) -> dict[str, object]:
     return {
-        "format": "stage-a-static-machine-import-profile-v1",
+        "format": "spaghetti-extractor-static-machine-import-profile-v1",
         "id": "fixture-native-callthrough-v1",
         "machine_import_signatures": [entry],
     }

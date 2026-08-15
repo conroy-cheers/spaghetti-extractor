@@ -98,7 +98,7 @@ def discover_rooted_instruction_views(
 ) -> dict[str, Any]:
     """Discover a deterministic, bounded instruction-view proposal.
 
-    ``binary`` may be a :class:`StageABinary` or a clean equivalent exposing
+    ``binary`` may be a :class:`ParsedPEImage` or a clean equivalent exposing
     ``bitness``, ``image_base``, executable ``sections``, and one of
     ``read_rva(rva, size)``, ``get_data(rva, size)``, or ``pe.get_data``.
     Existing RVAs are validated when reached, recorded as merge destinations,

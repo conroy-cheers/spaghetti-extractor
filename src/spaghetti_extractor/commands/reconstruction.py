@@ -21,7 +21,7 @@ def _export_machine_ir(args: argparse.Namespace) -> Any:
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name != "stage-a-export-machine-ir":
+    if name != "machine-ir-export":
         raise ValueError(f"unsupported reconstruction command: {name}")
     path_argument(command, "state_machine", required=True)
     path_argument(command, "original", required=True)

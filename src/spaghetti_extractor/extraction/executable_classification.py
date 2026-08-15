@@ -9,13 +9,8 @@ from typing import Any
 import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
-from ..pe32.stage_binary import (
-    BlockSide,
-    StageABinary,
-    StageAImport,
-    _executable_section_for_rva,
-    _section_for_rva,
-)
+from ..pe32.model import BlockSide, ParsedPEImage, PEImport
+from ..pe32.queries import executable_section_for_rva, section_for_rva
 from ..static_program.semantics.support import (
     _is_conditional_jump,
 )
@@ -77,7 +72,7 @@ def _failure_record(
 
 
 
-def _capstone_mode(binary: StageABinary) -> int:
+def _capstone_mode(binary: ParsedPEImage) -> int:
     return capstone.CS_MODE_64 if binary.bitness == 64 else capstone.CS_MODE_32
 
 def _linker_function_issues(binary_name: str, functions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -121,7 +116,7 @@ def _linker_function_issues(binary_name: str, functions: list[dict[str, Any]]) -
                 category="ambiguous_linker_map",
                 obligation_id=overlap["obligation_id"],
                 blocker=overlap["blocker"],
-                next_action="fix linker-map function range recovery before generating a Stage A map",
+                next_action="fix linker-map function range recovery before generating a static analysis map",
                 details=overlap,
             )
         )
@@ -131,7 +126,7 @@ def _linker_function_issues(binary_name: str, functions: list[dict[str, Any]]) -
 
 
 
-def _linker_function_import_thunk_evidence(binary: StageABinary, function: dict[str, Any]) -> dict[str, Any] | None:
+def _linker_function_import_thunk_evidence(binary: ParsedPEImage, function: dict[str, Any]) -> dict[str, Any] | None:
     start = int(function["rva_start"])
     end = int(function["rva_end"])
     if end <= start:
@@ -166,7 +161,7 @@ def _linker_function_import_thunk_evidence(binary: StageABinary, function: dict[
 
 
 
-def _import_thunk_match_key(imported: StageAImport) -> str:
+def _import_thunk_match_key(imported: PEImport) -> str:
     symbol = imported.symbol if imported.symbol is not None else f"ordinal-{imported.ordinal}"
     return f"{imported.dll}!{symbol}"
 
@@ -180,7 +175,7 @@ def _import_thunk_match_key(imported: StageAImport) -> str:
 
 
 
-def _recover_basic_blocks(binary: StageABinary, rva_start: int, rva_end: int) -> list[dict[str, Any]]:
+def _recover_basic_blocks(binary: ParsedPEImage, rva_start: int, rva_end: int) -> list[dict[str, Any]]:
     data = binary.pe.get_data(rva_start, rva_end - rva_start)
     dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
     dis.detail = True
@@ -269,7 +264,7 @@ def _recover_basic_blocks(binary: StageABinary, rva_start: int, rva_end: int) ->
     return blocks or [_function_range_block(binary, rva_start, rva_end, data, len(instructions), decoded)]
 
 def _function_range_block(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     rva_start: int,
     rva_end: int,
     data: bytes,
@@ -292,7 +287,7 @@ def _function_range_block(
 
 def _section_gap_code_blocks(
     binary_name: str,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     gaps: list[BlockSide],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     code_blocks: list[dict[str, Any]] = []
@@ -402,7 +397,7 @@ def _section_gap_code_blocks(
     return code_blocks, waivers
 
 def _decodable_prefix_before_padding_suffix(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     span: BlockSide,
     data: bytes,
 ) -> BlockSide:
@@ -419,7 +414,7 @@ def _decodable_prefix_before_padding_suffix(
         return span
     return BlockSide(span.rva_start, suffix_start)
 
-def _trim_padding_edges(binary: StageABinary, block: BlockSide, data: bytes) -> tuple[list[BlockSide], BlockSide | None, bytes]:
+def _trim_padding_edges(binary: ParsedPEImage, block: BlockSide, data: bytes) -> tuple[list[BlockSide], BlockSide | None, bytes]:
     dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
     dis.detail = True
     instructions = list(dis.disasm(data, binary.image_base + block.rva_start))
@@ -457,7 +452,7 @@ def _padding_waiver(binary_name: str, span: BlockSide) -> dict[str, Any]:
     }
 
 
-def _section_gaps(binary: StageABinary, ranges: list[BlockSide]) -> dict[str, list[BlockSide]]:
+def _section_gaps(binary: ParsedPEImage, ranges: list[BlockSide]) -> dict[str, list[BlockSide]]:
     result: dict[str, list[BlockSide]] = {}
     executable_name_counts = Counter(
         section.name for section in binary.sections if section.executable
@@ -473,7 +468,7 @@ def _section_gaps(binary: StageABinary, ranges: list[BlockSide]) -> dict[str, li
         result[identity] = _gaps(section.rva_start, section.rva_end, ranges)
     return result
 
-def _is_padding_bytes(binary: StageABinary, rva_start: int, data: bytes) -> bool:
+def _is_padding_bytes(binary: ParsedPEImage, rva_start: int, data: bytes) -> bool:
     if not data:
         return True
     if all(byte == 0 for byte in data):
@@ -531,7 +526,7 @@ def _gaps(start: int, end: int, ranges: list[BlockSide]) -> list[BlockSide]:
         gaps.append(BlockSide(cursor, end))
     return gaps
 
-def _instruction_report(binary: StageABinary, insn: Any) -> dict[str, Any]:
+def _instruction_report(binary: ParsedPEImage, insn: Any) -> dict[str, Any]:
     return {
         "rva": int(insn.address - binary.image_base),
         "size": int(insn.size),
@@ -553,7 +548,7 @@ def _direct_branch_target(insn: Any, image_base: int) -> int | None:
         return None
     return int(operand.imm - image_base)
 
-def _resolved_branch_target(binary: StageABinary, insn: Any) -> int | None:
+def _resolved_branch_target(binary: ParsedPEImage, insn: Any) -> int | None:
     target = _direct_branch_target(insn, binary.image_base)
     if target is not None:
         return target
@@ -565,7 +560,7 @@ def _resolved_branch_target(binary: StageABinary, insn: Any) -> int | None:
     pointer_rva = _absolute_mem_operand_rva(binary, operand)
     if pointer_rva is None:
         return None
-    pointer_section = _section_for_rva(binary, pointer_rva)
+    pointer_section = section_for_rva(binary, pointer_rva)
     if (
         pointer_section is None
         or not pointer_section.readable
@@ -586,11 +581,11 @@ def _resolved_branch_target(binary: StageABinary, insn: Any) -> int | None:
         target_rva = value
     else:
         return None
-    if _executable_section_for_rva(binary, target_rva) is None:
+    if executable_section_for_rva(binary, target_rva) is None:
         return None
     return target_rva
 
-def _external_import_call(binary: StageABinary, insn: Any) -> StageAImport | None:
+def _external_import_call(binary: ParsedPEImage, insn: Any) -> PEImport | None:
     if insn.mnemonic != "call" or len(insn.operands) != 1:
         return None
     operand = insn.operands[0]
@@ -602,7 +597,7 @@ def _external_import_call(binary: StageABinary, insn: Any) -> StageAImport | Non
     return None
 
 
-def _external_import_jump(binary: StageABinary, insn: Any) -> StageAImport | None:
+def _external_import_jump(binary: ParsedPEImage, insn: Any) -> PEImport | None:
     if insn.mnemonic not in {"jmp", "ljmp"} or len(insn.operands) != 1:
         return None
     operand = insn.operands[0]
@@ -613,7 +608,7 @@ def _external_import_jump(binary: StageABinary, insn: Any) -> StageAImport | Non
         return _direct_import_thunk(binary, target_rva)
     return None
 
-def _direct_import_jump_instruction(binary: StageABinary, insn: Any) -> StageAImport | None:
+def _direct_import_jump_instruction(binary: ParsedPEImage, insn: Any) -> PEImport | None:
     if insn.mnemonic not in {"jmp", "ljmp"} or len(insn.operands) != 1:
         return None
     operand = insn.operands[0]
@@ -621,20 +616,20 @@ def _direct_import_jump_instruction(binary: StageABinary, insn: Any) -> StageAIm
         return None
     return _import_for_absolute_memory_operand(binary, operand)
 
-def _import_for_absolute_memory_operand(binary: StageABinary, operand: Any) -> StageAImport | None:
+def _import_for_absolute_memory_operand(binary: ParsedPEImage, operand: Any) -> PEImport | None:
     thunk_rva = _absolute_mem_operand_rva(binary, operand)
     if thunk_rva is None:
         return None
     return _import_for_thunk_rva(binary, thunk_rva)
 
-def _import_for_thunk_rva(binary: StageABinary, thunk_rva: int) -> StageAImport | None:
+def _import_for_thunk_rva(binary: ParsedPEImage, thunk_rva: int) -> PEImport | None:
     for item in binary.imports:
         if item.thunk_rva == thunk_rva:
             return item
     return None
 
-def _direct_import_thunk(binary: StageABinary, target_rva: int) -> StageAImport | None:
-    if _executable_section_for_rva(binary, target_rva) is None:
+def _direct_import_thunk(binary: ParsedPEImage, target_rva: int) -> PEImport | None:
+    if executable_section_for_rva(binary, target_rva) is None:
         return None
     data = binary.pe.get_data(target_rva, 16)
     dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
@@ -650,7 +645,7 @@ def _direct_import_thunk(binary: StageABinary, target_rva: int) -> StageAImport 
         return None
     return _import_for_absolute_memory_operand(binary, operand)
 
-def _is_noreturn_import_call(binary: StageABinary, insn: Any) -> bool:
+def _is_noreturn_import_call(binary: ParsedPEImage, insn: Any) -> bool:
     imported = _external_import_call(binary, insn)
     if imported is None:
         return False
@@ -663,7 +658,7 @@ def _normalized_import_symbol(symbol: str | None) -> str:
     name = symbol.split("@", 1)[0]
     return name.lstrip("_").lower()
 
-def _absolute_mem_operand_rva(binary: StageABinary, operand: Any) -> int | None:
+def _absolute_mem_operand_rva(binary: ParsedPEImage, operand: Any) -> int | None:
     mem = operand.mem
     if mem.base or mem.index:
         return None

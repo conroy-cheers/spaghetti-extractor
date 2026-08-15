@@ -14,7 +14,7 @@ import pefile
 from tests.pe_fixtures import pe32_image
 
 from spaghetti_extractor.roundtrip_fuzz.image_io import (
-    write_stage_a_load_image_contract,
+    write_spx_load_image_contract,
 )
 from spaghetti_extractor.authority_inputs.machine_ir_authority import (
     build_machine_ir_authority_bindings,
@@ -37,25 +37,25 @@ from spaghetti_extractor.artifacts.artifact_set import (
     canonical_sha256_v3,
 )
 from spaghetti_extractor.candidate.interpreter import (
-    write_stage_b_interpreter_package,
+    write_spx_interpreter_package,
 )
 from spaghetti_extractor.candidate.build import (
     INTERPRETER_NATIVE_BUILD_FORMAT,
     INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME,
-    StageBInterpreterNativeBuildError,
-    assemble_stage_b_interpreter_native_objects,
-    build_stage_b_interpreter_native_candidate,
-    compile_stage_b_interpreter_native_object,
-    compile_stage_b_interpreter_native_source_bundle,
-    prepare_stage_b_interpreter_native_object_graph,
+    CandidateNativeBuildError,
+    assemble_spx_interpreter_native_objects,
+    build_spx_interpreter_native_candidate,
+    compile_spx_interpreter_native_object,
+    compile_spx_interpreter_native_source_bundle,
+    prepare_spx_interpreter_native_object_graph,
 )
 from spaghetti_extractor.candidate.engine import (
     _machine_ir_internal_call_preservation,
-    write_stage_b_native_engine_package,
+    write_spx_native_engine_package,
 )
 from spaghetti_extractor.candidate.runtime import (
-    StageBNativeRuntimeError,
-    write_stage_b_native_runtime_package,
+    CandidateRuntimeError,
+    write_spx_native_runtime_package,
 )
 from spaghetti_extractor.candidate.pe import (
     EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
@@ -114,7 +114,7 @@ def _refresh_source_binding(manifest_path: Path, source_path: Path) -> None:
 
 def _transfer(rva: int = 0x1000) -> dict[str, Any]:
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": f"semantic-transfer:{rva:08x}",
         "status": "qualified",
@@ -204,14 +204,14 @@ class _Packages:
         original_sha256 = sha256_file(self.original)
         machine_ir_sha256 = sha256_file(self.machine_ir)
         _write_json(self.machine_ir_manifest, {
-            "format": "stage-a-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v2",
             "status": "qualified",
             "inputs": {"original_pe": {"sha256": original_sha256}},
             "binary": {"sha256": original_sha256},
             "counts": {"units": 1},
             "artifacts": {
                 "machine_ir": {
-                    "format": "stage-a-machine-ir-v2",
+                    "format": "spaghetti-extractor-machine-ir-v2",
                     "path": self.machine_ir.name,
                     "sha256": machine_ir_sha256,
                 }
@@ -233,7 +233,7 @@ class _Packages:
                 },
                 "callback_cutpoint_proposals": [],
                 "internal_call_preservation": {
-                    "format": "stage-a-internal-call-preservation-v1",
+                    "format": "spaghetti-extractor-internal-call-preservation-v1",
                     "status": "complete",
                     "fixed_point_complete": True,
                     "summaries": [{
@@ -259,7 +259,7 @@ class _Packages:
                     }],
                 },
                 "external_interface_provenance": {
-                    "format": "stage-a-external-interface-provenance-v1",
+                    "format": "spaghetti-extractor-external-interface-provenance-v1",
                     "status": "complete",
                     "resolutions": [],
                     "issues": [],
@@ -268,33 +268,33 @@ class _Packages:
             },
         })
         _write_json(self.profile, {
-            "format": "stage-a-static-machine-import-profile-v1",
+            "format": "spaghetti-extractor-static-machine-import-profile-v1",
             "id": "test-static-runtime-v1",
             "includes": [],
             "machine_import_signatures": [],
         })
-        write_stage_b_interpreter_package(
+        write_spx_interpreter_package(
             machine_ir=self.machine_ir, out=self.interpreter
         )
         ArtifactSetWriterV3(
             artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
             bindings=(),
         ).write(self.canonical_external_sites, [])
-        write_stage_b_native_engine_package(
+        write_spx_native_engine_package(
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.machine_ir_manifest,
             entry_rva=0x1000,
             canonical_external_sites=self.canonical_external_sites,
             out=self.engine,
         )
-        write_stage_b_native_runtime_package(
+        write_spx_native_runtime_package(
             interpreter_package=self.interpreter,
             native_engine_package=self.engine,
             external_profile=self.profile,
             out=self.runtime,
         )
 
-        contract = write_stage_a_load_image_contract(
+        contract = write_spx_load_image_contract(
             original_pe=self.original, out=self.contract
         )
         family_names = (
@@ -377,7 +377,7 @@ class _Packages:
             "machine_ir_record_sha256": _canonical_sha256(unit),
             "lowering_transfer_sha256": hashlib.sha256(b"lowering").hexdigest(),
             "implementation_kind": "machine_ir_fallback",
-            "dispatch_lookup": "stage_b_program_lookup",
+            "dispatch_lookup": "spx_program_lookup",
             "portable_replacement": None,
         }
         fallback_entry = {

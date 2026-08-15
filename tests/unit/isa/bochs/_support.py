@@ -115,7 +115,7 @@ def _case(case_id):
 def _corpus(*case_ids):
     return parse_isa_conformance_corpus(
         {
-            "format": "stage-a-isa-conformance-corpus-v1",
+            "format": "spaghetti-extractor-isa-conformance-corpus-v1",
             "id": "bochs-fixture-corpus-v1",
             "cases": [_case(case_id) for case_id in case_ids],
         }

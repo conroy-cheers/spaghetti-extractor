@@ -2,13 +2,13 @@
 
 #include "spaghetti-component-abi.h"
 
-static uint8_t byte_at(const stage_b_c_string_v1 *value, uint32_t index) {
+static uint8_t byte_at(const spx_c_string_v1 *value, uint32_t index) {
   uint8_t result = 0U;
   (void)value->read_u8(value->context, index, &result);
   return result;
 }
 
-uint32_t gnu_hello_last_path_component(const stage_b_c_string_v1 *value) {
+uint32_t gnu_hello_last_path_component(const spx_c_string_v1 *value) {
   uint32_t cursor = 0U;
   uint32_t component = 0U;
   uint32_t saw_separator = 0U;

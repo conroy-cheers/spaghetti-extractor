@@ -26,12 +26,12 @@ class InterpreterStringOperationModelTests(unittest.TestCase):
             row["register_writes"] = []
             _write_machine(machine, [row])
 
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
             fill = next(action for action in transfer.actions if action.op == "rep_stosd")
             self.assertEqual(len(fill.args), 4)
 
             package_dir = root / "package"
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine, out=package_dir
             )
             self.assertEqual(package["status"], "ready")
@@ -72,18 +72,18 @@ static void write_word(
   ++context->count;
 }
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 
 int main(void) {
   fill_context context = {{0U,0U,0U},{0U,0U,0U},0U};
-  stage_b_runtime runtime = {0};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result;
+  spx_runtime runtime = {0};
+  spx_machine_state state = {0};
+  spx_step_result result;
   runtime.context = &context;
   runtime.read = read_word;
   runtime.write = write_word;
@@ -91,8 +91,8 @@ int main(void) {
   state.ecx = 3U;
   state.edi = 0x100cU;
   state.df = 1U;
-  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
-  if (result.kind != STAGE_B_FALLTHROUGH) return 1;
+  result = spx_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != SPX_FALLTHROUGH) return 1;
   if (context.count != 3U) return 2;
   if (context.addresses[0] != 0x100cU ||
       context.addresses[1] != 0x1008U ||
@@ -163,7 +163,7 @@ int main(void) {
             row["register_writes"] = []
             _write_machine(machine, [row])
 
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
 
             copy = next(action for action in transfer.actions if action.op == "rep_movs")
             fill = next(action for action in transfer.actions if action.op == "rep_stos")
@@ -190,7 +190,7 @@ int main(void) {
             ] + [{"flag": "df", "value": {"op": "false"}}]
             _write_machine(machine, [row])
 
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
             scan = next(action for action in transfer.actions if action.op == "rep_scas")
             self.assertEqual((len(scan.args), scan.aux), (4, 1))
             self.assertEqual(
@@ -211,7 +211,7 @@ int main(void) {
             )
 
             package_dir = root / "package"
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine,
                 out=package_dir,
             )
@@ -255,66 +255,66 @@ static void write_unused(
   (void)raw; (void)address; (void)width; (void)value; *fault = 1U;
 }
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 
-static void initial_flags(stage_b_machine_state *state) {
+static void initial_flags(spx_machine_state *state) {
   state->cf = 1U; state->zf = 0U; state->sf = 1U;
   state->of = 1U; state->pf = 0U; state->eflags = 1U << 4;
 }
 
 static int flags_are(
-    const stage_b_machine_state *state, uint32_t cf, uint32_t zf,
+    const spx_machine_state *state, uint32_t cf, uint32_t zf,
     uint32_t sf, uint32_t of, uint32_t pf, uint32_t af) {
   return state->cf == cf && state->zf == zf && state->sf == sf &&
       state->of == of && state->pf == pf &&
       ((state->eflags >> 4) & 1U) == af;
 }
 
-static stage_b_step_result run(
-    scan_context *context, stage_b_machine_state *state) {
-  stage_b_runtime runtime = {0};
+static spx_step_result run(
+    scan_context *context, spx_machine_state *state) {
+  spx_runtime runtime = {0};
   runtime.context = context; runtime.read = read_byte; runtime.write = write_unused;
-  return stage_b_interpreter_step(&runtime, state, 0x1000U);
+  return spx_interpreter_step(&runtime, state, 0x1000U);
 }
 
 int main(void) {
   const uint32_t base = 0x3000U;
   scan_context context = {base, 0xffffffffU, 0U, {0U,0U,0U,0U}};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result;
+  spx_machine_state state = {0};
+  spx_step_result result;
 
   state.eax = 0x41U; state.edi = base; state.ecx = 0U; initial_flags(&state);
   result = run(&context, &state);
-  if (result.kind != STAGE_B_FALLTHROUGH || context.reads != 0U) return 1;
+  if (result.kind != SPX_FALLTHROUGH || context.reads != 0U) return 1;
   if (state.edi != base || state.ecx != 0U ||
       !flags_are(&state, 1U,0U,1U,1U,0U,1U)) return 2;
   if (state.eax != 0xdeadbeefU || state.df != 0U) return 3;
 
   context = (scan_context){base, 0xffffffffU, 0U, {0U,0x41U,0x10U,0U}};
-  state = (stage_b_machine_state){0};
+  state = (spx_machine_state){0};
   state.eax = 0x41U; state.edi = base + 2U; state.ecx = 2U; state.df = 1U;
   result = run(&context, &state);
-  if (result.kind != STAGE_B_FALLTHROUGH || context.reads != 2U) return 4;
+  if (result.kind != SPX_FALLTHROUGH || context.reads != 2U) return 4;
   if (state.edi != base || state.ecx != 0U ||
       !flags_are(&state, 0U,1U,0U,0U,1U,0U) || state.df != 0U) return 5;
 
   context = (scan_context){base, 0xffffffffU, 0U, {1U,2U,0U,0U}};
-  state = (stage_b_machine_state){0};
+  state = (spx_machine_state){0};
   state.eax = 0U; state.edi = base; state.ecx = 2U;
   result = run(&context, &state);
-  if (result.kind != STAGE_B_FALLTHROUGH || state.edi != base + 2U ||
+  if (result.kind != SPX_FALLTHROUGH || state.edi != base + 2U ||
       state.ecx != 0U || !flags_are(&state, 1U,0U,1U,0U,0U,1U)) return 6;
 
   context = (scan_context){base, base + 1U, 0U, {0x42U,0U,0U,0U}};
-  state = (stage_b_machine_state){0};
+  state = (spx_machine_state){0};
   state.eax = 0x41U; state.edi = base; state.ecx = 3U;
   result = run(&context, &state);
-  if (result.kind != STAGE_B_MEMORY_FAULT || result.target_rva != 0x1000U ||
+  if (result.kind != SPX_MEMORY_FAULT || result.target_rva != 0x1000U ||
       context.reads != 2U) return 7;
   if (state.edi != base + 1U || state.ecx != 2U ||
       !flags_are(&state, 1U,0U,1U,0U,1U,1U)) return 8;
@@ -369,7 +369,7 @@ int main(void) {
             row["register_writes"] = []
             _write_machine(machine, [row])
             package_dir = root / "package"
-            write_stage_b_interpreter_package(machine_ir=machine, out=package_dir)
+            write_spx_interpreter_package(machine_ir=machine, out=package_dir)
 
             harness = root / "harness.c"
             harness.write_text(
@@ -400,26 +400,26 @@ static void write_word(
   ++context->writes;
 }
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 
 int main(void) {
   copy_context context = {0U};
-  stage_b_runtime runtime = {0};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result;
+  spx_runtime runtime = {0};
+  spx_machine_state state = {0};
+  spx_step_result result;
   runtime.context = &context;
   runtime.read = read_word;
   runtime.write = write_word;
   state.esi = 0x2000U;
   state.edi = 0x3000U;
   state.ecx = 3U;
-  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
-  if (result.kind != STAGE_B_MEMORY_FAULT) return 1;
+  result = spx_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != SPX_MEMORY_FAULT) return 1;
   if (context.writes != 1U) return 2;
   if (state.esi != 0x2001U || state.edi != 0x3001U || state.ecx != 2U)
     return 3;

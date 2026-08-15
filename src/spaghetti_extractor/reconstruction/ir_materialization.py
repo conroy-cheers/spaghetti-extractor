@@ -9,8 +9,8 @@ from ..authority_inputs.bindings import indirect_exit_id_v2
 from ..static_program.semantics.transfer import semantic_transfer
 from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
 from ..pe32.recovered_executable_data import recover_executable_data_ranges
-from .state_machine import normalize_stage_a_semantic_transfer
-from ..pe32.stage_binary import BlockSide, StageABinary
+from .state_machine import normalize_spx_semantic_transfer
+from ..pe32.model import BlockSide, ParsedPEImage
 from ..static_program.model import StaticUnitContext
 from ..pe32.target_cutpoint_materialization import plan_recovered_target_cutpoints_v2
 from ..util import sha256_bytes
@@ -34,7 +34,7 @@ from .ir_evidence import _resolved_root
 
 
 def _immutable_static_data_reader(
-    binary: StageABinary,
+    binary: ParsedPEImage,
 ):
     def read(address: int, size: int) -> bytes | None:
         if size <= 0:
@@ -60,7 +60,7 @@ def _immutable_static_data_reader(
 
 def _materialize_recovered_target_cutpoints(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[Mapping[str, Any]],
     static_program: Mapping[str, Any],
     static_program_sha256: str | None,
@@ -359,7 +359,7 @@ def _materialize_recovered_target_cutpoints(
 
 def _materialize_target_cutpoint_plan(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     augmented: list[dict[str, Any]],
     plan: Mapping[str, Any],
     static_program_sha256: str | None,
@@ -444,7 +444,7 @@ def _materialize_target_cutpoint_plan(
                     identity,
                 )
                 semantic_sha256 = sha256_bytes(_canonical_json(raw))
-                normalized = normalize_stage_a_semantic_transfer(
+                normalized = normalize_spx_semantic_transfer(
                     raw,
                     static_program_contract_sha256=static_program_sha256,
                     semantic_transfer_sha256=(
@@ -459,7 +459,7 @@ def _materialize_target_cutpoint_plan(
                     static_program_sha256=static_program_sha256,
                 )
                 unit["preparation"]["target_cutpoint_materialization"] = {
-                    "format": "stage-a-target-cutpoint-unit-binding-v2",
+                    "format": "spaghetti-extractor-target-cutpoint-unit-binding-v2",
                     "target_rva": int(target["target_rva"]),
                     "target_sources": list(target["target_sources"]),
                     "recovery_ids": list(target["recovery_ids"]),
@@ -491,7 +491,7 @@ def _materialize_target_cutpoint_plan(
 
 def _classify_executable_data_before_control(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[Mapping[str, Any]],
     static_program: Mapping[str, Any],
     precomputed_static_recoveries: Sequence[Mapping[str, Any]] | None = None,
@@ -771,7 +771,7 @@ def _classify_executable_data_before_control(
         else "complete"
     )
     return retained, {
-        "format": "stage-a-precontrol-executable-classification-v1",
+        "format": "spaghetti-extractor-precontrol-executable-classification-v1",
         "status": status,
         "proof_authority": False,
         "ordering": "before_rooted_control_closure",
@@ -795,7 +795,7 @@ def _classify_executable_data_before_control(
 
 
 def _initial_control_roots(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     static_program: Mapping[str, Any],
     block_starts: Mapping[str, int],
 ) -> list[dict[str, Any]]:

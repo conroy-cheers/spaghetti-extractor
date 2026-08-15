@@ -8,7 +8,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from ..external.callbacks import parse_callback_source
 from ..authority_inputs.target_dependencies import build_bounded_selector_dependency_v2
-from ..pe32.stage_binary import StageABinary
+from ..pe32.model import ParsedPEImage
 from ..authority_inputs.static_indirect_replay import (
     direct_predecessors_by_target as _direct_predecessors_by_target,
     indirect_predecessor_evidence as _indirect_predecessor_evidence,
@@ -124,7 +124,7 @@ def _rebind_preclassified_static_recoveries(
 
 def _static_jump_table_recovery_fixed_point(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[Mapping[str, Any]],
     starts: Mapping[int, Mapping[str, Any]],
     indirect_exits: Sequence[Mapping[str, Any]],
@@ -293,14 +293,14 @@ def _callback_root_proposals_from_provenance(
 
 
 def _local_callback_cutpoint_proposals(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     """Bootstrap exact cutpoints for locally visible direct callback words.
 
     These proposals are deliberately conservative and have no proof authority.
     They may add roots but never remove behavior; regenerated provenance must
-    still bind each callback to an exact decoded unit before Stage B can adapt it.
+    still bind each callback to an exact decoded unit before candidate reconstruction can adapt it.
     """
 
     executable_sections = tuple(

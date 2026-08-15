@@ -6,7 +6,7 @@ import json
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from .region_replacement_model import (
     REGION_OBSERVATIONS_FORMAT,
     REGION_REPLACEMENT_BUNDLE_FORMAT,
@@ -37,7 +37,7 @@ def _parse_manifest(payload: Mapping[str, Any]) -> RegionReplacementManifest:
     digest = str(normalized.pop("manifest_sha256"))
     expected = _canonical_sha256(normalized)
     if digest != expected:
-        raise StageAInputError("region replacement manifest hash does not match its content")
+        raise ToolkitInputError("region replacement manifest hash does not match its content")
     normalized["manifest_sha256"] = digest
     return RegionReplacementManifest(payload=normalized)
 
@@ -48,7 +48,7 @@ def _normalize_manifest(
     context = "region replacement manifest"
     format_name = payload.get("format")
     if format_name not in _REGION_REPLACEMENT_FORMATS:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "region replacement manifest must use a supported version: "
             f"{sorted(_REGION_REPLACEMENT_FORMATS)}"
         )
@@ -90,7 +90,7 @@ def _normalize_manifest(
             f"{context}.support_sources paths",
         )
         if source["path"] in {item["path"] for item in support_sources}:
-            raise StageAInputError("replacement source is duplicated as a support source")
+            raise ToolkitInputError("replacement source is duplicated as a support source")
         support_sources.sort(key=lambda item: item["path"])
 
     raw_evidence = _array(payload["evidence"], f"{context}.evidence")
@@ -102,7 +102,7 @@ def _normalize_manifest(
     evidence.sort(key=lambda item: item["id"])
     evidence_ids = {item["id"] for item in evidence}
     if not evidence_ids:
-        raise StageAInputError("region replacement manifest requires evidence")
+        raise ToolkitInputError("region replacement manifest requires evidence")
 
     abi = _normalize_abi(_object(payload["abi"], f"{context}.abi"), evidence_ids)
     hypotheses = [
@@ -166,10 +166,10 @@ def _normalize_cluster(payload: Mapping[str, Any]) -> dict[str, Any]:
     )
     _require_unique(unit_ids, f"{context}.unit_ids")
     if not unit_ids:
-        raise StageAInputError(f"{context}.unit_ids must not be empty")
+        raise ToolkitInputError(f"{context}.unit_ids must not be empty")
     entry_unit_id = _identifier(payload["entry_unit_id"], f"{context}.entry_unit_id")
     if entry_unit_id not in unit_ids:
-        raise StageAInputError(f"{context}.entry_unit_id is not in unit_ids")
+        raise ToolkitInputError(f"{context}.entry_unit_id is not in unit_ids")
     spans = []
     for index, item in enumerate(_array(payload["rva_spans"], f"{context}.rva_spans")):
         span = _object(item, f"{context}.rva_spans[{index}]")
@@ -177,15 +177,15 @@ def _normalize_cluster(payload: Mapping[str, Any]) -> dict[str, Any]:
         start = _uint32(span["start"], f"{context}.rva_spans[{index}].start")
         end = _uint32(span["end"], f"{context}.rva_spans[{index}].end")
         if end <= start:
-            raise StageAInputError(f"{context}.rva_spans[{index}] must be nonempty")
+            raise ToolkitInputError(f"{context}.rva_spans[{index}] must be nonempty")
         spans.append({"start": start, "end": end})
     if not spans:
-        raise StageAInputError(f"{context}.rva_spans must not be empty")
+        raise ToolkitInputError(f"{context}.rva_spans must not be empty")
     spans.sort(key=lambda span: (span["start"], span["end"]))
     _reject_overlapping_spans(spans, context)
     entry_rva = _uint32(payload["entry_rva"], f"{context}.entry_rva")
     if sum(span["start"] <= entry_rva < span["end"] for span in spans) != 1:
-        raise StageAInputError(f"{context}.entry_rva is not in exactly one RVA span")
+        raise ToolkitInputError(f"{context}.entry_rva is not in exactly one RVA span")
     return {
         "id": _identifier(payload["id"], f"{context}.id"),
         "entry_unit_id": entry_unit_id,
@@ -203,7 +203,7 @@ def _normalize_source(payload: Mapping[str, Any]) -> dict[str, Any]:
     line_start = _positive_int(payload["line_start"], f"{context}.line_start")
     line_end = _positive_int(payload["line_end"], f"{context}.line_end")
     if line_end < line_start:
-        raise StageAInputError(f"{context}.line_end must not precede line_start")
+        raise ToolkitInputError(f"{context}.line_end must not precede line_start")
     return {
         "path": _relative_path(payload["path"], f"{context}.path"),
         "sha256": _digest(payload["sha256"], f"{context}.sha256"),
@@ -233,7 +233,7 @@ def _normalize_evidence(payload: Mapping[str, Any]) -> dict[str, Any]:
     evidence_class = _choice(payload["class"], _EVIDENCE_CLASSES, f"{context}.class")
     status = _choice(payload["status"], _STATUSES, f"{context}.status")
     if evidence_class == "unsupported" and status == "qualified":
-        raise StageAInputError("unsupported replacement evidence cannot be qualified")
+        raise ToolkitInputError("unsupported replacement evidence cannot be qualified")
     return {
         "id": _identifier(payload["id"], f"{context}.id"),
         "class": evidence_class,
@@ -275,12 +275,12 @@ def _normalize_abi(payload: Mapping[str, Any], evidence: set[str]) -> dict[str, 
     preserved = _register_list(payload["preserved_registers"], f"{context}.preserved_registers")
     clobbered = _register_list(payload["clobbered_registers"], f"{context}.clobbered_registers")
     if set(preserved) & set(clobbered):
-        raise StageAInputError("ABI preserved and clobbered registers overlap")
+        raise ToolkitInputError("ABI preserved and clobbered registers overlap")
     stack_delta = payload["stack_delta"]
     if isinstance(stack_delta, bool) or not isinstance(stack_delta, int):
-        raise StageAInputError(f"{context}.stack_delta must be an integer")
+        raise ToolkitInputError(f"{context}.stack_delta must be an integer")
     if not -(1 << 31) <= stack_delta < (1 << 31):
-        raise StageAInputError(f"{context}.stack_delta is outside signed 32-bit range")
+        raise ToolkitInputError(f"{context}.stack_delta is outside signed 32-bit range")
     return {
         "calling_convention": _choice(
             payload["calling_convention"], _CALLING_CONVENTIONS,
@@ -375,7 +375,7 @@ def _normalize_memory_view(payload: Mapping[str, Any], evidence: set[str]) -> di
     byte_length = payload["byte_length"]
     length_expression = payload["length_expression"]
     if (byte_length is None) == (length_expression is None):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} requires exactly one of byte_length or length_expression"
         )
     normalized_length = (
@@ -408,12 +408,12 @@ def _normalize_expectations(payload: Mapping[str, Any], evidence: set[str]) -> d
     ]
     _require_unique((item["id"] for item in controls), f"{context}.control ids")
     if not controls:
-        raise StageAInputError(f"{context}.control must declare at least one exit")
+        raise ToolkitInputError(f"{context}.control must declare at least one exit")
     controls.sort(key=lambda item: item["id"])
     fault = _object(payload["fault"], f"{context}.fault")
     _exact_fields(fault, {"allow_none", "variants"}, f"{context}.fault")
     if not isinstance(fault["allow_none"], bool):
-        raise StageAInputError(f"{context}.fault.allow_none must be a boolean")
+        raise ToolkitInputError(f"{context}.fault.allow_none must be a boolean")
     faults = [
         _normalize_fault_variant(
             _object(item, f"{context}.fault.variants[{index}]"), evidence
@@ -424,7 +424,7 @@ def _normalize_expectations(payload: Mapping[str, Any], evidence: set[str]) -> d
     ]
     _require_unique((item["id"] for item in faults), f"{context}.fault variant ids")
     if not fault["allow_none"] and not faults:
-        raise StageAInputError(f"{context}.fault cannot forbid every outcome")
+        raise ToolkitInputError(f"{context}.fault cannot forbid every outcome")
     faults.sort(key=lambda item: item["id"])
     events = [
         _normalize_external_expectation(
@@ -499,7 +499,7 @@ def _normalize_external_expectation(payload: Mapping[str, Any], evidence: set[st
     _exact_fields(payload, required | optional, context, optional=optional)
     present_site_fields = set(payload) & site_fields
     if present_site_fields not in (set(), site_fields):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} must provide instruction_rva and return_rva together"
         )
     result = {
@@ -559,9 +559,9 @@ def _normalize_observations(
     context = "region observations"
     _exact_fields(payload, {"format", "manifest_sha256", "cases"}, context)
     if payload["format"] != REGION_OBSERVATIONS_FORMAT:
-        raise StageAInputError(f"{context} use an unsupported format")
+        raise ToolkitInputError(f"{context} use an unsupported format")
     if _digest(payload["manifest_sha256"], f"{context}.manifest_sha256") != manifest.manifest_sha256:
-        raise StageAInputError(f"{context} are not bound to the replacement manifest")
+        raise ToolkitInputError(f"{context} are not bound to the replacement manifest")
     cases = [
         _normalize_observation_case(_object(item, f"{context}.cases[{index}]"))
         for index, item in enumerate(_array(payload["cases"], f"{context}.cases"))
@@ -667,7 +667,7 @@ def _normalize_observed_guest_write(payload: Mapping[str, Any]) -> dict[str, Any
     _exact_fields(payload, {"address", "after"}, context)
     after = _hex_bytes(payload["after"], f"{context}.after")
     if len(after) != 2:
-        raise StageAInputError(f"{context}.after must contain exactly one byte")
+        raise ToolkitInputError(f"{context}.after must contain exactly one byte")
     return {
         "address": _uint32(payload["address"], f"{context}.address"),
         "after": after,
@@ -731,11 +731,11 @@ def _normalize_observed_external(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 def _read_json_object(path: Path, context: str) -> Mapping[str, Any]:
     if path.is_symlink() or not path.is_file():
-        raise StageAInputError(f"{context} must be a regular non-symlink file")
+        raise ToolkitInputError(f"{context} must be a regular non-symlink file")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read {context}: {exc}") from exc
+        raise ToolkitInputError(f"cannot read {context}: {exc}") from exc
     return _object(payload, context)
 
 
@@ -745,7 +745,7 @@ def _canonical_json_value(value: Any, context: str) -> Any:
     if isinstance(value, int) and not isinstance(value, bool):
         return value
     if isinstance(value, float):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} must encode floating-point values as exact bit strings"
         )
     if isinstance(value, list):
@@ -757,10 +757,10 @@ def _canonical_json_value(value: Any, context: str) -> Any:
         result: dict[str, Any] = {}
         for key in sorted(value):
             if not isinstance(key, str) or not key:
-                raise StageAInputError(f"{context} object keys must be nonempty strings")
+                raise ToolkitInputError(f"{context} object keys must be nonempty strings")
             result[key] = _canonical_json_value(value[key], f"{context}.{key}")
         return result
-    raise StageAInputError(f"{context} contains a non-JSON value")
+    raise ToolkitInputError(f"{context} contains a non-JSON value")
 
 
 def _exact_fields(
@@ -780,75 +780,75 @@ def _exact_fields(
             details.append(f"missing fields {missing}")
         if extra:
             details.append(f"unexpected fields {extra}")
-        raise StageAInputError(f"{context} has " + " and ".join(details))
+        raise ToolkitInputError(f"{context} has " + " and ".join(details))
 
 
 def _string(value: Any, context: str) -> str:
     if not isinstance(value, str) or not value or any(ord(char) < 0x20 for char in value):
-        raise StageAInputError(f"{context} must be a nonempty string without control characters")
+        raise ToolkitInputError(f"{context} must be a nonempty string without control characters")
     return value
 
 
 def _identifier(value: Any, context: str) -> str:
     text = _string(value, context)
     if _ID_RE.fullmatch(text) is None:
-        raise StageAInputError(f"{context} is not a stable identifier")
+        raise ToolkitInputError(f"{context} is not a stable identifier")
     return text
 
 
 def _c_identifier(value: Any, context: str) -> str:
     text = _string(value, context)
     if _C_ID_RE.fullmatch(text) is None:
-        raise StageAInputError(f"{context} is not a C identifier")
+        raise ToolkitInputError(f"{context} is not a C identifier")
     return text
 
 
 def _choice(value: Any, choices: frozenset[str], context: str) -> str:
     text = _string(value, context)
     if text not in choices:
-        raise StageAInputError(f"{context} must be one of {sorted(choices)}")
+        raise ToolkitInputError(f"{context} must be one of {sorted(choices)}")
     return text
 
 
 def _digest(value: Any, context: str) -> str:
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise StageAInputError(f"{context} must be 64 lowercase hexadecimal characters")
+        raise ToolkitInputError(f"{context} must be 64 lowercase hexadecimal characters")
     return value
 
 
 def _uint32(value: Any, context: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= _UINT32_MAX:
-        raise StageAInputError(f"{context} must be an unsigned 32-bit integer")
+        raise ToolkitInputError(f"{context} must be an unsigned 32-bit integer")
     return value
 
 
 def _positive_int(value: Any, context: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise StageAInputError(f"{context} must be a positive integer")
+        raise ToolkitInputError(f"{context} must be a positive integer")
     return value
 
 
 def _nonnegative_int(value: Any, context: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise StageAInputError(f"{context} must be a nonnegative integer")
+        raise ToolkitInputError(f"{context} must be a nonnegative integer")
     return value
 
 
 def _relative_path(value: Any, context: str) -> str:
     raw = _string(value, context)
     if "\\" in raw:
-        raise StageAInputError(f"{context} must use POSIX separators")
+        raise ToolkitInputError(f"{context} must use POSIX separators")
     path = PurePosixPath(raw)
     if path.is_absolute() or path.as_posix() != raw or ".." in path.parts:
-        raise StageAInputError(f"{context} must be a canonical contained path")
+        raise ToolkitInputError(f"{context} must be a canonical contained path")
     if any(part in {"", "."} for part in path.parts):
-        raise StageAInputError(f"{context} contains an empty or dot component")
+        raise ToolkitInputError(f"{context} contains an empty or dot component")
     return raw
 
 
 def _hex_bytes(value: Any, context: str) -> str:
     if not isinstance(value, str) or _HEX_RE.fullmatch(value) is None:
-        raise StageAInputError(f"{context} must be lowercase hexadecimal bytes")
+        raise ToolkitInputError(f"{context} must be lowercase hexadecimal bytes")
     return value
 
 
@@ -868,20 +868,20 @@ def _evidence_refs(value: Any, available: set[str], context: str) -> list[str]:
     )
     _require_unique(refs, context)
     if not refs:
-        raise StageAInputError(f"{context} must not be empty")
+        raise ToolkitInputError(f"{context} must not be empty")
     unknown = sorted(set(refs) - available)
     if unknown:
-        raise StageAInputError(f"{context} references unknown evidence {unknown}")
+        raise ToolkitInputError(f"{context} references unknown evidence {unknown}")
     return refs
 
 
 def _require_unique(values: Iterable[Any], context: str) -> None:
     observed = list(values)
     if len(observed) != len(set(observed)):
-        raise StageAInputError(f"{context} must not contain duplicates")
+        raise ToolkitInputError(f"{context} must not contain duplicates")
 
 
 def _reject_overlapping_spans(spans: Sequence[Mapping[str, Any]], context: str) -> None:
     for left, right in zip(spans, spans[1:]):
         if int(right["start"]) < int(left["end"]):
-            raise StageAInputError(f"{context} contains overlapping RVA spans")
+            raise ToolkitInputError(f"{context} contains overlapping RVA spans")

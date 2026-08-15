@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..artifacts.formats import STATIC_ANALYSIS_PROFILE_ID
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes
 from .schema import STATIC_ANALYSIS_MODEL_ID
 from .region_inventory import (
@@ -17,7 +17,7 @@ from .region_inventory import (
 )
 
 
-SIDE_ISA_FORMAT = "stage-a-static-isa-inventory-v1"
+SIDE_ISA_FORMAT = "spaghetti-extractor-static-isa-inventory-v1"
 SIDE_ISA_STATUS = "untrusted_proposal_requires_lean_decode_replay"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _TOP_FIELDS = {
@@ -46,7 +46,7 @@ _OCCURRENCE_FIELDS = {"rva", "size", "bytes", "form"}
 
 def _sha256(value: Any, context: str) -> str:
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise StageAInputError(f"{context} must be 64 lowercase hex characters")
+        raise ToolkitInputError(f"{context} must be 64 lowercase hex characters")
     return value
 
 
@@ -62,13 +62,13 @@ def _validate_occurrences(
     occurrences: Any, *, start: int, size: int, context: str
 ) -> list[dict[str, Any]]:
     if not isinstance(occurrences, list) or not occurrences:
-        raise StageAInputError(f"{context} occurrences must be a nonempty list")
+        raise ToolkitInputError(f"{context} occurrences must be a nonempty list")
     result: list[dict[str, Any]] = []
     cursor = start
     for index, value in enumerate(occurrences):
         row_context = f"{context} occurrence {index}"
         if not isinstance(value, Mapping) or set(value) != _OCCURRENCE_FIELDS:
-            raise StageAInputError(f"{row_context} is malformed")
+            raise ToolkitInputError(f"{row_context} is malformed")
         rva = value.get("rva")
         instruction_size = value.get("size")
         encoded = value.get("bytes")
@@ -86,7 +86,7 @@ def _validate_occurrences(
             or not isinstance(form, str)
             or not form
         ):
-            raise StageAInputError(f"{row_context} is invalid")
+            raise ToolkitInputError(f"{row_context} is invalid")
         cursor += instruction_size
         result.append({
             "rva": rva,
@@ -95,7 +95,7 @@ def _validate_occurrences(
             "form": form,
         })
     if cursor != start + size:
-        raise StageAInputError(f"{context} occurrences do not cover the span")
+        raise ToolkitInputError(f"{context} occurrences do not cover the span")
     return result
 
 
@@ -115,7 +115,7 @@ def side_isa_payload(
     }
     expected = {(request.side, region.index) for region in request.regions}
     if set(forms) != expected:
-        raise StageAInputError("side ISA forms do not match the request inventory")
+        raise ToolkitInputError("side ISA forms do not match the request inventory")
     regions: list[dict[str, Any]] = []
     for region in request.regions:
         occurrences = _validate_occurrences(
@@ -159,7 +159,7 @@ def parse_side_isa_unbound(
     source_sha256: str,
 ) -> tuple[SideExtractionRequest, list[tuple[dict[str, Any], ...]]]:
     if not isinstance(payload, Mapping) or set(payload) != _TOP_FIELDS:
-        raise StageAInputError("side ISA artifact fields are malformed")
+        raise ToolkitInputError("side ISA artifact fields are malformed")
     expected_top = {
         "format": SIDE_ISA_FORMAT,
         "profile": STATIC_ANALYSIS_PROFILE_ID,
@@ -179,12 +179,12 @@ def parse_side_isa_unbound(
     }
     for field, expected in expected_top.items():
         if payload.get(field) != expected:
-            raise StageAInputError(f"side ISA artifact {field} mismatch")
+            raise ToolkitInputError(f"side ISA artifact {field} mismatch")
     raw_regions = payload.get("regions")
     if not isinstance(raw_regions, list):
-        raise StageAInputError("side ISA artifact regions must be a list")
+        raise ToolkitInputError("side ISA artifact regions must be a list")
     request = parse_request({
-        "format": "stage-a-static-region-request-v1",
+        "format": "spaghetti-extractor-static-region-request-v1",
         "profile": payload.get("profile"),
         "model": payload.get("model"),
         "side": payload.get("side"),
@@ -202,11 +202,11 @@ def parse_side_isa_unbound(
         ],
     })
     if payload.get("request_sha256") != canonical_request_sha256(request):
-        raise StageAInputError("side ISA artifact request_sha256 mismatch")
+        raise ToolkitInputError("side ISA artifact request_sha256 mismatch")
     result: list[tuple[dict[str, Any], ...]] = []
     for region, raw in zip(request.regions, raw_regions, strict=True):
         if not isinstance(raw, Mapping) or set(raw) != _REGION_FIELDS:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"side ISA artifact region {region.index} is malformed"
             )
         occurrences = _validate_occurrences(
@@ -216,7 +216,7 @@ def parse_side_isa_unbound(
             context=f"side ISA artifact region {region.index}",
         )
         if raw.get("occurrences_sha256") != _canonical_sha256(occurrences):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"side ISA artifact region {region.index} hash mismatch"
             )
         result.append(tuple(occurrences))
@@ -244,13 +244,13 @@ def select_side_isa_spans(
     for region, occurrences in zip(inventory.regions, rows, strict=True):
         key = (region.span.rva_start, region.span.size)
         if key in by_span:
-            raise StageAInputError("side ISA artifact contains duplicate spans")
+            raise ToolkitInputError("side ISA artifact contains duplicate spans")
         by_span[key] = occurrences
     selected: dict[tuple[str, int], tuple[dict[str, Any], ...]] = {}
     for region in expected_request.regions:
         key = (region.span.rva_start, region.span.size)
         if key not in by_span:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"side ISA artifact omits required span {key[0]:#x}+{key[1]}"
             )
         selected[(expected_request.side, region.index)] = by_span[key]
@@ -273,13 +273,13 @@ def write_binary_isa_inventory(
     try:
         inventory_payload = json.loads(Path(inventory).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read binary inventory: {exc}") from exc
+        raise ToolkitInputError(f"cannot read binary inventory: {exc}") from exc
     request_payload = side_extraction_request_from_inventory(
         inventory_payload, scope=scope
     )
     request = parse_request(request_payload)
     if sha256_file(Path(binary)) != request.binary_sha256:
-        raise StageAInputError("binary ISA inventory input hash mismatch")
+        raise ToolkitInputError("binary ISA inventory input hash mismatch")
     forms, evidence = extract_lean_instruction_forms_side(
         binary=Path(binary), request=request_payload
     )
@@ -292,7 +292,7 @@ def write_binary_isa_inventory(
     )
     write_json(Path(out), payload)
     return {
-        "format": "stage-a-static-isa-inventory-result-v1",
+        "format": "spaghetti-extractor-static-isa-inventory-result-v1",
         "status": "generated",
         "out": str(out),
         "sha256": sha256_file(Path(out)),

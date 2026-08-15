@@ -1,4 +1,4 @@
-"""Deterministic freestanding PE32 construction for Stage B semantic engines.
+"""Deterministic freestanding PE32 construction for candidate reconstruction semantic engines.
 
 This module only constructs candidate binaries. Its manifests are build and
 provenance evidence; none of them can qualify a candidate.
@@ -21,34 +21,34 @@ import pefile
 from ..artifacts.formats import (
     NATIVE_ENGINE_PACKAGE_FORMAT as _NATIVE_FORMAT,
 )
-from ..errors import StageAInputError
+from ..errors import ToolkitInputError
 from ..roundtrip_fuzz.image_io import (
-    load_stage_a_load_image_contract,
+    load_spx_load_image_contract,
 )
 from ..roundtrip_fuzz.image_model import (
-    StageALoadImageContract,
+    LoadImageContract,
 )
 from .engine_layout import (
     EngineLayout,
     EngineLayoutFeature,
-    STAGE_B_ENGINE_LAYOUT_MAGIC_BYTES,
-    parse_stage_b_engine_layout_payload,
+    SPX_ENGINE_LAYOUT_MAGIC_BYTES,
+    parse_spx_engine_layout_payload,
 )
-from .binding import build_stage_b_native_runtime_binding
+from .binding import build_spx_native_runtime_binding
 from .pe import (
     CANDIDATE_FILENAME,
     COMPOSITION_MANIFEST_FILENAME,
     ExecutableAnchorManifest,
     PayloadRelocation,
     PayloadRelocationInventory,
-    compose_stage_b_pe,
+    compose_spx_pe,
 )
 from ..util import sha256_bytes, sha256_file
 
 
-NATIVE_BUILD_PREPARE_FORMAT = "stage-b-native-build-prepare-v1"
-NATIVE_BUILD_COMPILE_FORMAT = "stage-b-native-build-compile-v1"
-NATIVE_BUILD_MANIFEST_FORMAT = "stage-b-native-build-v1"
+NATIVE_BUILD_PREPARE_FORMAT = "spaghetti-extractor-native-build-prepare-v1"
+NATIVE_BUILD_COMPILE_FORMAT = "spaghetti-extractor-native-build-compile-v1"
+NATIVE_BUILD_MANIFEST_FORMAT = "spaghetti-extractor-native-build-v1"
 PREPARE_MANIFEST_FILENAME = "native-build-prepare.json"
 COMPILE_MANIFEST_FILENAME = "native-build-compile.json"
 BUILD_MANIFEST_FILENAME = "native-build-manifest.json"
@@ -59,7 +59,7 @@ PAYLOAD_RELOCATION_INVENTORY_FILENAME = "payload-relocations.json"
 
 _SEMANTIC_MANIFEST = "state-machine-implementation.json"
 _NATIVE_MANIFEST = "native-engine-package.json"
-_SEMANTIC_FORMAT = "stage-b-semantic-c-implementation-v1"
+_SEMANTIC_FORMAT = "spaghetti-extractor-semantic-c-implementation-v1"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _PLACEHOLDER_INT3 = re.compile(
@@ -84,7 +84,7 @@ _DIRECTORY_IAT = 12
 _DIRECTORY_DELAY_IMPORT = 13
 
 
-class StageBNativeBuildError(ValueError):
+class CandidateNativeBuildError(ValueError):
     """A candidate-generation input or output failed closed validation."""
 
 
@@ -135,7 +135,7 @@ class _Toolchain:
         }
 
 
-def prepare_stage_b_native_build(
+def prepare_spx_native_build(
     *,
     semantic_c_package: Path | str,
     native_engine_package: Path | str,
@@ -143,7 +143,7 @@ def prepare_stage_b_native_build(
     anchor_manifest: Path | str,
     out_dir: Path | str,
     compiler: Path | str = "i686-w64-mingw32-gcc",
-    entry_symbol: str = "stage_b_payload_entry",
+    entry_symbol: str = "spx_payload_entry",
     payload_rva: int | None = None,
 ) -> dict[str, Any]:
     """Validate cheap inputs and emit a content-addressable compile plan."""
@@ -153,17 +153,17 @@ def prepare_stage_b_native_build(
     contract_path = _file(load_image_contract, "load-image contract")
     anchor_path = _file(anchor_manifest, "executable-anchor manifest")
     if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
-        raise StageBNativeBuildError("payload entry symbol is not a C identifier")
+        raise CandidateNativeBuildError("payload entry symbol is not a C identifier")
 
-    contract = load_stage_a_load_image_contract(contract_path)
+    contract = load_spx_load_image_contract(contract_path)
     _require_pe32_contract(contract)
     anchor_payload = _read_json_object(anchor_path, "executable-anchor manifest")
     try:
         anchors = ExecutableAnchorManifest.parse(anchor_payload)
     except Exception as exc:
-        raise StageBNativeBuildError(str(exc)) from exc
+        raise CandidateNativeBuildError(str(exc)) from exc
     if anchors.image_base != contract.identity.preferred_base:
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             "executable-anchor manifest image base differs from the load-image contract"
         )
 
@@ -178,12 +178,12 @@ def prepare_stage_b_native_build(
         item for item in semantic_artifacts if item.key == "runtime_obligations"
     )
     try:
-        binding = build_stage_b_native_runtime_binding(
+        binding = build_spx_native_runtime_binding(
             native_engine_plan=plan.path,
             runtime_call_obligations=obligations.path,
         )
-    except StageAInputError as exc:
-        raise StageBNativeBuildError(f"native runtime binding is malformed: {exc}") from exc
+    except ToolkitInputError as exc:
+        raise CandidateNativeBuildError(f"native runtime binding is malformed: {exc}") from exc
 
     blockers = _package_blockers(
         semantic=semantic,
@@ -193,7 +193,7 @@ def prepare_stage_b_native_build(
         entry_symbol=entry_symbol,
     )
     if blockers:
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             "native build preparation is incomplete: " + "; ".join(blockers)
         )
 
@@ -206,7 +206,7 @@ def prepare_stage_b_native_build(
     minimum_rva = _align_up(contract.identity.image_size, section_alignment)
     selected_rva = minimum_rva if payload_rva is None else _u32(payload_rva, "payload RVA")
     if selected_rva < minimum_rva or selected_rva % section_alignment:
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             "payload RVA must be section-aligned and outside the contracted image"
         )
 
@@ -270,7 +270,7 @@ def prepare_stage_b_native_build(
     return manifest
 
 
-def compile_stage_b_native_payload(
+def compile_spx_native_payload(
     *,
     prepare_manifest: Path | str,
     semantic_c_package: Path | str,
@@ -317,7 +317,7 @@ def compile_stage_b_native_payload(
         ]
         _run(command, phase=f"compile {artifact.owner}:{artifact.key}", env=environment)
         if not object_path.is_file():
-            raise StageBNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"compiler omitted object for {artifact.owner}:{artifact.key}"
             )
         object_paths.append(object_path)
@@ -352,7 +352,7 @@ def compile_stage_b_native_payload(
         env=environment,
     )
     if not relocation_object.is_file():
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             "compiler omitted the generated relocation-anchor object"
         )
     object_paths.append(relocation_object)
@@ -402,14 +402,14 @@ def compile_stage_b_native_payload(
         cwd=output,
     )
     if not raw_payload.is_file() or not linker_map.is_file():
-        raise StageBNativeBuildError("linker omitted the payload PE or linker map")
+        raise CandidateNativeBuildError("linker omitted the payload PE or linker map")
 
     normalized = _normalize_empty_import_directory(raw_payload.read_bytes())
     payload_path = output / PAYLOAD_FILENAME
     payload_path.write_bytes(normalized)
     unresolved = _unresolved_symbols(toolchain.nm, payload_path, environment)
     if unresolved:
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             "payload has unresolved CRT/helper symbols: " + ", ".join(unresolved)
         )
     payload_pe = _qualify_payload_pe(
@@ -499,7 +499,7 @@ def compile_stage_b_native_payload(
     return manifest
 
 
-def compose_stage_b_native_candidate(
+def compose_spx_native_candidate(
     *,
     prepare_manifest: Path | str,
     compile_manifest: Path | str,
@@ -520,10 +520,10 @@ def compose_stage_b_native_candidate(
         compiled_path, NATIVE_BUILD_COMPILE_FORMAT, "native build compile manifest"
     )
     if compiled.get("status") != "qualified":
-        raise StageBNativeBuildError("native build compile manifest is not qualified")
+        raise CandidateNativeBuildError("native build compile manifest is not qualified")
     compile_prepare = _mapping(compiled.get("prepare"), "compile prepare binding")
     if compile_prepare.get("manifest_core_sha256") != prepared["hashes"]["manifest_core_sha256"]:
-        raise StageBNativeBuildError("compile manifest binds a different prepare manifest")
+        raise CandidateNativeBuildError("compile manifest binds a different prepare manifest")
 
     inputs = _mapping(prepared.get("inputs"), "prepare inputs")
     contract_binding = _mapping(inputs.get("load_image_contract"), "contract binding")
@@ -531,9 +531,9 @@ def compose_stage_b_native_candidate(
         inputs.get("executable_anchor_manifest"), "anchor binding"
     )
     if sha256_file(contract_path) != contract_binding.get("artifact_sha256"):
-        raise StageBNativeBuildError("load-image contract changed after preparation")
+        raise CandidateNativeBuildError("load-image contract changed after preparation")
     if sha256_file(anchors_path) != anchor_binding.get("artifact_sha256"):
-        raise StageBNativeBuildError("executable-anchor manifest changed after preparation")
+        raise CandidateNativeBuildError("executable-anchor manifest changed after preparation")
 
     outputs = _mapping(compiled.get("outputs"), "compile outputs")
     payload_binding = _mapping(outputs.get("payload"), "compiled payload binding")
@@ -541,7 +541,7 @@ def compose_stage_b_native_candidate(
         payload_binding.get("path"), "compiled payload path"
     )
     if not payload_path.is_file() or sha256_file(payload_path) != payload_binding.get("sha256"):
-        raise StageBNativeBuildError("compiled payload changed after qualification")
+        raise CandidateNativeBuildError("compiled payload changed after qualification")
     relocation_binding = _mapping(
         outputs.get("payload_relocation_inventory"),
         "compiled payload relocation inventory binding",
@@ -553,7 +553,7 @@ def compose_stage_b_native_candidate(
         not relocation_inventory_path.is_file()
         or sha256_file(relocation_inventory_path) != relocation_binding.get("sha256")
     ):
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             "compiled payload relocation inventory changed after qualification"
         )
     relocation_inventory_payload = _read_json_object(
@@ -564,11 +564,11 @@ def compose_stage_b_native_candidate(
             relocation_inventory_payload
         )
     except Exception as exc:
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             f"compiled payload relocation inventory is malformed: {exc}"
         ) from exc
     if relocation_inventory.payload_sha256 != payload_binding.get("sha256"):
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             "compiled payload relocation inventory binds a different payload"
         )
     payload_pe = _pe(payload_path.read_bytes(), "compiled payload")
@@ -578,7 +578,7 @@ def compose_stage_b_native_candidate(
     payload_pe.close()
 
     output = Path(out_dir)
-    composition = compose_stage_b_pe(
+    composition = compose_spx_pe(
         load_image_contract=contract_path,
         payload_pe=payload_path,
         anchor_manifest=anchors_path,
@@ -626,7 +626,7 @@ def compose_stage_b_native_candidate(
     return manifest
 
 
-def build_stage_b_native_candidate(
+def build_spx_native_candidate(
     *,
     semantic_c_package: Path | str,
     native_engine_package: Path | str,
@@ -634,7 +634,7 @@ def build_stage_b_native_candidate(
     anchor_manifest: Path | str,
     out_dir: Path | str,
     compiler: Path | str = "i686-w64-mingw32-gcc",
-    entry_symbol: str = "stage_b_payload_entry",
+    entry_symbol: str = "spx_payload_entry",
     payload_rva: int | None = None,
 ) -> dict[str, Any]:
     """Run prepare, compile, and compose while preserving phase boundaries."""
@@ -642,7 +642,7 @@ def build_stage_b_native_candidate(
     output = Path(out_dir)
     prepare_dir = output / "prepare"
     compile_dir = output / "compile"
-    prepare_stage_b_native_build(
+    prepare_spx_native_build(
         semantic_c_package=semantic_c_package,
         native_engine_package=native_engine_package,
         load_image_contract=load_image_contract,
@@ -652,13 +652,13 @@ def build_stage_b_native_candidate(
         entry_symbol=entry_symbol,
         payload_rva=payload_rva,
     )
-    compile_stage_b_native_payload(
+    compile_spx_native_payload(
         prepare_manifest=prepare_dir / PREPARE_MANIFEST_FILENAME,
         semantic_c_package=semantic_c_package,
         native_engine_package=native_engine_package,
         out_dir=compile_dir,
     )
-    return compose_stage_b_native_candidate(
+    return compose_spx_native_candidate(
         prepare_manifest=prepare_dir / PREPARE_MANIFEST_FILENAME,
         compile_manifest=compile_dir / COMPILE_MANIFEST_FILENAME,
         load_image_contract=load_image_contract,
@@ -669,7 +669,7 @@ def build_stage_b_native_candidate(
 
 def _semantic_artifacts(root: Path, manifest: Mapping[str, Any]) -> tuple[_Artifact, ...]:
     if manifest.get("format") != _SEMANTIC_FORMAT:
-        raise StageBNativeBuildError("unsupported semantic-C package format")
+        raise CandidateNativeBuildError("unsupported semantic-C package format")
     artifacts = _mapping(manifest.get("artifacts"), "semantic-C artifacts")
     required = {
         "runtime_header",
@@ -688,7 +688,7 @@ def _semantic_artifacts(root: Path, manifest: Mapping[str, Any]) -> tuple[_Artif
     }
     missing = required - set(artifacts)
     if missing:
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             "semantic-C package omits artifacts: " + ", ".join(sorted(missing))
         )
     return tuple(
@@ -699,16 +699,16 @@ def _semantic_artifacts(root: Path, manifest: Mapping[str, Any]) -> tuple[_Artif
 
 def _native_artifacts(root: Path, manifest: Mapping[str, Any]) -> tuple[_Artifact, ...]:
     if manifest.get("format") != _NATIVE_FORMAT:
-        raise StageBNativeBuildError("unsupported native-engine package format")
+        raise CandidateNativeBuildError("unsupported native-engine package format")
     result = [_parse_artifact(root, "native", "plan", manifest.get("plan"))]
     sources = manifest.get("sources")
     if not isinstance(sources, list) or not sources:
-        raise StageBNativeBuildError("native-engine package has no source inventory")
+        raise CandidateNativeBuildError("native-engine package has no source inventory")
     seen: set[str] = set()
     for index, value in enumerate(sources):
         artifact = _parse_artifact(root, "native", f"source_{index:03d}", value)
         if artifact.relative_path in seen:
-            raise StageBNativeBuildError("native-engine source inventory has duplicates")
+            raise CandidateNativeBuildError("native-engine source inventory has duplicates")
         seen.add(artifact.relative_path)
         result.append(artifact)
     return tuple(result)
@@ -720,10 +720,10 @@ def _parse_artifact(root: Path, owner: str, key: str, value: Any) -> _Artifact:
     expected = _digest(record.get("sha256"), f"{owner} artifact {key} SHA-256")
     path = root / relative
     if not path.is_file():
-        raise StageBNativeBuildError(f"{owner} artifact {key} is missing: {relative}")
+        raise CandidateNativeBuildError(f"{owner} artifact {key} is missing: {relative}")
     observed = sha256_file(path)
     if observed != expected:
-        raise StageBNativeBuildError(f"{owner} artifact {key} has a stale SHA-256")
+        raise CandidateNativeBuildError(f"{owner} artifact {key} has a stale SHA-256")
     return _Artifact(owner, key, relative.as_posix(), expected, path)
 
 
@@ -795,7 +795,7 @@ def _compile_units(
         if item.key != "plan" and item.path.suffix.lower() in {".c", ".s"}
     )
     if not selected:
-        raise StageBNativeBuildError("native build has no compilation units")
+        raise CandidateNativeBuildError("native build has no compilation units")
 
     def order(item: _Artifact) -> tuple[int, str, str]:
         if item.owner == "native" and item.path.suffix.lower() == ".s":
@@ -812,13 +812,13 @@ def _prepared_compile_units(
 ) -> tuple[_Artifact, ...]:
     rows = prepared.get("compile_units")
     if not isinstance(rows, list) or not rows:
-        raise StageBNativeBuildError("prepare manifest has no compile units")
+        raise CandidateNativeBuildError("prepare manifest has no compile units")
     result: list[_Artifact] = []
     for index, value in enumerate(rows):
         row = _mapping(value, f"compile unit {index}")
         owner = row.get("owner")
         if owner not in {"semantic", "native"}:
-            raise StageBNativeBuildError(f"compile unit {index} owner is malformed")
+            raise CandidateNativeBuildError(f"compile unit {index} owner is malformed")
         root = semantic_root if owner == "semantic" else native_root
         result.append(_parse_artifact(root, owner, _string(row.get("key"), "compile key"), row))
     return tuple(result)
@@ -835,15 +835,15 @@ def _revalidate_prepared_packages(
         binding = _mapping(inputs.get(owner), f"prepare {owner}")
         manifest = root / manifest_name
         if not manifest.is_file() or sha256_file(manifest) != binding.get("manifest_sha256"):
-            raise StageBNativeBuildError(f"{owner} manifest changed after preparation")
+            raise CandidateNativeBuildError(f"{owner} manifest changed after preparation")
         rows = binding.get("artifacts")
         if not isinstance(rows, list):
-            raise StageBNativeBuildError(f"{owner} artifact binding is malformed")
+            raise CandidateNativeBuildError(f"{owner} artifact binding is malformed")
         for index, row in enumerate(rows):
             parsed = _mapping(row, f"{owner} artifact binding {index}")
             artifact = root / _relative_path(parsed.get("path"), f"{owner} artifact path")
             if not artifact.is_file() or sha256_file(artifact) != parsed.get("sha256"):
-                raise StageBNativeBuildError(
+                raise CandidateNativeBuildError(
                     f"{owner} artifact changed after preparation: {parsed.get('path')}"
                 )
 
@@ -852,11 +852,11 @@ def _select_toolchain(compiler: Path | str) -> _Toolchain:
     requested = str(compiler)
     compiler_path = shutil.which(requested) if not Path(requested).is_absolute() else requested
     if compiler_path is None or not Path(compiler_path).is_file():
-        raise StageBNativeBuildError(f"selected MinGW compiler is unavailable: {compiler}")
+        raise CandidateNativeBuildError(f"selected MinGW compiler is unavailable: {compiler}")
     compiler_real = Path(compiler_path).resolve()
     target = _tool_output([str(compiler_real), "-dumpmachine"])
     if target != "i686-w64-mingw32":
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             f"selected compiler target is {target!r}, expected i686-w64-mingw32"
         )
     prefix = Path(compiler_path).name.rsplit("gcc", 1)[0]
@@ -866,7 +866,7 @@ def _select_toolchain(compiler: Path | str) -> _Toolchain:
             candidate = Path(compiler_path).parent / (prefix + name)
             path = str(candidate) if candidate.is_file() else None
         if path is None:
-            raise StageBNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"selected MinGW toolchain has no matching {name}"
             )
         return Path(path).resolve()
@@ -895,7 +895,7 @@ def _revalidate_toolchain(prepared: Mapping[str, Any]) -> _Toolchain:
     binding = _mapping(prepared.get("toolchain"), "prepare toolchain")
     toolchain = _select_toolchain(_string(binding.get("compiler"), "compiler path"))
     if toolchain.payload() != dict(binding):
-        raise StageBNativeBuildError("selected toolchain changed after preparation")
+        raise CandidateNativeBuildError("selected toolchain changed after preparation")
     return toolchain
 
 
@@ -904,24 +904,24 @@ def _compile_flags(
 ) -> list[str]:
     return [
         *_common_compile_flags(source_sha256),
-        f"-ffile-prefix-map={semantic_root}=/stage-b/semantic",
-        f"-ffile-prefix-map={native_root}=/stage-b/native",
-        f"-fdebug-prefix-map={semantic_root}=/stage-b/semantic",
-        f"-fdebug-prefix-map={native_root}=/stage-b/native",
-        f"-fmacro-prefix-map={semantic_root}=/stage-b/semantic",
-        f"-fmacro-prefix-map={native_root}=/stage-b/native",
+        f"-ffile-prefix-map={semantic_root}=/candidate/semantic",
+        f"-ffile-prefix-map={native_root}=/candidate/native",
+        f"-fdebug-prefix-map={semantic_root}=/candidate/semantic",
+        f"-fdebug-prefix-map={native_root}=/candidate/native",
+        f"-fmacro-prefix-map={semantic_root}=/candidate/semantic",
+        f"-fmacro-prefix-map={native_root}=/candidate/native",
     ]
 
 
 def _canonical_compile_flags(source_sha256: str) -> list[str]:
     return [
         *_common_compile_flags(source_sha256),
-        "-ffile-prefix-map=<semantic-package>=/stage-b/semantic",
-        "-ffile-prefix-map=<native-package>=/stage-b/native",
-        "-fdebug-prefix-map=<semantic-package>=/stage-b/semantic",
-        "-fdebug-prefix-map=<native-package>=/stage-b/native",
-        "-fmacro-prefix-map=<semantic-package>=/stage-b/semantic",
-        "-fmacro-prefix-map=<native-package>=/stage-b/native",
+        "-ffile-prefix-map=<semantic-package>=/candidate/semantic",
+        "-ffile-prefix-map=<native-package>=/candidate/native",
+        "-fdebug-prefix-map=<semantic-package>=/candidate/semantic",
+        "-fdebug-prefix-map=<native-package>=/candidate/native",
+        "-fmacro-prefix-map=<semantic-package>=/candidate/semantic",
+        "-fmacro-prefix-map=<native-package>=/candidate/native",
     ]
 
 
@@ -946,8 +946,8 @@ def _relocation_anchor_source(entry_symbol: str) -> str:
     return (
         ".section .stgbrel,\"dr\"\n"
         ".balign 4\n"
-        ".globl _stage_b_payload_relocation_anchor\n"
-        "_stage_b_payload_relocation_anchor:\n"
+        ".globl _spx_payload_relocation_anchor\n"
+        "_spx_payload_relocation_anchor:\n"
         f"  .long {entry}\n"
     )
 
@@ -992,7 +992,7 @@ def _normalize_empty_import_directory(image: bytes) -> bytes:
         directory = directories[index]
         if int(directory.VirtualAddress) or int(directory.Size):
             pe.close()
-            raise StageBNativeBuildError(f"payload has forbidden {label}")
+            raise CandidateNativeBuildError(f"payload has forbidden {label}")
     import_directory = directories[_DIRECTORY_IMPORT]
     rva = int(import_directory.VirtualAddress)
     size = int(import_directory.Size)
@@ -1000,15 +1000,15 @@ def _normalize_empty_import_directory(image: bytes) -> bytes:
     if rva or size:
         if not rva or size != 20:
             pe.close()
-            raise StageBNativeBuildError("payload has a nonempty import directory")
+            raise CandidateNativeBuildError("payload has a nonempty import directory")
         try:
             offset = pe.get_offset_from_rva(rva)
         except pefile.PEFormatError as exc:
             pe.close()
-            raise StageBNativeBuildError("payload import directory is unmapped") from exc
+            raise CandidateNativeBuildError("payload import directory is unmapped") from exc
         if offset < 0 or offset + size > len(image) or any(image[offset : offset + size]):
             pe.close()
-            raise StageBNativeBuildError("payload has actual imported symbols")
+            raise CandidateNativeBuildError("payload has actual imported symbols")
         directory_offset = import_directory.get_file_offset()
         normalized[directory_offset : directory_offset + 8] = bytes(8)
     checksum_offset = optional.get_field_absolute_offset("CheckSum")
@@ -1030,19 +1030,19 @@ def _qualify_payload_pe(
     optional = _optional_header(pe)
     if int(file_header.Machine) != 0x14C or int(optional.Magic) != 0x10B:
         pe.close()
-        raise StageBNativeBuildError("payload architecture is not i386 PE32")
+        raise CandidateNativeBuildError("payload architecture is not i386 PE32")
     if int(optional.ImageBase) != image_base:
         pe.close()
-        raise StageBNativeBuildError("payload image base differs from the prepared contract")
+        raise CandidateNativeBuildError("payload image base differs from the prepared contract")
     if int(optional.SectionAlignment) != section_alignment:
         pe.close()
-        raise StageBNativeBuildError("payload section alignment changed")
+        raise CandidateNativeBuildError("payload section alignment changed")
     if int(optional.FileAlignment) != file_alignment:
         pe.close()
-        raise StageBNativeBuildError("payload file alignment changed")
+        raise CandidateNativeBuildError("payload file alignment changed")
     if not int(optional.DllCharacteristics) & _IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE:
         pe.close()
-        raise StageBNativeBuildError("payload is not dynamically relocatable")
+        raise CandidateNativeBuildError("payload is not dynamically relocatable")
     directories = optional.DATA_DIRECTORY
     forbidden = (
         (_DIRECTORY_IMPORT, "imports"),
@@ -1053,7 +1053,7 @@ def _qualify_payload_pe(
     for index, label in forbidden:
         if int(directories[index].VirtualAddress) or int(directories[index].Size):
             pe.close()
-            raise StageBNativeBuildError(f"payload has forbidden {label}")
+            raise CandidateNativeBuildError(f"payload has forbidden {label}")
     relocation_directory = directories[_DIRECTORY_BASE_RELOCATION]
     relocation_present = bool(
         int(relocation_directory.VirtualAddress) or int(relocation_directory.Size)
@@ -1063,17 +1063,17 @@ def _qualify_payload_pe(
     )
     if relocation_present == relocations_stripped:
         pe.close()
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             "payload relocation directory disagrees with RELOCS_STRIPPED"
         )
     if not pe.sections:
         pe.close()
-        raise StageBNativeBuildError("payload has no sections")
+        raise CandidateNativeBuildError("payload has no sections")
     for section in pe.sections:
         rva = int(section.VirtualAddress)
         if rva < minimum_rva or rva % section_alignment:
             pe.close()
-            raise StageBNativeBuildError("payload has a section outside its high-RVA range")
+            raise CandidateNativeBuildError("payload has a section outside its high-RVA range")
     entry = int(optional.AddressOfEntryPoint)
     executable = [
         section
@@ -1084,7 +1084,7 @@ def _qualify_payload_pe(
     ]
     if len(executable) != 1:
         pe.close()
-        raise StageBNativeBuildError("payload entry symbol is absent or non-executable")
+        raise CandidateNativeBuildError("payload entry symbol is absent or non-executable")
     return pe
 
 
@@ -1105,7 +1105,7 @@ def _payload_relocation_inventory(
             relocations=(),
         )
     if not directory_rva or directory_size < 8:
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             "payload base-relocation directory is partial or too small"
         )
     raw = _read_payload_rva(
@@ -1121,20 +1121,20 @@ def _payload_relocation_inventory(
     seen_targets: set[int] = set()
     while cursor < len(raw):
         if len(raw) - cursor < 8:
-            raise StageBNativeBuildError(
+            raise CandidateNativeBuildError(
                 "payload base-relocation directory has a partial block"
             )
         page_rva, block_size = struct.unpack_from("<II", raw, cursor)
         if page_rva % 0x1000:
-            raise StageBNativeBuildError(
+            raise CandidateNativeBuildError(
                 "payload base-relocation block page is not 4 KiB aligned"
             )
         if page_rva <= previous_page:
-            raise StageBNativeBuildError(
+            raise CandidateNativeBuildError(
                 "payload base-relocation blocks are duplicated or unordered"
             )
         if block_size < 8 or block_size % 4 or cursor + block_size > len(raw):
-            raise StageBNativeBuildError(
+            raise CandidateNativeBuildError(
                 "payload base-relocation block has an invalid size"
             )
         slot_count = (block_size - 8) // 2
@@ -1145,13 +1145,13 @@ def _payload_relocation_inventory(
             if relocation_type == 0:
                 continue
             if relocation_type != 3:
-                raise StageBNativeBuildError(
+                raise CandidateNativeBuildError(
                     "payload base-relocation directory contains unsupported "
                     f"PE32 relocation type {relocation_type}"
                 )
             target_rva = page_rva + offset
             if target_rva in seen_targets:
-                raise StageBNativeBuildError(
+                raise CandidateNativeBuildError(
                     "payload base-relocation target is duplicated"
                 )
             preferred = int.from_bytes(
@@ -1174,7 +1174,7 @@ def _payload_relocation_inventory(
     ordered = tuple(sorted(relocations, key=lambda item: item.rva))
     for previous, current in zip(ordered, ordered[1:]):
         if current.rva < previous.rva + previous.width:
-            raise StageBNativeBuildError(
+            raise CandidateNativeBuildError(
                 "payload HIGHLOW relocation target ranges overlap"
             )
     return PayloadRelocationInventory(
@@ -1200,14 +1200,14 @@ def _read_payload_rva(
         <= int(section.VirtualAddress) + int(section.SizeOfRawData)
     ]
     if len(matches) != 1:
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             f"{context} is not contained by exactly one raw-backed section"
         )
     section = matches[0]
     offset = int(section.PointerToRawData) + rva - int(section.VirtualAddress)
     result = image[offset : offset + size]
     if len(result) != size:
-        raise StageBNativeBuildError(f"{context} raw bytes are truncated")
+        raise CandidateNativeBuildError(f"{context} raw bytes are truncated")
     return result
 
 
@@ -1224,7 +1224,7 @@ def _extract_engine_layout(
         data = image[raw_offset : raw_offset + raw_size]
         cursor = 0
         while True:
-            found = data.find(STAGE_B_ENGINE_LAYOUT_MAGIC_BYTES, cursor)
+            found = data.find(SPX_ENGINE_LAYOUT_MAGIC_BYTES, cursor)
             if found < 0:
                 break
             cursor = found + 1
@@ -1237,7 +1237,7 @@ def _extract_engine_layout(
                 continue
             payload = data[found : found + byte_count]
             try:
-                layout = parse_stage_b_engine_layout_payload(
+                layout = parse_spx_engine_layout_payload(
                     payload,
                     expected_features=_EXPECTED_LAYOUT_FEATURES,
                     expected_x87_slot_count=_EXPECTED_X87_SLOTS,
@@ -1247,7 +1247,7 @@ def _extract_engine_layout(
             name = section.Name.rstrip(b"\0").decode("ascii", errors="strict")
             matches.append((payload, layout, rva, name))
     if len(matches) != 1:
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             f"payload has {len(matches)} qualified compiler-materialized engine-layout tables"
         )
     payload, layout, rva, section_name = matches[0]
@@ -1279,15 +1279,15 @@ def _validate_anchor_routes(pe: pefile.PE, anchors: ExecutableAnchorManifest) ->
             or anchor.bytes[0] != 0xE9
             or any(byte != 0x90 for byte in anchor.bytes[5:])
         ):
-            raise StageBNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"{label} anchor must be an exact near jump with an optional NOP suffix"
             )
         displacement = struct.unpack_from("<i", anchor.bytes, 1)[0]
         target = (rva + 5 + displacement) & 0xFFFFFFFF
         if not any(start <= target < stop for start, stop in executable_ranges):
-            raise StageBNativeBuildError(f"{label} anchor does not target payload code")
+            raise CandidateNativeBuildError(f"{label} anchor does not target payload code")
         if label == "entry" and target != int(optional.AddressOfEntryPoint):
-            raise StageBNativeBuildError("entry anchor does not target the payload entry symbol")
+            raise CandidateNativeBuildError("entry anchor does not target the payload entry symbol")
 
 
 def _unresolved_symbols(nm: Path, payload: Path, env: Mapping[str, str]) -> list[str]:
@@ -1325,11 +1325,11 @@ def _run(
     )
     if completed.returncode != 0:
         detail = (completed.stdout[-3000:] + completed.stderr[-9000:]).strip()
-        raise StageBNativeBuildError(f"{phase} failed:\n{detail}")
+        raise CandidateNativeBuildError(f"{phase} failed:\n{detail}")
     if not capture and completed.stderr.strip():
         warnings = completed.stderr.strip()
         if "warning:" in warnings.lower():
-            raise StageBNativeBuildError(f"{phase} emitted a warning:\n{warnings[-6000:]}")
+            raise CandidateNativeBuildError(f"{phase} emitted a warning:\n{warnings[-6000:]}")
     return completed
 
 
@@ -1338,14 +1338,14 @@ def _tool_output(command: Sequence[str], *, first_line: bool = False) -> str:
         list(command), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False
     )
     if completed.returncode != 0:
-        raise StageBNativeBuildError(
+        raise CandidateNativeBuildError(
             f"toolchain identity command failed: {' '.join(command)}"
         )
     value = completed.stdout.strip()
     if first_line:
         value = value.splitlines()[0] if value else ""
     if not value:
-        raise StageBNativeBuildError("toolchain identity command returned no output")
+        raise CandidateNativeBuildError("toolchain identity command returned no output")
     return value
 
 
@@ -1360,12 +1360,12 @@ def _deterministic_environment() -> dict[str, str]:
     }
 
 
-def _require_pe32_contract(contract: StageALoadImageContract) -> None:
+def _require_pe32_contract(contract: LoadImageContract) -> None:
     identity = contract.identity
     if identity.machine != "i386" or identity.bitness != 32 or identity.pointer_width != 4:
-        raise StageBNativeBuildError("load-image contract is not i386 PE32")
+        raise CandidateNativeBuildError("load-image contract is not i386 PE32")
     if not contract.completeness.complete:
-        raise StageBNativeBuildError("load-image contract is incomplete")
+        raise CandidateNativeBuildError("load-image contract is incomplete")
 
 
 def _state_machine_sha256(manifest: Mapping[str, Any]) -> str:
@@ -1376,14 +1376,14 @@ def _state_machine_sha256(manifest: Mapping[str, Any]) -> str:
 def _load_closed_manifest(path: Path, expected_format: str, label: str) -> dict[str, Any]:
     payload = _read_json_object(path, label)
     if payload.get("format") != expected_format:
-        raise StageBNativeBuildError(f"unsupported {label} format")
+        raise CandidateNativeBuildError(f"unsupported {label} format")
     hashes = _mapping(payload.get("hashes"), f"{label} hashes")
     if hashes.get("algorithm") != "sha256":
-        raise StageBNativeBuildError(f"{label} hash algorithm is unsupported")
+        raise CandidateNativeBuildError(f"{label} hash algorithm is unsupported")
     expected = _digest(hashes.get("manifest_core_sha256"), f"{label} core SHA-256")
     core = {key: value for key, value in payload.items() if key != "hashes"}
     if _canonical_sha256(core) != expected:
-        raise StageBNativeBuildError(f"{label} deterministic hash does not close")
+        raise CandidateNativeBuildError(f"{label} deterministic hash does not close")
     return payload
 
 
@@ -1403,9 +1403,9 @@ def _read_json_object(path: Path, label: str) -> dict[str, Any]:
             path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys
         )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StageBNativeBuildError(f"cannot read {label} {path}: {exc}") from exc
+        raise CandidateNativeBuildError(f"cannot read {label} {path}: {exc}") from exc
     if not isinstance(value, dict):
-        raise StageBNativeBuildError(f"{label} must be a JSON object")
+        raise CandidateNativeBuildError(f"{label} must be a JSON object")
     return value
 
 
@@ -1431,7 +1431,7 @@ def _canonical_sha256(value: Any) -> str:
 
 def _mapping(value: Any, label: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageBNativeBuildError(f"{label} must be an object")
+        raise CandidateNativeBuildError(f"{label} must be an object")
     return value
 
 
@@ -1439,46 +1439,46 @@ def _relative_path(value: Any, label: str) -> Path:
     text = _string(value, label)
     path = Path(text)
     if path.is_absolute() or not path.parts or any(part in {"", ".", ".."} for part in path.parts):
-        raise StageBNativeBuildError(f"{label} must be a confined relative path")
+        raise CandidateNativeBuildError(f"{label} must be a confined relative path")
     return path
 
 
 def _digest(value: Any, label: str) -> str:
     if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
-        raise StageBNativeBuildError(f"{label} must be a lowercase SHA-256 digest")
+        raise CandidateNativeBuildError(f"{label} must be a lowercase SHA-256 digest")
     return value
 
 
 def _integer(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise StageBNativeBuildError(f"{label} must be a nonnegative integer")
+        raise CandidateNativeBuildError(f"{label} must be a nonnegative integer")
     return value
 
 
 def _u32(value: Any, label: str) -> int:
     result = _integer(value, label)
     if result > 0xFFFFFFFF:
-        raise StageBNativeBuildError(f"{label} does not fit uint32")
+        raise CandidateNativeBuildError(f"{label} does not fit uint32")
     return result
 
 
 def _string(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value:
-        raise StageBNativeBuildError(f"{label} must be a nonempty string")
+        raise CandidateNativeBuildError(f"{label} must be a nonempty string")
     return value
 
 
 def _directory(value: Path | str, label: str) -> Path:
     path = Path(value)
     if not path.is_dir():
-        raise StageBNativeBuildError(f"{label} is not a directory: {path}")
+        raise CandidateNativeBuildError(f"{label} is not a directory: {path}")
     return path.resolve()
 
 
 def _file(value: Path | str, label: str) -> Path:
     path = Path(value)
     if not path.is_file():
-        raise StageBNativeBuildError(f"{label} is not a file: {path}")
+        raise CandidateNativeBuildError(f"{label} is not a file: {path}")
     return path.resolve()
 
 
@@ -1486,26 +1486,26 @@ def _pe(data: bytes, label: str) -> pefile.PE:
     try:
         return pefile.PE(data=data, fast_load=False)
     except pefile.PEFormatError as exc:
-        raise StageBNativeBuildError(f"{label} is not a valid PE: {exc}") from exc
+        raise CandidateNativeBuildError(f"{label} is not a valid PE: {exc}") from exc
 
 
 def _optional_header(pe: pefile.PE) -> Any:
     header = pe.OPTIONAL_HEADER
     if header is None:
-        raise StageBNativeBuildError("PE has no optional header")
+        raise CandidateNativeBuildError("PE has no optional header")
     return header
 
 
 def _file_header(pe: pefile.PE) -> Any:
     header = pe.FILE_HEADER
     if header is None:
-        raise StageBNativeBuildError("PE has no file header")
+        raise CandidateNativeBuildError("PE has no file header")
     return header
 
 
 def _align_up(value: int, alignment: int) -> int:
     if alignment <= 0 or alignment & (alignment - 1):
-        raise StageBNativeBuildError("PE alignment is not a positive power of two")
+        raise CandidateNativeBuildError("PE alignment is not a positive power of two")
     return (value + alignment - 1) & ~(alignment - 1)
 
 
@@ -1519,9 +1519,9 @@ __all__ = [
     "PAYLOAD_FILENAME",
     "PAYLOAD_MAP_FILENAME",
     "PREPARE_MANIFEST_FILENAME",
-    "StageBNativeBuildError",
-    "build_stage_b_native_candidate",
-    "compile_stage_b_native_payload",
-    "compose_stage_b_native_candidate",
-    "prepare_stage_b_native_build",
+    "CandidateNativeBuildError",
+    "build_spx_native_candidate",
+    "compile_spx_native_payload",
+    "compose_spx_native_candidate",
+    "prepare_spx_native_build",
 ]

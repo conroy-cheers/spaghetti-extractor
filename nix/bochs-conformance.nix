@@ -137,7 +137,6 @@ let
     trust = {
       role = "isa_conformance_evidence_only";
       proofAuthority = false;
-      closesStageAProof = false;
     };
     inherit configureFlags;
   };

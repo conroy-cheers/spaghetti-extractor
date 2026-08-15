@@ -22,7 +22,7 @@ class InterpreterX87ReplayTests(unittest.TestCase):
         ).payload()
         operation["identity"] = "0" * 64
 
-        with self.assertRaisesRegex(StageAInputError, "canonical representation"):
+        with self.assertRaisesRegex(ToolkitInputError, "canonical representation"):
             typed_x87_operation_from_payload(operation, image_base=0x400000)
 
     def test_typed_micro_op_rejects_malformed_address_registers(self) -> None:
@@ -39,7 +39,7 @@ class InterpreterX87ReplayTests(unittest.TestCase):
             }],
         )
 
-        with self.assertRaisesRegex(StageAInputError, "memory base is malformed"):
+        with self.assertRaisesRegex(ToolkitInputError, "memory base is malformed"):
             typed_x87_operation_from_micro_op(
                 unit["x87_micro_ops"][0], image_base=0x400000
             )
@@ -50,9 +50,9 @@ class InterpreterX87ReplayTests(unittest.TestCase):
             machine_ir = root / "machine-ir.jsonl"
             _write_machine(machine_ir, [_machine_ir_x87_unit()])
 
-            transfer = compile_stage_b_interpreter_machine_ir(machine_ir)[0]
+            transfer = compile_spx_interpreter_machine_ir(machine_ir)[0]
             self.assertEqual(transfer.x87_operations[0].operation.mnemonic, "fld1")
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine_ir, out=root / "package"
             )
             self.assertEqual(package["status"], "ready", package["blockers"])
@@ -78,8 +78,8 @@ class InterpreterX87ReplayTests(unittest.TestCase):
                     }],
                 )],
             )
-            with self.assertRaises(StageBInterpreterError) as raised:
-                compile_stage_b_interpreter_machine_ir(machine_ir)
+            with self.assertRaises(CandidateInterpreterError) as raised:
+                compile_spx_interpreter_machine_ir(machine_ir)
             self.assertEqual(raised.exception.code, "unsupported_typed_x87_operation")
 
     def test_byte_free_micro_op_must_bind_its_unit_and_checker(self) -> None:
@@ -88,8 +88,8 @@ class InterpreterX87ReplayTests(unittest.TestCase):
             unit = _machine_ir_x87_unit()
             unit["x87_micro_ops"][0]["unit_id"] = "semantic-transfer:other"
             _write_machine(machine_ir, [unit])
-            with self.assertRaises(StageBInterpreterError) as raised:
-                compile_stage_b_interpreter_machine_ir(machine_ir)
+            with self.assertRaises(CandidateInterpreterError) as raised:
+                compile_spx_interpreter_machine_ir(machine_ir)
             self.assertEqual(raised.exception.code, "malformed_typed_x87_operation")
 
     def test_byte_free_machine_ir_rejects_raw_opcode_fields(self) -> None:
@@ -98,8 +98,8 @@ class InterpreterX87ReplayTests(unittest.TestCase):
             unit = _machine_ir_x87_unit()
             unit["x87_micro_ops"][0]["bytes"] = "d9e8"
             _write_machine(machine_ir, [unit])
-            with self.assertRaises(StageBInterpreterError) as raised:
-                compile_stage_b_interpreter_machine_ir(machine_ir)
+            with self.assertRaises(CandidateInterpreterError) as raised:
+                compile_spx_interpreter_machine_ir(machine_ir)
             self.assertEqual(raised.exception.code, "malformed_machine_ir_input")
 
     def test_byte_free_machine_ir_composes_x87_and_ordinary_schedule(self) -> None:
@@ -108,7 +108,7 @@ class InterpreterX87ReplayTests(unittest.TestCase):
             machine_ir = root / "machine-ir.jsonl"
             _write_machine(machine_ir, [_machine_ir_mixed_unit()])
 
-            transfer = compile_stage_b_interpreter_machine_ir(machine_ir)[0]
+            transfer = compile_spx_interpreter_machine_ir(machine_ir)[0]
             self.assertEqual(
                 [action.op for action in transfer.actions],
                 [
@@ -116,7 +116,7 @@ class InterpreterX87ReplayTests(unittest.TestCase):
                     "outcome_fallthrough",
                 ],
             )
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine_ir, out=root / "package"
             )
             self.assertEqual(package["status"], "ready", package["blockers"])
@@ -127,11 +127,11 @@ class InterpreterX87ReplayTests(unittest.TestCase):
             machine_ir = root / "machine-ir.jsonl"
             _write_machine(machine_ir, [_machine_ir_adc_carry_unit()])
 
-            transfer = compile_stage_b_interpreter_machine_ir(machine_ir)[0]
+            transfer = compile_spx_interpreter_machine_ir(machine_ir)[0]
             node_ops = [node.op for node in transfer.nodes]
             self.assertIn("adc_carry", node_ops)
             self.assertIn("adc_overflow", node_ops)
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine_ir, out=root / "package"
             )
             self.assertEqual(package["status"], "ready", package["blockers"])
@@ -147,20 +147,20 @@ class InterpreterX87ReplayTests(unittest.TestCase):
             harness.write_text(
                 r'''
 #include "state-machine-interpreter.h"
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 static int check(uint32_t left, uint32_t right, uint32_t carry,
                  uint32_t expected_cf, uint32_t expected_of) {
-  stage_b_runtime runtime = {0};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result;
+  spx_runtime runtime = {0};
+  spx_machine_state state = {0};
+  spx_step_result result;
   state.eax = left; state.ebx = right; state.cf = carry;
-  result = stage_b_interpreter_step(&runtime, &state, 0x2000U);
-  if (result.kind != STAGE_B_FALLTHROUGH || result.target_rva != 0x2002U)
+  result = spx_interpreter_step(&runtime, &state, 0x2000U);
+  if (result.kind != SPX_FALLTHROUGH || result.target_rva != 0x2002U)
     return 10;
   if (state.cf != expected_cf) return 20;
   if (state.of != expected_of) return 30;
@@ -204,62 +204,62 @@ int main(void) {
             unit["x87_micro_ops"] = []
             unit["semantics"]["fpu_state"] = None
             _write_machine(machine_ir, [unit])
-            write_stage_b_interpreter_package(
+            write_spx_interpreter_package(
                 machine_ir=machine_ir, out=package_dir
             )
             source = (
                 package_dir / "state-machine-interpreter.c"
             ).read_text(encoding="ascii")
             self.assertLess(
-                source.index("override=stage_b_region_override_lookup(source_rva)"),
-                source.index("t=stage_b_program_lookup(source_rva)"),
+                source.index("override=spx_region_override_lookup(source_rva)"),
+                source.index("t=spx_program_lookup(source_rva)"),
             )
             harness = root / "override-harness.c"
             harness.write_text(
                 r'''
 #include "state-machine-interpreter.h"
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 
-static stage_b_step_result valid_override(
-    stage_b_runtime *runtime, stage_b_machine_state *state) {
+static spx_step_result valid_override(
+    spx_runtime *runtime, spx_machine_state *state) {
   (void)runtime;
   state->eax = 0x12345678U;
-  return (stage_b_step_result){STAGE_B_JUMP, 0x2000U, 0U};
+  return (spx_step_result){SPX_JUMP, 0x2000U, 0U};
 }
 
-static stage_b_step_result malformed_override(
-    stage_b_runtime *runtime, stage_b_machine_state *state) {
+static spx_step_result malformed_override(
+    spx_runtime *runtime, spx_machine_state *state) {
   (void)runtime;
   state->eax = 0xffffffffU;
-  return (stage_b_step_result){(stage_b_control_kind)99U, 7U, 9U};
+  return (spx_step_result){(spx_control_kind)99U, 7U, 9U};
 }
 
-static const stage_b_region_override overrides[] = {
+static const spx_region_override overrides[] = {
   {0x1000U, valid_override, 0U, "valid", "fixture"},
   {0x3000U, malformed_override, 0U, "malformed", "fixture"},
 };
 
-const stage_b_region_override *stage_b_region_override_lookup(uint32_t rva) {
+const spx_region_override *spx_region_override_lookup(uint32_t rva) {
   if (rva == 0x1000U) return &overrides[0];
   if (rva == 0x3000U) return &overrides[1];
-  return (const stage_b_region_override *)0;
+  return (const spx_region_override *)0;
 }
 
 int main(void) {
-  stage_b_runtime runtime = {0};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
-  if (result.kind != STAGE_B_JUMP || result.target_rva != 0x2000U) return 1;
+  spx_runtime runtime = {0};
+  spx_machine_state state = {0};
+  spx_step_result result = spx_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != SPX_JUMP || result.target_rva != 0x2000U) return 1;
   if (state.eax != 0x12345678U) return 2;
   state.eax = 0x55U;
-  result = stage_b_interpreter_step(&runtime, &state, 0x3000U);
-  if (result.kind != STAGE_B_UNIMPLEMENTED || result.target_rva != 0x3000U) return 3;
+  result = spx_interpreter_step(&runtime, &state, 0x3000U);
+  if (result.kind != SPX_UNIMPLEMENTED || result.target_rva != 0x3000U) return 3;
   return state.eax == 0x55U ? 0 : 4;
 }
 ''',
@@ -292,7 +292,7 @@ int main(void) {
             machine = root / "state-machine.jsonl"
             _write_machine(machine, [_replay_row()])
 
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
             operation = transfer.x87_operations[0]
 
             self.assertEqual([action.op for action in transfer.actions], [
@@ -311,7 +311,7 @@ int main(void) {
 
             machine_ir = root / "machine-ir.jsonl"
             _write_machine(machine_ir, [_machine_ir_x87_unit()])
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine_ir, out=root / "package"
             )
             program = json.loads(
@@ -337,12 +337,12 @@ int main(void) {
             interpreter_source = (
                 root / "package/state-machine-interpreter.c"
             ).read_text(encoding="ascii")
-            self.assertIn("stage_b_typed_x87_handler", runtime_header)
+            self.assertIn("spx_typed_x87_handler", runtime_header)
             self.assertIn("execute_typed_x87_operation", runtime_header)
-            self.assertIn("STAGE_B_MACHINE_STATE_HAS_X87", runtime_header)
+            self.assertIn("SPX_MACHINE_STATE_HAS_X87", runtime_header)
             self.assertIn("const char *mnemonic", runtime_header)
             self.assertIn("uint32_t operand_kind, operand_width", runtime_header)
-            self.assertIn("static const stage_b_typed_x87_operation", program_source)
+            self.assertIn("static const spx_typed_x87_operation", program_source)
             self.assertIn('"fld1"', program_source)
             self.assertNotIn("0xd9U,0xe8U", program_source)
             self.assertIn("{ 25U, 1U, 0U, {0U,0U,0U,0U,0U} }", program_source)
@@ -355,8 +355,8 @@ int main(void) {
                 self.assertNotIn("instruction_bytes", generated)
                 self.assertNotIn(".byte", generated)
             self.assertNotIn("long double", interpreter_source)
-            self.assertNotIn("stage_b_eval_x87", interpreter_source)
-            self.assertNotIn("stage_b_x87_binary", interpreter_source)
+            self.assertNotIn("spx_eval_x87", interpreter_source)
+            self.assertNotIn("spx_x87_binary", interpreter_source)
 
     def test_contiguous_x87_commands_lower_to_ordered_singletons(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -390,7 +390,7 @@ int main(void) {
             ]
             _write_machine(machine, [row])
 
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
 
             self.assertEqual(
                 [action.op for action in transfer.actions],
@@ -416,7 +416,7 @@ int main(void) {
             package_dir = root / "package"
             _write_machine(machine, [_scheduled_mixed_row()])
 
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
             replay_action = next(
                 index
                 for index, action in enumerate(transfer.actions)
@@ -436,7 +436,7 @@ int main(void) {
 
             machine_ir = root / "machine-ir.jsonl"
             _write_machine(machine_ir, [_machine_ir_mixed_unit()])
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine_ir, out=package_dir
             )
             self.assertEqual(package["status"], "ready")
@@ -446,32 +446,32 @@ int main(void) {
                 r'''
 #include "state-machine-interpreter.h"
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 
-static stage_b_call_status checked_operation(
-    stage_b_runtime *runtime, const stage_b_typed_x87_operation *program,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+static spx_call_status checked_operation(
+    spx_runtime *runtime, const spx_typed_x87_operation *program,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)input;
   if (program->rva_start != 0x1000U || program->rva_end != 0x1002U)
-    return STAGE_B_CALL_UNIMPLEMENTED;
+    return SPX_CALL_UNIMPLEMENTED;
   output->eax = 40U;
   output->x87_status = 0x1234U;
-  return STAGE_B_CALL_OK;
+  return SPX_CALL_OK;
 }
 
 int main(void) {
-  stage_b_runtime runtime = {0};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result;
+  spx_runtime runtime = {0};
+  spx_machine_state state = {0};
+  spx_step_result result;
   state.eax = 1U;
   runtime.execute_typed_x87_operation = checked_operation;
-  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
-  if (result.kind != STAGE_B_FALLTHROUGH || result.target_rva != 0x1003U) return 1;
+  result = spx_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != SPX_FALLTHROUGH || result.target_rva != 0x1003U) return 1;
   if (state.eax != 41U) return 2;
   return state.x87_status == 0x1234U ? 0 : 3;
 }
@@ -526,9 +526,9 @@ int main(void) {
             _write_machine(machine, [row])
 
             with self.assertRaisesRegex(
-                StageBInterpreterError, "final schedule targets differ"
+                CandidateInterpreterError, "final schedule targets differ"
             ) as raised:
-                compile_stage_b_interpreter_program(machine)
+                compile_spx_interpreter_program(machine)
             self.assertEqual(
                 raised.exception.code, "malformed_x87_instruction_effect_schedule"
             )
@@ -569,8 +569,8 @@ int main(void) {
                 ]
                 _write_machine(machine, [row])
 
-                with self.assertRaises(StageBInterpreterError) as raised:
-                    compile_stage_b_interpreter_program(machine)
+                with self.assertRaises(CandidateInterpreterError) as raised:
+                    compile_spx_interpreter_program(machine)
 
                 self.assertEqual(
                     raised.exception.code, "x87_replay_interleaving_unavailable"
@@ -585,41 +585,41 @@ int main(void) {
             machine = root / "state-machine.jsonl"
             package_dir = root / "package"
             _write_machine(machine, [_machine_ir_x87_unit()])
-            write_stage_b_interpreter_package(machine_ir=machine, out=package_dir)
+            write_spx_interpreter_package(machine_ir=machine, out=package_dir)
             harness = root / "replay-harness.c"
             harness.write_text(
                 r'''
 #include <string.h>
 #include "state-machine-interpreter.h"
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 
-static stage_b_call_status checked_operation(
-    stage_b_runtime *runtime, const stage_b_typed_x87_operation *program,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+static spx_call_status checked_operation(
+    spx_runtime *runtime, const spx_typed_x87_operation *program,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime;
   if (program->rva_start != 0x1000U || program->rva_end != 0x1002U ||
       program->source_size != 2U || strcmp(program->operation_identity,
-        "1d432ce79277a7acd9723c0b1df3284238e4f9c190c05b1adc71be963cfeb130") != 0)
-    return STAGE_B_CALL_UNIMPLEMENTED;
+        "c145cd72f0c4873b7138ed83b49da1c405d01ee94889d03540b3b7448f6fb7da") != 0)
+    return SPX_CALL_UNIMPLEMENTED;
   *output = *input;
   output->x87_status = 0x1234U;
-  return STAGE_B_CALL_OK;
+  return SPX_CALL_OK;
 }
 
 int main(void) {
-  stage_b_runtime runtime = {0};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
-  if (result.kind != STAGE_B_UNIMPLEMENTED) return 1;
+  spx_runtime runtime = {0};
+  spx_machine_state state = {0};
+  spx_step_result result = spx_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != SPX_UNIMPLEMENTED) return 1;
   runtime.execute_typed_x87_operation = checked_operation;
-  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
-  if (result.kind != STAGE_B_FALLTHROUGH || result.target_rva != 0x1002U) return 2;
+  result = spx_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != SPX_FALLTHROUGH || result.target_rva != 0x1002U) return 2;
   return state.x87_status == 0x1234U ? 0 : 3;
 }
 ''',
@@ -657,9 +657,9 @@ int main(void) {
             _write_machine(machine, [row])
 
             with self.assertRaisesRegex(
-                StageBInterpreterError, "bytes_sha256 does not match"
+                CandidateInterpreterError, "bytes_sha256 does not match"
             ):
-                compile_stage_b_interpreter_program(machine)
+                compile_spx_interpreter_program(machine)
 
     def test_package_rejects_legacy_replay_rows_before_emission(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -708,9 +708,9 @@ int main(void) {
             _write_machine(machine, [bad_sequence, valid, bad_digest])
 
             with self.assertRaisesRegex(
-                StageBInterpreterError, "raw instruction material"
+                CandidateInterpreterError, "raw instruction material"
             ):
-                write_stage_b_interpreter_package(
+                write_spx_interpreter_package(
                     machine_ir=machine, out=root / "package"
                 )
             self.assertFalse(

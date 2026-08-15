@@ -1,4 +1,4 @@
-"""Derive candidate-generation inputs from an exact Stage A load-image contract."""
+"""Derive candidate-generation inputs from an exact static analysis load-image contract."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from typing import Any, Mapping, Sequence
 
 from ..external.machine_import_profiles import load_machine_import_profile_set
 from ..roundtrip_fuzz.image_io import (
-    load_stage_a_load_image_contract,
+    load_spx_load_image_contract,
 )
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 
 
 _DYNAMIC_BASE = 0x0040
@@ -33,16 +33,16 @@ def derive_native_image_inputs(
     load_image_contract: Path | str,
     static_program_contract_sha256: str | None = None,
 ) -> NativeImageInputs:
-    contract = load_stage_a_load_image_contract(Path(load_image_contract))
+    contract = load_spx_load_image_contract(Path(load_image_contract))
     headers = contract.runtime_headers.data
     if len(headers) < 0x40:
-        raise StageAInputError("load-image runtime headers are truncated")
+        raise ToolkitInputError("load-image runtime headers are truncated")
     pe_offset = struct.unpack_from("<I", headers, 0x3C)[0]
     optional_offset = pe_offset + 24
     if optional_offset + 72 > len(headers):
-        raise StageAInputError("load-image optional header is truncated")
+        raise ToolkitInputError("load-image optional header is truncated")
     if struct.unpack_from("<H", headers, optional_offset)[0] != 0x10B:
-        raise StageAInputError("native candidate requires a PE32 optional header")
+        raise ToolkitInputError("native candidate requires a PE32 optional header")
     dll_characteristics = struct.unpack_from("<H", headers, optional_offset + 70)[0]
     dynamic_base = bool(dll_characteristics & _DYNAMIC_BASE)
 
@@ -53,12 +53,12 @@ def derive_native_image_inputs(
                 cell.symbol if cell.symbol is not None else cell.ordinal
             )
             if identity is None:
-                raise StageAInputError("load-image import cell has no identity")
+                raise ToolkitInputError("load-image import cell has no identity")
             key = (descriptor.dll.lower(), identity)
             value = contract.identity.preferred_base + cell.iat_rva
             prior = imports.get(key)
             if prior is not None and prior != value:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"load-image import identity {key!r} has multiple IAT cells"
                 )
             imports[key] = value
@@ -79,12 +79,12 @@ def derive_native_image_inputs(
     ]
     if relocation_rows:
         if static_program_contract_sha256 is None:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "relocatable native image inputs require a static-program SHA-256"
             )
         fixed_image_base = None
         relocation_evidence: Mapping[str, Any] | None = {
-            "format": "stage-b-pe32-base-relocation-evidence-v1",
+            "format": "spaghetti-extractor-pe32-base-relocation-evidence-v1",
             "complete": True,
             "pe_sha256": contract.identity.pe_sha256,
             "static_program_contract_sha256": static_program_contract_sha256,
@@ -93,7 +93,7 @@ def derive_native_image_inputs(
         }
     else:
         if dynamic_base:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "PE requests dynamic-base loading but has no usable base relocations"
             )
         fixed_image_base = contract.identity.preferred_base
@@ -156,7 +156,7 @@ def select_native_termination_import(
             f"{item['dll']}!{item['symbol'] or ('#' + str(item['ordinal']))}"
             for item in candidates
         )
-        raise StageAInputError(
+        raise ToolkitInputError(
             "multiple imported one-word termination contracts are available: " + rendered
         )
     return candidates[0] if candidates else None

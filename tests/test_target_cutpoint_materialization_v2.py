@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.pe32.stage_binary import _parse_stage_a_pe
+from spaghetti_extractor.pe32.image import parse_pe_image
 from spaghetti_extractor.pe32.target_cutpoint_materialization import (
     TARGET_CUTPOINT_PLAN_V2_FORMAT,
     plan_recovered_target_cutpoints_v2,
@@ -52,7 +52,7 @@ class TargetCutpointMaterializationV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / "original.exe"
             original.write_bytes(pe32_image(code, virtual_size=len(code)))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 return plan_recovered_target_cutpoints_v2(
                     binary=binary,
@@ -116,7 +116,7 @@ class TargetCutpointMaterializationV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / "original.exe"
             original.write_bytes(pe32_image(b"\x90\xc3", virtual_size=2))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 report = plan_recovered_target_cutpoints_v2(
                     binary=binary,
@@ -170,7 +170,7 @@ class TargetCutpointMaterializationV2Tests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / "original.exe"
             original.write_bytes(pe32_image(b"\x90\x90\xc3", virtual_size=3))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 report = plan_recovered_target_cutpoints_v2(
                     binary=binary,

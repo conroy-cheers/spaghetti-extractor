@@ -17,21 +17,21 @@ from tests.pe_fixtures import (
 )
 
 from spaghetti_extractor.roundtrip_fuzz.image_io import (
-    build_stage_a_load_image_contract,
-    write_stage_a_load_image_contract,
+    build_spx_load_image_contract,
+    write_spx_load_image_contract,
 )
 from spaghetti_extractor.pe32.recovered_executable_data import (
     build_recovered_executable_data_contract,
 )
-from spaghetti_extractor.pe32.stage_binary import _parse_stage_a_pe
+from spaghetti_extractor.pe32.image import parse_pe_image
 from spaghetti_extractor.candidate.pe import (
     COMPOSITION_MANIFEST_FILENAME,
     EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
     PAYLOAD_RELOCATION_INVENTORY_FORMAT,
     PE_COMPOSITION_MANIFEST_FORMAT,
-    StageBPECompositionError,
-    compose_stage_b_pe,
-    plan_stage_b_pe_composition,
+    PECompositionError,
+    compose_spx_pe,
+    plan_spx_pe_composition,
 )
 from spaghetti_extractor.util import sha256_bytes
 
@@ -283,7 +283,7 @@ class PEComposerTests(unittest.TestCase):
             root = Path(temporary)
             original = root / "original.exe"
             original.write_bytes(original_bytes)
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 recovered = build_recovered_executable_data_contract(
                     binary=binary,
@@ -328,8 +328,8 @@ class PEComposerTests(unittest.TestCase):
             finally:
                 binary.pe.close()
             payload = _high_rva_payload()
-            result = compose_stage_b_pe(
-                load_image_contract=build_stage_a_load_image_contract(original),
+            result = compose_spx_pe(
+                load_image_contract=build_spx_load_image_contract(original),
                 payload_pe=payload,
                 anchor_manifest=_anchor_manifest(),
                 payload_relocation_inventory=_empty_relocation_inventory(payload),
@@ -366,8 +366,8 @@ class PEComposerTests(unittest.TestCase):
             root = Path(temporary)
             original_path = root / "original.exe"
             original_path.write_bytes(original)
-            plan = plan_stage_b_pe_composition(
-                load_image_contract=build_stage_a_load_image_contract(original_path),
+            plan = plan_spx_pe_composition(
+                load_image_contract=build_spx_load_image_contract(original_path),
                 payload_pe=_high_rva_payload_with_cross_page_highlow(),
                 anchor_manifest=_anchor_manifest(
                     anchors=((0x1000, bytes.fromhex("e9fb3f0000")),)
@@ -393,7 +393,7 @@ class PEComposerTests(unittest.TestCase):
             payload_path = root / "payload.exe"
             anchor_path = root / "anchors.json"
             original.write_bytes(original_bytes)
-            contract = write_stage_a_load_image_contract(
+            contract = write_spx_load_image_contract(
                 original_pe=original, out=contract_path
             )
             payload_path.write_bytes(payload_bytes)
@@ -402,7 +402,7 @@ class PEComposerTests(unittest.TestCase):
             )
             original.unlink()
 
-            first = compose_stage_b_pe(
+            first = compose_spx_pe(
                 load_image_contract=contract_path,
                 payload_pe=payload_path,
                 anchor_manifest=anchor_path,
@@ -411,7 +411,7 @@ class PEComposerTests(unittest.TestCase):
                 ),
                 out_dir=root / "first",
             )
-            second = compose_stage_b_pe(
+            second = compose_spx_pe(
                 load_image_contract=contract_path,
                 payload_pe=payload_path,
                 anchor_manifest=anchor_path,
@@ -486,7 +486,7 @@ class PEComposerTests(unittest.TestCase):
             root = Path(temporary)
             original = root / "tls.exe"
             original.write_bytes(original_bytes)
-            contract = build_stage_a_load_image_contract(original)
+            contract = build_spx_load_image_contract(original)
             anchors = _anchor_manifest(
                 tls_callback_rvas=(0x1020, 0x1010),
                 callback_rvas=(0x1030,),
@@ -498,7 +498,7 @@ class PEComposerTests(unittest.TestCase):
                 ),
             )
 
-            result = compose_stage_b_pe(
+            result = compose_spx_pe(
                 load_image_contract=contract,
                 payload_pe=(payload := _high_rva_payload()),
                 anchor_manifest=anchors,
@@ -521,9 +521,9 @@ class PEComposerTests(unittest.TestCase):
             wrong_order = copy.deepcopy(anchors)
             wrong_order["tls_callback_anchor_rvas"] = [0x1010, 0x1020]
             with self.assertRaisesRegex(
-                StageBPECompositionError, "TLS callback order"
+                PECompositionError, "TLS callback order"
             ):
-                plan_stage_b_pe_composition(
+                plan_spx_pe_composition(
                     load_image_contract=contract,
                     payload_pe=(payload := _high_rva_payload()),
                     anchor_manifest=wrong_order,
@@ -537,7 +537,7 @@ class PEComposerTests(unittest.TestCase):
             root = Path(temporary)
             original = root / "original.exe"
             original.write_bytes(original_bytes)
-            contract = build_stage_a_load_image_contract(original)
+            contract = build_spx_load_image_contract(original)
 
             payload_mutations: list[tuple[str, bytes, str]] = []
             for directory_index, label in ((1, "imports"), (9, "TLS"), (13, "delay imports")):
@@ -571,9 +571,9 @@ class PEComposerTests(unittest.TestCase):
 
             for name, payload, error in payload_mutations:
                 with self.subTest(name=name), self.assertRaisesRegex(
-                    StageBPECompositionError, error
+                    PECompositionError, error
                 ):
-                    plan_stage_b_pe_composition(
+                    plan_spx_pe_composition(
                         load_image_contract=contract,
                         payload_pe=payload,
                         anchor_manifest=_anchor_manifest(),
@@ -612,9 +612,9 @@ class PEComposerTests(unittest.TestCase):
             )
             for name, anchors, error in anchor_mutations:
                 with self.subTest(name=name), self.assertRaisesRegex(
-                    StageBPECompositionError, error
+                    PECompositionError, error
                 ):
-                    plan_stage_b_pe_composition(
+                    plan_spx_pe_composition(
                         load_image_contract=contract,
                         payload_pe=(payload := _high_rva_payload()),
                         anchor_manifest=anchors,
@@ -638,8 +638,8 @@ class PEComposerTests(unittest.TestCase):
             root = Path(temporary)
             original = root / "original.exe"
             original.write_bytes(original_bytes)
-            contract = build_stage_a_load_image_contract(original)
-            manifest = compose_stage_b_pe(
+            contract = build_spx_load_image_contract(original)
+            manifest = compose_spx_pe(
                 load_image_contract=contract,
                 payload_pe=payload_bytes,
                 anchor_manifest=anchors,
@@ -705,8 +705,8 @@ class PEComposerTests(unittest.TestCase):
             root = Path(temporary)
             original = root / "original.exe"
             original.write_bytes(original_bytes)
-            contract = build_stage_a_load_image_contract(original)
-            manifest = compose_stage_b_pe(
+            contract = build_spx_load_image_contract(original)
+            manifest = compose_spx_pe(
                 load_image_contract=contract,
                 payload_pe=payload_bytes,
                 anchor_manifest=anchors,
@@ -773,17 +773,17 @@ class PEComposerTests(unittest.TestCase):
                     pe32_import_image(b"\xc3", symbol="ExitProcess")
                 )
             )
-            contract = build_stage_a_load_image_contract(original)
+            contract = build_spx_load_image_contract(original)
             with self.assertRaisesRegex(
-                StageBPECompositionError,
+                PECompositionError,
                 "requires a complete payload relocation inventory",
             ):
-                plan_stage_b_pe_composition(
+                plan_spx_pe_composition(
                     load_image_contract=contract,
                     payload_pe=payload,
                     anchor_manifest=_anchor_manifest(),
                 )
-            result = compose_stage_b_pe(
+            result = compose_spx_pe(
                 load_image_contract=contract,
                 payload_pe=payload,
                 payload_relocation_inventory=inventory,
@@ -804,7 +804,7 @@ class PEComposerTests(unittest.TestCase):
                     pe32_import_image(b"\xc3", symbol="ExitProcess")
                 )
             )
-            contract = build_stage_a_load_image_contract(original)
+            contract = build_spx_load_image_contract(original)
 
             unsupported = _high_rva_payload_with_highlow(
                 text_rva=0x4000, relocation_type=5
@@ -824,9 +824,9 @@ class PEComposerTests(unittest.TestCase):
             )
             for name, payload, error in malformed:
                 with self.subTest(name=name), self.assertRaisesRegex(
-                    StageBPECompositionError, error
+                    PECompositionError, error
                 ):
-                    plan_stage_b_pe_composition(
+                    plan_spx_pe_composition(
                         load_image_contract=contract,
                         payload_pe=payload,
                         anchor_manifest=_anchor_manifest(),
@@ -868,9 +868,9 @@ class PEComposerTests(unittest.TestCase):
                 ("wrong-hash", wrong_hash_inventory, "hash does not bind"),
             ):
                 with self.subTest(name=name), self.assertRaisesRegex(
-                    StageBPECompositionError, error
+                    PECompositionError, error
                 ):
-                    plan_stage_b_pe_composition(
+                    plan_spx_pe_composition(
                         load_image_contract=contract,
                         payload_pe=payload,
                         payload_relocation_inventory=inventory,
@@ -882,14 +882,14 @@ class PEComposerTests(unittest.TestCase):
             root = Path(temporary)
             original = root / "original.exe"
             original.write_bytes(pe32_import_image(b"\xc3", symbol="ExitProcess"))
-            contract = build_stage_a_load_image_contract(original)
+            contract = build_spx_load_image_contract(original)
             corrupted = copy.deepcopy(contract.to_payload())
             headers = bytearray.fromhex(corrupted["runtime_headers"]["data_hex"])
             struct.pack_into("<I", headers, SECTION_TABLE_OFFSET + 20, 0)
             corrupted["runtime_headers"]["data_hex"] = headers.hex()
 
             with self.assertRaisesRegex(ValueError, "header byte hash changed"):
-                plan_stage_b_pe_composition(
+                plan_spx_pe_composition(
                     load_image_contract=corrupted,
                     payload_pe=(payload := _high_rva_payload()),
                     anchor_manifest=_anchor_manifest(),
@@ -898,19 +898,19 @@ class PEComposerTests(unittest.TestCase):
 
             crowded_original = root / "crowded.exe"
             crowded_original.write_bytes(_three_section_original())
-            crowded_contract = build_stage_a_load_image_contract(crowded_original)
+            crowded_contract = build_spx_load_image_contract(crowded_original)
             payload = _high_rva_payload(rva=0x5000)
             anchors = _anchor_manifest(
                 anchors=((0x1000, bytes.fromhex("e9fb3f0000")),)
             )
-            first = compose_stage_b_pe(
+            first = compose_spx_pe(
                 load_image_contract=crowded_contract,
                 payload_pe=payload,
                 anchor_manifest=anchors,
                 payload_relocation_inventory=_empty_relocation_inventory(payload),
                 out_dir=root / "crowded-first",
             )
-            second = compose_stage_b_pe(
+            second = compose_spx_pe(
                 load_image_contract=crowded_contract,
                 payload_pe=payload,
                 anchor_manifest=anchors,

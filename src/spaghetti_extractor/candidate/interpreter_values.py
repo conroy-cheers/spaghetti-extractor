@@ -1,4 +1,4 @@
-"""Parsing and value helpers for Stage B interpreter lowering."""
+"""Parsing and value helpers for candidate reconstruction interpreter lowering."""
 
 from __future__ import annotations
 
@@ -6,10 +6,10 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes
 from .interpreter_model import (
-    StageBInterpreterError,
+    CandidateInterpreterError,
     _TypedX87Program,
 )
 from .x87 import extract_typed_x87_operation
@@ -32,8 +32,8 @@ def _typed_x87_program(
             instruction=instruction,
             image_base=image_base,
         )
-    except StageAInputError as exc:
-        raise StageBInterpreterError(
+    except ToolkitInputError as exc:
+        raise CandidateInterpreterError(
             f"typed x87 extraction failed: {exc}",
             code="unsupported_typed_x87_operation",
             next_action=(
@@ -42,7 +42,7 @@ def _typed_x87_program(
             ),
         ) from exc
     if operation.source_size != rva_end - rva_start:
-        raise StageBInterpreterError(
+        raise CandidateInterpreterError(
             "typed x87 source size differs from its checked span",
             code="malformed_typed_x87_operation",
         )
@@ -61,7 +61,7 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise StageBInterpreterError(f"cannot read state machine {path}") from exc
+        raise CandidateInterpreterError(f"cannot read state machine {path}") from exc
     result: list[dict[str, Any]] = []
     for number, line in enumerate(lines, 1):
         if not line.strip():
@@ -69,21 +69,21 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
         try:
             result.append(_object(json.loads(line), f"state machine line {number}"))
         except json.JSONDecodeError as exc:
-            raise StageBInterpreterError(f"invalid state machine line {number}: {exc}") from exc
+            raise CandidateInterpreterError(f"invalid state machine line {number}: {exc}") from exc
     if not result:
-        raise StageBInterpreterError("state machine is empty")
+        raise CandidateInterpreterError("state machine is empty")
     return result
 
 
 def _object(value: Any, field: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise StageBInterpreterError(f"{field} must be an object")
+        raise CandidateInterpreterError(f"{field} must be an object")
     return value
 
 
 def _list(value: Any, field: str) -> list[Any]:
     if not isinstance(value, list):
-        raise StageBInterpreterError(f"{field} must be a list")
+        raise CandidateInterpreterError(f"{field} must be a list")
     return value
 
 
@@ -93,14 +93,14 @@ def _optional_list(value: Any) -> list[Any]:
 
 def _string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value:
-        raise StageBInterpreterError(f"{field} must be a non-empty string")
+        raise CandidateInterpreterError(f"{field} must be a non-empty string")
     return value
 
 
 def _sha256(value: Any, field: str) -> str:
     text = _string(value, field)
     if len(text) != 64 or any(char not in "0123456789abcdef" for char in text):
-        raise StageBInterpreterError(f"{field} must be a lowercase SHA-256")
+        raise CandidateInterpreterError(f"{field} must be a lowercase SHA-256")
     return text
 
 
@@ -109,11 +109,11 @@ def _hex_bytes(value: Any, field: str) -> bytes:
     if len(text) % 2 or text != text.lower() or any(
         char not in "0123456789abcdef" for char in text
     ):
-        raise StageBInterpreterError(f"{field} must be lowercase even-length hex")
+        raise CandidateInterpreterError(f"{field} must be lowercase even-length hex")
     try:
         return bytes.fromhex(text)
     except ValueError as exc:
-        raise StageBInterpreterError(f"{field} must be lowercase even-length hex") from exc
+        raise CandidateInterpreterError(f"{field} must be lowercase even-length hex") from exc
 
 
 def _x87_singleton_candidate(
@@ -138,40 +138,40 @@ def _rva_list(values: Iterable[int]) -> str:
 
 def _u32(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 2**32:
-        raise StageBInterpreterError(f"{field} must be a uint32")
+        raise CandidateInterpreterError(f"{field} must be a uint32")
     return value
 
 
 def _u32_wrapping(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
-        raise StageBInterpreterError(f"{field} must be an integer")
+        raise CandidateInterpreterError(f"{field} must be an integer")
     return value & 0xFFFFFFFF
 
 
 def _nonnegative(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        raise StageBInterpreterError(f"{field} must be nonnegative")
+        raise CandidateInterpreterError(f"{field} must be nonnegative")
     return value
 
 
 def _width(value: Any) -> int:
     result = _nonnegative(value, "memory width")
     if result not in {1, 2, 4}:
-        raise StageBInterpreterError(f"unsupported memory width {result}")
+        raise CandidateInterpreterError(f"unsupported memory width {result}")
     return result
 
 
 def _width_bits(value: Any) -> int:
     result = _nonnegative(value, "bit width")
     if result not in {8, 16, 32}:
-        raise StageBInterpreterError(f"unsupported bit width {result}")
+        raise CandidateInterpreterError(f"unsupported bit width {result}")
     return result
 
 
 def _x87_slot(value: Any) -> int:
     result = _nonnegative(value, "x87 slot")
     if result >= 8:
-        raise StageBInterpreterError("x87 slot must be below 8")
+        raise CandidateInterpreterError("x87 slot must be below 8")
     return result
 
 

@@ -732,12 +732,12 @@ def _fallback_entries_match(entries: list[Any], machine: _MachineIR) -> bool:
         ):
             return False
         if kind == "machine_ir_fallback" and (
-            entry.get("dispatch_lookup") != "stage_b_program_lookup"
+            entry.get("dispatch_lookup") != "spx_program_lookup"
             or entry.get("portable_replacement") is not None
         ):
             return False
         if kind == "portable_replacement" and (
-            entry.get("dispatch_lookup") != "stage_b_region_override_lookup"
+            entry.get("dispatch_lookup") != "spx_region_override_lookup"
             or not isinstance(entry.get("portable_replacement"), Mapping)
             or entry["portable_replacement"].get("fallback_on_unimplemented") is not False
         ):

@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_file, write_json
 from .region_replacement_model import (
     REGION_OBSERVATIONS_FORMAT,
@@ -55,7 +55,7 @@ def write_region_replacement_manifest(
     raw = _json_copy(payload)
     raw.pop("manifest_sha256", None)
     if raw.get("format") not in _REGION_REPLACEMENT_FORMATS:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "region replacement manifest must use a supported version: "
             f"{sorted(_REGION_REPLACEMENT_FORMATS)}"
         )
@@ -230,7 +230,7 @@ def generate_region_override_table(
     """Generate a deterministic interpreter override lookup table."""
 
     if not manifests:
-        raise StageAInputError("region override table requires at least one manifest")
+        raise ToolkitInputError("region override table requires at least one manifest")
     runtime_header = _relative_path(runtime_header, "override runtime header")
     contracts = [
         _coerce_manifest(item, source_root=Path(source_root)) for item in manifests
@@ -241,7 +241,7 @@ def generate_region_override_table(
     contract_ids = {item.id for item in contracts}
     unknown_fallbacks = fallback_ids.difference(contract_ids)
     if unknown_fallbacks:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "override fallback IDs are absent from the manifest inventory: "
             + ", ".join(sorted(unknown_fallbacks))
         )
@@ -307,40 +307,40 @@ def _verify_source_binding(manifest: RegionReplacementManifest, root: Path) -> P
     source = manifest.source
     unresolved = root / str(source["path"])
     if unresolved.is_symlink():
-        raise StageAInputError("replacement source must be a regular non-symlink file")
+        raise ToolkitInputError("replacement source must be a regular non-symlink file")
     path = unresolved.resolve()
     if path == root or root not in path.parents:
-        raise StageAInputError("replacement source escapes its declared source root")
+        raise ToolkitInputError("replacement source escapes its declared source root")
     if path.is_symlink() or not path.is_file():
-        raise StageAInputError("replacement source must be a regular non-symlink file")
+        raise ToolkitInputError("replacement source must be a regular non-symlink file")
     if sha256_file(path) != source["sha256"]:
-        raise StageAInputError("replacement source hash does not match its manifest")
+        raise ToolkitInputError("replacement source hash does not match its manifest")
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except UnicodeDecodeError as exc:
-        raise StageAInputError("replacement source must be UTF-8 text") from exc
+        raise ToolkitInputError("replacement source must be UTF-8 text") from exc
     if int(source["line_end"]) > len(lines):
-        raise StageAInputError("replacement source location exceeds the source file")
+        raise ToolkitInputError("replacement source location exceeds the source file")
     selected = "\n".join(
         lines[int(source["line_start"]) - 1 : int(source["line_end"])]
     )
     if re.search(rf"\b{re.escape(str(source['symbol']))}\b", selected) is None:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "replacement source symbol is outside its declared source location"
         )
     for support in manifest.support_sources:
         unresolved_support = root / str(support["path"])
         if unresolved_support.is_symlink():
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "replacement support source must be a regular non-symlink file"
             )
         support_path = unresolved_support.resolve()
         if support_path == root or root not in support_path.parents:
-            raise StageAInputError("replacement support source escapes its source root")
+            raise ToolkitInputError("replacement support source escapes its source root")
         if support_path.is_symlink() or not support_path.is_file():
-            raise StageAInputError("replacement support source must be a regular file")
+            raise ToolkitInputError("replacement support source must be a regular file")
         if sha256_file(support_path) != support["sha256"]:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "replacement support source hash does not match its manifest"
             )
     return path
@@ -359,7 +359,7 @@ def _load_observations_for_validation(
             else _object(value, f"{side} region observations")
         )
         return _normalize_observations(payload, manifest)
-    except (StageAInputError, OSError, json.JSONDecodeError) as exc:
+    except (ToolkitInputError, OSError, json.JSONDecodeError) as exc:
         _append_delta(
             deltas,
             manifest,

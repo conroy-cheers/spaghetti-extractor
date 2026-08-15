@@ -10,9 +10,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..authority_inputs.machine_ir_authority import build_machine_ir_authority_bindings
-from .state_machine import STAGE_B_STATE_MACHINE_FORMAT, normalize_stage_a_semantic_transfer
+from .state_machine import SPX_STATE_MACHINE_FORMAT, normalize_spx_semantic_transfer
 from ..static_program.codec import load_static_program_contract_binding
-from ..pe32.stage_binary import StageABinary, _parse_stage_a_pe
+from ..pe32.image import parse_pe_image
+from ..pe32.model import ParsedPEImage
 from ..util import sha256_bytes, sha256_file, write_json
 from .ir_decoding import _semantic_call_events
 from .ir_decoding import (
@@ -66,7 +67,7 @@ def prepare_machine_ir_units_package(
     state_path = _regular_file(state_machine, "canonical state machine")
     state_sha256 = sha256_file(state_path)
     original_path = _regular_file(original_pe, "original PE")
-    binary = _parse_stage_a_pe(original_path)
+    binary = parse_pe_image(original_path)
     if binary.machine != "i386" or binary.bitness != 32:
         raise MachineIRExportError(
             "machine IR v2 supports x86 PE32 inputs only",
@@ -179,12 +180,12 @@ def _read_canonical_rows(path: Path) -> list[dict[str, Any]]:
                 f"state-machine line {line_number} is not an object",
                 code="malformed_state_machine_unit",
             )
-        if raw.get("stage_b_format") != STAGE_B_STATE_MACHINE_FORMAT:
+        if raw.get("spx_format") != SPX_STATE_MACHINE_FORMAT:
             raise MachineIRExportError(
-                f"state-machine line {line_number} is not canonical {STAGE_B_STATE_MACHINE_FORMAT}",
+                f"state-machine line {line_number} is not canonical {SPX_STATE_MACHINE_FORMAT}",
                 code="noncanonical_state_machine_unit",
             )
-        expected = normalize_stage_a_semantic_transfer(raw)
+        expected = normalize_spx_semantic_transfer(raw)
         if raw.get("contract_sha256") != expected.get("contract_sha256"):
             raise MachineIRExportError(
                 f"state-machine line {line_number} has a stale contract digest",
@@ -205,7 +206,7 @@ def _preparation_input_sha256(
     return sha256_bytes(
         _canonical_json(
             {
-                "format": "stage-a-machine-ir-unit-preparation-input-v1",
+                "format": "spaghetti-extractor-machine-ir-unit-preparation-input-v1",
                 "binary_sha256": binary_sha256,
                 "static_program_contract_sha256": static_program_sha256,
                 "state_machine_row": row,
@@ -318,7 +319,7 @@ def _load_reusable_prepared_units(
             if (
                 not isinstance(preparation, Mapping)
                 or preparation.get("format")
-                != "stage-a-machine-ir-unit-preparation-v1"
+                != "spaghetti-extractor-machine-ir-unit-preparation-v1"
                 or not isinstance(preparation.get("input_sha256"), str)
                 or re.fullmatch(r"[0-9a-f]{64}", preparation["input_sha256"])
                 is None
@@ -352,7 +353,7 @@ def _load_reusable_prepared_units(
 def _prepare_units(
     rows: Sequence[Mapping[str, Any]],
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     static_program_sha256: str | None,
     reusable: Mapping[str, Mapping[str, Any]],
 ) -> tuple[list[dict[str, Any]], int]:
@@ -428,7 +429,7 @@ def _validate_unique_units(rows: Sequence[Mapping[str, Any]]) -> None:
 def _prepare_unit(
     row: Mapping[str, Any],
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     static_program_sha256: str | None,
 ) -> dict[str, Any]:
     identity = _required_string(row.get("id"), "unit id")
@@ -520,7 +521,7 @@ def _prepare_unit(
         "format": MACHINE_IR_FORMAT,
         "record_kind": "unit",
         "preparation": {
-            "format": "stage-a-machine-ir-unit-preparation-v1",
+            "format": "spaghetti-extractor-machine-ir-unit-preparation-v1",
             "input_sha256": _preparation_input_sha256(
                 row,
                 binary_sha256=binary.sha256,

@@ -268,7 +268,7 @@ def _build_functional_report(
     result = {
         "format": CANDIDATE_TEST_REPORT_FORMAT,
         "runner": {
-            "name": "candidate-run-test-suite",
+            "name": "candidate-test-suite-run",
             "report_format": CANDIDATE_TEST_REPORT_FORMAT,
             "strip_stderr_line_regexes": list(strip_stderr_line_regexes),
         },

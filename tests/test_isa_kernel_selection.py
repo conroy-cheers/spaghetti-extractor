@@ -92,7 +92,7 @@ def _profile() -> ISAProfileBinding:
 
 def _kernel() -> SemanticKernelBinding:
     return SemanticKernelBinding(
-        id="stage-a-lean-machine-semantics:test",
+        id="spaghetti-extractor-lean-machine-semantics:test",
         decoder_sha256=SHA0,
         semantics_sha256=SHA1,
         lean_version="4.19.0",
@@ -231,7 +231,7 @@ class ISAKernelSelectionAuthorityTests(unittest.TestCase):
     ) -> Path:
         unit = ExactUnitV3.create(
             {
-                "format": "stage-a-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v2",
                 "record_kind": "unit",
                 "id": "unit-1000",
                 "status": "qualified",

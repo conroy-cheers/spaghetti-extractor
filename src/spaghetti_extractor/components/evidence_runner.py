@@ -42,7 +42,7 @@ _READ_U8 = ctypes.CFUNCTYPE(
 )
 
 
-class _StageBRoBytesV1(ctypes.Structure):
+class _ComponentRoBytesV1(ctypes.Structure):
     _fields_ = [
         ("context", ctypes.c_void_p),
         ("extent", ctypes.c_uint32),
@@ -50,7 +50,7 @@ class _StageBRoBytesV1(ctypes.Structure):
     ]
 
 
-class _StageBCStringV1(ctypes.Structure):
+class _ComponentCStringV1(ctypes.Structure):
     _fields_ = [
         ("context", ctypes.c_void_p),
         ("read_u8", _READ_U8),
@@ -306,9 +306,9 @@ def _configure_function(
 
 def _parameter_ctype(abi: object, type_name: str) -> Any:
     if type_name == READ_ONLY_BYTES_V1 and abi == LOGICAL_OBJECT_C_V1:
-        return ctypes.POINTER(_StageBRoBytesV1)
+        return ctypes.POINTER(_ComponentRoBytesV1)
     if type_name == NUL_TERMINATED_BYTES_V1 and abi == LOGICAL_OBJECT_C_V1:
-        return ctypes.POINTER(_StageBCStringV1)
+        return ctypes.POINTER(_ComponentCStringV1)
     return _scalar_ctype(type_name)
 
 
@@ -412,13 +412,13 @@ def _invoke(
 
         callback = _READ_U8(read_u8)
         object_view = (
-            _StageBRoBytesV1(
+            _ComponentRoBytesV1(
                 ctypes.c_void_p(expected_context),
                 extent,
                 callback,
             )
             if type_name == READ_ONLY_BYTES_V1
-            else _StageBCStringV1(
+            else _ComponentCStringV1(
                 ctypes.c_void_p(expected_context),
                 callback,
             )

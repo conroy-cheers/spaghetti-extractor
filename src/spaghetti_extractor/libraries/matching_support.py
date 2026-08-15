@@ -30,7 +30,8 @@ from ..artifacts.formats import (
     LINKED_ISLAND_REVIEW_FORMAT,
     MACHINE_IR_FORMAT,
 )
-from ..pe32.stage_binary import StageAInputError, _parse_stage_a_pe
+from ..errors import ToolkitInputError
+from ..pe32.image import parse_pe_image
 from .contracts import (
     validate_linked_island_manifest as _validate_linked_island_contract,
 )

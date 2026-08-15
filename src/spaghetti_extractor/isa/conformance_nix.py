@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from ..build_support.nix_support import find_flake_root, nix_build_expression
-from ..pe32.stage_binary import StageAInputError
+from ..build_support.nix_invocation import select_builder_policy
+from ..errors import ToolkitInputError
 from ..util import sha256_file
 
 
-_ISA_CONFORMANCE_EVALUATOR = "stage-a-isa-conformance.nix"
+_ISA_CONFORMANCE_EVALUATOR = "isa-conformance.nix"
 
 
 def _isa_conformance_nix_evaluator() -> Path:
@@ -33,7 +34,7 @@ def _isa_conformance_nix_evaluator() -> Path:
     for candidate in candidates:
         if candidate.is_file():
             return candidate.resolve()
-    raise StageAInputError(
+    raise ToolkitInputError(
         f"cannot locate nix/{_ISA_CONFORMANCE_EVALUATOR}"
     )
 
@@ -61,7 +62,7 @@ def _isa_conformance_nix_expression(
     bochs = (
         "null"
         if bochs_runner is None
-        else _nix_input(bochs_runner, "stage-a-bochs-runner")
+        else _nix_input(bochs_runner, "spaghetti-extractor-bochs-runner")
     )
     return "\n".join(
         [
@@ -73,14 +74,14 @@ def _isa_conformance_nix_expression(
             f"  evaluator = builtins.toPath {json.dumps(str(evaluator))};",
             "in import evaluator {",
             "  inherit pkgs;",
-            f"  name = {json.dumps(f'stage-a-isa-{backend}-{identity}')};",
+            f"  name = {json.dumps(f'spaghetti-extractor-isa-{backend}-{identity}')};",
             '  spaghettiExtractor = packages."spaghetti-extractor";',
             (
                 '  kernelCache = packages."isa-kernel";'
                 if backend == "lean"
                 else "  kernelCache = null;"
             ),
-            f"  corpus = {_nix_input(corpus, 'stage-a-isa-corpus.json')};",
+            f"  corpus = {_nix_input(corpus, 'spaghetti-extractor-isa-corpus.json')};",
             f"  backend = {json.dumps(backend)};",
             f"  bochsRunner = {bochs};",
             f"  withForms = {'true' if with_forms else 'false'};",
@@ -93,7 +94,7 @@ def _isa_conformance_nix_expression(
     )
 
 
-def stage_a_check_isa_conformance_nix(
+def spx_check_isa_conformance_nix(
     *,
     corpus: Path,
     backend: str,
@@ -105,36 +106,32 @@ def stage_a_check_isa_conformance_nix(
     builder_trusted_public_keys_file: Path | None = None,
 ) -> dict[str, Any]:
     if backend not in {"lean", "unicorn", "bochs"}:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"unsupported ISA conformance backend {backend!r}"
         )
     if forms_out is not None and backend != "lean":
-        raise StageAInputError(
+        raise ToolkitInputError(
             "--forms-out is valid only with --backend=lean"
         )
     if backend == "bochs" and bochs_runner is None:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "--bochs-runner is required when --backend=bochs"
         )
 
     corpus = Path(corpus).resolve()
     if not corpus.is_file():
-        raise StageAInputError(f"ISA conformance corpus does not exist: {corpus}")
+        raise ToolkitInputError(f"ISA conformance corpus does not exist: {corpus}")
     runner = Path(bochs_runner).resolve() if bochs_runner is not None else None
     if runner is not None and not runner.is_file():
-        raise StageAInputError(f"Bochs runner does not exist: {runner}")
+        raise ToolkitInputError(f"Bochs runner does not exist: {runner}")
 
     evaluator = _isa_conformance_nix_evaluator()
     flake_root = find_flake_root(flake)
-    builders = (
-        Path(builders_file).resolve() if builders_file is not None else None
-    )
-    if builders is not None and not builders.is_file():
-        raise StageAInputError(f"Nix builders file does not exist: {builders}")
-    trusted_keys = (
-        Path(builder_trusted_public_keys_file).resolve()
-        if builder_trusted_public_keys_file is not None
-        else None
+    builder_policy = select_builder_policy(
+        target_flake=str(flake_root),
+        builders_file=builders_file,
+        trusted_public_keys_file=builder_trusted_public_keys_file,
+        cwd=flake_root,
     )
     content_addressed = True
 
@@ -149,8 +146,7 @@ def stage_a_check_isa_conformance_nix(
     )
     command = nix_build_expression(
         expression,
-        builders_file=builders,
-        trusted_public_keys_file=trusted_keys,
+        builder_policy=builder_policy,
     )
     environment = os.environ.copy()
     environment.pop("NIXPKGS_CONFIG", None)
@@ -165,7 +161,7 @@ def stage_a_check_isa_conformance_nix(
     )
     elapsed = round(time.monotonic() - started, 3)
     if process.returncode != 0:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "Nix ISA conformance build failed:\n"
             + process.stderr[:4000]
             + ("\n...\n" if len(process.stderr) > 12000 else "")
@@ -187,7 +183,7 @@ def stage_a_check_isa_conformance_nix(
         ValueError,
         json.JSONDecodeError,
     ) as exc:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "Nix returned malformed ISA conformance provenance"
         ) from exc
 
@@ -202,7 +198,7 @@ def stage_a_check_isa_conformance_nix(
         result["forms_out"] = str(forms_out)
         result["forms_sha256"] = sha256_file(forms_out)
     result["nix"] = {
-        "format": "stage-a-isa-conformance-nix-provenance-v1",
+        "format": "spaghetti-extractor-isa-conformance-nix-provenance-v1",
         "drv_path": outputs[0].get("drvPath"),
         "result_path": str(store_output),
         "evaluator_sha256": sha256_file(evaluator),
@@ -213,4 +209,4 @@ def stage_a_check_isa_conformance_nix(
     return result
 
 
-__all__ = ["stage_a_check_isa_conformance_nix"]
+__all__ = ["spx_check_isa_conformance_nix"]

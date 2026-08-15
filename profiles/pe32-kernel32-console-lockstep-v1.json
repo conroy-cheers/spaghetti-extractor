@@ -1,5 +1,5 @@
 {
-  "format": "stage-a-external-environment-profile-v1",
+  "format": "spaghetti-extractor-external-environment-profile-v1",
   "id": "pe32-kernel32-console-lockstep-v1",
   "machine_import_call_contracts": [
     {

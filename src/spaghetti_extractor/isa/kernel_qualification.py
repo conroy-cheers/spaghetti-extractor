@@ -1,4 +1,4 @@
-"""Deterministic, evidence-only qualification for the Stage A ISA kernel.
+"""Deterministic, evidence-only qualification for the static analysis ISA kernel.
 
 The artifacts in this module deliberately sit outside candidate qualification
 boundary.  Structural coverage records that a declared semantic form has an
@@ -33,13 +33,13 @@ from .conformance import (
     parse_isa_conformance_corpus,
     parse_isa_conformance_report,
 )
-ISA_ORACLE_OBSERVATION_FORMAT = "stage-a-isa-oracle-observation-v1"
-ISA_ORACLE_CONSENSUS_FORMAT = "stage-a-isa-oracle-consensus-v1"
-ISA_FORM_QUALIFICATION_FORMAT = "stage-a-isa-form-qualification-v2"
-ISA_KERNEL_QUALIFICATION_FORMAT = "stage-a-isa-kernel-qualification-v2"
-ISA_KERNEL_SELECTION_FORMAT = "stage-a-isa-kernel-selection-v2"
+ISA_ORACLE_OBSERVATION_FORMAT = "spaghetti-extractor-isa-oracle-observation-v1"
+ISA_ORACLE_CONSENSUS_FORMAT = "spaghetti-extractor-isa-oracle-consensus-v1"
+ISA_FORM_QUALIFICATION_FORMAT = "spaghetti-extractor-isa-form-qualification-v2"
+ISA_KERNEL_QUALIFICATION_FORMAT = "spaghetti-extractor-isa-kernel-qualification-v2"
+ISA_KERNEL_SELECTION_FORMAT = "spaghetti-extractor-isa-kernel-selection-v2"
 ISA_KERNEL_SELECTION_REQUIREMENTS_FORMAT = (
-    "stage-a-isa-kernel-selection-requirements-v1"
+    "spaghetti-extractor-isa-kernel-selection-requirements-v1"
 )
 ISA_KERNEL_QUALIFICATION_TRUST_ROLE = "isa_kernel_qualification_evidence_only"
 
@@ -94,7 +94,6 @@ _STATUS_PRECEDENCE = {
 class EvidenceTrust:
     role: str = ISA_KERNEL_QUALIFICATION_TRUST_ROLE
     proof_authority: bool = False
-    closes_stage_a_proof: bool = False
 
 
 @dataclass(frozen=True)
@@ -614,7 +613,7 @@ def _parse_trust(value: Any, context: str) -> EvidenceTrust:
     payload = _object(value, context)
     _exact_fields(
         payload,
-        {"role", "proof_authority", "closes_stage_a_proof"},
+        {"role", "proof_authority"},
         context,
     )
     if payload.get("role") != ISA_KERNEL_QUALIFICATION_TRUST_ROLE:
@@ -622,10 +621,6 @@ def _parse_trust(value: Any, context: str) -> EvidenceTrust:
     if payload.get("proof_authority") is not False:
         raise ISAKernelQualificationError(
             f"{context}.proof_authority must be false"
-        )
-    if payload.get("closes_stage_a_proof") is not False:
-        raise ISAKernelQualificationError(
-            f"{context}.closes_stage_a_proof must be false"
         )
     return EvidenceTrust()
 
@@ -638,7 +633,6 @@ def _trust_payload(trust: EvidenceTrust) -> dict[str, Any]:
     return {
         "role": trust.role,
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }
 
 

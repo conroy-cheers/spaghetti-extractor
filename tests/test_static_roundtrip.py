@@ -10,7 +10,7 @@ from spaghetti_extractor.roundtrip_fuzz.semantic import (
     SemanticBlock,
     SemanticProgram,
 )
-from spaghetti_extractor.pe32.stage_binary import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 
 
 def _program(*, with_nop: bool) -> SemanticProgram:
@@ -33,7 +33,7 @@ def _program(*, with_nop: bool) -> SemanticProgram:
 
 class StaticRoundtripTests(unittest.TestCase):
     def test_qualified_expectation_cannot_hide_a_witness(self) -> None:
-        with self.assertRaisesRegex(StageAInputError, "cannot name a witness"):
+        with self.assertRaisesRegex(ToolkitInputError, "cannot name a witness"):
             CaseExpectation.parse(
                 {
                     "disposition": "qualified",

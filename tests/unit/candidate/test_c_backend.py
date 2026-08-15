@@ -8,10 +8,10 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.candidate.c_backend import (
-    write_stage_b_semantic_c_backend,
+    write_spx_semantic_c_backend,
 )
 from spaghetti_extractor.candidate.api_catalog import load_machine_call_catalog
-from spaghetti_extractor.reconstruction.state_machine import normalize_stage_a_semantic_transfer
+from spaghetti_extractor.reconstruction.state_machine import normalize_spx_semantic_transfer
 
 
 def _transfer(**updates):
@@ -85,22 +85,22 @@ class SemanticCBackendTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
 
-            report = write_stage_b_semantic_c_backend(root, [_transfer()])
+            report = write_spx_semantic_c_backend(root, [_transfer()])
 
             self.assertEqual(report["status"], "complete", report)
             self.assertEqual(report["counts"], {"transfers": 1, "generated": 1, "unsupported": 0})
             source = (root / "state-machine-transfers.c").read_text(encoding="utf-8")
             self.assertIn("input.ebx", source)
-            self.assertIn("STAGE_B_BRANCH", source)
+            self.assertIn("SPX_BRANCH", source)
             self.assertNotIn("deadbeef", source)
             self.assertFalse(report["constraints"]["original_instruction_bytes_embedded"])
             source_map = json.loads((root / "state-machine-source-map.json").read_text(encoding="utf-8"))
-            self.assertEqual(source_map["authority"], "stage-a-semantic-transfer-contracts")
+            self.assertEqual(source_map["authority"], "spaghetti-extractor-semantic-transfer-contracts")
             self.assertEqual(source_map["transfers"][0]["id"], "semantic-transfer:integer-branch")
             self.assertEqual(source_map["transfers"][0]["implementation"], "generated_semantic_c")
             self.assertRegex(source_map["transfers"][0]["contract_sha256"], r"^[0-9a-f]{64}$")
             implementation = json.loads((root / "state-machine-implementation.json").read_text(encoding="utf-8"))
-            self.assertEqual(implementation["authority"], "stage-a-semantic-transfer-contracts")
+            self.assertEqual(implementation["authority"], "spaghetti-extractor-semantic-transfer-contracts")
             self.assertEqual(implementation["strict_candidate"]["status"], "ready")
             self.assertEqual(implementation["transfer_inventory"][0]["id"], "semantic-transfer:integer-branch")
             self.assertEqual(
@@ -108,7 +108,7 @@ class SemanticCBackendTests(unittest.TestCase):
                 source_map["transfers"][0]["contract_sha256"],
             )
             dispatch = (root / "state-machine-dispatch.c").read_text(encoding="utf-8")
-            self.assertIn("stage_b_step_by_rva", dispatch)
+            self.assertIn("spx_step_by_rva", dispatch)
             self.assertIn("semantic-transfer:integer-branch", dispatch)
 
             compiler = shutil.which("cc")
@@ -182,7 +182,7 @@ class SemanticCBackendTests(unittest.TestCase):
                 fpu_state={"model": "symbolic_x87_stack_v1"},
             )
 
-            report = write_stage_b_semantic_c_backend(root, [external, mixed, x87])
+            report = write_spx_semantic_c_backend(root, [external, mixed, x87])
 
             self.assertEqual(report["status"], "incomplete")
             self.assertEqual(report["source_generation_status"], "incomplete")
@@ -197,12 +197,12 @@ class SemanticCBackendTests(unittest.TestCase):
             persisted = json.loads((root / "state-machine-c-report.json").read_text(encoding="utf-8"))
             self.assertFalse(persisted["constraints"]["original_instruction_bytes_embedded"])
             source = (root / "state-machine-transfers.c").read_text(encoding="utf-8")
-            self.assertIn("STAGE_B_CALL_EXTERNAL_IMPORT", source)
+            self.assertIn("SPX_CALL_EXTERNAL_IMPORT", source)
             self.assertIn('"WriteFile"', source)
-            self.assertIn("stage_b_invoke_call", source)
+            self.assertIn("spx_invoke_call", source)
             self.assertIn("call_output_0.eax", source)
             repairs = (root / "state-machine-repairs.c").read_text(encoding="utf-8")
-            self.assertIn("STAGE_B_UNIMPLEMENTED", repairs)
+            self.assertIn("SPX_UNIMPLEMENTED", repairs)
             self.assertNotIn("semantic-transfer:external", repairs)
             self.assertNotIn("deadbeef", repairs)
             source_map = json.loads((root / "state-machine-source-map.json").read_text(encoding="utf-8"))
@@ -248,14 +248,14 @@ class SemanticCBackendTests(unittest.TestCase):
                 ordered_events=[{"family": "external", "instruction_rva": 0x1000, **event}],
             )
 
-            report = write_stage_b_semantic_c_backend(root, [row])
+            report = write_spx_semantic_c_backend(root, [row])
 
             self.assertEqual(report["status"], "complete", report)
             self.assertEqual(report["runtime_obligation_count"], 0)
             source = (root / "state-machine-transfers.c").read_text(encoding="utf-8")
             self.assertIn("copy_count_0", source)
-            self.assertIn("stage_b_read(rt, copy_source_0", source)
-            self.assertIn("stage_b_write(rt, copy_destination_0", source)
+            self.assertIn("spx_read(rt, copy_source_0", source)
+            self.assertIn("spx_write(rt, copy_destination_0", source)
 
     def test_emits_width_generic_string_copy_and_fill_protocols(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -295,18 +295,18 @@ class SemanticCBackendTests(unittest.TestCase):
                 ],
             )
 
-            report = write_stage_b_semantic_c_backend(root, [row])
+            report = write_spx_semantic_c_backend(root, [row])
 
             self.assertEqual(report["status"], "complete", report)
             source = (root / "state-machine-transfers.c").read_text(encoding="utf-8")
             self.assertIn(
-                "stage_b_read(rt, copy_source_0, 1U, &memory_fault)", source
+                "spx_read(rt, copy_source_0, 1U, &memory_fault)", source
             )
             self.assertIn(
-                "stage_b_write(rt, copy_destination_0, 1U", source
+                "spx_write(rt, copy_destination_0, 1U", source
             )
             self.assertIn(
-                "stage_b_write(rt, fill_destination_1, 2U", source
+                "spx_write(rt, fill_destination_1, 2U", source
             )
             self.assertIn("0xfffffffeU : 2U", source)
 
@@ -337,12 +337,12 @@ class SemanticCBackendTests(unittest.TestCase):
                 outcome={"kind": "fallthrough", "target_rva": 0x1002},
             )
 
-            report = write_stage_b_semantic_c_backend(root, [row])
+            report = write_spx_semantic_c_backend(root, [row])
 
             self.assertEqual(report["status"], "complete", report)
             source = (root / "state-machine-transfers.c").read_text(encoding="ascii")
             self.assertIn("scan_accumulator_0", source)
-            self.assertIn("stage_b_read(rt, scan_destination_0, 1U", source)
+            self.assertIn("spx_read(rt, scan_destination_0, 1U", source)
             self.assertNotIn("state->edi = 47824U", source)
             self.assertNotIn("state->ecx = 47825U", source)
             self.assertIn("state->eax = 3735928559U", source)
@@ -375,74 +375,74 @@ static void write_unused(
   (void)raw; (void)address; (void)width; (void)value; *fault = 1U;
 }
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 
-static void initial_flags(stage_b_machine_state *state) {
+static void initial_flags(spx_machine_state *state) {
   state->cf = 1U; state->zf = 0U; state->sf = 1U;
   state->of = 1U; state->pf = 0U; state->eflags = 1U << 4;
 }
 
 static int flags_are(
-    const stage_b_machine_state *state, uint32_t cf, uint32_t zf,
+    const spx_machine_state *state, uint32_t cf, uint32_t zf,
     uint32_t sf, uint32_t of, uint32_t pf, uint32_t af) {
   return state->cf == cf && state->zf == zf && state->sf == sf &&
       state->of == of && state->pf == pf &&
       ((state->eflags >> 4) & 1U) == af;
 }
 
-static stage_b_step_result run(
-    scan_context *context, stage_b_machine_state *state) {
-  stage_b_runtime runtime = {0};
+static spx_step_result run(
+    scan_context *context, spx_machine_state *state) {
+  spx_runtime runtime = {0};
   runtime.context = context; runtime.read = read_byte; runtime.write = write_unused;
-  return stage_b_transfer_semantic_transfer_rep_scas(&runtime, state);
+  return spx_transfer_semantic_transfer_rep_scas(&runtime, state);
 }
 
 int main(void) {
   const uint32_t base = 0x2000U;
   scan_context context = {base, 0xffffffffU, 0U, {0U,0U,0U,0U}};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result;
+  spx_machine_state state = {0};
+  spx_step_result result;
 
   state.eax = 0x41U; state.edi = base; state.ecx = 0U; initial_flags(&state);
   result = run(&context, &state);
-  if (result.kind != STAGE_B_FALLTHROUGH || context.reads != 0U) return 1;
+  if (result.kind != SPX_FALLTHROUGH || context.reads != 0U) return 1;
   if (state.edi != base || state.ecx != 0U ||
       !flags_are(&state, 1U,0U,1U,1U,0U,1U)) return 2;
   if (state.eax != 0xdeadbeefU || state.df != 0U) return 3;
 
   context = (scan_context){base, 0xffffffffU, 0U, {0x20U,0x41U,0U,0U}};
-  state = (stage_b_machine_state){0};
+  state = (spx_machine_state){0};
   state.eax = 0x41U; state.edi = base; state.ecx = 3U;
   result = run(&context, &state);
-  if (result.kind != STAGE_B_FALLTHROUGH || context.reads != 2U) return 4;
+  if (result.kind != SPX_FALLTHROUGH || context.reads != 2U) return 4;
   if (state.edi != base + 2U || state.ecx != 1U ||
       !flags_are(&state, 0U,1U,0U,0U,1U,0U)) return 5;
 
   context = (scan_context){base, 0xffffffffU, 0U, {1U,2U,0U,0U}};
-  state = (stage_b_machine_state){0};
+  state = (spx_machine_state){0};
   state.eax = 0U; state.edi = base; state.ecx = 2U;
   result = run(&context, &state);
-  if (result.kind != STAGE_B_FALLTHROUGH || state.edi != base + 2U ||
+  if (result.kind != SPX_FALLTHROUGH || state.edi != base + 2U ||
       state.ecx != 0U || !flags_are(&state, 1U,0U,1U,0U,0U,1U)) return 6;
 
   context = (scan_context){base, 0xffffffffU, 0U, {0U,0x41U,0x10U,0U}};
-  state = (stage_b_machine_state){0};
+  state = (spx_machine_state){0};
   state.eax = 0x41U; state.edi = base + 2U; state.ecx = 2U; state.df = 1U;
   result = run(&context, &state);
-  if (result.kind != STAGE_B_FALLTHROUGH || state.edi != base ||
+  if (result.kind != SPX_FALLTHROUGH || state.edi != base ||
       state.ecx != 0U || !flags_are(&state, 0U,1U,0U,0U,1U,0U)) return 7;
   if (state.df != 0U) return 8;
 
   context = (scan_context){base, base + 1U, 0U, {0x42U,0U,0U,0U}};
-  state = (stage_b_machine_state){0};
+  state = (spx_machine_state){0};
   state.eax = 0x41U; state.edi = base; state.ecx = 3U;
   result = run(&context, &state);
-  if (result.kind != STAGE_B_MEMORY_FAULT || result.target_rva != 0x1000U ||
+  if (result.kind != SPX_MEMORY_FAULT || result.target_rva != 0x1000U ||
       context.reads != 2U) return 9;
   if (state.edi != base + 1U || state.ecx != 2U ||
       !flags_are(&state, 1U,0U,1U,0U,1U,1U)) return 10;
@@ -487,7 +487,7 @@ int main(void) {
             with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
                 event = {**_rep_scas_event(), **mutation}
-                report = write_stage_b_semantic_c_backend(
+                report = write_spx_semantic_c_backend(
                     root,
                     [_transfer(
                         external_events=[event],
@@ -545,7 +545,7 @@ int main(void) {
             catalog_path.write_text(
                 json.dumps(
                     {
-                        "format": "stage-b-machine-call-catalog-v1",
+                        "format": "spaghetti-extractor-machine-call-catalog-v1",
                         "entries": [
                             {
                                 "id": "kernel32-write-file",
@@ -566,7 +566,7 @@ int main(void) {
                 encoding="utf-8",
             )
 
-            report = write_stage_b_semantic_c_backend(
+            report = write_spx_semantic_c_backend(
                 root / "generated",
                 [row],
                 machine_call_catalog=load_machine_call_catalog(catalog_path),
@@ -581,7 +581,7 @@ int main(void) {
             self.assertIn("__attribute__((stdcall, dllimport))", adapter)
             self.assertIn('__asm__("WriteFile")', adapter)
             self.assertIn("input->esp + 16U", adapter)
-            self.assertIn("stage_b_import_0(argument_0, argument_1, argument_2, argument_3, argument_4)", adapter)
+            self.assertIn("spx_import_0(argument_0, argument_1, argument_2, argument_3, argument_4)", adapter)
             boundaries = json.loads(
                 (root / "generated" / "state-machine-runtime-obligations.json").read_text(encoding="utf-8")
             )["call_boundaries"]
@@ -639,7 +639,7 @@ int main(void) {
                 outcome={"kind": "return", "value": {"op": "reg", "name": "eax", "width": 32}},
             )
 
-            report = write_stage_b_semantic_c_backend(root, [caller, callee])
+            report = write_spx_semantic_c_backend(root, [caller, callee])
 
             self.assertEqual(report["status"], "complete", report)
             self.assertEqual(report["runtime_obligation_count"], 0)
@@ -651,8 +651,8 @@ int main(void) {
             self.assertEqual(boundaries[0]["status"], "bound")
             self.assertEqual(boundaries[0]["binding"], "generated_nested_frame_engine_v1")
             engine = (root / "state-machine-engine.c").read_text(encoding="utf-8")
-            self.assertIn("stage_b_run_function", engine)
-            self.assertIn("STAGE_B_CALL_INTERNAL_DIRECT", engine)
+            self.assertIn("spx_run_function", engine)
+            self.assertIn("SPX_CALL_INTERNAL_DIRECT", engine)
 
     def test_rejects_ordered_event_payload_that_does_not_match_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -660,7 +660,7 @@ int main(void) {
             summary = {"kind": "read", "width": 4, "address": {"op": "reg", "name": "eax", "width": 32}}
             ordered = {"family": "memory", "instruction_rva": 0x1000, "kind": "read", "width": 4, "address": {"op": "reg", "name": "ebx", "width": 32}}
 
-            report = write_stage_b_semantic_c_backend(
+            report = write_spx_semantic_c_backend(
                 root,
                 [_transfer(memory_events=[summary], ordered_events=[ordered])],
             )
@@ -695,14 +695,14 @@ int main(void) {
                 ]
             )
 
-            report = write_stage_b_semantic_c_backend(root, [row])
+            report = write_spx_semantic_c_backend(root, [row])
 
             self.assertEqual(report["status"], "complete", report)
             source = (root / "state-machine-transfers.c").read_text(encoding="utf-8")
-            self.assertIn("stage_b_shift_cf", source)
-            self.assertIn("stage_b_shift_of", source)
-            self.assertIn("stage_b_sbb_borrow", source)
-            self.assertIn("stage_b_sbb_overflow", source)
+            self.assertIn("spx_shift_cf", source)
+            self.assertIn("spx_shift_of", source)
+            self.assertIn("spx_sbb_borrow", source)
+            self.assertIn("spx_sbb_overflow", source)
 
     def test_lowers_double_shift_flag_expressions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -717,12 +717,12 @@ int main(void) {
                 ]
             )
 
-            report = write_stage_b_semantic_c_backend(root, [row])
+            report = write_spx_semantic_c_backend(root, [row])
 
             self.assertEqual(report["status"], "complete", report)
             source = (root / "state-machine-transfers.c").read_text(encoding="utf-8")
-            self.assertIn("stage_b_shift_cf(1U", source)
-            self.assertIn("stage_b_shift_of(1U", source)
+            self.assertIn("spx_shift_cf(1U", source)
+            self.assertIn("spx_shift_of(1U", source)
 
     def test_ordered_events_check_divide_fault_before_later_read(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -747,13 +747,13 @@ int main(void) {
                 ],
             )
 
-            report = write_stage_b_semantic_c_backend(root, [row])
+            report = write_spx_semantic_c_backend(root, [row])
 
             self.assertEqual(report["status"], "complete", report)
             source = (root / "state-machine-transfers.c").read_text(encoding="utf-8")
-            first_read = source.index("stage_b_read(rt, input.eax")
-            divide_check = source.index("STAGE_B_DIVIDE_ERROR")
-            second_read = source.index("stage_b_read(rt, input.ebx")
+            first_read = source.index("spx_read(rt, input.eax")
+            divide_check = source.index("SPX_DIVIDE_ERROR")
+            second_read = source.index("spx_read(rt, input.ebx")
             self.assertLess(first_read, divide_check)
             self.assertLess(divide_check, second_read)
 
@@ -765,7 +765,7 @@ int main(void) {
                 _transfer(id="semantic-transfer:overlapping-view"),
             ]
 
-            report = write_stage_b_semantic_c_backend(root, rows)
+            report = write_spx_semantic_c_backend(root, rows)
 
             self.assertEqual(report["status"], "incomplete")
             self.assertEqual(report["dispatch"]["status"], "incomplete")

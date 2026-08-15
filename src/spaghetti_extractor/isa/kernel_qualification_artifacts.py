@@ -164,7 +164,7 @@ def build_isa_kernel_qualification(
     required_form_ids: Iterable[str],
     forms: Iterable[ISAFormQualification],
 ) -> ISAKernelQualification:
-    """Public builder used by ``stage-a-build-isa-kernel-qualification``."""
+    """Public builder used by ``spaghetti-extractor-build-isa-kernel-qualification``."""
     return build_kernel_qualification(
         profile=profile,
         semantic_kernel=semantic_kernel,
@@ -693,7 +693,7 @@ def select_isa_kernel_qualification(
     requirements: Iterable[BinaryFormRequirement],
     qualification: ISAKernelQualification,
 ) -> ISAKernelSelection:
-    """Public builder used by ``stage-a-select-isa-kernel-qualification``."""
+    """Public builder used by ``spaghetti-extractor-select-isa-kernel-qualification``."""
     return build_kernel_selection(
         binary_id=binary_id,
         binary_sha256=binary_sha256,

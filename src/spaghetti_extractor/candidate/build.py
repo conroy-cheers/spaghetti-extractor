@@ -5,14 +5,14 @@ from .build_model import (
     INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME,
     INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT,
     INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT,
-    StageBInterpreterNativeBuildError,
+    CandidateNativeBuildError,
 )
 from .build_workflow import (
-    assemble_stage_b_interpreter_native_objects,
-    build_stage_b_interpreter_native_candidate,
-    compile_stage_b_interpreter_native_object,
-    compile_stage_b_interpreter_native_source_bundle,
-    prepare_stage_b_interpreter_native_object_graph,
+    assemble_spx_interpreter_native_objects,
+    build_spx_interpreter_native_candidate,
+    compile_spx_interpreter_native_object,
+    compile_spx_interpreter_native_source_bundle,
+    prepare_spx_interpreter_native_object_graph,
 )
 
 __all__ = [
@@ -20,10 +20,10 @@ __all__ = [
     "INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME",
     "INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT",
     "INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT",
-    "StageBInterpreterNativeBuildError",
-    "assemble_stage_b_interpreter_native_objects",
-    "build_stage_b_interpreter_native_candidate",
-    "compile_stage_b_interpreter_native_object",
-    "compile_stage_b_interpreter_native_source_bundle",
-    "prepare_stage_b_interpreter_native_object_graph",
+    "CandidateNativeBuildError",
+    "assemble_spx_interpreter_native_objects",
+    "build_spx_interpreter_native_candidate",
+    "compile_spx_interpreter_native_object",
+    "compile_spx_interpreter_native_source_bundle",
+    "prepare_spx_interpreter_native_object_graph",
 ]

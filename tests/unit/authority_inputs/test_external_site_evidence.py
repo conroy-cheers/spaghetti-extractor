@@ -92,7 +92,7 @@ def _event() -> dict[str, object]:
 
 def _unit(event: dict[str, object]) -> dict[str, object]:
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": "source:unit",
         "status": "qualified",

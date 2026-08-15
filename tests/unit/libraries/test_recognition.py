@@ -90,7 +90,7 @@ class LinkedLibraryRecognitionTests(LinkedLibraryTestCase):
             out=self.root / "v2-index.json",
         )
 
-        self.assertEqual(index["format"], "stage-b-library-artifact-index-v2")
+        self.assertEqual(index["format"], "spaghetti-extractor-library-artifact-index-v2")
         member = index["artifacts"][0]["index"]["members"][0]
         self.assertTrue(member["member_id"].startswith("member:"))
         fingerprint = member["index"]["function_fingerprints"][0]
@@ -329,7 +329,7 @@ class LinkedLibraryRecognitionTests(LinkedLibraryTestCase):
         write_json(
             report,
             {
-                "format": "stage-a-static-machine-import-contracts-v1",
+                "format": "spaghetti-extractor-static-machine-import-contracts-v1",
                 "status": "ready",
                 "authority": {
                     "lean_redecodes_boundary_routes": True,
@@ -396,7 +396,7 @@ class LinkedLibraryRecognitionTests(LinkedLibraryTestCase):
         write_json(
             report,
             {
-                "format": "stage-a-static-machine-import-contracts-v1",
+                "format": "spaghetti-extractor-static-machine-import-contracts-v1",
                 "status": "ready",
                 "authority": {
                     "lean_redecodes_boundary_routes": True,

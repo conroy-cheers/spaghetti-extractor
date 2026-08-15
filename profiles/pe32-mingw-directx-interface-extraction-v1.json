@@ -1,5 +1,5 @@
 {
-  "format": "stage-a-external-interface-extraction-spec-v1",
+  "format": "spaghetti-extractor-external-interface-extraction-spec-v1",
   "id": "pe32-mingw-directx-legacy-interfaces-v1",
   "model": "x86-pe32",
   "effect_model": "same-library-call-through-v1",

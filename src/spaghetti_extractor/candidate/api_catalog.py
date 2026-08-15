@@ -8,7 +8,7 @@ from typing import Any
 from ..util import sha256_file
 
 
-STAGE_B_MACHINE_CALL_CATALOG_FORMAT = "stage-b-machine-call-catalog-v1"
+SPX_MACHINE_CALL_CATALOG_FORMAT = "spaghetti-extractor-machine-call-catalog-v1"
 _CALLING_CONVENTIONS = {"cdecl", "stdcall"}
 
 
@@ -72,7 +72,7 @@ def load_machine_call_catalog(path: Path) -> MachineCallCatalog:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("machine-call catalog must be a JSON object")
-    if payload.get("format") == STAGE_B_MACHINE_CALL_CATALOG_FORMAT:
+    if payload.get("format") == SPX_MACHINE_CALL_CATALOG_FORMAT:
         raw_entries = payload.get("entries")
     else:
         raw_entries = payload.get("machine_import_call_contracts")

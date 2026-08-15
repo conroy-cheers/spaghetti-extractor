@@ -8,7 +8,7 @@ class NativeRuntimeRenderingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             interpreter, engine = _packages(root)
-            package = write_stage_b_native_runtime_package(
+            package = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=root / "runtime",
@@ -19,45 +19,45 @@ class NativeRuntimeRenderingTests(unittest.TestCase):
             ).read_text(encoding="ascii")
             header = (root / "runtime/native-runtime.h").read_text(encoding="ascii")
 
-            self.assertNotIn("stage_b_native_engine_manifest_sha256[65] =", source)
-            self.assertIn("stage_b_native_engine_manifest_sha256[65] =", bindings)
+            self.assertNotIn("spx_native_engine_manifest_sha256[65] =", source)
+            self.assertIn("spx_native_engine_manifest_sha256[65] =", bindings)
 
-            self.assertIn("stage_b_native_flat_read", source)
-            self.assertIn("stage_b_native_flat_write", source)
-            self.assertIn("stage_b_native_atomic_compare_exchange", source)
-            self.assertIn("stage_b_runtime_atomic_compare_exchange", source)
-            self.assertIn("stage_b_native_atomic_exchange", source)
-            self.assertIn("stage_b_runtime_atomic_exchange", source)
+            self.assertIn("spx_native_flat_read", source)
+            self.assertIn("spx_native_flat_write", source)
+            self.assertIn("spx_native_atomic_compare_exchange", source)
+            self.assertIn("spx_runtime_atomic_compare_exchange", source)
+            self.assertIn("spx_native_atomic_exchange", source)
+            self.assertIn("spx_runtime_atomic_exchange", source)
             self.assertIn(
                 ".atomic_compare_exchange = "
-                "stage_b_native_atomic_compare_exchange",
+                "spx_native_atomic_compare_exchange",
                 source,
             )
             self.assertIn(
-                ".atomic_exchange = stage_b_native_atomic_exchange",
+                ".atomic_exchange = spx_native_atomic_exchange",
                 source,
             )
             self.assertIn("__atomic_compare_exchange_n", source)
             self.assertIn("__atomic_exchange_n", source)
-            self.assertIn("STAGE_B_NATIVE_IMAGE_SCN_MEM_EXECUTE", source)
-            self.assertIn("stage_b_native_transfer_rvas", source)
-            self.assertIn("stage_b_program_lookup(rva)", source)
+            self.assertIn("SPX_NATIVE_IMAGE_SCN_MEM_EXECUTE", source)
+            self.assertIn("spx_native_transfer_rvas", source)
+            self.assertIn("spx_program_lookup(rva)", source)
             self.assertIn("target_word - context->image_base", source)
-            self.assertIn("STAGE_B_NATIVE_TERMINAL_UNDEFINED_VALUE", source)
+            self.assertIn("SPX_NATIVE_TERMINAL_UNDEFINED_VALUE", source)
             self.assertIn("context->undefined_fault = 1U", source)
             self.assertNotIn(
-                "stage_b_native_halt(STAGE_B_NATIVE_TERMINAL_UNDEFINED_VALUE)",
+                "spx_native_halt(SPX_NATIVE_TERMINAL_UNDEFINED_VALUE)",
                 source,
             )
             self.assertIn("__sync_lock_test_and_set", source)
-            self.assertIn("stage_b_run_function(", source)
-            self.assertIn("stage_b_native_runtime_run_at_rva(", source)
-            self.assertIn("stage_b_native_runtime_run_nested_callback(", source)
-            self.assertIn("stage_b_runtime stage_b_native_runtime_instance", source)
-            self.assertNotIn("static stage_b_runtime stage_b_native_runtime", source)
-            self.assertNotIn("stage_b_native_replay_checked_x87_command", source)
+            self.assertIn("spx_run_function(", source)
+            self.assertIn("spx_native_runtime_run_at_rva(", source)
+            self.assertIn("spx_native_runtime_run_nested_callback(", source)
+            self.assertIn("spx_runtime spx_native_runtime_instance", source)
+            self.assertNotIn("static spx_runtime spx_native_runtime", source)
+            self.assertNotIn("spx_native_replay_checked_x87_command", source)
             self.assertIn(
-                "stage_b_native_terminate(stage_b_native_terminal_status)", source
+                "spx_native_terminate(spx_native_terminal_status)", source
             )
             self.assertIn("__attribute__((noreturn))", header)
             self.assertNotIn("hello", source.lower())
@@ -84,7 +84,7 @@ class NativeRuntimeRenderingTests(unittest.TestCase):
             root = Path(temporary)
             interpreter, engine = _packages(root)
             runtime = root / "runtime"
-            write_stage_b_native_runtime_package(
+            write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=runtime,
@@ -119,30 +119,30 @@ class NativeRuntimeRenderingTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
             ).stdout
-            self.assertNotIn("stage_b_native_replay_checked_x87_command", runtime_symbols)
+            self.assertNotIn("spx_native_replay_checked_x87_command", runtime_symbols)
             stub = runtime / "interpreter-stub.c"
             stub.write_text(
                 """#include "native-runtime.h"
-const stage_b_program_transfer *stage_b_program_lookup(uint32_t source_rva) {
-  return source_rva == 0x1000U ? (const stage_b_program_transfer *)1 : 0;
+const spx_program_transfer *spx_program_lookup(uint32_t source_rva) {
+  return source_rva == 0x1000U ? (const spx_program_transfer *)1 : 0;
 }
-stage_b_call_status stage_b_run_function(
-    stage_b_runtime *runtime, uint32_t entry_rva,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_run_function(
+    spx_runtime *runtime, uint32_t entry_rva,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime;
   (void)entry_rva;
   *output = *input;
-  return STAGE_B_CALL_OK;
+  return SPX_CALL_OK;
 }
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime;
   (void)event;
   *output = *input;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
-void stage_b_native_terminate(stage_b_native_terminal_kind status) {
+void spx_native_terminate(spx_native_terminal_kind status) {
   (void)status;
   for (;;) {}
 }
@@ -176,7 +176,7 @@ void stage_b_native_terminate(stage_b_native_terminal_kind status) {
                 [
                     compiler,
                     "-nostdlib",
-                    "-Wl,--entry,_stage_b_native_runtime_coordinate",
+                    "-Wl,--entry,_spx_native_runtime_coordinate",
                     "-Wl,--subsystem,console",
                     "-Wl,--disable-runtime-pseudo-reloc",
                     str(runtime / "native-runtime.o"),
@@ -196,7 +196,7 @@ void stage_b_native_terminate(stage_b_native_terminal_kind status) {
             ).stdout
             self.assertEqual(
                 len(re.findall(
-                    r"(?m)^\S+ [BD] _stage_b_native_runtime_instance$",
+                    r"(?m)^\S+ [BD] _spx_native_runtime_instance$",
                     linked_symbols,
                 )),
                 1,

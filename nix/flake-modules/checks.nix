@@ -62,10 +62,8 @@
           test ! -e ${testSource}/src/spaghetti_extractor/candidate/modes.py
           test ! -e ${testSource}/src/spaghetti_extractor/candidate/machine_ir_scope.py
           test ! -e ${testSource}/nix/structural-diagnostics.nix
-          test ! -e ${testSource}/nix/stage-b-functional-suite.nix
-          test ! -e ${testSource}/nix/stage-b-upstream-shell-suite.nix
           if grep -R -n -E \
-            'spaghetti_extractor\.reference_contract|candidate_mode|allow_deferred_potential_transfers|stage-b-run-functional-suite' \
+            'spaghetti_extractor\.reference_contract|candidate_mode|allow_deferred_potential_transfers|spaghetti-extractor-run-functional-suite' \
             ${testSource}/src ${testSource}/nix \
             --exclude='checks.nix' \
             --exclude='python-module-index.json' \
@@ -73,9 +71,18 @@
             echo "retired binary-pair or diagnostic-candidate API reintroduced" >&2
             exit 1
           fi
+          if rg -n \
+              -e 'Stage [AB]' -e 'STAGE_[AB]' -e 'stage_[ab]_' \
+              -e 'stage-[ab]-' -e 'spaghetti-extractor-spaghetti-extractor' \
+              ${testSource}/src ${testSource}/nix ${testSource}/docs \
+              ${testSource}/tools ${testSource}/README.md \
+              ${testSource}/REPOSITORY_MAP.md; then
+            echo "retired phase terminology or duplicated wire prefix reintroduced" >&2
+            exit 1
+          fi
           touch "$out"
         '';
-      roundtrip = import ../stage-a-roundtrip-corpus.nix {
+      roundtrip = import ../roundtrip-corpus.nix {
         inherit pkgs;
         inherit (context) pythonEnv;
         source = context.sources.staticSource;
@@ -180,7 +187,7 @@
           spaghetti-extractor candidate list --help >/dev/null
           spaghetti-extractor candidate status --help >/dev/null
           spaghetti-extractor candidate test --help >/dev/null
-          spaghetti-extractor expert stage-a-inventory-binary --help >/dev/null
+          spaghetti-extractor expert static-inventory-binary --help >/dev/null
           touch "$out"
         '';
         test-suite = fullGate;

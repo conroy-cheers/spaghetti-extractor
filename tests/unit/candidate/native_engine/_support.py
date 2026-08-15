@@ -30,10 +30,10 @@ from spaghetti_extractor.authority.external_site_records import (
     ExternalContractV3,
     external_site_id_v3,
 )
-from spaghetti_extractor.pe32.stage_binary import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 from spaghetti_extractor.candidate.engine import (
-    plan_stage_b_native_engine,
-    write_stage_b_native_engine_package,
+    plan_spx_native_engine,
+    write_spx_native_engine_package,
 )
 from spaghetti_extractor.util import sha256_bytes
 
@@ -88,7 +88,7 @@ def _machine_ir_transfer(
         }]
     end = rva + size
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": f"semantic-transfer:typed-{rva:08x}",
         "status": "qualified",
@@ -146,10 +146,10 @@ def _implementation_manifest(
     summaries: list[dict] | None = None,
 ) -> dict:
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "artifacts": {
             "machine_ir": {
-                "format": "stage-a-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v2",
                 "sha256": sha256_bytes(machine_ir.read_bytes()),
             },
         },
@@ -305,7 +305,7 @@ def _machine_ir_x87_transfer(
     transfer_digest = unit["source"]["instruction_bytes_sha256"]
     micro_id = f"{unit['id']}:x87:{rva:08x}"
     unit["x87_micro_ops"] = [{
-        "format": "stage-a-x87-micro-op-v1",
+        "format": "spaghetti-extractor-x87-micro-op-v1",
         "id": micro_id,
         "unit_id": unit["id"],
         "rva_start": rva,
@@ -317,21 +317,21 @@ def _machine_ir_x87_transfer(
         "operands": unit["instructions"][0]["operands"],
         "implicit_registers_read": ["st(0)", "st(1)"],
         "implicit_registers_written": ["eflags"],
-        "checked_decoder": "StageA.Formal.decodeInstructionExact",
-        "checked_executor": "StageA.Formal.executeInstruction",
+        "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+        "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
         "physical_state_effect": "defined_by_checked_typed_x87_executor",
     }]
     unit["semantics"]["fpu_state"] = {
         "typed_replay": {
-            "source_format": "stage-a-native-exact-x87-command-replay-obligation-v1",
+            "source_format": "spaghetti-extractor-native-exact-x87-command-replay-obligation-v1",
             "architecture": "x86",
             "bitness": 32,
             "image_base": 0x400000,
             "rva_start": rva,
             "rva_end": rva + len(encoded),
             "instruction_bytes_sha256": transfer_digest,
-            "checked_decoder": "StageA.Formal.decodeInstructionExact",
-            "checked_executor": "StageA.Formal.executeInstruction",
+            "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+            "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             "micro_op_ids": [micro_id],
         }
     }
@@ -357,7 +357,7 @@ def _x87_replay_transfer() -> dict:
         "fpu_state": {
             "model": "native_exact_x87_command_replay_obligation_v1",
             "status": "required",
-            "authoritative_state_type": "StageA.X87.PhysicalState",
+            "authoritative_state_type": "SpaghettiExtractor.ISA.X87.PhysicalState",
             "required_fields": [
                 "stack", "tags", "control", "status", "pending_exception",
                 "last_opcode", "instruction_pointer", "code_selector",
@@ -370,9 +370,9 @@ def _x87_replay_transfer() -> dict:
             ],
             "logical_state_guidance": {},
             "replay": {
-                "format": "stage-a-native-exact-x87-command-replay-obligation-v1",
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "format": "spaghetti-extractor-native-exact-x87-command-replay-obligation-v1",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
                 "architecture": "x86",
                 "bitness": 32,
                 "image_base": 0x400000,
@@ -431,7 +431,7 @@ def _relocation_evidence(
     static_program_contract_sha256: str = "c" * 64,
 ) -> dict:
     return {
-        "format": "stage-b-pe32-base-relocation-evidence-v1",
+        "format": "spaghetti-extractor-pe32-base-relocation-evidence-v1",
         "complete": True,
         "pe_sha256": "d" * 64,
         "static_program_contract_sha256": static_program_contract_sha256,
@@ -446,18 +446,18 @@ def _relocation_evidence(
     }
 
 
-_RUNTIME_HEADER = r"""#ifndef STAGE_B_STATE_MACHINE_RUNTIME_H
-#define STAGE_B_STATE_MACHINE_RUNTIME_H
+_RUNTIME_HEADER = r"""#ifndef SPX_STATE_MACHINE_RUNTIME_H
+#define SPX_STATE_MACHINE_RUNTIME_H
 #include <stdint.h>
-typedef struct stage_b_x87_value {
+typedef struct spx_x87_value {
   uint8_t value_bytes[10];
   uint32_t empty;
   uint8_t tag;
-} stage_b_x87_value;
-typedef struct stage_b_machine_state {
+} spx_x87_value;
+typedef struct spx_machine_state {
   uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp;
   uint32_t cf, zf, sf, of, pf, df;
-  stage_b_x87_value x87_stack[8];
+  spx_x87_value x87_stack[8];
   uint16_t x87_control;
   uint16_t x87_status;
   uint8_t x87_pending_exception;
@@ -469,57 +469,54 @@ typedef struct stage_b_machine_state {
   uint32_t eflags;
   uint32_t fs_base;
   uint32_t original_rva;
-} stage_b_machine_state;
-typedef struct stage_b_stack_input {
+} spx_machine_state;
+typedef struct spx_stack_input {
   uint32_t offset, width, value;
-} stage_b_stack_input;
-typedef enum stage_b_call_event_kind {
-  STAGE_B_CALL_EXTERNAL_IMPORT = 0,
-  STAGE_B_CALL_INTERNAL_DIRECT = 1,
-  STAGE_B_CALL_INDIRECT = 2
-} stage_b_call_event_kind;
-typedef struct stage_b_call_event {
-  stage_b_call_event_kind kind;
+} spx_stack_input;
+typedef enum spx_call_event_kind {
+  SPX_CALL_EXTERNAL_IMPORT = 0,
+  SPX_CALL_INTERNAL_DIRECT = 1,
+  SPX_CALL_INDIRECT = 2
+} spx_call_event_kind;
+typedef struct spx_call_event {
+  spx_call_event_kind kind;
   uint32_t instruction_rva, call_index, target_rva, return_rva;
   const char *dll, *symbol;
   uint32_t ordinal, has_ordinal;
   const uint32_t *arguments;
   uint32_t argument_count;
-  const stage_b_stack_input *stack_inputs;
+  const spx_stack_input *stack_inputs;
   uint32_t stack_input_count;
-} stage_b_call_event;
-#define STAGE_B_MAX_EXTERNAL_ARGUMENTS 256U
-typedef struct stage_b_external_call_snapshot {
+} spx_call_event;
+#define SPX_MAX_EXTERNAL_ARGUMENTS 256U
+typedef struct spx_external_call_snapshot {
   uint32_t instruction_rva;
   uint32_t target_iat_rva;
   uint32_t argument_base_offset;
   uint32_t argument_count;
-  uint32_t arguments[STAGE_B_MAX_EXTERNAL_ARGUMENTS];
-} stage_b_external_call_snapshot;
-typedef struct stage_b_runtime stage_b_runtime;
-typedef enum stage_b_call_status {
-  STAGE_B_CALL_OK = 0,
-  STAGE_B_CALL_UNIMPLEMENTED = 1,
-  STAGE_B_CALL_DIVIDE_ERROR = 2,
-  STAGE_B_CALL_MEMORY_FAULT = 3,
-  STAGE_B_CALL_EXTERNAL_FAULT = 4
-} stage_b_call_status;
-typedef stage_b_call_status (*stage_b_external_call_handler)(
-    stage_b_runtime *, const stage_b_call_event *,
-    const stage_b_machine_state *, stage_b_machine_state *);
-typedef uint32_t (*stage_b_code_target_resolver)(
-    stage_b_runtime *, uint32_t, uint32_t *);
-typedef void (*stage_b_transfer_trace_handler)(
-    void *, uint32_t, const stage_b_machine_state *);
-struct stage_b_runtime {
+  uint32_t arguments[SPX_MAX_EXTERNAL_ARGUMENTS];
+} spx_external_call_snapshot;
+typedef struct spx_runtime spx_runtime;
+typedef enum spx_call_status {
+  SPX_CALL_OK = 0,
+  SPX_CALL_UNIMPLEMENTED = 1,
+  SPX_CALL_DIVIDE_ERROR = 2,
+  SPX_CALL_MEMORY_FAULT = 3,
+  SPX_CALL_EXTERNAL_FAULT = 4
+} spx_call_status;
+typedef spx_call_status (*spx_external_call_handler)(
+    spx_runtime *, const spx_call_event *,
+    const spx_machine_state *, spx_machine_state *);
+typedef uint32_t (*spx_code_target_resolver)(
+    spx_runtime *, uint32_t, uint32_t *);
+struct spx_runtime {
   void *context;
   uint32_t (*read)(void *, uint32_t, uint32_t, uint32_t *);
   void (*write)(void *, uint32_t, uint32_t, uint32_t, uint32_t *);
   uint32_t (*undefined_value)(
-      void *, uint32_t, const stage_b_machine_state *, uint32_t);
-  stage_b_external_call_handler external_call_fallback;
-  stage_b_transfer_trace_handler trace_transfer;
-  stage_b_code_target_resolver resolve_code_target;
+      void *, uint32_t, const spx_machine_state *, uint32_t);
+  spx_external_call_handler external_call_fallback;
+  spx_code_target_resolver resolve_code_target;
   void *replay_checked_x87_command;
 };
 #endif
@@ -528,26 +525,26 @@ struct stage_b_runtime {
 
 def _x87_runtime_header() -> str:
     header = _RUNTIME_HEADER.replace(
-        "typedef struct stage_b_runtime stage_b_runtime;",
-        """typedef struct stage_b_typed_x87_operation {
+        "typedef struct spx_runtime spx_runtime;",
+        """typedef struct spx_typed_x87_operation {
   uint32_t image_base, rva_start, rva_end, source_size;
   const char *operation_identity;
   const char *contract_sha256;
   const char *checked_decoder;
   const char *checked_executor;
-} stage_b_typed_x87_operation;
-typedef struct stage_b_runtime stage_b_runtime;""",
+} spx_typed_x87_operation;
+typedef struct spx_runtime spx_runtime;""",
     )
     header = header.replace(
-        "typedef uint32_t (*stage_b_code_target_resolver)(",
-        """typedef stage_b_call_status (*stage_b_typed_x87_handler)(
-    stage_b_runtime *, const stage_b_typed_x87_operation *,
-    const stage_b_machine_state *, stage_b_machine_state *);
-typedef uint32_t (*stage_b_code_target_resolver)(""",
+        "typedef uint32_t (*spx_code_target_resolver)(",
+        """typedef spx_call_status (*spx_typed_x87_handler)(
+    spx_runtime *, const spx_typed_x87_operation *,
+    const spx_machine_state *, spx_machine_state *);
+typedef uint32_t (*spx_code_target_resolver)(""",
     )
     return header.replace(
         "  void *replay_checked_x87_command;",
-        "  stage_b_typed_x87_handler execute_typed_x87_operation;",
+        "  spx_typed_x87_handler execute_typed_x87_operation;",
     )
 
 

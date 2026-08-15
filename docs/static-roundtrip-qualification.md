@@ -16,10 +16,10 @@ artifact hashing, and violation localization.
 
 Formats:
 
-- `stage-a-roundtrip-corpus-v2`
-- `stage-a-roundtrip-case-v2`
-- `stage-a-roundtrip-case-result-v2`
-- `stage-a-roundtrip-run-result-v2`
+- `spaghetti-extractor-roundtrip-corpus-v2`
+- `spaghetti-extractor-roundtrip-case-v2`
+- `spaghetti-extractor-roundtrip-case-result-v2`
+- `spaghetti-extractor-roundtrip-run-result-v2`
 
 Commands:
 

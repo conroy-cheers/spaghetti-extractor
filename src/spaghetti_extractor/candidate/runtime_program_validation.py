@@ -6,15 +6,15 @@ import json
 import re
 from typing import Any, Mapping
 
-from ..artifacts.formats import STAGE_B_INTERPRETER_PROGRAM_FORMAT
+from ..artifacts.formats import SPX_INTERPRETER_PROGRAM_FORMAT
 from ..util import sha256_bytes
 from .interpreter_model import (
-    STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS,
+    SPX_INTERPRETER_DEFINEDNESS_USE_FIELDS,
 )
 from .runtime_model import (
     DEFINEDNESS_USE_FORMAT,
     NativeUndefinedPolicy,
-    StageBNativeRuntimeError,
+    CandidateRuntimeError,
     _InterpreterTransferBinding,
     _MACHINE_IR_INPUT_MODE,
 )
@@ -36,14 +36,14 @@ def _validate_program_manifest(
     tuple[NativeUndefinedPolicy, ...],
     str | None,
 ]:
-    if payload.get("format") != STAGE_B_INTERPRETER_PROGRAM_FORMAT:
-        raise StageBNativeRuntimeError("interpreter program has an unsupported format")
+    if payload.get("format") != SPX_INTERPRETER_PROGRAM_FORMAT:
+        raise CandidateRuntimeError("interpreter program has an unsupported format")
     if payload.get("state_machine_sha256") != state_machine_sha256:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "interpreter package and program bind different state machines"
         )
     if payload.get("status") != "ready" or payload.get("blockers") != []:
-        raise StageBNativeRuntimeError("interpreter program is not runnable")
+        raise CandidateRuntimeError("interpreter program is not runnable")
     _validate_complete_semantic_coverage(payload, label="interpreter program")
     transfers = _required_list(payload.get("transfers"), "interpreter transfers")
     rvas: list[int] = []
@@ -70,18 +70,18 @@ def _validate_program_manifest(
         rvas.append(rva)
         bindings.append(_InterpreterTransferBinding(unit_id=unit_id, rva=rva))
     if not rvas:
-        raise StageBNativeRuntimeError("interpreter transfer table is empty")
+        raise CandidateRuntimeError("interpreter transfer table is empty")
     if (
         rvas != sorted(rvas)
         or len(set(rvas)) != len(rvas)
         or len({binding.unit_id for binding in bindings}) != len(bindings)
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "interpreter transfer table must be strictly sorted and unique"
         )
     counts = _required_object(payload.get("counts"), "interpreter counts")
     if _required_count(counts.get("transfers"), "interpreter transfer count") != len(rvas):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "interpreter transfer count does not match its inventory"
         )
     if (
@@ -94,7 +94,7 @@ def _validate_program_manifest(
         )
         != 0
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "interpreter transfer scope does not match its inventory"
         )
     capability = _required_object(payload.get("capability"), "interpreter capability")
@@ -127,7 +127,7 @@ def _validate_complete_semantic_coverage(
         or coverage.get("acceptance_authority") is not False
         or payload.get("execution_policy") != "complete_transfer_inventory_v1"
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             f"{label} does not require complete semantic coverage"
         )
 
@@ -143,7 +143,7 @@ def _semantic_input_binding(
         or state_machine is not None
         or machine_ir is None
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             f"{label} must bind strict machine IR"
         )
     return str(mode), _required_object(machine_ir, f"{label} machine_ir")
@@ -154,20 +154,20 @@ def _validate_typed_x87_operations(rows: list[Any]) -> None:
     for index, raw in enumerate(rows):
         row = _required_object(raw, f"typed x87 operation {index}")
         if _contains_key(row, "instruction_bytes"):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "typed x87 operation contains a forbidden instruction payload"
             )
-        if row.get("format") != "stage-b-typed-native-x87-operation-v1":
-            raise StageBNativeRuntimeError("typed x87 operation has an unsupported format")
+        if row.get("format") != "spaghetti-extractor-typed-native-x87-operation-v1":
+            raise CandidateRuntimeError("typed x87 operation has an unsupported format")
         start = _required_u32(row.get("rva_start"), f"typed x87 operation {index} RVA")
         end = _required_u32(row.get("rva_end"), f"typed x87 operation {index} end RVA")
         if end <= start:
-            raise StageBNativeRuntimeError("typed x87 operation has an empty source span")
+            raise CandidateRuntimeError("typed x87 operation has an empty source span")
         operation = _required_object(
             row.get("operation"), f"typed x87 operation {index} descriptor"
         )
-        if operation.get("format") != "stage-b-typed-native-x87-operation-v1":
-            raise StageBNativeRuntimeError("typed x87 descriptor has an unsupported format")
+        if operation.get("format") != "spaghetti-extractor-typed-native-x87-operation-v1":
+            raise CandidateRuntimeError("typed x87 descriptor has an unsupported format")
         identity = _required_sha256(
             operation.get("identity"), f"typed x87 operation {index} identity"
         )
@@ -175,7 +175,7 @@ def _validate_typed_x87_operations(rows: list[Any]) -> None:
             operation.get("source_size"), f"typed x87 operation {index} source size"
         )
         if source_size == 0 or source_size != end - start:
-            raise StageBNativeRuntimeError("typed x87 operation source span is inconsistent")
+            raise CandidateRuntimeError("typed x87 operation source span is inconsistent")
         _required_string(operation.get("mnemonic"), "typed x87 mnemonic")
         _required_object(operation.get("operand"), "typed x87 operand")
         address_binding = _required_object(
@@ -189,12 +189,12 @@ def _validate_typed_x87_operations(rows: list[Any]) -> None:
                 )
                 != _required_u32(row.get("image_base"), "typed x87 image base")
             ):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "fixed x87 address binding differs from its operation image base"
                 )
             _required_u32(address_binding.get("target_rva"), "fixed x87 target RVA")
             if row.get("base_relocation") is not None:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "fixed x87 address binding unexpectedly carries relocation evidence"
                 )
         elif binding_kind == "pe32_highlow_relocation":
@@ -202,18 +202,18 @@ def _validate_typed_x87_operations(rows: list[Any]) -> None:
             _required_u32(address_binding.get("target_rva"), "relocated x87 target RVA")
         elif binding_kind == "position_independent":
             if row.get("base_relocation") is not None:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "position-independent x87 operation carries relocation evidence"
                 )
         else:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "typed x87 operation has an unsupported address binding"
             )
         if not identity:
-            raise StageBNativeRuntimeError("typed x87 operation identity is empty")
+            raise CandidateRuntimeError("typed x87 operation identity is empty")
         rvas.append(start)
     if rvas != sorted(rvas) or len(set(rvas)) != len(rvas):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "typed x87 operation RVAs must be strictly sorted and unique"
         )
 
@@ -237,14 +237,14 @@ def _validate_definedness_use(
     raw_metadata = payload.get("definedness_use")
     if raw_metadata is None:
         if required:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "interpreter program uses undefined_bv/undefined_flag but has no "
                 f"complete {DEFINEDNESS_USE_FORMAT} metadata"
             )
         return (), None
     metadata = _required_object(raw_metadata, "interpreter definedness_use")
-    if set(metadata) != STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS:
-        raise StageBNativeRuntimeError(
+    if set(metadata) != SPX_INTERPRETER_DEFINEDNESS_USE_FIELDS:
+        raise CandidateRuntimeError(
             "interpreter definedness_use fields do not match the v1 schema"
         )
     if (
@@ -253,7 +253,7 @@ def _validate_definedness_use(
         or metadata.get("proof_authority") is not False
         or metadata.get("state_machine_sha256") != state_machine_sha256
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "interpreter definedness_use metadata is not complete and hash-bound"
         )
     _required_sha256(
@@ -269,7 +269,7 @@ def _validate_definedness_use(
         ).encode("ascii")
     )
     if metadata.get("transfer_inventory_sha256") != transfer_digest:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "interpreter definedness_use transfer inventory SHA-256 mismatch"
         )
     metadata_digest = _required_sha256(
@@ -286,19 +286,19 @@ def _validate_definedness_use(
         ).encode("ascii")
     )
     if metadata_digest != actual_metadata_digest:
-        raise StageBNativeRuntimeError("definedness metadata SHA-256 mismatch")
+        raise CandidateRuntimeError("definedness metadata SHA-256 mismatch")
     undefined_node_count = _required_count(
         metadata.get("undefined_node_count"), "definedness undefined-node count"
     )
     counts = _required_object(payload.get("counts"), "interpreter counts")
     if "undefined_nodes" not in counts:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "interpreter counts omit undefined_nodes required for completeness"
         )
     if _required_count(counts.get("undefined_nodes"), "interpreter undefined-node count") != (
         undefined_node_count
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "definedness metadata does not cover the interpreter undefined-node count"
         )
     raw_slots = _required_list(metadata.get("slots"), "definedness slots")
@@ -310,7 +310,7 @@ def _validate_definedness_use(
         "definedness unused-evidence-slot count",
     )
     if evidence_slot_count != len(raw_slots) + unused_evidence_slot_count:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "definedness evidence-slot accounting is inconsistent"
         )
     policies: list[NativeUndefinedPolicy] = []
@@ -328,12 +328,12 @@ def _validate_definedness_use(
             "proof_obligations",
             "uses",
         }:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 f"definedness slot {index} fields do not match the v1 schema"
             )
         slot = _required_u32(slot_row.get("slot"), f"definedness slot {index} id")
         if slot in seen_slots:
-            raise StageBNativeRuntimeError("definedness metadata contains duplicate slots")
+            raise CandidateRuntimeError("definedness metadata contains duplicate slots")
         seen_slots.add(slot)
         undefined_id = _required_string(
             slot_row.get("undefined_id"), f"definedness slot {index} undefined id"
@@ -364,18 +364,18 @@ def _validate_definedness_use(
                 "requires_semantic_obligations",
             }
             if set(choice_source) != expected_choice_fields or (
-                choice_source.get("format") != "stage-a-definedness-choice-source-v1"
+                choice_source.get("format") != "spaghetti-extractor-definedness-choice-source-v1"
                 or choice_source.get("kind") != "noninterfering_zero"
                 or choice_source.get("slot") != slot
                 or choice_source.get("undefined_id") != undefined_id
                 or choice_source.get("requires_semantic_obligations")
                 is not bool(obligations)
             ):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "noninterfering undefined slot has invalid zero-choice evidence"
                 )
             if witness_policy != "zero":
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "noninterfering undefined slots require the checked zero witness policy"
                 )
             if (
@@ -384,7 +384,7 @@ def _validate_definedness_use(
                 classification == "unconstrained_conditionally_noninterfering"
                 and not obligations
             ):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "definedness conditional classification disagrees with obligations"
                 )
             choice_kind = "noninterfering_zero"
@@ -410,13 +410,13 @@ def _validate_definedness_use(
                 "instruction_model",
             }
             if (
-                (choice_format == "stage-a-definedness-choice-source-v3"
+                (choice_format == "spaghetti-extractor-definedness-choice-source-v3"
                  and set(choice_source) != exact_bytes_fields)
-                or (choice_format == "stage-a-definedness-choice-source-v4"
+                or (choice_format == "spaghetti-extractor-definedness-choice-source-v4"
                     and set(choice_source) != typed_ir_fields)
                 or choice_format not in {
-                    "stage-a-definedness-choice-source-v3",
-                    "stage-a-definedness-choice-source-v4",
+                    "spaghetti-extractor-definedness-choice-source-v3",
+                    "spaghetti-extractor-definedness-choice-source-v4",
                 }
                 or choice_source.get("kind") != "related_machine_input"
                 or choice_source.get("slot") != slot
@@ -424,28 +424,28 @@ def _validate_definedness_use(
                 or choice_source.get("profile")
                 != "ia32-bsr-zero-preserves-destination-v1"
             ):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "synchronized undefined slot has invalid machine-input evidence"
                 )
             _required_u32(
                 choice_source.get("instruction_rva"),
                 f"definedness slot {index} BSR instruction RVA",
             )
-            if choice_format == "stage-a-definedness-choice-source-v3":
+            if choice_format == "spaghetti-extractor-definedness-choice-source-v3":
                 instruction_bytes = choice_source.get("instruction_bytes")
                 if (
                     not isinstance(instruction_bytes, str)
                     or re.fullmatch(r"[0-9a-f]+", instruction_bytes) is None
                     or len(instruction_bytes) % 2
                 ):
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         "synchronized undefined slot has invalid BSR instruction bytes"
                     )
             elif (
                 choice_source.get("instruction_model")
                 != "sanitized_typed_machine_ir_v2"
             ):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "synchronized undefined slot has invalid typed instruction model"
                 )
             else:
@@ -469,7 +469,7 @@ def _validate_definedness_use(
                     ensure_ascii=True,
                 ).encode("ascii")
             ) != expected_expression_sha256:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "synchronized undefined slot input expression digest differs"
                 )
             location = _required_object(
@@ -477,7 +477,7 @@ def _validate_definedness_use(
                 f"definedness slot {index} input location",
             )
             if set(location) != {"family", "name"} or location.get("family") != "register":
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "synchronized undefined slot input location is not a register"
                 )
             input_location = _required_string(
@@ -485,30 +485,30 @@ def _validate_definedness_use(
                 f"definedness slot {index} input register",
             )
             if input_location not in {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "synchronized undefined slot input register is unsupported"
                 )
             if witness_policy != "synchronized":
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "synchronized undefined slot requires an input-derived witness policy"
                 )
             choice_kind = "related_machine_input"
         elif classification == "unknown":
             if witness_policy is not None:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "unknown slots cannot declare a candidate witness"
                 )
             if raw_choice_source is not None or obligations:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "unknown slots cannot declare choice or semantic evidence"
                 )
         else:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 f"definedness slot {index} has an unsupported classification"
             )
         uses = _required_list(slot_row.get("uses"), f"definedness slot {index} uses")
         if not uses:
-            raise StageBNativeRuntimeError(f"definedness slot {index} has no uses")
+            raise CandidateRuntimeError(f"definedness slot {index} has no uses")
         for use_index, raw_use in enumerate(uses):
             use = _required_object(
                 raw_use, f"definedness slot {index} use {use_index}"
@@ -519,7 +519,7 @@ def _validate_definedness_use(
                 frozenset(base_use_fields),
                 frozenset((*base_use_fields, "defined_value_node")),
             }:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"definedness slot {index} use {use_index} fields are invalid"
                 )
             transfer_id = _required_string(
@@ -529,7 +529,7 @@ def _validate_definedness_use(
                 use.get("node_index"), "definedness use node index"
             )
             if choice_kind == "related_machine_input" and "defined_value_node" not in use:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "synchronized definedness use omits its input-expression node"
                 )
             if "defined_value_node" in use:
@@ -538,15 +538,15 @@ def _validate_definedness_use(
                     "definedness use input-expression node index",
                 )
             if transfer_id not in transfer_ids:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "definedness use references an unknown interpreter transfer"
                 )
             if use.get("op") not in {"undefined_bv", "undefined_flag"}:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "definedness use must identify undefined_bv or undefined_flag"
                 )
             if (transfer_id, node_index) in seen_uses:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "definedness metadata contains a duplicate transfer/node use"
                 )
             seen_uses.add((transfer_id, node_index))
@@ -564,7 +564,7 @@ def _validate_definedness_use(
             )
         )
     if use_count != undefined_node_count or required != (undefined_node_count != 0):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "definedness metadata is incomplete for the interpreter undefined nodes"
         )
     return tuple(sorted(policies, key=lambda item: item.slot)), metadata_digest

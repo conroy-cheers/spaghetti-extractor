@@ -225,7 +225,7 @@ let
       ir.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in units))
       ir_hash = hashlib.sha256(ir.read_bytes()).hexdigest()
       manifest = {
-          "format": "stage-a-machine-ir-v2",
+          "format": "spaghetti-extractor-machine-ir-v2",
           "artifacts": {"machine_ir": {"path": "machine-ir.jsonl", "sha256": ir_hash}},
           "binary": {"sha256": "1" * 64},
           "control": {"roots": [{"kind": "pe_entrypoint", "rva": 4096, "checked": True}]},
@@ -234,10 +234,10 @@ let
       write(manifest_path, manifest)
       manifest_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
       plan = {
-          "format": "stage-b-reconstruction-plan-v1",
+          "format": "spaghetti-extractor-reconstruction-plan-v1",
           "status": "incomplete",
           "inputs": {"machine_ir": {
-              "format": "stage-a-machine-ir-v2",
+              "format": "spaghetti-extractor-machine-ir-v2",
               "sha256": ir_hash,
               "manifest_sha256": manifest_hash,
           }},
@@ -364,7 +364,7 @@ let
       write_package("component-proposals-selected-changed", selected_changed)
       PY
     '';
-  mkDag = componentIntent: reviewRoot: sourceRoot: proposals: import ../stage-b-components.nix {
+  mkDag = componentIntent: reviewRoot: sourceRoot: proposals: import ../component-workflow.nix {
     inherit pkgs pythonEnv pythonSource;
     intent = componentIntent;
     machineIr = fixture;
@@ -404,28 +404,28 @@ let
     { nativeBuildInputs = [ pkgs.coreutils ]; __contentAddressed = true; } ''
       mkdir -p "$out"
       cat > "$out/state-machine-runtime.h" <<'EOF'
-      #ifndef STAGE_B_STATE_MACHINE_RUNTIME_H
-      #define STAGE_B_STATE_MACHINE_RUNTIME_H
+      #ifndef SPX_STATE_MACHINE_RUNTIME_H
+      #define SPX_STATE_MACHINE_RUNTIME_H
       #include <stdint.h>
-      typedef struct stage_b_runtime {
+      typedef struct spx_runtime {
         void *context;
         uint32_t (*read)(void *, uint32_t, uint32_t, uint32_t *);
         void (*write)(void *, uint32_t, uint32_t, uint32_t, uint32_t *);
-      } stage_b_runtime;
-      typedef struct stage_b_machine_state {
+      } spx_runtime;
+      typedef struct spx_machine_state {
         uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp;
         uint32_t cf, zf, sf, of, pf, df;
-      } stage_b_machine_state;
-      typedef struct stage_b_step_result {
+      } spx_machine_state;
+      typedef struct spx_step_result {
         uint32_t kind, target_rva, value;
-      } stage_b_step_result;
+      } spx_step_result;
       enum {
-        STAGE_B_FALLTHROUGH = 0,
-        STAGE_B_JUMP = 1,
-        STAGE_B_BRANCH = 2,
-        STAGE_B_RETURN = 3,
-        STAGE_B_MEMORY_FAULT = 6,
-        STAGE_B_UNIMPLEMENTED = 7
+        SPX_FALLTHROUGH = 0,
+        SPX_JUMP = 1,
+        SPX_BRANCH = 2,
+        SPX_RETURN = 3,
+        SPX_MEMORY_FAULT = 6,
+        SPX_UNIMPLEMENTED = 7
       };
       #endif
       EOF

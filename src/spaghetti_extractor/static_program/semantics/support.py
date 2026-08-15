@@ -6,7 +6,8 @@ import re
 from collections import Counter
 from typing import Any, Iterable, Mapping, Protocol
 
-from ...pe32.stage_binary import BlockSide, StageAInputError
+from ...errors import ToolkitInputError
+from ...pe32.model import BlockSide
 
 
 class _StaticUnitLike(Protocol):
@@ -28,12 +29,12 @@ def _mapping_source(unit: _StaticUnitLike) -> dict[str, Any]:
 
 def _parse_int(value: Any) -> int:
     if isinstance(value, bool):
-        raise StageAInputError(f"expected integer or integer string, got {value!r}")
+        raise ToolkitInputError(f"expected integer or integer string, got {value!r}")
     if isinstance(value, int):
         return value
     if isinstance(value, str):
         return int(value, 0)
-    raise StageAInputError(f"expected integer or integer string, got {value!r}")
+    raise ToolkitInputError(f"expected integer or integer string, got {value!r}")
 
 
 def _is_conditional_jump(mnemonic: str) -> bool:

@@ -1,4 +1,4 @@
-"""Semantic transfer compiler for the Stage B interpreter."""
+"""Semantic transfer compiler for the candidate reconstruction interpreter."""
 
 from __future__ import annotations
 
@@ -9,10 +9,10 @@ from ..artifacts.formats import (
     INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
     NATIVE_X87_REPLAY_FORMAT,
 )
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes
 from .interpreter_model import (
-    StageBInterpreterError,
+    CandidateInterpreterError,
     _AF_FLAG_INDEX,
     _Action,
     _Call,
@@ -107,7 +107,7 @@ class _TransferCompiler:
         elif native_x87_replay:
             scheduled_x87_replay = self._compile_x87_replay(fpu)
         elif fpu is not None:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: x87 transitions require an exact checked replay schedule",
                 code="x87_checked_replay_required",
                 next_action=(
@@ -155,14 +155,14 @@ class _TransferCompiler:
                 start = _u32(micro.get("rva_start"), "typed x87 start RVA")
                 end = _u32(micro.get("rva_end"), "typed x87 end RVA")
                 if start != cursor or end <= start:
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: typed x87 micro-ops do not cover the unit",
                         code="malformed_machine_ir_instruction_schedule",
                     )
                 self._append_machine_ir_x87_operation(micro)
                 cursor = end
             if cursor != original_end:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: typed x87 micro-ops do not cover the unit",
                     code="malformed_machine_ir_instruction_schedule",
                 )
@@ -179,7 +179,7 @@ class _TransferCompiler:
             or schedule_object.get("rva_start", original_start) != original_start
             or schedule_object.get("rva_end", original_end) != original_end
         ):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: machine-IR instruction schedule is incomplete",
                 code="malformed_machine_ir_instruction_schedule",
             )
@@ -192,7 +192,7 @@ class _TransferCompiler:
             f"{self.identity} machine-IR schedule counts",
         )
         if counts.get("instructions") != len(records) or counts.get("blockers") != 0:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: machine-IR schedule counts are inconsistent",
                 code="malformed_machine_ir_instruction_schedule",
             )
@@ -201,7 +201,7 @@ class _TransferCompiler:
             micro = _object(raw, f"{self.identity} x87 micro-op")
             rva = _u32(micro.get("rva_start"), "x87 micro-op RVA")
             if rva in micro_by_rva:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: duplicate x87 micro-op RVA 0x{rva:x}",
                     code="malformed_machine_ir_instruction_schedule",
                 )
@@ -215,7 +215,7 @@ class _TransferCompiler:
             rva = _u32(record.get("rva_start"), "machine-IR schedule RVA")
             rva_end = _u32(record.get("rva_end"), "machine-IR schedule end RVA")
             if rva != cursor or rva_end <= rva:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: machine-IR schedule is not contiguous",
                     code="malformed_machine_ir_instruction_schedule",
                 )
@@ -230,7 +230,7 @@ class _TransferCompiler:
                 != "proposal_requires_lean_exact_byte_replay"
                 or classification.get("proof_authority") is not False
             ):
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: machine-IR schedule classification is invalid",
                     code="malformed_machine_ir_instruction_schedule",
                 )
@@ -251,7 +251,7 @@ class _TransferCompiler:
                     control_object.get("kind") != "fallthrough"
                     or control_object.get("target_rva") != next_record.get("rva_start")
                 ):
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: machine-IR schedule is not contiguous",
                         code="malformed_machine_ir_instruction_schedule",
                     )
@@ -260,7 +260,7 @@ class _TransferCompiler:
             if instruction_class == "x87_singleton_checked_replay":
                 micro = micro_by_rva.get(rva)
                 if micro is None:
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: x87 schedule record has no typed micro-op",
                         code="malformed_machine_ir_instruction_schedule",
                     )
@@ -269,7 +269,7 @@ class _TransferCompiler:
                     or classification.get("checked_decoder") != _X87_CHECKED_DECODER
                     or classification.get("checked_executor") != _X87_CHECKED_EXECUTOR
                 ):
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: typed x87 schedule binding is invalid",
                         code="malformed_machine_ir_instruction_schedule",
                     )
@@ -283,7 +283,7 @@ class _TransferCompiler:
                     or classification.get("checked_executor")
                     != _ORDINARY_CHECKED_EXECUTOR
                 ):
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: ordinary schedule binding is invalid",
                         code="malformed_machine_ir_instruction_schedule",
                     )
@@ -297,7 +297,7 @@ class _TransferCompiler:
                     self.instruction_local = False
                 ordinary_count += 1
             else:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: unsupported machine-IR instruction class",
                     code="malformed_machine_ir_instruction_schedule",
                 )
@@ -312,7 +312,7 @@ class _TransferCompiler:
                 finally:
                     self.instruction_local = False
         if used != set(micro_by_rva):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: machine-IR x87 micro-op coverage differs from schedule",
                 code="malformed_machine_ir_instruction_schedule",
             )
@@ -321,7 +321,7 @@ class _TransferCompiler:
             or counts.get("x87_singletons") != x87_count
             or counts.get("ordinary_instructions") != ordinary_count
         ):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: machine-IR schedule coverage is inconsistent",
                 code="malformed_machine_ir_instruction_schedule",
             )
@@ -340,7 +340,7 @@ class _TransferCompiler:
             or micro.get("physical_state_effect")
             != "defined_by_checked_typed_x87_executor"
         ):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: typed x87 micro-op is not bound to its unit or checker",
                 code="malformed_typed_x87_operation",
             )
@@ -348,8 +348,8 @@ class _TransferCompiler:
         image_base = _u32(typed_replay.get("image_base"), "typed x87 image base")
         try:
             operation = typed_x87_operation_from_micro_op(micro, image_base=image_base)
-        except StageAInputError as exc:
-            raise StageBInterpreterError(
+        except ToolkitInputError as exc:
+            raise CandidateInterpreterError(
                 f"{self.identity}: malformed typed x87 micro-op: {exc}",
                 code="unsupported_typed_x87_operation",
             ) from exc
@@ -364,7 +364,7 @@ class _TransferCompiler:
             or start < original_start
             or end > original_end
         ):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: typed x87 micro-op span is invalid for its unit",
                 code="malformed_typed_x87_operation",
             )
@@ -392,7 +392,7 @@ class _TransferCompiler:
     def _compile_symbolic_transfer(self) -> None:
         ordered = self.row.get("ordered_events")
         if not isinstance(ordered, list):
-            raise StageBInterpreterError(f"{self.identity}: ordered_events must be a list")
+            raise CandidateInterpreterError(f"{self.identity}: ordered_events must be a list")
         owned_register_outputs, owned_flag_outputs = self._rep_scas_owned_outputs(
             ordered
         )
@@ -411,7 +411,7 @@ class _TransferCompiler:
                 )
                 external_index += 1
             else:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: unsupported ordered-event family {family!r}"
                 )
 
@@ -422,7 +422,7 @@ class _TransferCompiler:
             if name in owned_register_outputs:
                 continue
             if name not in _REGISTER_INDEX:
-                raise StageBInterpreterError(f"{self.identity}: unsupported register {name!r}")
+                raise CandidateInterpreterError(f"{self.identity}: unsupported register {name!r}")
             updates.append(
                 _Action("set_reg", (self.word(write.get("value")),), _REGISTER_INDEX[name])
             )
@@ -432,7 +432,7 @@ class _TransferCompiler:
             if name in owned_flag_outputs:
                 continue
             if name not in _FLAG_INDEX:
-                raise StageBInterpreterError(f"{self.identity}: unsupported flag {name!r}")
+                raise CandidateInterpreterError(f"{self.identity}: unsupported flag {name!r}")
             updates.append(
                 _Action("set_flag", (self.word(write.get("value")),), _FLAG_INDEX[name])
             )
@@ -470,7 +470,7 @@ class _TransferCompiler:
             event.get(field) != aggregate.get(field)
             for field in identity_fields
         ):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: instruction and aggregate call identities differ",
                 code="instruction_call_boundary_mismatch",
             )
@@ -522,7 +522,7 @@ class _TransferCompiler:
         )
 
         def reject(message: str, *, code: str = "malformed_x87_replay") -> None:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: {message}",
                 code=code,
                 next_action=malformed_action,
@@ -530,7 +530,7 @@ class _TransferCompiler:
 
         if fpu.get("status") != "required":
             reject("x87 replay obligation status must be 'required'")
-        if fpu.get("authoritative_state_type") != "StageA.X87.PhysicalState":
+        if fpu.get("authoritative_state_type") != "SpaghettiExtractor.ISA.X87.PhysicalState":
             reject("x87 replay obligation has an unsupported authoritative state type")
         if fpu.get("required_fields") != list(_X87_PHYSICAL_FIELDS):
             reject("x87 replay obligation required_fields changed")
@@ -674,7 +674,7 @@ class _TransferCompiler:
                 )
                 if not is_x87
             ]
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: mixed x87/ordinary transfer lacks instruction-local "
                 f"effect interleaving (x87 RVAs={_rva_list(x87_rvas)}, "
                 f"ordinary RVAs={_rva_list(ordinary_rvas)})",
@@ -715,12 +715,12 @@ class _TransferCompiler:
         transfer_digest: str,
     ) -> None:
         if schedule.get("format") != _INSTRUCTION_EFFECT_SCHEDULE_FORMAT:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: unsupported instruction effect schedule format",
                 code="malformed_x87_instruction_effect_schedule",
             )
         if schedule.get("status") != "complete" or schedule.get("proof_authority") is not False:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: instruction effect schedule is not a complete proposal",
                 code="malformed_x87_instruction_effect_schedule",
             )
@@ -732,18 +732,18 @@ class _TransferCompiler:
             or schedule.get("rva_end", original.get("rva_end"))
             != original.get("rva_end")
         ):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: instruction effect schedule span or ordering changed",
                 code="malformed_x87_instruction_effect_schedule",
             )
         if schedule.get("transfer_bytes_sha256") != transfer_digest:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: instruction effect schedule binds different transfer bytes",
                 code="malformed_x87_instruction_effect_schedule",
             )
         outer_schedule = self.row.get("instruction_effect_schedule")
         if outer_schedule != schedule:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: outer and replay instruction effect schedules differ",
                 code="malformed_x87_instruction_effect_schedule",
             )
@@ -753,24 +753,24 @@ class _TransferCompiler:
         schedule_body = dict(schedule)
         del schedule_body["schedule_sha256"]
         if _json_sha256(schedule_body) != schedule_digest:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: instruction effect schedule SHA-256 mismatch",
                 code="malformed_x87_instruction_effect_schedule",
             )
         if schedule.get("blockers") != []:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: complete instruction effect schedule contains blockers",
                 code="malformed_x87_instruction_effect_schedule",
             )
         records = _list(schedule.get("records"), "instruction effect schedule records")
         if len(records) != len(instruction_records):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: instruction effect schedule does not cover the transfer",
                 code="malformed_x87_instruction_effect_schedule",
             )
         counts = _object(schedule.get("counts"), "instruction effect schedule counts")
         if counts.get("instructions") != len(records) or counts.get("blockers") != 0:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: instruction effect schedule counts are inconsistent",
                 code="malformed_x87_instruction_effect_schedule",
             )
@@ -790,7 +790,7 @@ class _TransferCompiler:
             record_body = dict(record)
             del record_body["record_sha256"]
             if _json_sha256(record_body) != record_digest:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: schedule record {index} SHA-256 mismatch",
                     code="malformed_x87_instruction_effect_schedule",
                 )
@@ -804,7 +804,7 @@ class _TransferCompiler:
                 or record.get("bytes_sha256") != sha256_bytes(instruction_bytes)
                 or record.get("transfer_bytes_sha256") != transfer_digest
             ):
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: schedule record {index} does not bind its exact instruction",
                     code="malformed_x87_instruction_effect_schedule",
                 )
@@ -816,7 +816,7 @@ class _TransferCompiler:
                 != "proposal_requires_lean_exact_byte_replay"
                 or classification.get("proof_authority") is not False
             ):
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: schedule record {index} classification is unqualified",
                     code="malformed_x87_instruction_effect_schedule",
                 )
@@ -841,7 +841,7 @@ class _TransferCompiler:
                     control.get("kind") != "fallthrough"
                     or control.get("target_rva") != next_rva
                 ):
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: schedule record {index} does not fall through "
                         "to the next exact instruction",
                         code="malformed_x87_instruction_effect_schedule",
@@ -854,7 +854,7 @@ class _TransferCompiler:
                     classification.get("checked_decoder") != _X87_CHECKED_DECODER
                     or classification.get("checked_executor") != _X87_CHECKED_EXECUTOR
                 ):
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: x87 schedule record {index} names an unsupported checker",
                         code="malformed_x87_instruction_effect_schedule",
                     )
@@ -872,7 +872,7 @@ class _TransferCompiler:
                     or singleton.get("physical_state_effect")
                     != "produced_by_checked_executor_not_inferred_by_exporter"
                 ):
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: x87 schedule record {index} singleton binding is malformed",
                         code="malformed_x87_instruction_effect_schedule",
                     )
@@ -891,7 +891,7 @@ class _TransferCompiler:
                 self._reset_instruction_expression_cache()
                 if index + 1 == len(records):
                     if control.get("kind") not in {"fallthrough", "jump"}:
-                        raise StageBInterpreterError(
+                        raise CandidateInterpreterError(
                             f"{self.identity}: terminal checked x87 instruction has "
                             "non-static control",
                             code="x87_checked_export_unavailable",
@@ -908,7 +908,7 @@ class _TransferCompiler:
                     or classification.get("checked_executor") != _ORDINARY_CHECKED_EXECUTOR
                     or "x87_singleton_replay" in record
                 ):
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: ordinary schedule record {index} is malformed",
                         code="malformed_x87_instruction_effect_schedule",
                     )
@@ -922,7 +922,7 @@ class _TransferCompiler:
                     self.instruction_local = False
                 ordinary_count += 1
             else:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: schedule record {index} has an unsupported class",
                     code="malformed_x87_instruction_effect_schedule",
                 )
@@ -930,12 +930,12 @@ class _TransferCompiler:
             counts.get("x87_singletons") != x87_count
             or counts.get("ordinary_instructions") != ordinary_count
         ):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: instruction effect schedule class counts differ",
                 code="malformed_x87_instruction_effect_schedule",
             )
         if final_control is None or self.scheduled_outcome is None:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: instruction effect schedule has no composable outcome",
                 code="malformed_x87_instruction_effect_schedule",
             )
@@ -944,7 +944,7 @@ class _TransferCompiler:
         aggregate = _object(self.row.get("outcome"), f"{self.identity} outcome")
         kind = control.get("kind")
         if kind != aggregate.get("kind"):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: final schedule control differs from aggregate outcome",
                 code="malformed_x87_instruction_effect_schedule",
             )
@@ -954,7 +954,7 @@ class _TransferCompiler:
             "branch": ("true_target_rva", "false_target_rva"),
         }.get(str(kind), ())
         if any(control.get(field) != aggregate.get(field) for field in fields):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: final schedule targets differ from aggregate outcome",
                 code="malformed_x87_instruction_effect_schedule",
             )
@@ -993,7 +993,7 @@ class _TransferCompiler:
                 if name in owned_register_outputs:
                     continue
                 if name not in _REGISTER_INDEX:
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: unsupported instruction register {name!r}"
                     )
                 updates.append(_Action(
@@ -1005,7 +1005,7 @@ class _TransferCompiler:
                 if name in owned_flag_outputs:
                     continue
                 if name not in _FLAG_INDEX:
-                    raise StageBInterpreterError(
+                    raise CandidateInterpreterError(
                         f"{self.identity}: unsupported instruction flag {name!r}"
                     )
                 updates.append(_Action(
@@ -1029,7 +1029,7 @@ class _TransferCompiler:
                 )
                 external_index += 1
             else:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: unsupported instruction event family {family!r}"
                 )
         if call_event:
@@ -1050,7 +1050,7 @@ class _TransferCompiler:
                 != list(_REP_SCAS_OWNED_REGISTERS)
                 or raw.get("owned_flag_outputs") != list(_REP_SCAS_OWNED_FLAGS)
             ):
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: rep_scas has an invalid owned-output inventory",
                     code="malformed_rep_scas_event",
                 )
@@ -1061,7 +1061,7 @@ class _TransferCompiler:
     def _check_x87_replay_outcome(self, outcome: Mapping[str, Any]) -> None:
         continuation = self.x87_operations[-1].rva_end
         if outcome.get("kind") != "fallthrough" or outcome.get("target_rva") != continuation:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: checked x87 replay sequence must fall through to its span end",
                 code="unsupported_x87_replay_outcome",
                 next_action=(
@@ -1096,7 +1096,7 @@ class _TransferCompiler:
 
     def x87(self, raw: Any) -> int:
         _object(raw, f"{self.identity} x87 expression")
-        raise StageBInterpreterError(
+        raise CandidateInterpreterError(
             f"{self.identity}: x87-derived value is not materialized by checked replay",
             code="x87_checked_export_unavailable",
             next_action=(
@@ -1145,7 +1145,7 @@ class _TransferCompiler:
         if op == "reg":
             name = _string(expr.get("name"), "register expression name")
             if name not in _REGISTER_INDEX:
-                raise StageBInterpreterError(f"{self.identity}: unsupported register {name!r}")
+                raise CandidateInterpreterError(f"{self.identity}: unsupported register {name!r}")
             return _Node(
                 op,
                 aux=_REGISTER_INDEX[name],
@@ -1154,7 +1154,7 @@ class _TransferCompiler:
         if op == "flag":
             name = _string(expr.get("name"), "flag expression name")
             if name not in _FLAG_INDEX and name != "af":
-                raise StageBInterpreterError(f"{self.identity}: unsupported flag {name!r}")
+                raise CandidateInterpreterError(f"{self.identity}: unsupported flag {name!r}")
             return _Node(
                 op,
                 aux=_AF_FLAG_INDEX if name == "af" else _FLAG_INDEX[name],
@@ -1172,7 +1172,7 @@ class _TransferCompiler:
         if op in {"call_response", "call_flag"}:
             call_index = _nonnegative(expr.get("call_index"), f"{op} call_index")
             if call_index not in self.available_calls:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: {op} references unavailable call {call_index}"
                 )
             field = _string(
@@ -1181,7 +1181,7 @@ class _TransferCompiler:
             )
             index_map = _REGISTER_INDEX if op == "call_response" else _FLAG_INDEX
             if field not in index_map and not (op == "call_flag" and field == "af"):
-                raise StageBInterpreterError(f"{self.identity}: unsupported {op} field {field!r}")
+                raise CandidateInterpreterError(f"{self.identity}: unsupported {op} field {field!r}")
             index = _AF_FLAG_INDEX if field == "af" else index_map[field]
             return _Node(op, aux=index, immediate=call_index)
         if op == "load":
@@ -1195,7 +1195,7 @@ class _TransferCompiler:
             if len(args) != expected or args[0] not in {
                 "shl", "sal", "shr", "sar", "shld", "shrd"
             }:
-                raise StageBInterpreterError(f"{self.identity}: unsupported {op} shape")
+                raise CandidateInterpreterError(f"{self.identity}: unsupported {op} shape")
             width = _width_bits(args[1])
             kind = {"shl": 0, "sal": 0, "shld": 0, "shr": 1, "shrd": 1, "sar": 2}[str(args[0])]
             refs = tuple(self.word(arg) for arg in args[2:])
@@ -1215,13 +1215,13 @@ class _TransferCompiler:
             "adc_carry": 5, "adc_overflow": 5,
         }.get(op)
         if expected is None:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: unsupported semantic op {op!r}"
             )
         args = _list(expr.get("args"), f"{op} args")
         refs = tuple(self.word(arg) for arg in args)
         if not _arity_ok(len(refs), expected):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: unsupported semantic op {op!r} with {len(refs)} args"
             )
         return _Node(op, refs)
@@ -1249,7 +1249,7 @@ class _TransferCompiler:
             return _Node(op, (self.x87(args[0]), self.x87(args[1])))
         if op == "fpu_int32" and len(args) == 2:
             return _Node(op, (self.x87(args[0]), self.word(args[1])))
-        raise StageBInterpreterError(f"{self.identity}: unsupported x87 word op {op!r}")
+        raise CandidateInterpreterError(f"{self.identity}: unsupported x87 word op {op!r}")
 
     def _x87_node(self, op: str, expr: Mapping[str, Any]) -> _Node:
         args = _list(expr.get("args"), f"{op} args")
@@ -1262,7 +1262,7 @@ class _TransferCompiler:
         if op in {"fpu_mem", "fpu_int"} and len(args) == 2:
             width = _width_bits(args[0])
             if op == "fpu_mem" and width != 32:
-                raise StageBInterpreterError(f"{self.identity}: fpu_mem supports 32 bits")
+                raise CandidateInterpreterError(f"{self.identity}: fpu_mem supports 32 bits")
             return _Node(op, (self.word(args[1]),), aux=width)
         if op == "fpu_mem64" and len(args) == 2:
             return _Node(op, (self.word(args[0]), self.word(args[1])))
@@ -1270,7 +1270,7 @@ class _TransferCompiler:
             return _Node(op, (self.x87(args[0]),))
         if op in {"fpu_add", "fpu_sub", "fpu_subr", "fpu_mul", "fpu_div", "fpu_divr"} and len(args) == 2:
             return _Node(op, (self.x87(args[0]), self.x87(args[1])))
-        raise StageBInterpreterError(f"{self.identity}: unsupported x87 value op {op!r}")
+        raise CandidateInterpreterError(f"{self.identity}: unsupported x87 value op {op!r}")
 
     def _memory_event(self, event: Mapping[str, Any]) -> None:
         kind = event.get("kind")
@@ -1282,11 +1282,11 @@ class _TransferCompiler:
             value = self.word(event.get("value"))
             self.actions.append(_Action("memory_write", (address, value), width))
         else:
-            raise StageBInterpreterError(f"{self.identity}: unsupported memory event {kind!r}")
+            raise CandidateInterpreterError(f"{self.identity}: unsupported memory event {kind!r}")
 
     def _fault_event(self, event: Mapping[str, Any]) -> None:
         if event.get("kind") != "divide_error":
-            raise StageBInterpreterError(f"{self.identity}: unsupported fault event")
+            raise CandidateInterpreterError(f"{self.identity}: unsupported fault event")
         self.actions.append(_Action("divide_if", (self.word(event.get("condition")),)))
 
     def _external_event(self, event: Mapping[str, Any], event_index: int) -> None:
@@ -1305,7 +1305,7 @@ class _TransferCompiler:
                 effect_model="symbolic_string_copy_v2",
             )
             if "value" in event:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: rep_movs must not carry a fill value",
                     code="malformed_rep_movs_event",
                 )
@@ -1327,7 +1327,7 @@ class _TransferCompiler:
         if kind == "rep_stosd":
             _u32(event.get("instruction_rva"), "rep_stosd instruction_rva")
             if event.get("effect_model") != "symbolic_string_fill_v1":
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: rep_stosd requires symbolic_string_fill_v1",
                     code="malformed_rep_stosd_event",
                     next_action=(
@@ -1336,7 +1336,7 @@ class _TransferCompiler:
                     ),
                 )
             if _nonnegative(event.get("index"), "rep_stosd event index") != event_index:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: rep_stosd event index does not match its "
                     "ordered external-event position",
                     code="malformed_rep_stosd_event",
@@ -1345,7 +1345,7 @@ class _TransferCompiler:
                     ),
                 )
             if "source" in event:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: rep_stosd must not carry a source address",
                     code="malformed_rep_stosd_event",
                     next_action=(
@@ -1367,7 +1367,7 @@ class _TransferCompiler:
                 effect_model="symbolic_string_fill_v2",
             )
             if "source" in event:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: rep_stos must not carry a source address",
                     code="malformed_rep_stos_event",
                 )
@@ -1379,7 +1379,7 @@ class _TransferCompiler:
             ), width))
             return
         if kind not in {"external_call", "internal_call", "indirect_call"}:
-            raise StageBInterpreterError(f"{self.identity}: unsupported external event {kind!r}")
+            raise CandidateInterpreterError(f"{self.identity}: unsupported external event {kind!r}")
         registers = _object(event.get("register_inputs"), "call register_inputs")
         flags = _object(event.get("flag_inputs"), "call flag_inputs")
         register_nodes = tuple(self.word(registers.get(name)) for name in _REGISTERS)
@@ -1433,30 +1433,30 @@ class _TransferCompiler:
         code = f"malformed_{kind}_event"
         _u32(event.get("instruction_rva"), f"{kind} instruction_rva")
         if event.get("effect_model") != effect_model:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: {kind} requires {effect_model}",
                 code=code,
             )
         if event.get("address_size") != 32:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: {kind} requires 32-bit address size",
                 code=code,
             )
         if event.get("restart_semantics") != "element_committed_v1":
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: {kind} requires element_committed_v1 restart semantics",
                 code=code,
             )
         if _nonnegative(event.get("index"), f"{kind} event index") != event_index:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: {kind} event index does not match its "
                 "ordered external-event position",
                 code=code,
             )
         try:
             return _width(event.get("element_width"))
-        except StageBInterpreterError as error:
-            raise StageBInterpreterError(
+        except CandidateInterpreterError as error:
+            raise CandidateInterpreterError(
                 f"{self.identity}: {kind} has invalid element width",
                 code=code,
             ) from error
@@ -1474,13 +1474,13 @@ class _TransferCompiler:
                 kind="rep_scas",
                 effect_model="symbolic_string_scan_v1",
             )
-        except StageBInterpreterError as error:
-            raise StageBInterpreterError(
+        except CandidateInterpreterError as error:
+            raise CandidateInterpreterError(
                 f"{self.identity}: malformed rep_scas event: {error}",
                 code=code,
             ) from error
         if width != 1:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: rep_scas requires byte element width",
                 code=code,
             )
@@ -1492,7 +1492,7 @@ class _TransferCompiler:
         }
         for field, expected in required_models.items():
             if event.get(field) != expected:
-                raise StageBInterpreterError(
+                raise CandidateInterpreterError(
                     f"{self.identity}: rep_scas requires {expected}",
                     code=code,
                 )
@@ -1501,12 +1501,12 @@ class _TransferCompiler:
             != list(_REP_SCAS_OWNED_REGISTERS)
             or event.get("owned_flag_outputs") != list(_REP_SCAS_OWNED_FLAGS)
         ):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: rep_scas has an invalid owned-output inventory",
                 code=code,
             )
         if "source" in event or "value" in event:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{self.identity}: rep_scas must not carry copy/fill operands",
                 code=code,
             )
@@ -1527,4 +1527,4 @@ class _TransferCompiler:
             return _Action("outcome_indirect", (self.word(outcome.get("target")),))
         if kind == "external_jump":
             return _Action("outcome_external")
-        raise StageBInterpreterError(f"{self.identity}: unsupported outcome {kind!r}")
+        raise CandidateInterpreterError(f"{self.identity}: unsupported outcome {kind!r}")

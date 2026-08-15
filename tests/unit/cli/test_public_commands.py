@@ -24,21 +24,21 @@ TESTKIT = {"commands": ("*",)}
 
 
 RETIRED_COMMANDS = (
-    "stage-a-export-opaque-reconstruction",
-    "stage-a-export-reference-contract",
-    "stage-a-smoke-contract",
-    "stage-a-explain-contract",
-    "stage-a-diff-contract",
-    "stage-a-check-isa-conformance-worker",
-    "stage-b-record-candidate",
-    "stage-b-validate-candidate",
-    "stage-b-explain-delta",
-    "stage-b-bind-source-project",
-    "stage-b-resolve-component-catalog-v2",
-    "stage-b-build-component-contract-v2",
-    "stage-b-package-component-source-v2",
-    "stage-b-qualify-component-v2",
-    "stage-b-compose-components-v2",
+    "spaghetti-extractor-export-opaque-reconstruction",
+    "spaghetti-extractor-export-reference-contract",
+    "spaghetti-extractor-smoke-contract",
+    "spaghetti-extractor-explain-contract",
+    "spaghetti-extractor-diff-contract",
+    "isa-check-conformance-worker",
+    "spaghetti-extractor-record-candidate",
+    "spaghetti-extractor-validate-candidate",
+    "spaghetti-extractor-explain-delta",
+    "spaghetti-extractor-bind-source-project",
+    "spaghetti-extractor-resolve-component-catalog-v2",
+    "component-contract-build-v2",
+    "component-source-package-v2",
+    "component-qualify-v2",
+    "component-compose-v2",
 )
 
 OPERATOR_COMMANDS = (
@@ -109,7 +109,7 @@ class PublicCliTests(unittest.TestCase):
             (
                 "spaghetti_extractor.commands.proposal_static",
                 "proposal",
-                "command:expert stage-a-inventory-binary",
+                "command:expert static-inventory-binary",
             ),
             roots,
         )
@@ -238,10 +238,10 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
 
     def test_native_engine_command_exposes_only_static_closed_inputs(self) -> None:
         parser = _build_parser(
-            selected_command="expert stage-b-generate-native-engine"
+            selected_command="expert candidate-generate-engine"
         )
         command = _command_parser(
-            parser, "expert stage-b-generate-native-engine"
+            parser, "expert candidate-generate-engine"
         )
         actions = {action.dest: action for action in command._actions}
 

@@ -10,7 +10,7 @@ class NativeRuntimeFailurePolicyTests(unittest.TestCase):
             profile = root / "external-profile.json"
             profile.write_text(
                 json.dumps({
-                    "format": "stage-a-external-environment-profile-v1",
+                    "format": "spaghetti-extractor-external-environment-profile-v1",
                     "id": "fixture-variadic-profile-v1",
                     "machine_import_signatures": [{
                         "import": {
@@ -33,7 +33,7 @@ class NativeRuntimeFailurePolicyTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                StageAInputError, "native engine plan is incomplete"
+                ToolkitInputError, "native engine plan is incomplete"
             ):
                 _packages(
                     root,
@@ -49,7 +49,7 @@ class NativeRuntimeFailurePolicyTests(unittest.TestCase):
                 interpreter,
                 classification="unconstrained_noninterfering",
             )
-            package = write_stage_b_native_runtime_package(
+            package = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=root / "runtime",
@@ -70,10 +70,10 @@ class NativeRuntimeFailurePolicyTests(unittest.TestCase):
             source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
             self.assertIn(f"{{ 0x{slot:08x}U, 0U, 0U }}", source)
             undefined_body = source.split(
-                "static uint32_t stage_b_native_undefined_value", 1
-            )[1].split("static uint32_t stage_b_native_resolve_code_target", 1)[0]
+                "static uint32_t spx_native_undefined_value", 1
+            )[1].split("static uint32_t spx_native_resolve_code_target", 1)[0]
             self.assertIn("return 0U;", undefined_body)
-            self.assertNotIn("stage_b_native_halt", undefined_body)
+            self.assertNotIn("spx_native_halt", undefined_body)
 
     def test_unknown_slot_latches_and_returns_unimplemented(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -84,7 +84,7 @@ class NativeRuntimeFailurePolicyTests(unittest.TestCase):
                 classification="unknown",
                 include_defined_value=True,
             )
-            write_stage_b_native_runtime_package(
+            write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=root / "runtime",
@@ -93,7 +93,7 @@ class NativeRuntimeFailurePolicyTests(unittest.TestCase):
             self.assertIn(f"{{ 0x{slot:08x}U, 2U, 0U }}", source)
             self.assertIn("context->undefined_fault = 1U", source)
             self.assertIn(
-                "stage_b_native_diagnostic_reason = 0x5001U;",
+                "spx_native_diagnostic_reason = 0x5001U;",
                 source,
             )
             self.assertIn("context->undefined_fault_slot = slot;", source)
@@ -102,9 +102,9 @@ class NativeRuntimeFailurePolicyTests(unittest.TestCase):
                 source,
             )
             undefined_body = source.split(
-                "static uint32_t stage_b_native_undefined_value", 1
-            )[1].split("static uint32_t stage_b_native_resolve_code_target", 1)[0]
-            self.assertNotIn("stage_b_native_halt", undefined_body)
+                "static uint32_t spx_native_undefined_value", 1
+            )[1].split("static uint32_t spx_native_resolve_code_target", 1)[0]
+            self.assertNotIn("spx_native_halt", undefined_body)
 
     def test_synchronized_slot_uses_checked_machine_input(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -113,7 +113,7 @@ class NativeRuntimeFailurePolicyTests(unittest.TestCase):
             slot = _attach_definedness_metadata(
                 interpreter, classification="synchronized_behavior_relevant"
             )
-            package = write_stage_b_native_runtime_package(
+            package = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=root / "runtime",
@@ -129,8 +129,8 @@ class NativeRuntimeFailurePolicyTests(unittest.TestCase):
             source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
             self.assertIn(f"{{ 0x{slot:08x}U, 1U, 0U }}", source)
             undefined_body = source.split(
-                "static uint32_t stage_b_native_undefined_value", 1
-            )[1].split("static uint32_t stage_b_native_resolve_code_target", 1)[0]
+                "static uint32_t spx_native_undefined_value", 1
+            )[1].split("static uint32_t spx_native_resolve_code_target", 1)[0]
             self.assertIn("return defined_value;", undefined_body)
             self.assertIn("context->undefined_fault = 1U", undefined_body)
             self.assertNotIn("undefined_choice_provider", source)

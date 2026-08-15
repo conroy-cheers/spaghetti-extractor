@@ -8,7 +8,7 @@ class NativeSummarySelectionTests(unittest.TestCase):
         payload = {
             "control": {
                 "internal_call_preservation": {
-                    "format": "stage-a-internal-call-preservation-v1",
+                    "format": "spaghetti-extractor-internal-call-preservation-v1",
                     "status": "incomplete",
                     "fixed_point_complete": False,
                     "summaries": [

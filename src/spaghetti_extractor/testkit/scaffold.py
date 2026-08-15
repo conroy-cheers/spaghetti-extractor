@@ -15,6 +15,7 @@ from .static_manifest import refresh_repository_metadata
 PHASE_KINDS = frozenset({"map-units", "map-sccs", "reduce"})
 TEST_TIERS = frozenset({"benchmark", "integration", "smoke", "unit"})
 NAME = re.compile(r"^[a-z][a-z0-9_]*$")
+TARGET_ID = re.compile(r"^[a-z][a-z0-9-]*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +298,75 @@ def plan_fixture_scaffold(*, fixture_kind: str, name: str) -> ScaffoldPlan:
     )
 
 
+def plan_target_scaffold(*, target_id: str) -> ScaffoldPlan:
+    """Create an intentionally unregistered PE32 target skeleton."""
+
+    if not TARGET_ID.fullmatch(target_id):
+        raise TestkitError(
+            Diagnostic(
+                "error",
+                "invalid_target_id",
+                f"target id must be lowercase kebab-case: {target_id!r}",
+                remediation="Use letters, digits, and hyphens, beginning with a letter.",
+            )
+        )
+    metadata = json.dumps(
+        {
+            "format": "spaghetti-extractor-target-bundle-v3",
+            "id": target_id,
+            "display_name": target_id,
+            "input": {"kind": "pe32", "expected_sha256": "0" * 64},
+            "paths": {"nix": "default.nix", "components": None},
+            "workflow": {"default_configuration": None},
+        },
+        indent=2,
+        sort_keys=True,
+    ) + "\n"
+    module = f'''{{ pkgs, sdk }}:
+
+let
+  # Bind a reproducible PE derivation before adding this target to registry.nix.
+  originalPe = throw "configure the {target_id} original PE derivation";
+  runtimeProfile = "${{sdk.profiles}}/pe32-native-callthrough-runtime-v1.json";
+  workflow = sdk.workflow.pe32 {{
+    original = originalPe;
+    binaryIdentity = "{target_id}.exe";
+    externalProfile = runtimeProfile;
+    machineImportProfiles = [ runtimeProfile ];
+    launchProfileTemplate =
+      "${{sdk.profiles}}/pe32-win32-console-launch-assumptions-v1.json";
+    namePrefix = "spaghetti-extractor-{target_id}";
+  }};
+in
+sdk.target.pe32Bundle {{
+  targetRoot = ./.;
+  inherit workflow;
+  inputs = {{ }};
+}}
+'''
+    return ScaffoldPlan(
+        kind="target",
+        name=target_id,
+        files=(
+            ScaffoldFile(
+                f"targets/{target_id}/target.json",
+                metadata,
+                "target metadata with no component or runtime claims",
+            ),
+            ScaffoldFile(
+                f"targets/{target_id}/default.nix",
+                module,
+                "public-SDK-only target module requiring an explicit PE binding",
+            ),
+        ),
+        next_commands=(
+            f"edit targets/{target_id}/default.nix and target.json to bind the exact PE",
+            f"add {target_id} = ./{target_id}; to targets/registry.nix",
+            "nix flake check ./targets",
+        ),
+    )
+
+
 __all__ = [
     "PHASE_KINDS",
     "TEST_TIERS",
@@ -305,5 +375,6 @@ __all__ = [
     "apply_scaffold_plan",
     "plan_fixture_scaffold",
     "plan_phase_scaffold",
+    "plan_target_scaffold",
     "plan_test_scaffold",
 ]

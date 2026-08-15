@@ -11,7 +11,7 @@ from spaghetti_extractor.authority.source_plan import prepare_analysis_source_v3
 
 def _unit(unit_id: str, start: int, targets: list[int]) -> dict[str, object]:
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",

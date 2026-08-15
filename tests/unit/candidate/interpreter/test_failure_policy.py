@@ -34,7 +34,7 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
             schedule["records"][1]["rva_end"] = 0x2002
             _write_machine(machine, [valid, potential])
 
-            strict = write_stage_b_interpreter_package(
+            strict = write_spx_interpreter_package(
                 machine_ir=machine,
                 out=root / "strict",
             )
@@ -96,7 +96,7 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
             reachable["reachability"] = "reachable"
             _write_machine(machine, [reachable])
 
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine,
                 out=root / "package",
             )
@@ -117,7 +117,7 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
             )
             _write_machine(machine, [row])
 
-            write_stage_b_interpreter_package(
+            write_spx_interpreter_package(
                 machine_ir=machine, out=root / "package"
             )
             program = json.loads(
@@ -127,7 +127,7 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
             )
             metadata = program["definedness_use"]
             self.assertEqual(
-                metadata["format"], STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT
+                metadata["format"], SPX_INTERPRETER_DEFINEDNESS_USE_FORMAT
             )
             self.assertEqual(metadata["status"], "complete")
             self.assertFalse(metadata["proof_authority"])
@@ -167,10 +167,10 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
                 ],
             })])
             package_dir = root / "package"
-            write_stage_b_interpreter_package(
+            write_spx_interpreter_package(
                 machine_ir=machine, out=package_dir
             )
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
             undefined_index = next(
                 index
                 for index, node in enumerate(transfer.nodes)
@@ -192,27 +192,27 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
 static uint32_t undefined_calls;
 
 static uint32_t undefined_value(
-    void *context, uint32_t slot, const stage_b_machine_state *input,
+    void *context, uint32_t slot, const spx_machine_state *input,
     uint32_t defined_value) {
   (void)context; (void)slot; (void)input; (void)defined_value;
   ++undefined_calls;
   return 0U;
 }
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 
 int main(void) {
-  stage_b_runtime runtime = {0};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result;
+  spx_runtime runtime = {0};
+  spx_machine_state state = {0};
+  spx_step_result result;
   runtime.undefined_value = undefined_value;
-  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
-  if (result.kind == STAGE_B_UNIMPLEMENTED) return 1;
+  result = spx_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind == SPX_UNIMPLEMENTED) return 1;
   if (state.eax != 7U) return 2;
   if (undefined_calls != 0U) return 3;
   return 0;
@@ -273,7 +273,7 @@ int main(void) {
             }]
             _write_machine(machine, [row])
             package_dir = root / "package"
-            write_stage_b_interpreter_package(
+            write_spx_interpreter_package(
                 machine_ir=machine, out=package_dir
             )
             harness = root / "harness.c"
@@ -284,30 +284,30 @@ int main(void) {
 static uint32_t undefined_calls;
 
 static uint32_t undefined_value(
-    void *context, uint32_t slot, const stage_b_machine_state *input,
+    void *context, uint32_t slot, const spx_machine_state *input,
     uint32_t defined_value) {
   (void)context; (void)slot; (void)input; (void)defined_value;
   ++undefined_calls;
   return 0U;
 }
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime, const stage_b_call_event *event,
-    const stage_b_machine_state *input, stage_b_machine_state *output) {
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime, const spx_call_event *event,
+    const spx_machine_state *input, spx_machine_state *output) {
   (void)runtime; (void)event; (void)input; (void)output;
-  return STAGE_B_CALL_UNIMPLEMENTED;
+  return SPX_CALL_UNIMPLEMENTED;
 }
 
 int main(void) {
-  stage_b_runtime runtime = {0};
-  stage_b_machine_state state = {0};
-  stage_b_step_result result;
+  spx_runtime runtime = {0};
+  spx_machine_state state = {0};
+  spx_step_result result;
   runtime.undefined_value = undefined_value;
   state.eax = 20000U;
   state.edx = 0U;
   state.esi = 4096U;
-  result = stage_b_interpreter_step(&runtime, &state, 0x1000U);
-  if (result.kind != STAGE_B_FALLTHROUGH) return 1;
+  result = spx_interpreter_step(&runtime, &state, 0x1000U);
+  if (result.kind != SPX_FALLTHROUGH) return 1;
   if (result.target_rva != 0x1003U) return 2;
   if (state.eax != 4U) return 3;
   if (undefined_calls != 0U) return 4;
@@ -367,7 +367,7 @@ int main(void) {
             blocked["outcome"] = {"kind": "unsupported"}
             _write_machine(machine, [compiled, blocked])
 
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine,
                 out=root / "package",
             )
@@ -409,7 +409,7 @@ int main(void) {
             )
             _write_machine(machine, [row])
 
-            transfer = compile_stage_b_interpreter_program(machine)[0]
+            transfer = compile_spx_interpreter_program(machine)[0]
             undefined_index, undefined = next(
                 (index, node)
                 for index, node in enumerate(transfer.nodes)
@@ -420,7 +420,7 @@ int main(void) {
             value = transfer.nodes[undefined.args[0]]
             self.assertEqual((value.op, value.aux, value.immediate), ("reg", 0, 0))
 
-            write_stage_b_interpreter_package(
+            write_spx_interpreter_package(
                 machine_ir=machine, out=root / "package"
             )
             program = json.loads(
@@ -437,7 +437,7 @@ int main(void) {
             root = Path(temporary)
             machine = root / "state-machine.jsonl"
             _write_machine(machine, [_row()])
-            write_stage_b_interpreter_package(
+            write_spx_interpreter_package(
                 machine_ir=machine, out=root / "package"
             )
 
@@ -445,8 +445,8 @@ int main(void) {
                 encoding="ascii"
             )
             run = source.split(
-                "static stage_b_call_status stage_b_run_function_checked(", 1
-            )[1].split("stage_b_call_status stage_b_run_function(", 1)[0]
+                "static spx_call_status spx_run_function_checked(", 1
+            )[1].split("spx_call_status spx_run_function(", 1)[0]
             self.assertNotIn("uint32_t entry_rva = rva;", run)
             self.assertEqual(run.count("*out = s;"), 2)
             self.assertEqual(run.count("out->original_rva = rva;"), 1)
@@ -454,20 +454,19 @@ int main(void) {
                 "out->original_rva = r.target_rva != 0U ? r.target_rva : rva;",
                 run,
             )
-            self.assertIn("*state=call_output;return(stage_b_step_result)", source)
+            self.assertIn("*state=call_output;return(spx_step_result)", source)
             self.assertIn("call_output.original_rva,0U", source)
             self.assertLess(
-                run.index("*out = s;", run.index("stage_b_step_result r")),
-                run.index("if (r.kind == STAGE_B_RETURN"),
+                run.index("*out = s;", run.index("spx_step_result r")),
+                run.index("if (r.kind == SPX_RETURN"),
             )
             self.assertIn("r.value != expected_return_rva", run)
             self.assertIn("out->esi = expected_return_rva;", run)
             self.assertIn("out->edi = r.value;", run)
             self.assertIn("call_input.esp -= 4U;", source)
             self.assertIn("event->return_rva, &memory_fault", source)
-            self.assertIn("output->esp < input->esp", source)
-            self.assertIn("output->esi = input->esp;", source)
-            self.assertIn("output->edi = output->esp;", source)
+            self.assertNotIn("SPX_NATIVE_DIAGNOSTIC_FAILURE_TRAP", source)
+            self.assertNotIn("output->esp < input->esp", source)
             self.assertIn("->fs_base;", source)
 
 

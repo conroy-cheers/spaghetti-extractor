@@ -25,7 +25,7 @@ from .conformance import (
 )
 
 
-ISA_FORM_CATALOG_FORMAT = "stage-a-isa-form-catalog-v2"
+ISA_FORM_CATALOG_FORMAT = "spaghetti-extractor-isa-form-catalog-v2"
 ISA_FORM_CATALOG_ENTRY_FORMAT = "pe32-i686-form-v2"
 XED_INSTRUCTION_CATALOG_FORMAT = "spaghetti-extractor-xed-inst-catalog-v1"
 ISA_PROFILE_ID = "pe32-i686-v1"

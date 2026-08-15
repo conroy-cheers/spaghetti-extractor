@@ -18,11 +18,11 @@ from ..artifacts.formats import (
 )
 from .machine_abi import MachineCallABI, resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_file
 
 
-EXTERNAL_INTERFACE_PROFILE_FORMAT = "stage-a-external-interface-profile-v1"
+EXTERNAL_INTERFACE_PROFILE_FORMAT = "spaghetti-extractor-external-interface-profile-v1"
 _SAME_NATIVE_TARGET_EFFECT = "sameNativeTargetCallThrough"
 _SDK_EXTRACTION_PROVENANCE_KIND = (
     "pinned_clang_ast_from_reviewed_sdk_headers"
@@ -44,7 +44,7 @@ RECEIVER_RESOURCE_LIFECYCLE_EFFECTS = frozenset({
 })
 
 
-class ExternalInterfaceProfileError(StageAInputError):
+class ExternalInterfaceProfileError(ToolkitInputError):
     """An external-interface profile is malformed or ambiguous."""
 
 

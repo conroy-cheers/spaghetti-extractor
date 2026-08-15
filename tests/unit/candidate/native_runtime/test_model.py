@@ -19,7 +19,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 root, rows=rows, external_profile=profile
             )
 
-            package = write_stage_b_native_runtime_package(
+            package = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 external_profile=profile,
@@ -33,7 +33,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
             self.assertEqual(rules[0]["minimum_size"], 4)
             self.assertEqual(rules[0]["size_value"], 24)
             source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
-            self.assertIn("stage_b_native_add_external_interface_ranges", source)
+            self.assertIn("spx_native_add_external_interface_ranges", source)
             self.assertIn("if ((int32_t)output->eax < 0) continue;", source)
 
     def test_external_result_ranges_are_profile_bound_and_generic(self) -> None:
@@ -44,7 +44,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
             interpreter, engine = _packages(
                 root, rows=_external_result_rows(), external_profile=profile
             )
-            package = write_stage_b_native_runtime_package(
+            package = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 external_profile=profile,
@@ -59,41 +59,23 @@ class NativeRuntimeModelTests(unittest.TestCase):
             self.assertEqual(rules[0]["argument_base_offset"], 0)
             self.assertEqual(rules[0]["argument_count"], 0)
             source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
-            self.assertIn("STAGE_B_NATIVE_MAX_EXTERNAL_RANGES 8192U", source)
-            self.assertIn("stage_b_native_inside_external_range", source)
-            self.assertIn("stage_b_native_runtime_record_external_result", source)
-            self.assertIn("stage_b_native_diagnostic_value", source)
-            self.assertIn("stage_b_native_diagnostic_aux", source)
-            self.assertIn("stage_b_native_diagnostic_detail", source)
+            self.assertIn("SPX_NATIVE_MAX_EXTERNAL_RANGES 8192U", source)
+            self.assertIn("spx_native_inside_external_range", source)
+            self.assertIn("spx_native_runtime_record_external_result", source)
+            self.assertIn("spx_native_diagnostic_value", source)
+            self.assertIn("spx_native_diagnostic_aux", source)
+            self.assertIn("spx_native_diagnostic_detail", source)
             self.assertIn(
-                "STAGE_B_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS 64U", source
+                "SPX_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS 64U", source
             )
             self.assertIn("producer_rva, producer_action, generation", source)
-            self.assertIn("stage_b_native_record_external_lifecycle", source)
-            self.assertIn("stage_b_native_runtime_write_diagnostic", source)
-            self.assertIn("stage_b_native_runtime_write_external_probe", source)
-            self.assertIn("stage_b_native_diagnostic_reason = 0x4001U", source)
-            self.assertIn("movl %%fs:0x34", source)
-            self.assertIn("spaghetti-extractor-diagnostic.bin", source)
-            self.assertIn("header.magic = 0x31444553U", source)
-            self.assertIn("header.version = 4U", source)
-            self.assertIn("uint32_t stack_words[16]", source)
-            self.assertIn(
-                "STAGE_B_NATIVE_MAX_EXTERNAL_TRACE_EVENTS 128U", source
-            )
-            self.assertIn(
-                "sequence, phase, instruction_rva, target_rva, target_iat_rva",
-                source,
-            )
-            self.assertIn("stage_b_native_record_external_trace", source)
-            self.assertIn(
-                "STAGE_B_NATIVE_MAX_TRANSFER_TRACE_EVENTS 1024U", source
-            )
-            self.assertIn(
-                "uint32_t sequence, rva, df, esp", source
-            )
-            self.assertIn("stage_b_native_trace_transfer", source)
-            self.assertIn("STAGE_B_NATIVE_DIAGNOSTIC_WRITER_AVAILABLE", source)
+            self.assertIn("spx_native_record_external_lifecycle", source)
+            self.assertNotIn("spx_native_diagnostic_reason = 0x4001U", source)
+            self.assertNotIn("movl %%fs:0x34", source)
+            self.assertNotIn("spaghetti-extractor-diagnostic.bin", source)
+            self.assertNotIn("spx_native_record_external_trace", source)
+            self.assertNotIn("spx_native_trace_transfer", source)
+            self.assertNotIn("SPX_NATIVE_DIAGNOSTIC_WRITER_AVAILABLE", source)
             self.assertIn("operation == 5U ? 0x2204U", source)
             self.assertIn("operation == 6U ? 0x2203U", source)
             self.assertIn("uint32_t process_world_initialized;", source)
@@ -102,13 +84,13 @@ class NativeRuntimeModelTests(unittest.TestCase):
             )
             self.assertIn("context->process_world_initialized = 1U", source)
             self.assertIn(
-                "stage_b_native_context_value.external_range_count", source
+                "spx_native_context_value.external_range_count", source
             )
             self.assertIn(
-                "stage_b_native_diagnostic_reason = 0x3001U", source
+                "spx_native_diagnostic_reason = 0x3001U", source
             )
             self.assertIn(
-                "stage_b_native_diagnostic_reason = 0x3002U", source
+                "spx_native_diagnostic_reason = 0x3002U", source
             )
             self.assertNotIn("__p__commode", source)
 
@@ -124,7 +106,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 external_profile=profile,
             )
 
-            package = write_stage_b_native_runtime_package(
+            package = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 external_profile=profile,
@@ -161,7 +143,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             with self.assertRaisesRegex(
-                StageAInputError, "native engine plan is incomplete"
+                ToolkitInputError, "native engine plan is incomplete"
             ):
                 _packages(
                     root,
@@ -181,7 +163,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 external_profile=profile,
             )
 
-            package = write_stage_b_native_runtime_package(
+            package = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 external_profile=profile,
@@ -192,9 +174,9 @@ class NativeRuntimeModelTests(unittest.TestCase):
             self.assertEqual(rule["argument_count"], 2)
             self.assertEqual(rule["size_argument"], 1)
             source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
-            self.assertIn("stage_b_native_external_argument(", source)
+            self.assertIn("spx_native_external_argument(", source)
             self.assertIn(
-                "stage_b_native_runtime_capture_external_call(", source
+                "spx_native_runtime_capture_external_call(", source
             )
             self.assertIn(
                 "input->esp + snapshot->argument_base_offset", source
@@ -212,7 +194,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 root, rows=_external_result_rows(), external_profile=profile
             )
 
-            package = write_stage_b_native_runtime_package(
+            package = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 external_profile=profile,
@@ -224,7 +206,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
             self.assertEqual(rule["termination_zero_units"], 2)
             self.assertEqual(rule["termination_max_units"], 4096)
             source = (root / "runtime/native-runtime.c").read_text(encoding="ascii")
-            self.assertIn("stage_b_native_zero_run_extent(", source)
+            self.assertIn("spx_native_zero_run_extent(", source)
             self.assertIn("run == zero_units", source)
 
     def test_modeled_termination_and_root_callback_buffers_are_emitted(self) -> None:
@@ -241,7 +223,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 modeled_termination=True,
             )
             runtime = root / "runtime"
-            package = write_stage_b_native_runtime_package(
+            package = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=runtime,
@@ -270,18 +252,18 @@ class NativeRuntimeModelTests(unittest.TestCase):
             )
             self.assertIn("jmp DWORD PTR ds:0x004321d8", assembly)
             self.assertNotIn("ud2", assembly)
-            self.assertIn("_stage_b_native_entry_dispatch_return:", assembly)
-            self.assertIn("_stage_b_native_entry_return:", assembly)
-            self.assertIn("_stage_b_native_termination:", assembly)
+            self.assertIn("_spx_native_entry_dispatch_return:", assembly)
+            self.assertIn("_spx_native_entry_return:", assembly)
+            self.assertIn("_spx_native_termination:", assembly)
             self.assertIn(
-                "_stage_b_native_callback_dispatch_return_00002000:",
+                "_spx_native_callback_dispatch_return_00002000:",
                 assembly,
             )
             self.assertIn(
-                "mov edx, OFFSET FLAT:_stage_b_native_launch_state", assembly
+                "mov edx, OFFSET FLAT:_spx_native_launch_state", assembly
             )
             self.assertIn(
-                "mov ebx, OFFSET FLAT:_stage_b_native_launch_output", assembly
+                "mov ebx, OFFSET FLAT:_spx_native_launch_output", assembly
             )
             self.assertIn(
                 "mov DWORD PTR [edx + 248], 0x00001000", assembly
@@ -300,11 +282,11 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 plan["launch_wrapper_symbols"],
                 {
                     "entry_dispatch_return":
-                        "stage_b_native_entry_dispatch_return",
-                    "entry_return": "stage_b_native_entry_return",
-                    "termination": "stage_b_native_termination",
+                        "spx_native_entry_dispatch_return",
+                    "entry_return": "spx_native_entry_return",
+                    "termination": "spx_native_termination",
                     "callback_dispatch_returns": [
-                        "stage_b_native_callback_dispatch_return_00002000"
+                        "spx_native_callback_dispatch_return_00002000"
                     ],
                 },
             )
@@ -321,7 +303,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
             root = Path(temporary)
             interpreter, engine = _packages(root, _internal_indirect_rows())
             runtime = root / "runtime"
-            write_stage_b_native_runtime_package(
+            write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=runtime,
@@ -331,16 +313,16 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 interpreter / "state-machine-interpreter.c"
             ).read_text(encoding="ascii")
             invoke = interpreter_source.split(
-                "stage_b_call_status stage_b_invoke_call", 1
+                "spx_call_status spx_invoke_call", 1
             )[1]
             resolve_index = invoke.index("resolve_code_target")
             indirect_invoke_index = invoke.index(
-                "return stage_b_invoke_internal_call(", resolve_index
+                "return spx_invoke_internal_call(", resolve_index
             )
             self.assertLess(resolve_index, indirect_invoke_index)
             self.assertLess(
                 indirect_invoke_index,
-                invoke.index("return stage_b_dispatch_external_call"),
+                invoke.index("return spx_dispatch_external_call"),
             )
             self.assertIn("call_input.esp -= 4U;", interpreter_source)
             self.assertIn("event->return_rva, &memory_fault", interpreter_source)
@@ -350,27 +332,27 @@ class NativeRuntimeModelTests(unittest.TestCase):
             )
             self.assertIn("0x00002000U", runtime_source)
             self.assertIn(
-                ".resolve_code_target = stage_b_native_resolve_code_target",
+                ".resolve_code_target = spx_native_resolve_code_target",
                 runtime_source,
             )
-            self.assertIn("stage_b_native_runtime_run_at_rva(", engine_source)
-            self.assertIn("stage_b_native_read_allowed", runtime_source)
+            self.assertIn("spx_native_runtime_run_at_rva(", engine_source)
+            self.assertIn("spx_native_read_allowed", runtime_source)
             self.assertIn("context->headers_size = headers_size;", runtime_source)
             self.assertIn(
-                "STAGE_B_NATIVE_THREAD_ENVIRONMENT_BYTES 0x1000U",
+                "SPX_NATIVE_THREAD_ENVIRONMENT_BYTES 0x1000U",
                 runtime_source,
             )
             self.assertIn(
-                "stage_b_native_inside_thread_environment(context, address, end)",
+                "spx_native_inside_thread_environment(context, address, end)",
                 runtime_source,
             )
             write_policy = runtime_source.split(
-                "static uint32_t stage_b_native_write_allowed", 1
-            )[1].split("static uint32_t stage_b_native_read_allowed", 1)[0]
+                "static uint32_t spx_native_write_allowed", 1
+            )[1].split("static uint32_t spx_native_read_allowed", 1)[0]
             self.assertIn(
-                "stage_b_native_inside_thread_environment", write_policy
+                "spx_native_inside_thread_environment", write_policy
             )
-            self.assertNotIn("static stage_b_runtime", engine_source)
+            self.assertNotIn("static spx_runtime", engine_source)
             self.assertNotIn(".resolve_code_target = 0", engine_source)
 
             sources = [
@@ -416,7 +398,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 [
                     compiler,
                     "-nostdlib",
-                    "-Wl,--entry,_stage_b_payload_entry",
+                    "-Wl,--entry,_spx_payload_entry",
                     "-Wl,--subsystem,console",
                     "-Wl,--dynamicbase",
                     "-Wl,--enable-reloc-section",
@@ -436,25 +418,25 @@ class NativeRuntimeModelTests(unittest.TestCase):
             ).stdout
             self.assertEqual(
                 len(re.findall(
-                    r"(?m)^\S+ [BD] _stage_b_native_runtime_instance$", symbols
+                    r"(?m)^\S+ [BD] _spx_native_runtime_instance$", symbols
                 )),
                 1,
             )
             self.assertRegex(
                 symbols,
-                r"(?m)^\S+ T _stage_b_native_runtime_run_at_rva$",
+                r"(?m)^\S+ T _spx_native_runtime_run_at_rva$",
             )
             self.assertRegex(
                 symbols,
-                r"(?m)^\S+ T _stage_b_native_runtime_run_nested_callback$",
+                r"(?m)^\S+ T _spx_native_runtime_run_nested_callback$",
             )
             self.assertEqual(
                 len(re.findall(
-                    r"(?m)^\S+ T _stage_b_dispatch_external_call$", symbols
+                    r"(?m)^\S+ T _spx_dispatch_external_call$", symbols
                 )),
                 1,
             )
-            self.assertNotIn("stage_b_native_replay_checked_x87_command", symbols)
+            self.assertNotIn("spx_native_replay_checked_x87_command", symbols)
 
     def test_nonzero_x87_inventory_links_exactly_one_engine_handler(self) -> None:
         compiler = shutil.which("i686-w64-mingw32-gcc")
@@ -464,7 +446,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
             root = Path(temporary)
             interpreter, engine = _packages(root, [_qualified_x87_transfer()])
             runtime = root / "runtime"
-            write_stage_b_native_runtime_package(
+            write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=runtime,
@@ -479,12 +461,12 @@ class NativeRuntimeModelTests(unittest.TestCase):
             self.assertIn("shr ecx, 11", bridge_source)
             self.assertIn("imul ecx, ecx, 10", bridge_source)
             self.assertIn(
-                "extern stage_b_call_status stage_b_native_execute_typed_x87_operation",
+                "extern spx_call_status spx_native_execute_typed_x87_operation",
                 runtime_source,
             )
             self.assertIn(
                 ".execute_typed_x87_operation = "
-                "stage_b_native_execute_typed_x87_operation",
+                "spx_native_execute_typed_x87_operation",
                 runtime_source,
             )
 
@@ -531,14 +513,14 @@ class NativeRuntimeModelTests(unittest.TestCase):
             ).stdout
             self.assertRegex(
                 runtime_object_symbols,
-                r"(?m)^\s+U _stage_b_native_execute_typed_x87_operation$",
+                r"(?m)^\s+U _spx_native_execute_typed_x87_operation$",
             )
             payload = root / "x87-runtime.exe"
             subprocess.run(
                 [
                     compiler,
                     "-nostdlib",
-                    "-Wl,--entry,_stage_b_payload_entry",
+                    "-Wl,--entry,_spx_payload_entry",
                     "-Wl,--subsystem,console",
                     "-Wl,--dynamicbase",
                     "-Wl,--enable-reloc-section",
@@ -558,14 +540,14 @@ class NativeRuntimeModelTests(unittest.TestCase):
             ).stdout
             self.assertEqual(
                 len(re.findall(
-                    r"(?m)^\S+ T _stage_b_native_execute_typed_x87_operation$",
+                    r"(?m)^\S+ T _spx_native_execute_typed_x87_operation$",
                     symbols,
                 )),
                 1,
             )
             self.assertEqual(
                 len(re.findall(
-                    r"(?m)^\S+ [BD] _stage_b_native_runtime_instance$", symbols
+                    r"(?m)^\S+ [BD] _spx_native_runtime_instance$", symbols
                 )),
                 1,
             )
@@ -583,7 +565,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 external_profile=profile,
             )
             runtime = root / "runtime"
-            write_stage_b_native_runtime_package(
+            write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 external_profile=profile,
@@ -645,7 +627,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 [
                     compiler,
                     "-nostdlib",
-                    "-Wl,--entry,_stage_b_payload_entry",
+                    "-Wl,--entry,_spx_payload_entry",
                     "-Wl,--subsystem,console",
                     "-Wl,--dynamicbase",
                     "-Wl,--enable-reloc-section",

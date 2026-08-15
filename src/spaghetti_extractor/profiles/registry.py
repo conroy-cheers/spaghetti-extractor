@@ -146,7 +146,7 @@ def _validate_headers(value: Any, context: str) -> None:
 
 def _validate_c0_toolchain(path: Path, payload: Mapping[str, Any]) -> None:
     del path
-    _expect_format(payload, "stage-a-c0-toolchain-profile-v1")
+    _expect_format(payload, "spaghetti-extractor-c0-toolchain-profile-v1")
     _exact_fields(
         payload,
         frozenset({"format", "id", "target", "tools", "flags", "runtime", "policy"}),
@@ -177,7 +177,7 @@ def _validate_c0_toolchain(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _validate_callable_external(path: Path, payload: Mapping[str, Any]) -> None:
     del path
-    _expect_format(payload, "stage-a-callable-external-profile-v2")
+    _expect_format(payload, "spaghetti-extractor-callable-external-profile-v2")
     _exact_fields(
         payload,
         frozenset({"format", "id", "model", "resolvers", "targets"}),
@@ -289,8 +289,8 @@ def _validate_callable_external(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _validate_machine_import(path: Path, payload: Mapping[str, Any]) -> None:
     if payload.get("format") not in {
-        "stage-a-external-environment-profile-v1",
-        "stage-a-static-machine-import-profile-v1",
+        "spaghetti-extractor-external-environment-profile-v1",
+        "spaghetti-extractor-static-machine-import-profile-v1",
     }:
         raise ProfileRegistryError("unsupported machine import profile format")
     load_machine_import_profile_set([path])
@@ -298,7 +298,7 @@ def _validate_machine_import(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _validate_interface_extraction(path: Path, payload: Mapping[str, Any]) -> None:
     del path
-    _expect_format(payload, "stage-a-external-interface-extraction-spec-v1")
+    _expect_format(payload, "spaghetti-extractor-external-interface-extraction-spec-v1")
     _exact_fields(
         payload,
         frozenset(
@@ -340,7 +340,7 @@ def _validate_interface_extraction(path: Path, payload: Mapping[str, Any]) -> No
 
 def _validate_function_extraction(path: Path, payload: Mapping[str, Any]) -> None:
     del path
-    _expect_format(payload, "stage-a-external-function-extraction-spec-v1")
+    _expect_format(payload, "spaghetti-extractor-external-function-extraction-spec-v1")
     _exact_fields(
         payload,
         frozenset({"format", "id", "model", "headers", "dlls"}),
@@ -363,7 +363,7 @@ def _validate_normal_call_abi(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _validate_indirect_target(path: Path, payload: Mapping[str, Any]) -> None:
     del path
-    _expect_format(payload, "stage-a-indirect-target-profile-v1")
+    _expect_format(payload, "spaghetti-extractor-indirect-target-profile-v1")
     expected = {
         "id": "pe32-static-cutpoints-and-paired-callables-v1",
         "status": "accepted_assumption",
@@ -422,7 +422,7 @@ def _validate_launch_assumption(path: Path, payload: Mapping[str, Any]) -> None:
 
 def _validate_import_abi_policy(path: Path, payload: Mapping[str, Any]) -> None:
     del path
-    _expect_format(payload, "stage-a-import-abi-policy-v1")
+    _expect_format(payload, "spaghetti-extractor-import-abi-policy-v1")
     _exact_fields(payload, frozenset({"format", "id", "rules"}), "import ABI policy")
     _nonempty_string(payload.get("id"), "import ABI policy.id")
     dlls: set[str] = set()

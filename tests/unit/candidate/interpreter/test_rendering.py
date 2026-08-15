@@ -14,10 +14,10 @@ class InterpreterRenderingTests(unittest.TestCase):
             _write_machine(machine, [_row()])
             first = root / "first"
             second = root / "second"
-            package = write_stage_b_interpreter_package(
+            package = write_spx_interpreter_package(
                 machine_ir=machine, out=first
             )
-            write_stage_b_interpreter_package(machine_ir=machine, out=second)
+            write_spx_interpreter_package(machine_ir=machine, out=second)
 
             self.assertEqual(package["status"], "ready")
             self.assertEqual(package["counts"]["transfers"], 1)
@@ -44,13 +44,11 @@ class InterpreterRenderingTests(unittest.TestCase):
             ).read_text(encoding="ascii")
             self.assertIn("uint32_t fallback_on_unimplemented;", interpreter_header)
             self.assertIn(
-                "result.kind==STAGE_B_UNIMPLEMENTED&&override->fallback_on_unimplemented",
+                "result.kind==SPX_UNIMPLEMENTED&&override->fallback_on_unimplemented",
                 interpreter_source,
             )
-            self.assertIn("t=stage_b_program_lookup(source_rva);", interpreter_source)
-            self.assertIn(
-                "rt->trace_transfer(rt->context, rva, &s)", interpreter_source
-            )
+            self.assertIn("t=spx_program_lookup(source_rva);", interpreter_source)
+            self.assertNotIn("trace_transfer", interpreter_source)
             for source in ("state-machine-interpreter.c", "state-machine-program.c"):
                 subprocess.run(
                     [

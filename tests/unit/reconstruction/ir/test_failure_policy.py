@@ -224,7 +224,7 @@ class ReconstructionIRFailurePolicyTests(unittest.TestCase):
             self.assertEqual(evidence["status"], "checked")
             self.assertEqual(
                 evidence["checker"],
-                "stage-a-machine-ir-qf-bv-fault-infeasibility-v1",
+                "spaghetti-extractor-machine-ir-qf-bv-fault-infeasibility-v1",
             )
             certificate = evidence["certificate"]
             self.assertEqual(certificate["fault_kind"], "divide_error")
@@ -478,7 +478,7 @@ class ReconstructionIRFailurePolicyTests(unittest.TestCase):
             requirement = evidence["scc_invariant_requirement"]
             self.assertEqual(
                 requirement["format"],
-                "stage-a-scc-exception-invariant-requirement-v2",
+                "spaghetti-extractor-scc-exception-invariant-requirement-v2",
             )
             self.assertEqual(
                 requirement["reason"],

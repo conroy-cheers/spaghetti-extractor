@@ -103,7 +103,7 @@ def _case(case_id="inc-eax"):
 
 def _corpus():
     return {
-        "format": "stage-a-isa-conformance-corpus-v1",
+        "format": "spaghetti-extractor-isa-conformance-corpus-v1",
         "id": "pe32-instruction-core-v1",
         "cases": [_case()],
     }
@@ -161,7 +161,6 @@ def _report():
         "trust": {
             "role": "isa_conformance_evidence_only",
             "proof_authority": False,
-            "closes_stage_a_proof": False,
         },
     }
 
@@ -387,7 +386,6 @@ class ISAConformanceTests(unittest.TestCase):
         self.assertEqual(report.qualification, ReportQualification.QUALIFIED)
         self.assertEqual(report.input_sha256, isa_conformance_corpus_sha256(corpus))
         self.assertFalse(report.trust.proof_authority)
-        self.assertFalse(report.trust.closes_stage_a_proof)
         self.assertEqual(
             serialize_isa_conformance_report(report, corpus=corpus), payload
         )
@@ -432,7 +430,7 @@ class ISAConformanceTests(unittest.TestCase):
         malformed_digest = _report()
         malformed_digest["input_sha256"] = "A" * 64
         old_schema = _report()
-        old_schema["format"] = "stage-a-isa-conformance-report-v1"
+        old_schema["format"] = "spaghetti-extractor-isa-conformance-report-v1"
         for malformed in (missing_digest, malformed_digest, old_schema):
             with self.subTest(malformed=malformed):
                 with self.assertRaises(ISAConformanceError):
@@ -466,18 +464,15 @@ class ISAConformanceTests(unittest.TestCase):
 
         authority = _report()
         authority["trust"]["proof_authority"] = True
-        closes_proof = _report()
-        closes_proof["trust"]["closes_stage_a_proof"] = True
+        legacy_field = _report()
+        legacy_field["trust"]["closes_spx_proof"] = False
 
         with self.assertRaisesRegex(
             ISAConformanceError, "oracle report cannot claim proof authority"
         ):
             parse_isa_conformance_report(authority, corpus=corpus)
-        with self.assertRaisesRegex(
-                ISAConformanceError,
-                "oracle report cannot qualify a reconstructed candidate",
-        ):
-            parse_isa_conformance_report(closes_proof, corpus=corpus)
+        with self.assertRaisesRegex(ISAConformanceError, "unknown fields"):
+            parse_isa_conformance_report(legacy_field, corpus=corpus)
 
 
 if __name__ == "__main__":

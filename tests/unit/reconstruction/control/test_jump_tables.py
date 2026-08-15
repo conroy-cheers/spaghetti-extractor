@@ -213,7 +213,7 @@ class StaticPE32JumpTableTests(unittest.TestCase):
         }
         values = [0xFFFFFFFC, 0xFFFFFFFD, 0xFFFFFFFE, 0xFFFFFFFF]
         domain = {
-            "format": "stage-a-finite-u32-expression-domain-v1",
+            "format": "spaghetti-extractor-finite-u32-expression-domain-v1",
             "status": "complete",
             "source_unit_id": "dispatch",
             "expression_sha256": sha256(

@@ -73,7 +73,7 @@ definitions to reproducible realizations; either side rejects metadata drift.
 | `project` | `analyze`, `status`, `check` (`--acceptance` selects the strict gate) |
 | `component` | `list`, `status`, `build`, `check` with unit/group/configuration selectors |
 | `candidate` | `list`, `status`, `build`, `test` |
-| `expert` | Explicit low-level Stage A, ISA, reconstruction, authority, runtime, component, source, and validation leaves from `commands/*.py`. |
+| `expert` | Explicit low-level static analysis, ISA, reconstruction, authority, runtime, component, source, and validation leaves from `commands/*.py`. |
 
 `commands/workflows.py` maps operator commands only to stable target-SDK Nix
 attributes. `commands/common.py` owns the expert handler protocol. A low-level
@@ -138,12 +138,11 @@ and cutpoint recovery remain in `extraction/`:
 | `binary_inventory.py` | Strict PE32 executable-byte classification and cutpoint inventory. |
 | `region_inventory.py` | Region extraction artifacts and bindings. |
 | `cutpoints.py` | Semantic cutpoint subdivision. |
-| `instruction_support.py` | Fail-closed instruction/profile preflight. |
 | `isa_inventory.py` | Required instruction-form inventory for one binary. |
 | `isa_requirements.py` | Required Lean form/capability projection. |
 | `x87_profile.py` | x87-specific static requirements and replay metadata. |
 
-PE primitives live in `pe32/pe.py`, `pe32/stage_binary.py`, and
+PE primitives live in `pe32/pe.py`, `pe32/image.py`, and
 `pe32/recursive_decode.py`.
 `reconstruction/rooted_state_machine.py` performs rooted static control recovery.
 `extraction/ghidra.py` is an optional, non-authorizing static proposal adapter.
@@ -345,7 +344,7 @@ partial constellations remain hypotheses and do not authorize replacement.
 | `isa/conformance_shards.py`, `isa/conformance_worker.py`, `isa/qualification_worker.py` | Deterministic oracle sharding and isolated cached conformance/qualification workers. |
 | `build_support/lean_runner.py` | Small deterministic Lean compile/run helper. |
 
-`src/spaghetti_extractor/lean/StageA/` contains only the compact reusable ISA
+`src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/` contains only the compact reusable ISA
 kernel. `Bytes`, `PE32`, `Machine`, `Decode`, and `Semantics` provide the stable
 formal layers; `X87`, `ISAInventory`, `ISAQualification`, `ISAConformance`, and
 `ISAConformanceRunner` build ISA qualification on top. It contains no target
@@ -382,24 +381,24 @@ enforce this with `xvfb-run` where Wine is used.
 |---|---|
 | `toolkit-context.nix` | One reusable per-system source, package, kernel, oracle, and fixture context shared by the root flake and target SDK. |
 | `target-sdk.nix` | Stable v3 target interface and high-level `workflow.pe32` constructor for analysis, authority, components, candidates, and validation. |
-| `stage-b-components.nix` | Content-addressed resolution, contract, source, evidence, qualification, configuration, and runtime-package DAG. |
-| `stage-b-component-proposal-input.nix` | Controlled-IFD boundary that checks the full proposal package once, then re-interns only reviewed selectors and selected resolution fields for downstream component phases. |
-| `stage-b-component-runtime-package.nix` | Generates and cross-compiles the sole executable component runtime package. |
+| `component-workflow.nix` | Content-addressed resolution, contract, source, evidence, qualification, configuration, and runtime-package DAG. |
+| `component-proposal-input.nix` | Controlled-IFD boundary that checks the full proposal package once, then re-interns only reviewed selectors and selected resolution fields for downstream component phases. |
+| `component-runtime-package.nix` | Generates and cross-compiles the sole executable component runtime package. |
 | `flake-modules/toolkit.nix`, `flake-modules/checks.nix` | Focused `flake-parts` modules for generic packages/apps/shells and checks. |
-| `stage-a-external-interface-profile.nix` | Pinned SDK headers through a checked machine-level interface profile. |
-| `stage-a-isa-conformance.nix` | One cached Lean/Unicorn/Bochs corpus evaluation. |
-| `stage-a-isa-qualification-graph.nix` | Sharded ISA evidence and qualification DAG. |
-| `stage-a-isa-semantic-kernel.nix` | Stable compiled Lean semantic kernel packaged independently of target evidence. |
-| `stage-a-isa-conformance-kernel.nix`, `stage-a-inductive-certificate-kernel.nix` | Shared compiled Lean conformance and inductive-certificate kernels reused by granular tests and target evidence. |
-| `stage-a-machine-ir-isa-qualification-v2.nix` | Binary-specific machine-IR requirement, oracle, selection, and authority DAG. |
-| `stage-a-roundtrip-corpus.nix` | Generated static corpus and qualification result. |
+| `external-interface-profile.nix` | Pinned SDK headers through a checked machine-level interface profile. |
+| `isa-conformance.nix` | One cached Lean/Unicorn/Bochs corpus evaluation. |
+| `isa-qualification-graph.nix` | Sharded ISA evidence and qualification DAG. |
+| `isa-semantic-kernel.nix` | Stable compiled Lean semantic kernel packaged independently of target evidence. |
+| `isa-conformance-kernel.nix`, `inductive-certificate-kernel.nix` | Shared compiled Lean conformance and inductive-certificate kernels reused by granular tests and target evidence. |
+| `machine-ir-isa-qualification.nix` | Binary-specific machine-IR requirement, oracle, selection, and authority DAG. |
+| `roundtrip-corpus.nix` | Generated static corpus and qualification result. |
 | `bochs-conformance.nix` | Pinned batched Bochs adapter. |
 | `machine-import-control-profile.nix` | Content-addressed no-return import projection that isolates machine IR from ordinary API-profile edits. |
-| `stage-b-component-analysis.nix` | Original inventory through component proposals. |
-| `stage-b-component-discovery.nix` | Independent proposal phase; publishes the bounded v2 package only after streaming every rich record through its complete integrity audit. |
+| `component-analysis.nix` | Original inventory through component proposals. |
+| `component-discovery.nix` | Independent proposal phase; publishes the bounded v2 package only after streaming every rich record through its complete integrity audit. |
 | `fallback-capability-analysis.nix` | Non-executable lowering analysis projected into final static authority; emits no source or object code. |
-| `stage-b-native-object-graph.nix` | Controlled-IFD source normalization plus independently content-addressed native objects and assembly; a changed compile bundle invalidates only its object and final package. |
-| `stage-b-hybrid-candidate.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |
+| `candidate-native-object-graph.nix` | Controlled-IFD source normalization plus independently content-addressed native objects and assembly; a changed compile bundle invalidates only its object and final package. |
+| `candidate-hybrid.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |
 | `ca-python-json-phase.nix` | Generic CA phase constructor with explicit store dependencies, schema/status checking, and phase manifests. |
 | `artifact-seed-v3.nix`, `artifact-set-v3.nix`, `artifact-phase-v3.nix` | Strict source-byte-bound artifact ingestion, typed streaming validation, complete checker-source provenance, and framework-owned map/reduce/SCC phase execution over bounded CA packs. |
 | `authority-source-plan.nix`, `authority-machine-ir-input.nix` | One streaming dynamic-analysis preparation boundary followed by stable bucket re-interning, so one changed unit invalidates one bounded machine-IR shard without thousands of evaluator reads. |
@@ -407,7 +406,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `authority-diagnostics.nix` | Non-authorizing checked-artifact summary for precise operator feedback across sharded authority families. |
 | `authority-input-exception-evidence.nix`, `authority-input-external-site-evidence.nix`, `authority-input-indexed-target-evidence.nix`, `authority-input-isa-evidence.nix`, `authority-input-standard-evidence.nix` | Content-addressed exact-evidence providers for exception, external-call, indirect-target, ISA, launch-root, callback, and invariant families. |
 | `authority-input-implementation-capabilities.nix` | Exact, sparse fallback-capability projection over the selected binary-specific ISA inventory. Missing records remain localized incomplete authority. |
-| `stage-b-interpreter-package.nix` | Generates executable fallback source only after final authority closes, then checks every generated source/header hash against the static capability analysis. |
+| `candidate-interpreter-package.nix` | Generates executable fallback source only after final authority closes, then checks every generated source/header hash against the static capability analysis. |
 | `authority-isa-frontiers.nix` | Separate content-addressed ISA repair report; diagnostic changes cannot invalidate the authoritative ISA artifact or its downstream closure. |
 | `authority-input-external-inputs.nix` | Content-addressed ingestion of exact machine-import profiles and PE/load-image roots into native-v3 input artifact sets. |
 | `authority-final-gate.nix` | Strict final-authority record gate used by candidate generation, target validation, and runtime suites. |
@@ -417,14 +416,13 @@ enforce this with `xvfb-run` where Wine is used.
 | `candidate-test-suite.nix` | Binds a final-authority candidate to curated expected-output cases and executes it through isolated headless Wine. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure with an explicit checked phase role. |
 | `generated/python-module-index.json` | Generated checked local-import/resource graph and role closures consumed by phase-specific Python closures. |
-| `stage-b-linked-libraries.nix` | Library constellation and replacement-plan DAG. With no catalog it still classifies reviewed application ranges, import thunks, and unknown ownership without granting replacement authority. |
-| `stage-b-fallback-coverage-receipt.nix` | Checks one implementation kind for every structural machine-IR unit without claiming rooted reachability. |
+| `linked-libraries.nix` | Library constellation and replacement-plan DAG. With no catalog it still classifies reviewed application ranges, import thunks, and unknown ownership without granting replacement authority. |
+| `fallback-coverage-receipt.nix` | Checks one implementation kind for every structural machine-IR unit without claiming rooted reachability. |
 | `candidate-test-aggregate.nix`, `candidate-test-suite.nix` | Final-authority-gated expected-exit and bounded-liveness tests under isolated headless Wine. |
 | `profile-registry-check.nix` | Exact-inventory, role, schema, and semantic validation for every reviewed reusable profile. |
 | `target-bundle-lint.nix` | Exact authored-file ownership validation for every target bundle. |
 | `xed-isa-catalog.nix` | Pinned deterministic XED instruction-catalog package and app. |
-| `stage-a-builders`, `stage-a-lightweight-ca-builders` | Optional remote builder inventories for full and lightweight jobs. |
-| `stage-a-builder-public-keys` | Trusted cache keys paired with the builder inventories. |
+| `builders.example`, `trusted-public-keys.example` | Versioned templates for ignored repository-local or XDG CA builder policy. No host inventory is tracked. |
 
 The supported consumer interface is `flake.lib.mkTargetSdk`. Low-level Nix
 constructors are private implementation details rather than a parallel API.
@@ -574,7 +572,7 @@ Tests are phase-oriented by filename:
   graph fixtures.
 - `tests/integration/native/`: fixture-backed native integration; `tests/smoke/`
   and `tests/benchmark/` own their explicit suite tiers.
-- `test_stage_a_isa_*`: ISA catalog, corpus, oracle, qualification, and Nix paths.
+- `test_spx_isa_*`: ISA catalog, corpus, oracle, qualification, and Nix paths.
 - `test_reconstruction_*`, `test_recursive_decode.py`,
   `test_rooted_state_machine.py`: static reconstruction and machine IR.
 - `test_component_discovery.py`, `test_component_interface.py`, and

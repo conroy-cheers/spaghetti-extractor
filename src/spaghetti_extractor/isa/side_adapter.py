@@ -28,15 +28,15 @@ from ..extraction.isa_requirements import (
 )
 from ..extraction.schema import STATIC_ANALYSIS_MODEL_ID
 from ..extraction.isa_inventory import parse_side_isa_unbound
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes, sha256_file, write_json
 
 
 SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT = (
-    "stage-a-side-isa-executable-catalog-proposal-v1"
+    "spaghetti-extractor-side-isa-executable-catalog-proposal-v1"
 )
 SIDE_ISA_QUALIFICATION_ADAPTER_RESULT_FORMAT = (
-    "stage-a-side-isa-qualification-adapter-result-v1"
+    "spaghetti-extractor-side-isa-qualification-adapter-result-v1"
 )
 _ADAPTER_VERSION = "side-isa-qualification-adapter-v1"
 _SIDES = ("original", "candidate")
@@ -70,16 +70,16 @@ def _read_mapping(path: Path, context: str) -> Mapping[str, Any]:
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read {context} {path}: {exc}") from exc
+        raise ToolkitInputError(f"cannot read {context} {path}: {exc}") from exc
     if not isinstance(payload, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     return payload
 
 
 def _hash_field(payload: Mapping[str, Any], field: str, context: str) -> str:
     value = payload.get(field)
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} {field} must be 64 lowercase hex characters"
         )
     return value
@@ -89,11 +89,11 @@ def _parse_side(artifact: Path, binary: Path) -> _ParsedSide:
     payload = _read_mapping(artifact, "side ISA artifact")
     side = payload.get("side")
     if side not in _SIDES:
-        raise StageAInputError("side ISA artifact side is invalid")
+        raise ToolkitInputError("side ISA artifact side is invalid")
     binary_sha256 = _hash_field(payload, "binary_sha256", "side ISA artifact")
     actual_binary_sha256 = sha256_file(Path(binary))
     if binary_sha256 != actual_binary_sha256:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{side} side ISA artifact names a different binary"
         )
     classifier_sha256 = _hash_field(
@@ -101,7 +101,7 @@ def _parse_side(artifact: Path, binary: Path) -> _ParsedSide:
     )
     current_classifier = lean_semantic_form_classifier_sha256()
     if classifier_sha256 != current_classifier:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{side} side ISA artifact uses a stale semantic classifier"
         )
     extractor_sha256 = _hash_field(
@@ -130,20 +130,20 @@ def _parse_side(artifact: Path, binary: Path) -> _ParsedSide:
 
 def _validate_side_set(sides: Sequence[_ParsedSide]) -> tuple[_ParsedSide, ...]:
     if not 1 <= len(sides) <= 2:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side ISA qualification adaptation requires one or two inputs"
         )
     by_side = {side.side: side for side in sides}
     if len(by_side) != len(sides):
-        raise StageAInputError("duplicate side ISA input")
+        raise ToolkitInputError("duplicate side ISA input")
     ordered = tuple(by_side[side] for side in _SIDES if side in by_side)
     classifier_ids = {side.classifier_sha256 for side in ordered}
     extractor_ids = {side.extractor_sha256 for side in ordered}
     source_ids = {side.source_sha256 for side in ordered}
     if len(classifier_ids) != 1:
-        raise StageAInputError("side ISA inputs use different semantic classifiers")
+        raise ToolkitInputError("side ISA inputs use different semantic classifiers")
     if len(extractor_ids) != 1 or len(source_ids) != 1:
-        raise StageAInputError("side ISA inputs use different extraction revisions")
+        raise ToolkitInputError("side ISA inputs use different extraction revisions")
     return ordered
 
 
@@ -192,7 +192,7 @@ def adapt_side_isa_qualification_inputs(
     node_count = 0
     for side_input in parsed:
         if not side_input.request.regions:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{side_input.side} side ISA input contains no regions"
             )
         side_node_offsets[side_input.side] = node_count
@@ -226,11 +226,11 @@ def adapt_side_isa_qualification_inputs(
                     form_id, semantic_form
                 )
                 if previous_semantic != semantic_form:
-                    raise StageAInputError("Lean semantic-form identity collision")
+                    raise ToolkitInputError("Lean semantic-form identity collision")
                 encoded = row["bytes"]
                 previous_form = form_by_bytes.setdefault(encoded, form_id)
                 if previous_form != form_id:
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         "one exact instruction encoding maps to multiple semantic forms"
                     )
                 occurrence_id = _occurrence_id(
@@ -243,7 +243,7 @@ def adapt_side_isa_qualification_inputs(
                     form_id=form_id,
                 )
                 if occurrence_id in occurrence_ids:
-                    raise StageAInputError("duplicate canonical ISA occurrence")
+                    raise ToolkitInputError("duplicate canonical ISA occurrence")
                 occurrence_ids.add(occurrence_id)
                 form_occurrences[form_id].append(occurrence_id)
                 occurrence = {
@@ -264,7 +264,7 @@ def adapt_side_isa_qualification_inputs(
                 encoding = encodings.setdefault(
                     key,
                     {
-                        "format": "stage-a-side-isa-executable-encoding-proposal-v1",
+                        "format": "spaghetti-extractor-side-isa-executable-encoding-proposal-v1",
                         "encoding_id": _encoding_id(form_id, encoded),
                         "form_id": form_id,
                         "semantic_form": semantic_form,
@@ -359,8 +359,8 @@ def adapt_side_isa_qualification_inputs(
         },
         "formal_binding": {
             "status": "lean_side_decode_extracted_replay_pending",
-            "classifier_module": "StageA.ISAQualification",
-            "span_decoder_module": "StageA.ISAInventory",
+            "classifier_module": "SpaghettiExtractor.ISA.ISAQualification",
+            "span_decoder_module": "SpaghettiExtractor.ISA.ISAInventory",
             "classifier_sha256": classifier_sha256,
             "extractor_sha256": extractor_sha256,
             "instruction_spans_and_bytes_match_capstone": False,
@@ -385,7 +385,6 @@ def adapt_side_isa_qualification_inputs(
         "trust": {
             "role": "untrusted_side_isa_qualification_input_adapter",
             "proof_authority": False,
-            "closes_stage_a_proof": False,
             "lean_checks_required": [
                 "exact_pe_byte_decode",
                 "region_instruction_adequacy",
@@ -444,7 +443,6 @@ def adapt_side_isa_qualification_inputs(
         "trust": {
             "role": "untrusted_executable_catalog_enrichment_proposal",
             "proof_authority": False,
-            "closes_stage_a_proof": False,
         },
     }
     return requirements, catalog_proposal
@@ -458,7 +456,7 @@ def write_side_isa_qualification_inputs(
     catalog_out: Path,
 ) -> dict[str, Any]:
     if len(side_isa_artifacts) != len(binaries):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "--side-isa and --binary must be supplied the same number of times"
         )
     requirements, catalog = adapt_side_isa_qualification_inputs(
@@ -476,7 +474,6 @@ def write_side_isa_qualification_inputs(
         "catalog_sha256": sha256_file(Path(catalog_out)),
         "counts": catalog["counts"],
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }
 
 

@@ -139,7 +139,7 @@ class TestNixFirstRunner(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "nix").mkdir()
-            machines = root / "nix/stage-a-builders"
+            machines = root / "nix/builders.local"
             machines.write_text("ssh-ng://builder x86_64-linux - 1 1 ca-derivations -\n")
 
             command = build_commands(root, mode="full")[1]

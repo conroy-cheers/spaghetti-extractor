@@ -9,18 +9,18 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 from spaghetti_extractor.candidate.interpreter import (
-    StageBInterpreterError,
-    compile_stage_b_interpreter_machine_ir,
-    compile_stage_b_interpreter_program,
+    CandidateInterpreterError,
+    compile_spx_interpreter_machine_ir,
+    compile_spx_interpreter_program,
 )
 from tests.unit.candidate.interpreter._support import (
-    write_stage_b_interpreter_package,
+    write_spx_interpreter_package,
 )
 from spaghetti_extractor.candidate.x87 import (
     typed_x87_operation_from_micro_op,
     typed_x87_operation_from_payload,
 )
-from spaghetti_extractor.pe32.stage_binary import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 from spaghetti_extractor.util import sha256_bytes
 
 
@@ -83,7 +83,7 @@ def _replay_row(
         "fpu_state": {
             "model": "native_exact_x87_command_replay_obligation_v1",
             "status": "required",
-            "authoritative_state_type": "StageA.X87.PhysicalState",
+            "authoritative_state_type": "SpaghettiExtractor.ISA.X87.PhysicalState",
             "required_fields": list(_REQUIRED_PHYSICAL_FIELDS),
             "missing_or_invalid_fields": list(_MISSING_PHYSICAL_FIELDS),
             "logical_state_guidance": {
@@ -94,9 +94,9 @@ def _replay_row(
                 "status": {"op": "fpu_status", "args": []},
             },
             "replay": {
-                "format": "stage-a-native-exact-x87-command-replay-obligation-v1",
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "format": "spaghetti-extractor-native-exact-x87-command-replay-obligation-v1",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
                 "architecture": "x86",
                 "bitness": 32,
                 "image_base": 0x400000,
@@ -124,7 +124,7 @@ def _write_machine(path: Path, rows: list[dict[str, object]]) -> None:
 def _machine_ir_x87_unit(*, mnemonic: str = "fld1", operands: list[object] | None = None) -> dict[str, object]:
     digest = sha256_bytes(bytes.fromhex("d9e8"))
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": "semantic-transfer:x87-replay",
         "status": "qualified",
@@ -134,7 +134,7 @@ def _machine_ir_x87_unit(*, mnemonic: str = "fld1", operands: list[object] | Non
             "instruction_bytes_sha256": digest,
         },
         "x87_micro_ops": [{
-            "format": "stage-a-x87-micro-op-v1",
+            "format": "spaghetti-extractor-x87-micro-op-v1",
             "id": "semantic-transfer:x87-replay:x87:00001000",
             "unit_id": "semantic-transfer:x87-replay",
             "rva_start": 0x1000,
@@ -146,8 +146,8 @@ def _machine_ir_x87_unit(*, mnemonic: str = "fld1", operands: list[object] | Non
             "operands": [] if operands is None else operands,
             "implicit_registers_read": [],
             "implicit_registers_written": [],
-            "checked_decoder": "StageA.Formal.decodeInstructionExact",
-            "checked_executor": "StageA.Formal.executeInstruction",
+            "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+            "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             "physical_state_effect": "defined_by_checked_typed_x87_executor",
         }],
         "semantics": {
@@ -165,8 +165,8 @@ def _machine_ir_x87_unit(*, mnemonic: str = "fld1", operands: list[object] | Non
             "fpu_state": {
                 "typed_replay": {
                     "image_base": 0x400000,
-                    "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                    "checked_executor": "StageA.Formal.executeInstruction",
+                    "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                    "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
                 }
             },
             "instruction_effect_schedule": None,
@@ -228,8 +228,8 @@ def _machine_ir_mixed_unit() -> dict[str, object]:
                 "classification": {
                     "status": "proposal_requires_lean_exact_byte_replay",
                     "proof_authority": False,
-                    "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                    "checked_executor": "StageA.Formal.executeInstruction",
+                    "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                    "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
                 },
                 "effects": x87_effects,
             },
@@ -241,8 +241,8 @@ def _machine_ir_mixed_unit() -> dict[str, object]:
                 "classification": {
                     "status": "proposal_requires_lean_exact_byte_replay",
                     "proof_authority": False,
-                    "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                    "checked_executor": "StageA.Formal.executeInstruction",
+                    "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                    "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
                 },
                 "effects": ordinary_effects,
             },
@@ -389,14 +389,14 @@ def _scheduled_mixed_row() -> dict[str, object]:
     ):
         stop = start + len(encoded)
         decoder = (
-            "StageA.Formal.decodeInstructionExact"
+            "SpaghettiExtractor.ISA.Formal.decodeInstructionExact"
             if is_x87
-            else "StageA.Formal.decodeInstructionExact"
+            else "SpaghettiExtractor.ISA.Formal.decodeInstructionExact"
         )
         executor = (
-            "StageA.Formal.executeInstruction"
+            "SpaghettiExtractor.ISA.Formal.executeInstruction"
             if is_x87
-            else "StageA.Formal.executeInstruction"
+            else "SpaghettiExtractor.ISA.Formal.executeInstruction"
         )
         record: dict[str, object] = {
             "index": index,

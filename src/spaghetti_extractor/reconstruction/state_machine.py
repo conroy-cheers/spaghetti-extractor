@@ -16,15 +16,15 @@ from ..artifacts.formats import (
 )
 from ..external.callbacks import parse_callback_abi, parse_callback_source
 from ..external.machine_import_profiles import load_machine_import_profile_set
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..static_program.codec import load_static_program_contract_binding
 from ..static_program.model import StaticProgramContractBinding
 from ..util import sha256_bytes, sha256_file
 
 
-STAGE_B_STATE_MACHINE_FORMAT = "stage-b-state-machine-transfer-v1"
-STAGE_A_SEMANTIC_IR_MODEL = SEMANTIC_IR_FORMAT
-STAGE_A_SEMANTIC_TRANSFER_FORMAT = SEMANTIC_TRANSFER_CONTRACT_FORMAT
+SPX_STATE_MACHINE_FORMAT = "spaghetti-extractor-state-machine-transfer-v1"
+SPX_SEMANTIC_IR_MODEL = SEMANTIC_IR_FORMAT
+SPX_SEMANTIC_TRANSFER_FORMAT = SEMANTIC_TRANSFER_CONTRACT_FORMAT
 
 _TRANSFER_FIELDS = (
     "format",
@@ -71,21 +71,21 @@ class StateMachineBinding:
     transfer_count: int
 
 
-def normalize_stage_a_semantic_transfer(
+def normalize_spx_semantic_transfer(
     row: dict[str, Any],
     *,
     static_program_contract_sha256: str | None = None,
     semantic_transfer_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Preserve the checked Stage A transfer IR used to generate Stage B source."""
+    """Preserve the checked static analysis transfer IR used to generate candidate reconstruction source."""
 
     source_row = dict(row)
     if "span" not in source_row:
         if (
-            source_row.get("stage_b_format") != STAGE_B_STATE_MACHINE_FORMAT
+            source_row.get("spx_format") != SPX_STATE_MACHINE_FORMAT
             or not isinstance(source_row.get("original"), Mapping)
         ):
-            raise StageAInputError("static semantic transfer omits its source span")
+            raise ToolkitInputError("static semantic transfer omits its source span")
         source_row["span"] = source_row["original"]
     normalized = {
         key: _json_value(source_row[key])
@@ -94,7 +94,7 @@ def normalize_stage_a_semantic_transfer(
     }
     source_bytes = _canonical_json(normalized)
     normalized["original"] = normalized.pop("span")
-    normalized["stage_b_format"] = STAGE_B_STATE_MACHINE_FORMAT
+    normalized["spx_format"] = SPX_STATE_MACHINE_FORMAT
     normalized["contract_sha256"] = sha256_bytes(source_bytes)
     existing_binding = source_row.get("static_program_export")
     if existing_binding is not None:
@@ -103,11 +103,11 @@ def normalize_stage_a_semantic_transfer(
             binding["static_program_contract_sha256"]
             != static_program_contract_sha256
         ):
-            raise StageAInputError("state-machine static-program binding changed")
+            raise ToolkitInputError("state-machine static-program binding changed")
         if semantic_transfer_sha256 is not None and (
             binding["semantic_transfer_sha256"] != semantic_transfer_sha256
         ):
-            raise StageAInputError("state-machine semantic-transfer binding changed")
+            raise ToolkitInputError("state-machine semantic-transfer binding changed")
         normalized["static_program_export"] = binding
     elif static_program_contract_sha256 is not None or semantic_transfer_sha256 is not None:
         normalized["static_program_export"] = {
@@ -136,31 +136,31 @@ def write_state_machine_from_static_program(
     )
     semantic_path = Path(semantic_transfer_contracts).resolve()
     if not semantic_path.is_file() or semantic_path.is_symlink():
-        raise StageAInputError("Stage A semantic-transfer sidecar must be a regular file")
+        raise ToolkitInputError("static analysis semantic-transfer sidecar must be a regular file")
     declared_semantic = static_program.semantic_transfers
     if semantic_path != declared_semantic:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "semantic-transfer input is not the sidecar declared by the static program"
         )
     if sha256_file(semantic_path) != static_program.semantic_transfers_sha256:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "semantic-transfer input differs from the static-program hash binding"
         )
-    raw_rows = _load_stage_a_semantic_transfer_rows(semantic_path, static_program)
+    raw_rows = _load_spx_semantic_transfer_rows(semantic_path, static_program)
     rows = [
-        normalize_stage_a_semantic_transfer(
+        normalize_spx_semantic_transfer(
             row,
             static_program_contract_sha256=static_program.sha256,
             semantic_transfer_sha256=sha256_bytes(_canonical_json(row)),
         )
         for row in raw_rows
     ]
-    rows = normalize_stage_a_semantic_transfers(rows)
+    rows = normalize_spx_semantic_transfers(rows)
     if not rows:
-        raise StageAInputError("Stage A semantic-transfer export is empty")
+        raise ToolkitInputError("static analysis semantic-transfer export is empty")
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    write_stage_b_state_machine(out, rows)
+    write_spx_state_machine(out, rows)
     return StateMachineBinding(
         path=out.resolve(),
         sha256=sha256_file(out),
@@ -180,7 +180,7 @@ def validate_state_machine_static_program_chain(
     """Check that a state machine is exactly reproducible from static evidence."""
 
     state_machine = Path(state_machine).resolve()
-    with tempfile.TemporaryDirectory(prefix="stage-b-state-machine-check-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="spaghetti-extractor-state-machine-check-") as temporary:
         expected_path = Path(temporary) / "expected.jsonl"
         expected = write_state_machine_from_static_program(
             static_program_contract=static_program_contract,
@@ -189,11 +189,11 @@ def validate_state_machine_static_program_chain(
             original_pe=original_pe,
         )
         if state_machine.is_symlink() or not state_machine.is_file():
-            raise StageAInputError("Stage B state machine must be a regular non-symlink file")
+            raise ToolkitInputError("candidate reconstruction state machine must be a regular non-symlink file")
         observed_sha = sha256_file(state_machine)
         if observed_sha != expected.sha256:
-            raise StageAInputError(
-                "Stage B state machine is not the canonical derivative of the Stage A exports"
+            raise ToolkitInputError(
+                "candidate reconstruction state machine is not the canonical derivative of the static analysis exports"
             )
         return StateMachineBinding(
             path=state_machine,
@@ -204,10 +204,10 @@ def validate_state_machine_static_program_chain(
         )
 
 
-def normalize_stage_a_semantic_transfers(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+def normalize_spx_semantic_transfers(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     normalized_rows: dict[str, dict[str, Any]] = {}
     for row in rows:
-        normalized = normalize_stage_a_semantic_transfer(row)
+        normalized = normalize_spx_semantic_transfer(row)
         identity = str(
             normalized.get("id")
             or f"{normalized.get('function')}:{normalized.get('block_id')}:{_transfer_start(normalized)}"
@@ -227,7 +227,7 @@ def normalize_stage_a_semantic_transfers(rows: Iterable[dict[str, Any]]) -> list
     )
 
 
-def write_stage_b_state_machine(path: Path, rows: Iterable[dict[str, Any]]) -> None:
+def write_spx_state_machine(path: Path, rows: Iterable[dict[str, Any]]) -> None:
     path.write_text(
         "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
         encoding="utf-8",
@@ -272,12 +272,12 @@ def annotate_state_machine_import_contracts(
         else row
         for row in annotated
     ]
-    return normalize_stage_a_semantic_transfers(result), terminating
+    return normalize_spx_semantic_transfers(result), terminating
 
 
 def _read_state_machine_rows(path: Path) -> list[dict[str, Any]]:
     if not path.is_file() or path.is_symlink():
-        raise StageAInputError("state machine must be a regular file")
+        raise ToolkitInputError("state machine must be a regular file")
     rows: list[dict[str, Any]] = []
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
@@ -285,7 +285,7 @@ def _read_state_machine_rows(path: Path) -> list[dict[str, Any]]:
         try:
             value = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"invalid state-machine JSON on line {line_number}: {exc}"
             ) from exc
         rows.append(_object(value, f"state-machine line {line_number}"))
@@ -333,14 +333,14 @@ def _machine_import_contracts(
             or argument_words < 0
             or argument_words > 64
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"external profile contract {contract['id']!r} has invalid argument_words"
             )
         if contract.get("abi_template") not in {
             "pe32-cdecl-v1",
             "pe32-stdcall-v1",
         }:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"external profile contract {contract['id']!r} has unsupported ABI template"
             )
         world_effect = contract.get("world_effect")
@@ -355,7 +355,7 @@ def _machine_import_contracts(
             contract["callback_abi"] = callback.as_json()
             callback_lifetime = contract.get("callback_lifetime")
             if not isinstance(callback_lifetime, (str, dict)) or not callback_lifetime:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"external profile contract {contract['id']!r} has no exact callback lifetime"
                 )
             callback_result = contract.get("callback_result")
@@ -367,11 +367,11 @@ def _machine_import_contracts(
                 or callback_result.get("origin") != "previous_registered_callback"
                 or not isinstance(callback_result.get("nullable"), bool)
             ):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"external profile contract {contract['id']!r} has an invalid callback result"
                 )
         elif callback_abi is not None:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"external profile contract {contract['id']!r} attaches a callback ABI to a non-callback effect"
             )
         result[identity] = contract
@@ -405,9 +405,9 @@ def _annotate_machine_import_arguments(
         argument_words = int(contract["argument_words"])
         arguments = event.get("arguments")
         if not isinstance(arguments, list):
-            raise StageAInputError(f"{label} arguments must be a list")
+            raise ToolkitInputError(f"{label} arguments must be a list")
         if arguments and len(arguments) != argument_words:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{label} argument inventory differs from its machine-call contract"
             )
         if not arguments:
@@ -420,7 +420,7 @@ def _annotate_machine_import_arguments(
             event["arguments"] = arguments
         stack_inputs = event.get("stack_inputs")
         if stack_inputs is not None and not isinstance(stack_inputs, list):
-            raise StageAInputError(f"{label} stack_inputs must be a list")
+            raise ToolkitInputError(f"{label} stack_inputs must be a list")
         if not stack_inputs:
             event["stack_inputs"] = [
                 {
@@ -482,10 +482,10 @@ def _annotate_machine_import_arguments(
     result = dict(row)
     external_events = row.get("external_events")
     if not isinstance(external_events, list):
-        raise StageAInputError("semantic transfer external_events must be a list")
+        raise ToolkitInputError("semantic transfer external_events must be a list")
     ordered_events = row.get("ordered_events")
     if not isinstance(ordered_events, list):
-        raise StageAInputError("semantic transfer ordered_events must be a list")
+        raise ToolkitInputError("semantic transfer ordered_events must be a list")
     result["external_events"] = [
         annotate(event, f"semantic external event {index}")
         for index, event in enumerate(external_events)
@@ -508,7 +508,7 @@ def _annotate_machine_import_arguments(
             replay = fpu_state.get("replay")
             if isinstance(replay, Mapping) and "instruction_effect_schedule" in replay:
                 if replay.get("instruction_effect_schedule") != schedule:
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         "FPU replay and transfer instruction effect schedules differ"
                     )
                 enriched_fpu = _json_value(fpu_state)
@@ -531,7 +531,7 @@ def _machine_contract_metadata(value: Any) -> Any:
         for raw_key, item in value.items():
             key = "byte_count" if raw_key == "bytes" else str(raw_key)
             if key in result:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"machine import contract metadata collides at {key!r}"
                 )
             result[key] = _machine_contract_metadata(item)
@@ -553,7 +553,7 @@ def _annotate_machine_import_instruction_schedule(
     )
     records = source.get("records")
     if not isinstance(records, list):
-        raise StageAInputError("instruction effect schedule records must be a list")
+        raise ToolkitInputError("instruction effect schedule records must be a list")
 
     expected_calls = Counter(
         _scheduled_external_call_key(event, "aggregate ordered external call")
@@ -582,7 +582,7 @@ def _annotate_machine_import_instruction_schedule(
         raw_ordered = effects.get("ordered_events")
         raw_calls = effects.get("call_effects")
         if not isinstance(raw_ordered, list) or not isinstance(raw_calls, list):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"instruction effect record {record_index} call inventories must be lists"
             )
 
@@ -595,7 +595,7 @@ def _annotate_machine_import_instruction_schedule(
             )
             if event.get("kind") == "external_call" and "abi_contract" in event:
                 if event.get("instruction_rva") != record_rva:
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"instruction effect record {record_index} external call has "
                         "a mismatched instruction RVA"
                     )
@@ -629,7 +629,7 @@ def _annotate_machine_import_instruction_schedule(
                 ] += 1
             enriched_calls.append(call)
         if call_effect_signatures != ordered_call_signatures:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"instruction effect record {record_index} call_effects and "
                 "ordered_events disagree"
             )
@@ -643,7 +643,7 @@ def _annotate_machine_import_instruction_schedule(
     if observed_calls != expected_calls:
         missing = expected_calls - observed_calls
         extra = observed_calls - expected_calls
-        raise StageAInputError(
+        raise ToolkitInputError(
             "instruction effect schedule and aggregate machine-import calls differ: "
             f"missing={list(missing.elements())[:3]}, "
             f"extra={list(extra.elements())[:3]}"
@@ -667,11 +667,11 @@ def _external_call_signature(
 ) -> tuple[Any, ...]:
     dll = event.get("dll")
     if not isinstance(dll, str) or not dll:
-        raise StageAInputError(f"{label} DLL identity must be a nonempty string")
+        raise ToolkitInputError(f"{label} DLL identity must be a nonempty string")
     symbol = event.get("symbol")
     ordinal = event.get("ordinal")
     if symbol is None and ordinal is None:
-        raise StageAInputError(f"{label} has no symbol or ordinal identity")
+        raise ToolkitInputError(f"{label} has no symbol or ordinal identity")
     return (
         event.get("kind"),
         dll.lower(),
@@ -686,7 +686,7 @@ def _verify_embedded_digest(
 ) -> None:
     expected = _digest(value.get(digest_field), f"{label} digest")
     if _embedded_digest(value, digest_field) != expected:
-        raise StageAInputError(f"{label} digest does not match its canonical contents")
+        raise ToolkitInputError(f"{label} digest does not match its canonical contents")
 
 
 def _embedded_digest(value: Mapping[str, Any], digest_field: str) -> str:
@@ -718,7 +718,7 @@ def _row_calls_terminating_import(
         return False
     external_events = row.get("external_events")
     if not isinstance(external_events, list):
-        raise StageAInputError("semantic transfer external_events must be a list")
+        raise ToolkitInputError("semantic transfer external_events must be a list")
     for index, raw in enumerate(external_events):
         event = _object(raw, f"semantic external event {index}")
         if event.get("kind") != "external_call":
@@ -777,23 +777,23 @@ def _validate_restartable_string_events(
         if kind not in {"rep_movs", "rep_stos", "rep_scas"}:
             return
         if event.get("index") != expected_index:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{event_label} has a noncanonical external-event index"
             )
         allowed_widths = {1} if kind == "rep_scas" else {1, 2, 4}
         if event.get("element_width") not in allowed_widths:
-            raise StageAInputError(f"{event_label} has an invalid element width")
+            raise ToolkitInputError(f"{event_label} has an invalid element width")
         if event.get("address_size") != 32:
-            raise StageAInputError(f"{event_label} has an unsupported address size")
+            raise ToolkitInputError(f"{event_label} has an unsupported address size")
         expected_model = {
             "rep_movs": "symbolic_string_copy_v2",
             "rep_stos": "symbolic_string_fill_v2",
             "rep_scas": "symbolic_string_scan_v1",
         }[kind]
         if event.get("effect_model") != expected_model:
-            raise StageAInputError(f"{event_label} has an invalid effect model")
+            raise ToolkitInputError(f"{event_label} has an invalid effect model")
         if event.get("restart_semantics") != "element_committed_v1":
-            raise StageAInputError(f"{event_label} lacks restart-state semantics")
+            raise ToolkitInputError(f"{event_label} lacks restart-state semantics")
         operand = {
             "rep_movs": "source",
             "rep_stos": "value",
@@ -803,9 +803,9 @@ def _validate_restartable_string_events(
         forbidden = {"source", "value", "accumulator"} - {operand}
         for field in sorted(required):
             if not isinstance(event.get(field), Mapping):
-                raise StageAInputError(f"{event_label}.{field} must be an expression")
+                raise ToolkitInputError(f"{event_label}.{field} must be an expression")
         if any(field in event for field in forbidden):
-            raise StageAInputError(f"{event_label} mixes string-operation operands")
+            raise ToolkitInputError(f"{event_label} mixes string-operation operands")
         if kind == "rep_scas":
             expected_fields = {
                 "repeat_condition": "while_not_equal_v1",
@@ -817,7 +817,7 @@ def _validate_restartable_string_events(
             }
             for field, expected in expected_fields.items():
                 if event.get(field) != expected:
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"{event_label} has an invalid {field.replace('_', ' ')}"
                     )
 
@@ -836,7 +836,7 @@ def _validate_restartable_string_events(
         external_index += 1
 
 
-def _load_stage_a_semantic_transfer_rows(
+def _load_spx_semantic_transfer_rows(
     path: Path,
     static_program: StaticProgramContractBinding,
 ) -> list[dict[str, Any]]:
@@ -848,67 +848,67 @@ def _load_stage_a_semantic_transfer_rows(
         try:
             raw = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise StageAInputError(
-                f"Stage A semantic-transfer line {line_number} is invalid JSON: {exc}"
+            raise ToolkitInputError(
+                f"static analysis semantic-transfer line {line_number} is invalid JSON: {exc}"
             ) from exc
-        row = _object(raw, f"Stage A semantic-transfer line {line_number}")
+        row = _object(raw, f"static analysis semantic-transfer line {line_number}")
         expected_fields = set(_TRANSFER_FIELDS)
         allowed_fields = expected_fields | set(_OPTIONAL_TRANSFER_FIELDS)
         missing = sorted(expected_fields - set(row))
         extra = sorted(set(row) - allowed_fields)
         if missing or extra:
-            raise StageAInputError(
-                f"Stage A semantic-transfer line {line_number} has schema drift: "
+            raise ToolkitInputError(
+                f"static analysis semantic-transfer line {line_number} has schema drift: "
                 f"missing={missing}, extra={extra}"
             )
-        if row.get("format") != STAGE_A_SEMANTIC_TRANSFER_FORMAT:
-            raise StageAInputError(
-                f"Stage A semantic-transfer line {line_number} has an unsupported format"
+        if row.get("format") != SPX_SEMANTIC_TRANSFER_FORMAT:
+            raise ToolkitInputError(
+                f"static analysis semantic-transfer line {line_number} has an unsupported format"
             )
         identity = row.get("id")
         if not isinstance(identity, str) or not identity:
-            raise StageAInputError(
-                f"Stage A semantic-transfer line {line_number} omits its identity"
+            raise ToolkitInputError(
+                f"static analysis semantic-transfer line {line_number} omits its identity"
             )
         if identity in seen_ids:
-            raise StageAInputError(f"Stage A semantic-transfer identity is duplicated: {identity}")
+            raise ToolkitInputError(f"static analysis semantic-transfer identity is duplicated: {identity}")
         seen_ids.add(identity)
-        if row.get("expression_model") != STAGE_A_SEMANTIC_IR_MODEL:
-            raise StageAInputError(
-                f"Stage A semantic-transfer line {line_number} has an unsupported expression model"
+        if row.get("expression_model") != SPX_SEMANTIC_IR_MODEL:
+            raise ToolkitInputError(
+                f"static analysis semantic-transfer line {line_number} has an unsupported expression model"
             )
         for field in (
             "instructions", "register_writes", "flag_writes", "memory_events",
             "external_events", "faults", "ordered_events", "edge_conditions",
         ):
             if not isinstance(row.get(field), list):
-                raise StageAInputError(
-                    f"Stage A semantic-transfer line {line_number}.{field} must be a list"
+                raise ToolkitInputError(
+                    f"static analysis semantic-transfer line {line_number}.{field} must be a list"
                 )
         _validate_restartable_string_events(
             row,
-            f"Stage A semantic-transfer line {line_number}",
+            f"static analysis semantic-transfer line {line_number}",
         )
         if "instruction_effect_schedule" in row and not isinstance(
             row["instruction_effect_schedule"], dict
         ):
-            raise StageAInputError(
-                f"Stage A semantic-transfer line {line_number}."
+            raise ToolkitInputError(
+                f"static analysis semantic-transfer line {line_number}."
                 "instruction_effect_schedule must be an object"
             )
         if "blocking_instruction" in row and row["blocking_instruction"] is not None:
             _object(
                 row["blocking_instruction"],
-                f"Stage A semantic-transfer line {line_number}.blocking_instruction",
+                f"static analysis semantic-transfer line {line_number}.blocking_instruction",
             )
         if "semantic_cutpoint" in row:
             cutpoint = _object(
                 row["semantic_cutpoint"],
-                f"Stage A semantic-transfer line {line_number}.semantic_cutpoint",
+                f"static analysis semantic-transfer line {line_number}.semantic_cutpoint",
             )
             if set(cutpoint) != {"index", "parent_block_id", "policy"}:
-                raise StageAInputError(
-                    f"Stage A semantic-transfer line {line_number} has an invalid "
+                raise ToolkitInputError(
+                    f"static analysis semantic-transfer line {line_number} has an invalid "
                     "semantic-cutpoint schema"
                 )
             if (
@@ -919,34 +919,34 @@ def _load_stage_a_semantic_transfer_rows(
                 or not cutpoint["parent_block_id"]
                 or cutpoint["policy"] != "formal_stopping_instruction_v1"
             ):
-                raise StageAInputError(
-                    f"Stage A semantic-transfer line {line_number} has invalid "
+                raise ToolkitInputError(
+                    f"static analysis semantic-transfer line {line_number} has invalid "
                     "semantic-cutpoint evidence"
                 )
         instruction_bytes = bytearray()
         for instruction_index, instruction_raw in enumerate(row["instructions"]):
             instruction = _object(
                 instruction_raw,
-                f"Stage A semantic-transfer line {line_number} instruction {instruction_index}",
+                f"static analysis semantic-transfer line {line_number} instruction {instruction_index}",
             )
             encoded = instruction.get("bytes")
             if not isinstance(encoded, str):
-                raise StageAInputError(
-                    f"Stage A semantic-transfer line {line_number} has missing instruction bytes"
+                raise ToolkitInputError(
+                    f"static analysis semantic-transfer line {line_number} has missing instruction bytes"
                 )
             try:
                 instruction_bytes.extend(bytes.fromhex(encoded))
             except ValueError as exc:
-                raise StageAInputError(
-                    f"Stage A semantic-transfer line {line_number} has invalid instruction bytes"
+                raise ToolkitInputError(
+                    f"static analysis semantic-transfer line {line_number} has invalid instruction bytes"
                 ) from exc
         instruction_digest = _digest(
             row.get("instruction_bytes_sha256"),
-            f"Stage A semantic-transfer line {line_number} instruction digest",
+            f"static analysis semantic-transfer line {line_number} instruction digest",
         )
         if sha256_bytes(bytes(instruction_bytes)) != instruction_digest:
-            raise StageAInputError(
-                f"Stage A semantic-transfer line {line_number} instruction digest changed"
+            raise ToolkitInputError(
+                f"static analysis semantic-transfer line {line_number} instruction digest changed"
             )
         rows.append(dict(row))
     return rows
@@ -960,9 +960,9 @@ def _parse_semantic_export_binding(value: Any) -> dict[str, str]:
         "semantic_transfer_sha256",
     }
     if set(binding) != expected:
-        raise StageAInputError("state-machine Stage A export binding has undeclared fields")
+        raise ToolkitInputError("state-machine static analysis export binding has undeclared fields")
     if binding.get("format") != STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "state-machine static-program export binding has an unsupported format"
         )
     return {
@@ -979,16 +979,16 @@ def _parse_semantic_export_binding(value: Any) -> dict[str, str]:
 
 def _read_json_object(path: Path, context: str) -> dict[str, Any]:
     if not path.is_file() or path.is_symlink():
-        raise StageAInputError(f"{context} must be a regular non-symlink file")
+        raise ToolkitInputError(f"{context} must be a regular non-symlink file")
     try:
         return _object(json.loads(path.read_text(encoding="utf-8")), context)
     except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read {context}: {exc}") from exc
+        raise ToolkitInputError(f"cannot read {context}: {exc}") from exc
 
 
 def _object(value: Any, context: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     return dict(value)
 
 
@@ -998,33 +998,33 @@ def _digest(value: Any, context: str) -> str:
         or len(value) != 64
         or any(character not in "0123456789abcdef" for character in value)
     ):
-        raise StageAInputError(f"{context} must be a lowercase SHA-256 digest")
+        raise ToolkitInputError(f"{context} must be a lowercase SHA-256 digest")
     return value
 
 
 def _nonnegative_int(value: Any, context: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-        raise StageAInputError(f"{context} must be a non-negative integer")
+        raise ToolkitInputError(f"{context} must be a non-negative integer")
     return value
 
 
 def _u32(value: Any, context: str) -> int:
     result = _nonnegative_int(value, context)
     if result >= 2**32:
-        raise StageAInputError(f"{context} must fit in 32 bits")
+        raise ToolkitInputError(f"{context} must fit in 32 bits")
     return result
 
 
 __all__ = [
-    "STAGE_A_SEMANTIC_IR_MODEL",
-    "STAGE_A_SEMANTIC_TRANSFER_FORMAT",
-    "STAGE_B_STATE_MACHINE_FORMAT",
+    "SPX_SEMANTIC_IR_MODEL",
+    "SPX_SEMANTIC_TRANSFER_FORMAT",
+    "SPX_STATE_MACHINE_FORMAT",
     "StateMachineBinding",
     "annotate_state_machine_import_contracts",
-    "normalize_stage_a_semantic_transfer",
-    "normalize_stage_a_semantic_transfers",
+    "normalize_spx_semantic_transfer",
+    "normalize_spx_semantic_transfers",
     "semantic_direct_targets",
     "validate_state_machine_static_program_chain",
-    "write_stage_b_state_machine",
+    "write_spx_state_machine",
     "write_state_machine_from_static_program",
 ]

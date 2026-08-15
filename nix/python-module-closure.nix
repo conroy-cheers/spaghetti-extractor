@@ -54,7 +54,7 @@ let
   unauthorizedExtraPaths = builtins.filter
     (path:
       !(builtins.elem phaseRole [ "authority" "developer" ]
-        && lib.hasPrefix "spaghetti_extractor/lean/StageA" path))
+        && lib.hasPrefix "spaghetti_extractor/lean/SpaghettiExtractor/ISA" path))
     extraPaths;
   sanitize = value: lib.replaceStrings [ "." "_" "/" ] [ "-" "-" "-" ] value;
   moduleFiles = map

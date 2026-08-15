@@ -461,7 +461,7 @@ class RootedReachabilityTests(unittest.TestCase):
             "argument_words": 6,
             "output_rules": [],
             "environment_contract": {
-                "format": "stage-a-external-operation-contract-v1",
+                "format": "spaghetti-extractor-external-operation-contract-v1",
                 "id": "surface.blt.environment",
                 "status": "complete",
                 "memory_footprints": [],
@@ -513,7 +513,7 @@ class RootedReachabilityTests(unittest.TestCase):
             "argument_words": 6,
             "output_rules": [],
             "environment_contract": {
-                "format": "stage-a-external-operation-contract-v1",
+                "format": "spaghetti-extractor-external-operation-contract-v1",
                 "id": "surface.blt.environment",
                 "status": "complete",
                 "memory_footprints": [],
@@ -564,7 +564,7 @@ class RootedReachabilityTests(unittest.TestCase):
             "argument_words": 2,
             "output_rules": [],
             "environment_contract": {
-                "format": "stage-a-external-operation-contract-v1",
+                "format": "spaghetti-extractor-external-operation-contract-v1",
                 "id": "surface.lock.environment",
                 "status": "complete",
                 "memory_footprints": [{
@@ -598,7 +598,7 @@ class RootedReachabilityTests(unittest.TestCase):
         self.assertEqual(len(result["frontiers"]), 1)
 
         target["environment_contract"] = {
-            "format": "stage-a-external-operation-contract-v1",
+            "format": "spaghetti-extractor-external-operation-contract-v1",
             "id": "surface.lock.environment",
             "status": "incomplete",
             "blockers": ["external_memory_footprint_not_authored"],

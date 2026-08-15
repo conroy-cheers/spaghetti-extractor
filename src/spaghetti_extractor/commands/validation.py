@@ -9,7 +9,7 @@ from .common import Handler, path_argument
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name != "candidate-run-test-suite":
+    if name != "candidate-test-suite-run":
         raise ValueError(f"unsupported validation command: {name}")
     command.add_argument("--candidate-command", nargs="+", required=True)
     path_argument(command, "candidate_binary")

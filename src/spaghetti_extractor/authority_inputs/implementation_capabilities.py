@@ -52,7 +52,7 @@ from ..artifacts.io import (
 )
 from ..machine_ir.coverage import (
     FallbackCoverageReceiptError,
-    validate_stage_b_fallback_coverage_receipt,
+    validate_spx_fallback_coverage_receipt,
 )
 from ..machine_ir.fallback_capability import (
     FallbackCapabilityAnalysis,
@@ -362,7 +362,7 @@ def emit_implementation_capabilities_v3(
         )
     else:
         try:
-            receipt = validate_stage_b_fallback_coverage_receipt(
+            receipt = validate_spx_fallback_coverage_receipt(
                 receipt=fallback_coverage_receipt,
                 machine_ir=machine_ir,
                 machine_ir_manifest=machine_ir_manifest,

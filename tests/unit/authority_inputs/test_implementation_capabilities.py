@@ -35,7 +35,7 @@ from spaghetti_extractor.authority_inputs.implementation_capabilities import (
     validate_implementation_capabilities_v3,
 )
 from spaghetti_extractor.machine_ir.coverage import (
-    write_stage_b_fallback_coverage_receipt,
+    write_spx_fallback_coverage_receipt,
 )
 from spaghetti_extractor.machine_ir.fallback_capability import (
     FallbackCapabilityAnalysis,
@@ -115,11 +115,11 @@ class _Fixture:
         _write_json(
             self.machine_manifest,
             {
-                "format": "stage-a-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v2",
                 "counts": {"units": 1},
                 "artifacts": {
                     "machine_ir": {
-                        "format": "stage-a-machine-ir-v2",
+                        "format": "spaghetti-extractor-machine-ir-v2",
                         "path": self.machine_ir.name,
                         "sha256": sha256_file(self.machine_ir),
                     }
@@ -141,7 +141,7 @@ class _Fixture:
         _write_json(
             program,
             {
-                "format": "stage-b-semantic-interpreter-program-v1",
+                "format": "spaghetti-extractor-semantic-interpreter-program-v1",
                 "status": "ready",
                 "state_machine_sha256": sha256_file(self.machine_ir),
                 "counts": counts,
@@ -165,7 +165,7 @@ class _Fixture:
         _write_json(
             package,
             {
-                "format": "stage-b-semantic-interpreter-package-v1",
+                "format": "spaghetti-extractor-semantic-interpreter-package-v1",
                 "status": "ready",
                 "machine_ir": {
                     "path": self.machine_ir.name,
@@ -195,7 +195,7 @@ class _Fixture:
             },
         )
         self.receipt = root / "fallback-coverage-receipt.json"
-        write_stage_b_fallback_coverage_receipt(
+        write_spx_fallback_coverage_receipt(
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.machine_manifest,
             interpreter_package=self.interpreter,

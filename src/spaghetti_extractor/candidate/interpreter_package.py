@@ -1,4 +1,4 @@
-"""Validation and package assembly for the Stage B interpreter."""
+"""Validation and package assembly for the candidate reconstruction interpreter."""
 
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from ..artifacts.formats import (
     MACHINE_IR_FORMAT,
     SEMANTIC_IR_FORMAT,
     SEMANTIC_TRANSFER_CONTRACT_FORMAT,
-    STAGE_B_INTERPRETER_PACKAGE_FORMAT,
-    STAGE_B_INTERPRETER_PROGRAM_FORMAT,
+    SPX_INTERPRETER_PACKAGE_FORMAT,
+    SPX_INTERPRETER_PROGRAM_FORMAT,
 )
 from ..machine_ir.fallback_capability import (
     FallbackCapabilityAnalysis,
@@ -22,9 +22,9 @@ from ..machine_ir.definedness import analyze_definedness_jsonl
 from ..util import sha256_bytes, sha256_file, write_json
 from .interpreter_compiler import _TransferCompiler
 from .interpreter_model import (
-    STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS,
-    STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT,
-    StageBInterpreterError,
+    SPX_INTERPRETER_DEFINEDNESS_USE_FIELDS,
+    SPX_INTERPRETER_DEFINEDNESS_USE_FORMAT,
+    CandidateInterpreterError,
     _Transfer,
     _TypedX87Program,
 )
@@ -59,13 +59,13 @@ _X87_CHECKED_DECODER = X87_CHECKED_DECODER
 _X87_CHECKED_EXECUTOR = X87_CHECKED_EXECUTOR
 
 
-def compile_stage_b_interpreter_program(state_machine: Path) -> tuple[_Transfer, ...]:
+def compile_spx_interpreter_program(state_machine: Path) -> tuple[_Transfer, ...]:
     rows = _read_jsonl(Path(state_machine))
     transfers, _blockers = _compile_interpreter_rows(rows, collect_blockers=False)
     return transfers
 
 
-def compile_stage_b_interpreter_machine_ir(machine_ir: Path) -> tuple[_Transfer, ...]:
+def compile_spx_interpreter_machine_ir(machine_ir: Path) -> tuple[_Transfer, ...]:
     rows = _adapt_machine_ir_rows(_read_jsonl(Path(machine_ir)))
     transfers, _blockers = _compile_interpreter_rows(rows, collect_blockers=False)
     return transfers
@@ -75,12 +75,12 @@ def _adapt_machine_ir_rows(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for index, unit in enumerate(units):
         if unit.get("format") != _MACHINE_IR_FORMAT or unit.get("record_kind") != "unit":
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"machine-IR record {index} is not a v2 unit",
                 code="malformed_machine_ir_input",
             )
         if _contains_raw_instruction_material(unit):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"machine-IR record {index} contains raw instruction material",
                 code="malformed_machine_ir_input",
             )
@@ -95,7 +95,7 @@ def _adapt_machine_ir_rows(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
         rva_end = _u32(original.get("rva_end"), "machine-IR end RVA")
         span_size = _nonnegative(original.get("size"), "machine-IR span size")
         if rva_end <= rva_start or span_size != rva_end - rva_start:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 f"{identity}: machine-IR source span is inconsistent",
                 code="malformed_machine_ir_input",
             )
@@ -160,7 +160,7 @@ def _compile_interpreter_rows(
     seen_rvas: set[int] = set()
     for index, row in enumerate(rows):
         if row.get("status") == "incomplete":
-            error = StageBInterpreterError(
+            error = CandidateInterpreterError(
                 f"{row.get('id')}: semantic transfer is not qualified",
                 code="machine_ir_semantics_incomplete",
                 next_action=(
@@ -177,7 +177,7 @@ def _compile_interpreter_rows(
             continue
         try:
             transfer = _TransferCompiler(row).compile()
-        except StageBInterpreterError as exc:
+        except CandidateInterpreterError as exc:
             if not collect_blockers:
                 raise
             blockers.append(
@@ -185,10 +185,10 @@ def _compile_interpreter_rows(
             )
             continue
         if transfer.identity in seen_ids:
-            error = StageBInterpreterError(
+            error = CandidateInterpreterError(
                 f"duplicate transfer id {transfer.identity}",
                 code="duplicate_transfer_id",
-                next_action="make every Stage A semantic transfer identity unique",
+                next_action="make every static analysis semantic transfer identity unique",
             )
             if not collect_blockers:
                 raise error
@@ -197,7 +197,7 @@ def _compile_interpreter_rows(
             )
             continue
         if transfer.rva_start in seen_rvas:
-            error = StageBInterpreterError(
+            error = CandidateInterpreterError(
                 f"duplicate transfer RVA 0x{transfer.rva_start:x}",
                 code="duplicate_transfer_rva",
                 next_action="split or reconcile transfers that start at the same original RVA",
@@ -218,7 +218,7 @@ def _compile_interpreter_rows(
 def _package_blocker(
     row: Mapping[str, Any],
     index: int,
-    error: StageBInterpreterError,
+    error: CandidateInterpreterError,
     *,
     failure_phase: str = "semantic_lowering",
 ) -> dict[str, Any]:
@@ -250,7 +250,7 @@ def _package_blocker_sort_key(blocker: Mapping[str, Any]) -> tuple[int, str, str
     )
 
 
-def write_stage_b_interpreter_package(
+def write_spx_interpreter_package(
     *,
     machine_ir: Path,
     out: Path,
@@ -323,7 +323,7 @@ def write_stage_b_interpreter_package(
     )
     write_json(files["program_manifest"], program_payload)
     package = {
-        "format": STAGE_B_INTERPRETER_PACKAGE_FORMAT,
+        "format": SPX_INTERPRETER_PACKAGE_FORMAT,
         "status": "ready" if not blockers else "incomplete",
         "machine_ir": {"path": input_path.name, "sha256": sha256_file(input_path)},
         "input_mode": "sanitized_machine_ir_v2",
@@ -483,7 +483,7 @@ def _program_payload(
         for node in row.nodes
     )
     payload = {
-        "format": STAGE_B_INTERPRETER_PROGRAM_FORMAT,
+        "format": SPX_INTERPRETER_PROGRAM_FORMAT,
         "status": "ready" if not blocker_rows else "incomplete",
         "state_machine_sha256": state_machine_sha256,
         "counts": {
@@ -520,7 +520,7 @@ def _program_payload(
         },
         "execution_policy": "complete_transfer_inventory_v1",
         "transfers": transfer_payloads,
-        "authority": "untrusted generated program; Stage A checks every binding",
+        "authority": "untrusted generated program; static analysis checks every binding",
     }
     if undefined_node_count:
         definedness_evidence = analyze_definedness_jsonl(definedness_input)
@@ -558,27 +558,27 @@ def _definedness_use_payload(
     evidence_slots: dict[int, Mapping[str, Any]] = {}
     raw_evidence_slots = definedness_evidence.get("slots")
     if not isinstance(raw_evidence_slots, list):
-        raise StageBInterpreterError(
+        raise CandidateInterpreterError(
             "definedness analysis omitted its slot inventory",
             code="definedness_evidence_incomplete",
             next_action="rerun complete fail-closed definedness analysis",
         )
     for raw_slot in raw_evidence_slots:
         if not isinstance(raw_slot, Mapping):
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 "definedness analysis emitted a non-object slot",
                 code="definedness_evidence_invalid",
                 next_action="repair the definedness evidence schema",
             )
         slot = raw_slot.get("slot")
         if not isinstance(slot, int) or isinstance(slot, bool) or slot < 0 or slot > 0xFFFFFFFF:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 "definedness analysis emitted an invalid slot id",
                 code="definedness_evidence_invalid",
                 next_action="repair stable undefined-slot assignment",
             )
         if slot in evidence_slots:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 "definedness analysis emitted duplicate slot ids",
                 code="definedness_evidence_invalid",
                 next_action="repair stable undefined-slot assignment",
@@ -586,7 +586,7 @@ def _definedness_use_payload(
         evidence_slots[slot] = raw_slot
     missing_slots = set(uses_by_slot) - set(evidence_slots)
     if missing_slots:
-        raise StageBInterpreterError(
+        raise CandidateInterpreterError(
             "compiled undefined nodes are missing definedness evidence",
             code="definedness_evidence_incomplete",
             next_action="regenerate interpreter and definedness evidence from one state machine",
@@ -606,7 +606,7 @@ def _definedness_use_payload(
             "synchronized_behavior_relevant",
             "unknown",
         } or not isinstance(undefined_id, str) or not undefined_id:
-            raise StageBInterpreterError(
+            raise CandidateInterpreterError(
                 "definedness analysis emitted an unsupported slot classification",
                 code="definedness_evidence_invalid",
                 next_action="repair the definedness evidence classifier",
@@ -625,7 +625,7 @@ def _definedness_use_payload(
             }
         )
     metadata: dict[str, Any] = {
-        "format": STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT,
+        "format": SPX_INTERPRETER_DEFINEDNESS_USE_FORMAT,
         "status": "complete",
         "proof_authority": False,
         "state_machine_sha256": state_machine_sha256,
@@ -651,7 +651,7 @@ def _definedness_use_payload(
             ensure_ascii=True,
         ).encode("ascii")
     )
-    assert set(metadata) == STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS
+    assert set(metadata) == SPX_INTERPRETER_DEFINEDNESS_USE_FIELDS
     return metadata
 
 

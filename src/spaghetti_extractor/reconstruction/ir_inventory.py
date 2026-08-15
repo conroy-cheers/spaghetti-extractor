@@ -6,7 +6,7 @@ import copy
 from typing import Any, Mapping, Sequence
 
 from ..authority_inputs.bindings import indirect_exit_id_v2
-from ..pe32.stage_binary import StageABinary
+from ..pe32.model import ParsedPEImage
 from ..util import sha256_bytes
 from .control_reachability import (
     canonical_indirect_external_targets,
@@ -102,7 +102,7 @@ def _unit_issues(units: Sequence[Mapping[str, Any]]) -> list[ExportIssue]:
 
 
 def _coverage_inventory(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[Mapping[str, Any]],
     noncode_ranges: Sequence[RvaSpan],
 ) -> tuple[dict[str, Any], list[ExportIssue]]:
@@ -181,7 +181,7 @@ def _coverage_inventory(
 
 def _exact_only_control_inventory(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[dict[str, Any]],
     roots: Sequence[Mapping[str, Any]],
     direct: Sequence[Mapping[str, Any]],
@@ -333,7 +333,7 @@ def _exact_only_control_inventory(
         internal_call_preservation=call_summaries,
     )
     provenance = {
-        "format": "stage-a-external-interface-provenance-v1",
+        "format": "spaghetti-extractor-external-interface-provenance-v1",
         "status": "incomplete",
         "resolutions": [],
         "static_interface_slots": [],
@@ -363,7 +363,7 @@ def _exact_only_control_inventory(
         "value_provenance": {"status": "incomplete", "resolutions": []},
         "external_interface_provenance": provenance,
         "operation_provenance": {
-            "format": "stage-a-operation-provenance-v2",
+            "format": "spaghetti-extractor-operation-provenance-v2",
             "status": "incomplete",
             "resolutions": [],
             "callback_registrations": [],
@@ -373,7 +373,7 @@ def _exact_only_control_inventory(
         "exceptional_control": exceptional,
         "callback_cutpoint_proposals": list(callback_root_proposals),
         "analysis_fixed_point": {
-            "format": "stage-a-interprocedural-analysis-v2",
+            "format": "spaghetti-extractor-interprocedural-analysis-v2",
             "status": "incomplete",
             "rounds": 0,
             "cold_replay_validated": False,
@@ -419,7 +419,7 @@ def _exact_only_control_inventory(
 
 
 def _control_inventory(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[dict[str, Any]],
     static_program: Mapping[str, Any],
     *,
@@ -658,7 +658,7 @@ def _exceptional_control_inventory(
                 infeasibility = {
                     **dict(infeasibility),
                     "scc_invariant_requirement": {
-                        "format": "stage-a-scc-exception-invariant-requirement-v2",
+                        "format": "spaghetti-extractor-scc-exception-invariant-requirement-v2",
                         "status": "incomplete",
                         "source_unit_id": unit_id,
                         "source_fault_index": fault_index,
@@ -676,7 +676,7 @@ def _exceptional_control_inventory(
             }
             if terminal_fault:
                 certificate = {
-                    "format": "stage-a-explicit-terminal-fault-certificate-v1",
+                    "format": "spaghetti-extractor-explicit-terminal-fault-certificate-v1",
                     "source_unit_id": unit_id,
                     "source_fault_index": fault_index,
                     "source_contract_sha256": source_contract_sha256,
@@ -692,7 +692,7 @@ def _exceptional_control_inventory(
                             "evidence": {
                                 "status": "checked",
                                 "checker": (
-                                    "stage-a-machine-ir-explicit-terminal-fault-v1"
+                                    "spaghetti-extractor-machine-ir-explicit-terminal-fault-v1"
                                 ),
                                 "certificate_sha256": sha256_bytes(
                                     _canonical_json(certificate)
@@ -767,7 +767,7 @@ def _exceptional_control_inventory(
                                     else "unchecked"
                                 ),
                                 "checker": (
-                                    "stage-a-machine-ir-exceptional-control-v1"
+                                    "spaghetti-extractor-machine-ir-exceptional-control-v1"
                                 ),
                                 **(
                                     {"feasibility": feasibility}
@@ -803,7 +803,7 @@ def _exceptional_control_inventory(
         )
     )
     return {
-        "format": "stage-a-exceptional-control-v1",
+        "format": "spaghetti-extractor-exceptional-control-v1",
         "status": (
             "complete"
             if all(row["status"] == "complete" for row in transitions)
@@ -861,7 +861,7 @@ def _checked_fault_infeasibility(
     )
     result_payload = result.to_payload()
     analysis = {
-        "format": "stage-a-qf-bv-fault-predicate-analysis-v1",
+        "format": "spaghetti-extractor-qf-bv-fault-predicate-analysis-v1",
         "fault_sha256": fault_sha256,
         "predicate_sha256": sha256_bytes(_canonical_json(condition)),
         "abstract_predicate_sha256": sha256_bytes(
@@ -880,7 +880,7 @@ def _checked_fault_infeasibility(
     source_contract_sha256 = str(unit["source"]["contract_sha256"])
     predicate_sha256 = sha256_bytes(_canonical_json(condition))
     certificate = {
-        "format": "stage-a-qf-bv-fault-infeasibility-certificate-v1",
+        "format": "spaghetti-extractor-qf-bv-fault-infeasibility-certificate-v1",
         "source_unit_id": unit_id,
         "source_fault_index": fault_index,
         "source_contract_sha256": source_contract_sha256,
@@ -896,7 +896,7 @@ def _checked_fault_infeasibility(
         "status": "complete",
         "evidence": {
             "status": "checked",
-            "checker": "stage-a-machine-ir-qf-bv-fault-infeasibility-v1",
+            "checker": "spaghetti-extractor-machine-ir-qf-bv-fault-infeasibility-v1",
             "trust_boundary": result.trust_boundary,
             "certificate_sha256": sha256_bytes(_canonical_json(certificate)),
             "certificate": certificate,

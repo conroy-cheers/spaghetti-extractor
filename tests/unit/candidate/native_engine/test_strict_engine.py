@@ -7,7 +7,7 @@ from tests.unit.candidate.native_engine._support import *
 
 class StrictNativeEngineTests(NativeEngineTestCase):
     def test_public_api_has_no_diagnostic_or_deferred_mode(self) -> None:
-        parameters = inspect.signature(plan_stage_b_native_engine).parameters
+        parameters = inspect.signature(plan_spx_native_engine).parameters
         self.assertNotIn("state_machine", parameters)
         self.assertNotIn("candidate_mode", parameters)
         self.assertNotIn("allow_deferred_potential_transfers", parameters)
@@ -21,7 +21,7 @@ class StrictNativeEngineTests(NativeEngineTestCase):
             unit = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="ret")
             unit["semantics"]["outcome"] = {"kind": "return"}
             machine_ir, manifest, sites = self._strict_inputs(root, [unit])
-            plan = plan_stage_b_native_engine(
+            plan = plan_spx_native_engine(
                 machine_ir=machine_ir,
                 machine_ir_manifest=manifest,
                 canonical_external_sites=sites,
@@ -46,7 +46,7 @@ class StrictNativeEngineTests(NativeEngineTestCase):
                 reachable=[entry["id"]],
                 potential=[potential["id"]],
             )
-            plan = plan_stage_b_native_engine(
+            plan = plan_spx_native_engine(
                 machine_ir=machine_ir,
                 machine_ir_manifest=manifest,
                 canonical_external_sites=sites,
@@ -57,8 +57,8 @@ class StrictNativeEngineTests(NativeEngineTestCase):
                 "implementation_reachability_incomplete",
                 {row["category"] for row in plan.blockers},
             )
-            with self.assertRaisesRegex(StageAInputError, "incomplete"):
-                write_stage_b_native_engine_package(
+            with self.assertRaisesRegex(ToolkitInputError, "incomplete"):
+                write_spx_native_engine_package(
                     machine_ir=machine_ir,
                     machine_ir_manifest=manifest,
                     canonical_external_sites=sites,
@@ -75,8 +75,8 @@ class StrictNativeEngineTests(NativeEngineTestCase):
             payload = json.loads(manifest.read_text(encoding="utf-8"))
             payload["artifacts"]["machine_ir"]["sha256"] = "0" * 64
             manifest.write_text(json.dumps(payload), encoding="utf-8")
-            with self.assertRaisesRegex(StageAInputError, "does not bind"):
-                plan_stage_b_native_engine(
+            with self.assertRaisesRegex(ToolkitInputError, "does not bind"):
+                plan_spx_native_engine(
                     machine_ir=machine_ir,
                     machine_ir_manifest=manifest,
                     canonical_external_sites=sites,
@@ -89,14 +89,14 @@ class StrictNativeEngineTests(NativeEngineTestCase):
             unit = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="ret")
             unit["semantics"]["outcome"] = {"kind": "return"}
             machine_ir, manifest, sites = self._strict_inputs(root, [unit])
-            first = write_stage_b_native_engine_package(
+            first = write_spx_native_engine_package(
                 machine_ir=machine_ir,
                 machine_ir_manifest=manifest,
                 canonical_external_sites=sites,
                 entry_rva=0x1000,
                 out=root / "first",
             )
-            second = write_stage_b_native_engine_package(
+            second = write_spx_native_engine_package(
                 machine_ir=machine_ir,
                 machine_ir_manifest=manifest,
                 canonical_external_sites=sites,

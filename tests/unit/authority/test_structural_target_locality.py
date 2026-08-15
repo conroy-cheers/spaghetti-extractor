@@ -53,7 +53,7 @@ def _unit(
     else:
         outcome = {"kind": "return"}
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",

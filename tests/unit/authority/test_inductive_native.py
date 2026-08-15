@@ -65,7 +65,7 @@ def _reg(name: str) -> dict[str, object]:
 
 def _unit(unit_id: str, rva: int, target: int, value: int) -> dict[str, object]:
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",

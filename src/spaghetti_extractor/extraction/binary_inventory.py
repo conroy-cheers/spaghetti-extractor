@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..artifacts.formats import STATIC_ANALYSIS_PROFILE_ID
+from ..errors import ToolkitInputError
 from .executable_classification import (
     _linker_function_import_thunk_evidence,
     _linker_function_issues,
@@ -14,12 +15,9 @@ from .executable_classification import (
     _section_gap_code_blocks,
     _section_gaps,
 )
-from ..pe32.stage_binary import (
-    BlockSide,
-    StageAInputError,
-    _parse_linker_map_functions,
-    _parse_stage_a_pe,
-)
+from ..pe32.image import parse_pe_image
+from ..pe32.linker_map import parse_linker_map_functions
+from ..pe32.model import BlockSide
 from ..util import sha256_bytes, sha256_file, write_json
 from .cutpoints import (
     decode_semantic_cutpoint_span,
@@ -29,7 +27,7 @@ from .region_inventory import parse_request
 from .schema import STATIC_ANALYSIS_MODEL_ID
 
 
-BINARY_CUTPOINT_INVENTORY_FORMAT = "stage-a-binary-cutpoint-inventory-v1"
+BINARY_CUTPOINT_INVENTORY_FORMAT = "spaghetti-extractor-binary-cutpoint-inventory-v1"
 _SIDES = {"original", "candidate"}
 _NO_LINKER_MAP_SHA256 = sha256_bytes(b"")
 
@@ -136,11 +134,11 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
     waivers = payload.get("padding_waivers")
     sections = payload.get("executable_sections")
     if not isinstance(regions, list) or not isinstance(waivers, list):
-        raise StageAInputError("binary cutpoint coverage inventory is malformed")
+        raise ToolkitInputError("binary cutpoint coverage inventory is malformed")
     if not isinstance(sections, list):
-        raise StageAInputError("binary cutpoint executable sections are malformed")
+        raise ToolkitInputError("binary cutpoint executable sections are malformed")
     if not sections and payload.get("status") == "pass":
-        raise StageAInputError(
+        raise ToolkitInputError(
             "passing binary cutpoint inventory has no executable sections"
         )
     previous_section_end: int | None = None
@@ -150,7 +148,7 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
             "rva_start",
             "rva_end",
         }:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"binary executable section {index} is malformed"
             )
         name = section.get("name")
@@ -167,16 +165,16 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
             or stop <= start
             or stop > 2**32
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"binary executable section {index} is invalid"
             )
         if previous_section_end is not None and start < previous_section_end:
-            raise StageAInputError("binary executable sections overlap or are unordered")
+            raise ToolkitInputError("binary executable sections overlap or are unordered")
         previous_section_end = stop
     coverage: list[tuple[int, int, str]] = []
     for index, region in enumerate(regions):
         if not isinstance(region, Mapping):
-            raise StageAInputError(f"binary cutpoint region {index} is malformed")
+            raise ToolkitInputError(f"binary cutpoint region {index} is malformed")
         start, stop = _span_key(region)
         coverage.append((start, stop, f"region:{index}"))
     waiver_ids: set[str] = set()
@@ -188,7 +186,7 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
             "rva",
             "size",
         }:
-            raise StageAInputError(f"binary padding waiver {index} is malformed")
+            raise ToolkitInputError(f"binary padding waiver {index} is malformed")
         waiver_side = waiver.get("binary")
         identity = waiver.get("id")
         reason = waiver.get("reason")
@@ -209,25 +207,25 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
             or size <= 0
             or start + size > 2**32
         ):
-            raise StageAInputError(f"binary padding waiver {index} is invalid")
+            raise ToolkitInputError(f"binary padding waiver {index} is invalid")
         waiver_ids.add(identity)
         coverage.append((start, start + size, f"padding:{index}"))
     coverage.sort()
     for section in sections:
         if not isinstance(section, Mapping):
-            raise StageAInputError("binary executable section row is malformed")
+            raise ToolkitInputError("binary executable section row is malformed")
         start = int(section.get("rva_start", -1))
         stop = int(section.get("rva_end", -1))
         rows = [row for row in coverage if start <= row[0] and row[1] <= stop]
         cursor = start
         for row_start, row_stop, identity in rows:
             if row_start != cursor or row_stop <= row_start:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"binary executable coverage is not exact at {identity}"
                 )
             cursor = row_stop
         if cursor != stop:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"binary executable coverage stops at {cursor:#x}, expected {stop:#x}"
             )
     for start, stop, identity in coverage:
@@ -235,14 +233,14 @@ def _validate_coverage(payload: Mapping[str, Any]) -> None:
             int(section["rva_start"]) <= start < stop <= int(section["rva_end"])
             for section in sections
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"binary executable coverage escapes its sections at {identity}"
             )
 
 
 def parse_binary_cutpoint_inventory(payload: Any) -> dict[str, Any]:
     if not isinstance(payload, Mapping):
-        raise StageAInputError("binary cutpoint inventory must be an object")
+        raise ToolkitInputError("binary cutpoint inventory must be an object")
     required = {
         "format",
         "profile",
@@ -259,16 +257,16 @@ def parse_binary_cutpoint_inventory(payload: Any) -> dict[str, Any]:
         "counts",
     }
     if set(payload) != required:
-        raise StageAInputError("binary cutpoint inventory fields are malformed")
+        raise ToolkitInputError("binary cutpoint inventory fields are malformed")
     if payload.get("format") != BINARY_CUTPOINT_INVENTORY_FORMAT:
-        raise StageAInputError("unsupported binary cutpoint inventory format")
+        raise ToolkitInputError("unsupported binary cutpoint inventory format")
     if payload.get("profile") != STATIC_ANALYSIS_PROFILE_ID:
-        raise StageAInputError("binary cutpoint inventory profile mismatch")
+        raise ToolkitInputError("binary cutpoint inventory profile mismatch")
     if payload.get("model") != STATIC_ANALYSIS_MODEL_ID:
-        raise StageAInputError("binary cutpoint inventory model mismatch")
+        raise ToolkitInputError("binary cutpoint inventory model mismatch")
     side = payload.get("side")
     if side not in _SIDES:
-        raise StageAInputError("binary cutpoint inventory side is invalid")
+        raise ToolkitInputError("binary cutpoint inventory side is invalid")
     for field in ("binary_sha256", "linker_map_sha256"):
         value = payload.get(field)
         if (
@@ -276,19 +274,19 @@ def parse_binary_cutpoint_inventory(payload: Any) -> dict[str, Any]:
             or len(value) != 64
             or any(character not in "0123456789abcdef" for character in value)
         ):
-            raise StageAInputError(f"binary cutpoint inventory {field} is invalid")
+            raise ToolkitInputError(f"binary cutpoint inventory {field} is invalid")
     issues = payload.get("issues")
     if not isinstance(issues, list) or any(
         not isinstance(issue, Mapping) for issue in issues
     ):
-        raise StageAInputError("binary cutpoint inventory issues are malformed")
+        raise ToolkitInputError("binary cutpoint inventory issues are malformed")
     expected_status = "pass" if not issues else "incomplete"
     if payload.get("status") != expected_status:
-        raise StageAInputError("binary cutpoint inventory status is inconsistent")
+        raise ToolkitInputError("binary cutpoint inventory status is inconsistent")
     def validate_regions(field: str, *, allow_overlap: bool) -> list[Any]:
         regions = payload.get(field)
         if not isinstance(regions, list):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"binary cutpoint inventory {field} must be a list"
             )
         seen_ids: set[str] = set()
@@ -303,22 +301,22 @@ def parse_binary_cutpoint_inventory(payload: Any) -> dict[str, Any]:
                 "span",
                 "source",
             }:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"binary cutpoint {field} region {index} is malformed"
                 )
             if region.get("index") != index or region.get("numeric_id") != index:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"binary cutpoint {field} region indices are not canonical"
                 )
             identity = region.get("id")
             if not isinstance(identity, str) or not identity or identity in seen_ids:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"binary cutpoint {field} region ids are invalid"
                 )
             seen_ids.add(identity)
             span = region.get("span")
             if not isinstance(span, Mapping) or set(span) != {"rva_start", "size"}:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"binary cutpoint {field} region {index} span is malformed"
                 )
             start = span.get("rva_start")
@@ -331,30 +329,30 @@ def parse_binary_cutpoint_inventory(payload: Any) -> dict[str, Any]:
                 or not isinstance(size, int)
                 or size <= 0
             ):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"binary cutpoint {field} region {index} span is invalid"
                 )
             stop = start + size
             if stop > 2**32:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"binary cutpoint {field} region {index} span is invalid"
                 )
             span_key = (start, size)
             if span_key in seen_spans:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"binary cutpoint {field} contains duplicate spans"
                 )
             seen_spans.add(span_key)
             if previous_start is not None and start < previous_start:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"binary cutpoint {field} regions are not ordered"
                 )
             if not allow_overlap and previous_stop is not None and start < previous_stop:
-                raise StageAInputError(f"binary cutpoint {field} regions overlap")
+                raise ToolkitInputError(f"binary cutpoint {field} regions overlap")
             previous_start = start
             previous_stop = stop
             if not isinstance(region.get("source"), Mapping):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"binary cutpoint {field} region {index} source is malformed"
                 )
         return regions
@@ -371,7 +369,7 @@ def parse_binary_cutpoint_inventory(payload: Any) -> dict[str, Any]:
             int(section["rva_start"]) <= start < stop <= int(section["rva_end"])
             for section in executable_sections
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "binary extraction region escapes its executable sections"
             )
     for region in regions:
@@ -379,7 +377,7 @@ def parse_binary_cutpoint_inventory(payload: Any) -> dict[str, Any]:
             extraction["span"] == region["span"]
             for extraction in extraction_regions
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "binary extraction regions omit a coverage cutpoint"
             )
     counts = payload.get("counts")
@@ -392,7 +390,7 @@ def parse_binary_cutpoint_inventory(payload: Any) -> dict[str, Any]:
     if not isinstance(counts, Mapping) or set(counts) != set(expected_counts) or any(
         counts.get(field) != value for field, value in expected_counts.items()
     ):
-        raise StageAInputError("binary cutpoint inventory counts are inconsistent")
+        raise ToolkitInputError("binary cutpoint inventory counts are inconsistent")
     return dict(payload)
 
 
@@ -421,7 +419,7 @@ def _deduplicate_code_spans(
     return accepted
 
 
-def stage_a_inventory_binary(
+def spx_inventory_binary(
     *,
     binary: Path,
     linker_map: Path | None = None,
@@ -429,12 +427,12 @@ def stage_a_inventory_binary(
     out: Path,
 ) -> dict[str, Any]:
     if side not in _SIDES:
-        raise StageAInputError("binary cutpoint inventory side is invalid")
+        raise ToolkitInputError("binary cutpoint inventory side is invalid")
     binary = Path(binary)
-    parsed = _parse_stage_a_pe(binary)
+    parsed = parse_pe_image(binary)
     linker_map = Path(linker_map) if linker_map is not None else None
     functions = (
-        _parse_linker_map_functions(linker_map, parsed)
+        parse_linker_map_functions(linker_map, parsed)
         if linker_map is not None
         else []
     )
@@ -525,7 +523,7 @@ def stage_a_inventory_binary(
                 periodic=False,
                 split_nop_padding=True,
             )
-        except StageAInputError as exc:
+        except ToolkitInputError as exc:
             issues.append(
                 _issue(
                     "semantic_cutpoint_decode_failed",
@@ -635,7 +633,7 @@ def stage_a_inventory_binary(
     if not issues:
         try:
             parse_binary_cutpoint_inventory(payload)
-        except StageAInputError as exc:
+        except ToolkitInputError as exc:
             payload["issues"].append(
                 _issue("executable_coverage_incomplete", str(exc))
             )
@@ -650,16 +648,16 @@ def side_extraction_request_from_inventory(
 ) -> dict[str, Any]:
     inventory = parse_binary_cutpoint_inventory(payload)
     if inventory["status"] != "pass":
-        raise StageAInputError("incomplete binary inventory cannot authorize extraction")
+        raise ToolkitInputError("incomplete binary inventory cannot authorize extraction")
     if scope not in {"base", "superset"}:
-        raise StageAInputError("binary inventory extraction scope is invalid")
+        raise ToolkitInputError("binary inventory extraction scope is invalid")
     selected_regions = (
         inventory["regions"]
         if scope == "base"
         else inventory["extraction_regions"]
     )
     request = {
-        "format": "stage-a-static-region-request-v1",
+        "format": "spaghetti-extractor-static-region-request-v1",
         "profile": STATIC_ANALYSIS_PROFILE_ID,
         "model": STATIC_ANALYSIS_MODEL_ID,
         "side": inventory["side"],

@@ -17,7 +17,7 @@ from .common import Handler, keyed_paths, path_argument
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name == "stage-b-resolve-components":
+    if name == "component-resolve":
         path_argument(command, "proposals", required=True)
         path_argument(command, "intent", required=True)
         path_argument(command, "out", required=True)
@@ -25,7 +25,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             proposals=a.proposals, intent=a.intent, out=a.out
         )
 
-    if name == "stage-b-build-component-contract":
+    if name == "component-contract-build":
         path_argument(command, "machine_ir", required=True)
         path_argument(command, "reconstruction_plan", required=True)
         path_argument(command, "resolution", required=True)
@@ -43,7 +43,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             out_dir=a.out,
         )
 
-    if name == "stage-b-package-component-source":
+    if name == "component-source-package":
         command.add_argument("--lift-unit-id", required=True)
         command.add_argument("--file", action="append", required=True)
         command.add_argument("--shared-input", action="append", default=[])
@@ -62,7 +62,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             out_dir=a.out,
         )
 
-    if name == "stage-b-build-component-adapter-plan":
+    if name == "component-adapter-build":
         path_argument(command, "contract", required=True)
         path_argument(command, "implementation", required=True)
         path_argument(command, "machine_ir", required=True)
@@ -74,7 +74,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             out_dir=a.out,
         )
 
-    if name == "stage-b-produce-component-evidence":
+    if name == "component-evidence-produce":
         path_argument(command, "contract", required=True)
         path_argument(command, "implementation", required=True)
         path_argument(command, "adapter_plan", required=True)
@@ -92,7 +92,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             out=a.out,
         )
 
-    if name == "stage-b-qualify-component":
+    if name == "component-qualify":
         path_argument(command, "contract", required=True)
         path_argument(command, "implementation", required=True)
         path_argument(command, "evidence", required=True)
@@ -110,7 +110,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             out=a.out,
         )
 
-    if name == "stage-b-compose-components":
+    if name == "component-compose":
         path_argument(command, "machine_ir", required=True)
         path_argument(command, "resolution", required=True)
         command.add_argument("--configuration-id", required=True)
@@ -130,7 +130,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             out=a.out,
         )
 
-    if name == "stage-b-build-component-runtime":
+    if name == "component-runtime-build":
         path_argument(command, "machine_ir", required=True)
         path_argument(command, "activation_plan", required=True)
         command.add_argument("--contract", action="append", default=[])

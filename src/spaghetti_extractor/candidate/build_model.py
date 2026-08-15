@@ -11,14 +11,14 @@ from . import native_build
 
 
 INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME = "interpreter-native-build-manifest.json"
-INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT = "stage-b-interpreter-native-object-graph-v2"
-INTERPRETER_NATIVE_OBJECT_FORMAT = "stage-b-interpreter-native-object-v2"
-INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT = "stage-b-interpreter-native-object-package-v2"
+INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT = "spaghetti-extractor-interpreter-native-object-graph-v2"
+INTERPRETER_NATIVE_OBJECT_FORMAT = "spaghetti-extractor-interpreter-native-object-v2"
+INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT = "spaghetti-extractor-interpreter-native-object-package-v2"
 INTERPRETER_NATIVE_SOURCE_BUNDLE_FORMAT = (
-    "stage-b-interpreter-native-source-bundle-v1"
+    "spaghetti-extractor-interpreter-native-source-bundle-v1"
 )
 INTERPRETER_NATIVE_BUNDLE_INDEX_FORMAT = (
-    "stage-b-interpreter-native-bundle-index-v1"
+    "spaghetti-extractor-interpreter-native-bundle-index-v1"
 )
 
 _INTERPRETER_MANIFEST_FILENAME = "state-machine-interpreter-package.json"
@@ -33,11 +33,11 @@ _INCLUDE_DIRECTIVE = re.compile(r'^\s*#\s*include\s+(.+?)\s*(?://.*)?$')
 _QUOTED_INCLUDE = re.compile(r'^"([^"\r\n]+)"(?:\s*/\*.*\*/\s*)?$')
 _SYSTEM_INCLUDE = re.compile(r"^<[^>\r\n]+>(?:\s*/\*.*\*/\s*)?$")
 _PAYLOAD_SYMBOL = re.compile(
-    r"(?m)^\s*(0x[0-9a-fA-F]+)\s+(_?stage_b_payload_(?:entry|callback_[0-9a-fA-F]{8}))\b"
+    r"(?m)^\s*(0x[0-9a-fA-F]+)\s+(_?spx_payload_(?:entry|callback_[0-9a-fA-F]{8}))\b"
 )
 
 
-class StageBInterpreterNativeBuildError(ValueError):
+class CandidateNativeBuildError(ValueError):
     """An interpreter-native candidate input or output failed validation."""
 
 

@@ -1,0 +1,3 @@
+# Copy to nix/builders.local or $XDG_CONFIG_HOME/spaghetti-extractor/builders.
+# See `man nix3 build` for the complete machine-list syntax.
+ssh-ng://builder.example?ssh-key=/absolute/path/to/key x86_64-linux - 8 2 big-parallel,ca-derivations -

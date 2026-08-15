@@ -8,7 +8,7 @@ IMAGE_SCN_MEM_WRITE = 0x80000000
 
 
 def mapped_section_size(virtual_size: int, raw_size: int) -> int:
-    """Return the PE mapped span Stage A should classify for a section."""
+    """Return the PE mapped span static analysis should classify for a section."""
 
     virtual = int(virtual_size)
     return virtual if virtual > 0 else int(raw_size)

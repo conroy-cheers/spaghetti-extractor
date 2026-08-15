@@ -13,8 +13,8 @@ import tempfile
 from typing import Any
 
 
-MACHINE_FORMAT = "stage-a-isa-conformance-bochs-machine-v1"
-RESULT_FORMAT = "stage-a-isa-conformance-bochs-result-v1"
+MACHINE_FORMAT = "spaghetti-extractor-isa-conformance-bochs-machine-v1"
+RESULT_FORMAT = "spaghetti-extractor-isa-conformance-bochs-result-v1"
 BACKEND_ID = "bochs-x86-32-batch-v1"
 BACKEND_VERSION = "3.1"
 PRIVATE_PROTOCOL_VERSION = "5"
@@ -637,7 +637,7 @@ def run() -> None:
         raise RunnerError("stdin corpus JSON is not canonical")
     corpus = exact_object(corpus, {"format", "id", "cases"}, "corpus")
     if (
-        corpus["format"] != "stage-a-isa-conformance-corpus-v1"
+        corpus["format"] != "spaghetti-extractor-isa-conformance-corpus-v1"
         or not isinstance(corpus["cases"], list)
     ):
         raise RunnerError("corpus format is unsupported")

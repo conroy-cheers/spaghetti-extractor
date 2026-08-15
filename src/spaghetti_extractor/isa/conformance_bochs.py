@@ -35,8 +35,8 @@ from .conformance import (
 
 
 BOCHS_BACKEND_ID = "bochs-x86-32-batch-v1"
-BOCHS_MACHINE_FORMAT = "stage-a-isa-conformance-bochs-machine-v1"
-BOCHS_RESULT_FORMAT = "stage-a-isa-conformance-bochs-result-v1"
+BOCHS_MACHINE_FORMAT = "spaghetti-extractor-isa-conformance-bochs-machine-v1"
+BOCHS_RESULT_FORMAT = "spaghetti-extractor-isa-conformance-bochs-result-v1"
 DEFAULT_TIMEOUT_SECONDS = 300.0
 MAX_STDOUT_BYTES = 64 * 1024 * 1024
 

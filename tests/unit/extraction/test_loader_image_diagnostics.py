@@ -7,12 +7,12 @@ from pathlib import Path
 
 from tests.pe_fixtures import pe32_image, pe32_import_image
 
-from spaghetti_extractor.pe32.stage_binary import (
+from spaghetti_extractor.pe32.image import parse_pe_image
+from spaghetti_extractor.pe32.loader import diagnose_pe32_loader_image
+from spaghetti_extractor.pe32.model import (
     PE32_CONSOLE_PREFERRED_BASE_POLICY,
-    StageALoaderDiagnosticSeverity,
-    StageALoaderDiagnosticStatus,
-    _parse_stage_a_pe,
-    diagnose_pe32_loader_image,
+    LoaderDiagnosticSeverity,
+    LoaderDiagnosticStatus,
 )
 
 
@@ -32,20 +32,16 @@ class LoaderImageDiagnosticTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first.policy, PE32_CONSOLE_PREFERRED_BASE_POLICY)
         self.assertEqual(
-            first.status, StageALoaderDiagnosticStatus.DIAGNOSTIC_CLEAN
+            first.status, LoaderDiagnosticStatus.DIAGNOSTIC_CLEAN
         )
         self.assertEqual(first.diagnostics, ())
         self.assertEqual(first.hard_diagnostics, ())
         self.assertEqual(first.conditional_warnings, ())
-        self.assertFalse(first.authorizes_stage_a)
-
         binary = self._parse(image)
         self.assertEqual(binary.loader_diagnostics, first)
-        self.assertFalse(binary.loader_diagnostics.authorizes_stage_a)
         self.assertEqual(first.as_payload(), {
             "policy": PE32_CONSOLE_PREFERRED_BASE_POLICY,
             "status": "diagnostic-clean",
-            "authorizes_stage_a": False,
             "diagnostics": [],
         })
 
@@ -58,7 +54,7 @@ class LoaderImageDiagnosticTests(unittest.TestCase):
         result = diagnose_pe32_loader_image(bytes(image))
 
         self.assertEqual(
-            result.status, StageALoaderDiagnosticStatus.DIAGNOSTIC_CLEAN
+            result.status, LoaderDiagnosticStatus.DIAGNOSTIC_CLEAN
         )
         self.assertEqual(result.diagnostics, ())
 
@@ -72,7 +68,7 @@ class LoaderImageDiagnosticTests(unittest.TestCase):
         result = diagnose_pe32_loader_image(image)
 
         self.assertEqual(
-            result.status, StageALoaderDiagnosticStatus.CONDITIONAL_LAUNCH
+            result.status, LoaderDiagnosticStatus.CONDITIONAL_LAUNCH
         )
         self.assertEqual(result.hard_diagnostics, ())
         self.assertEqual(
@@ -81,11 +77,10 @@ class LoaderImageDiagnosticTests(unittest.TestCase):
                 for diagnostic in result.conditional_warnings
             ),
             ((
-                StageALoaderDiagnosticSeverity.WARNING,
+                LoaderDiagnosticSeverity.WARNING,
                 "dynamic_base_requires_preferred_base",
             ),),
         )
-        self.assertFalse(result.authorizes_stage_a)
         self.assertEqual(
             result.as_payload()["diagnostics"][0]["code"],
             "dynamic_base_requires_preferred_base",
@@ -127,10 +122,9 @@ class LoaderImageDiagnosticTests(unittest.TestCase):
             with self.subTest(name=name):
                 result = diagnose_pe32_loader_image(image)
                 self.assertEqual(
-                    result.status, StageALoaderDiagnosticStatus.INVALID
+                    result.status, LoaderDiagnosticStatus.INVALID
                 )
                 self.assertIn(expected_code, _hard_codes(result))
-                self.assertFalse(result.authorizes_stage_a)
 
     def test_image_bounds_alignments_and_exact_sizes_are_checked(self) -> None:
         cases = {
@@ -183,7 +177,7 @@ class LoaderImageDiagnosticTests(unittest.TestCase):
             with self.subTest(name=name):
                 result = diagnose_pe32_loader_image(image)
                 self.assertEqual(
-                    result.status, StageALoaderDiagnosticStatus.INVALID
+                    result.status, LoaderDiagnosticStatus.INVALID
                 )
                 self.assertIn(expected_code, _hard_codes(result))
 
@@ -273,7 +267,7 @@ class LoaderImageDiagnosticTests(unittest.TestCase):
             with self.subTest(name=name):
                 result = diagnose_pe32_loader_image(image)
                 self.assertEqual(
-                    result.status, StageALoaderDiagnosticStatus.INVALID
+                    result.status, LoaderDiagnosticStatus.INVALID
                 )
                 self.assertIn(expected_code, _hard_codes(result))
 
@@ -281,7 +275,7 @@ class LoaderImageDiagnosticTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "loader-diagnostic.exe"
             path.write_bytes(data)
-            return _parse_stage_a_pe(path)
+            return parse_pe_image(path)
 
 
 def _hard_codes(result) -> tuple[str, ...]:

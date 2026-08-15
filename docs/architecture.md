@@ -35,7 +35,7 @@ library signatures, and operator-authored hints. Those inputs are not authority.
 Each accepting record is rebound to exact PE, machine-IR, unit, event, profile,
 and dependency identities by a checker-owned phase.
 
-Ghidra is exposed only through `stage-a-export-ghidra-proposal`. The adapter
+Ghidra is exposed only through `static-export-ghidra-proposal`. The adapter
 performs static headless analysis, verifies the exact binary hash in its output,
 and labels the result `untrusted-proposal`; it is not imported by or accepted as
 an authority phase.

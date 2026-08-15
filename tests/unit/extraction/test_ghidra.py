@@ -11,7 +11,7 @@ from spaghetti_extractor.extraction.ghidra import (
     GHIDRA_PROPOSAL_FORMAT,
     export_ghidra_proposal,
 )
-from spaghetti_extractor.pe32.stage_binary import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 from spaghetti_extractor.util import sha256_file
 
 
@@ -102,7 +102,7 @@ class GhidraProposalTests(unittest.TestCase):
     def test_missing_binary_is_rejected_before_launch(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            with self.assertRaises(StageAInputError):
+            with self.assertRaises(ToolkitInputError):
                 export_ghidra_proposal(
                     binary=root / "missing.exe",
                     out=root / "out",

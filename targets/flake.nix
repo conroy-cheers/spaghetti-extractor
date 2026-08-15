@@ -84,7 +84,7 @@
           };
           testRunner = pkgs.writeShellApplication {
             name = "spaghetti-extractor-target-test";
-            runtimeInputs = [ ];
+            runtimeInputs = [ pkgs.nix sdk.package ];
             text = ''
               set -euo pipefail
               mode=regression
@@ -118,21 +118,14 @@
               ${sdk.validation.testRunner}/bin/spaghetti-extractor-test \
                 smoke --repository "$toolkit_repository"
 
-              builder_flags=()
-              if [ -f ${consumerSource}/nix/stage-a-builders ]; then
-                builder_flags=(
-                  --builders @${consumerSource}/nix/stage-a-builders
-                  --option builders-use-substitutes true
-                )
-              fi
-              check_set=targetChecks
+              check_flags=()
               if [ "$mode" = acceptance ]; then
-                check_set=targetAcceptanceChecks
+                check_flags=(--acceptance)
               fi
-              nix --extra-experimental-features "nix-command flakes ca-derivations" \
-                build --no-link \
-                "path:${consumerSource}?dir=targets#legacyPackages.${system}.$check_set.$target" \
-                "''${builder_flags[@]}"
+              spaghetti-extractor project check \
+                "''${check_flags[@]}" \
+                --target-flake "path:${consumerSource}?dir=targets" \
+                "$target"
             '';
           };
         in

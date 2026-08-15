@@ -1,6 +1,6 @@
 """Checked immutable data recovered from executable PE32 sections.
 
-The Stage A load-image contract deliberately omits executable-section bodies so
+The static analysis load-image contract deliberately omits executable-section bodies so
 that a generated candidate cannot accidentally contain or execute reference
 code.  Some compilers place jump tables and their index maps in ``.text``.
 This artifact carries only ranges that static control recovery identified as
@@ -19,16 +19,17 @@ from typing import Any, Mapping, Sequence
 import capstone
 from capstone.x86 import X86_OP_REG
 
-from .stage_binary import StageABinary, StageAInputError
+from ..errors import ToolkitInputError
+from .model import ParsedPEImage
 from ..util import sha256_bytes
 
 
-RECOVERED_EXECUTABLE_DATA_FORMAT = "stage-a-recovered-executable-data-v1"
+RECOVERED_EXECUTABLE_DATA_FORMAT = "spaghetti-extractor-recovered-executable-data-v1"
 RECOVERED_EXECUTABLE_DATA_FILENAME = "recovered-executable-data.json"
 _MAX_ALIGNMENT_PADDING_BYTES = 15
 
 
-class RecoveredExecutableDataError(StageAInputError):
+class RecoveredExecutableDataError(ToolkitInputError):
     """Recovered executable-section data is malformed or insufficiently bound."""
 
 
@@ -323,7 +324,7 @@ class RecoveredExecutableDataContract:
 
 def build_recovered_executable_data_contract(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     control: Mapping[str, Any],
     source_map: Sequence[Mapping[str, Any]],
     machine_ir_sha256: str,
@@ -416,7 +417,7 @@ def build_recovered_executable_data_contract(
 
 def recover_executable_data_ranges(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     recoveries: Sequence[Mapping[str, Any]],
     require_complete_unit_binding: bool = False,
     allowed_source_unit_ids: set[str] | None = None,
@@ -583,7 +584,7 @@ def recover_executable_data_ranges(
 
 def _recover_adjacent_static_code_pointer_slots(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     data_ranges: Sequence[RecoveredExecutableDataRange],
     known_code_unit_rvas: set[int] | None,
 ) -> tuple[RecoveredExecutableDataRange, ...]:
@@ -663,7 +664,7 @@ def _recover_adjacent_static_code_pointer_slots(
 
 def _recover_adjacent_alignment_padding(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     data_ranges: Sequence[RecoveredExecutableDataRange],
     protected_code_rvas: set[int],
 ) -> tuple[RecoveredExecutableDataRange, ...]:
@@ -802,7 +803,7 @@ def _recover_adjacent_alignment_padding(
 
 
 def _bounded_noop_suffix_start(
-    *, binary: StageABinary, start: int, end: int
+    *, binary: ParsedPEImage, start: int, end: int
 ) -> int | None:
     scan_start = max(start, end - 2 * _MAX_ALIGNMENT_PADDING_BYTES)
     for candidate in range(scan_start, end):
@@ -816,7 +817,7 @@ def _bounded_noop_suffix_start(
 
 
 def _bounded_noop_prefix_end(
-    *, binary: StageABinary, start: int, end: int
+    *, binary: ParsedPEImage, start: int, end: int
 ) -> int | None:
     scan_end = min(end, start + 2 * _MAX_ALIGNMENT_PADDING_BYTES)
     data = bytes(binary.pe.get_data(start, scan_end - start))
@@ -839,7 +840,7 @@ def _bounded_noop_prefix_end(
 
 
 def _is_exact_semantic_noop_span(
-    *, binary: StageABinary, start: int, end: int
+    *, binary: ParsedPEImage, start: int, end: int
 ) -> bool:
     if end <= start:
         return False
@@ -892,7 +893,7 @@ def _is_semantic_noop(instruction: capstone.CsInsn) -> bool:
 
 
 def _ranges_from_classification(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     rows: Sequence[Mapping[str, Any]],
 ) -> tuple[RecoveredExecutableDataRange, ...]:
     ranges: list[RecoveredExecutableDataRange] = []

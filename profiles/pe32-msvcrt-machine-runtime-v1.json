@@ -1,5 +1,5 @@
 {
-  "format": "stage-a-static-machine-import-profile-v1",
+  "format": "spaghetti-extractor-static-machine-import-profile-v1",
   "id": "pe32-msvcrt-machine-runtime-v1",
   "default_callback_effect": "none",
   "includes": [

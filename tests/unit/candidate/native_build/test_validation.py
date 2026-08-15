@@ -10,7 +10,7 @@ class InterpreterNativeBuildValidationTests(unittest.TestCase):
             packages.candidate_authority.write_bytes(
                 canonical_json_bytes_v3(
                     {
-                        "format": "stage-b-static-hybrid-closure-receipt-v1",
+                        "format": "spaghetti-extractor-static-hybrid-closure-receipt-v1",
                         "status": "complete",
                         "authorizes": True,
                     }
@@ -18,9 +18,9 @@ class InterpreterNativeBuildValidationTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                StageBInterpreterNativeBuildError, "candidate receipt"
+                CandidateNativeBuildError, "candidate receipt"
             ):
-                build_stage_b_interpreter_native_candidate(
+                build_spx_interpreter_native_candidate(
                     interpreter_package=packages.interpreter,
                     native_engine_package=packages.engine,
                     native_runtime_package=packages.runtime,
@@ -45,9 +45,9 @@ class InterpreterNativeBuildValidationTests(unittest.TestCase):
             _write_json(packages.fallback_receipt, fallback)
 
             with self.assertRaisesRegex(
-                StageBInterpreterNativeBuildError, "stale|different inputs"
+                CandidateNativeBuildError, "stale|different inputs"
             ):
-                build_stage_b_interpreter_native_candidate(
+                build_spx_interpreter_native_candidate(
                     interpreter_package=packages.interpreter,
                     native_engine_package=packages.engine,
                     native_runtime_package=packages.runtime,
@@ -65,10 +65,10 @@ class InterpreterNativeBuildValidationTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                StageBInterpreterNativeBuildError,
+                CandidateNativeBuildError,
                 "native_runtime .* SHA-256 mismatch",
             ):
-                build_stage_b_interpreter_native_candidate(
+                build_spx_interpreter_native_candidate(
                     interpreter_package=packages.interpreter,
                     native_engine_package=packages.engine,
                     native_runtime_package=packages.runtime,
@@ -86,9 +86,9 @@ class InterpreterNativeBuildValidationTests(unittest.TestCase):
             _write_json(manifest_path, manifest)
 
             with self.assertRaisesRegex(
-                StageBInterpreterNativeBuildError, "interpreter package is not ready"
+                CandidateNativeBuildError, "interpreter package is not ready"
             ):
-                build_stage_b_interpreter_native_candidate(
+                build_spx_interpreter_native_candidate(
                     interpreter_package=packages.interpreter,
                     native_engine_package=packages.engine,
                     native_runtime_package=packages.runtime,

@@ -463,7 +463,7 @@ class ExternalOperationProfileTests(unittest.TestCase):
         unknown["extension"] = True
         cases.append((unknown, "unknown extension"))
         unsupported = profile()
-        unsupported["format"] = "stage-a-external-operation-profile-v1"
+        unsupported["format"] = "spaghetti-extractor-external-operation-profile-v1"
         cases.append((unsupported, "unsupported.*format"))
         incomplete = profile()
         incomplete["status"] = "draft"

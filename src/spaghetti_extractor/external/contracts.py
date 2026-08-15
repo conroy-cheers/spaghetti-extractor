@@ -19,7 +19,7 @@ from ..external.callbacks import (
     parse_callback_source,
     parse_nested_native_callback_behavior,
 )
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 
 
 CHECKED_EXTERNAL_SITE_CONTRACT_FORMAT = (
@@ -27,7 +27,7 @@ CHECKED_EXTERNAL_SITE_CONTRACT_FORMAT = (
 )
 _PE32_ABIS = frozenset({"pe32-cdecl-v1", "pe32-stdcall-v1"})
 _REGISTERS = frozenset({"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"})
-class CheckedExternalSiteContractError(StageAInputError):
+class CheckedExternalSiteContractError(ToolkitInputError):
     """An external site is missing an exact, executable machine contract."""
 
 
@@ -1074,7 +1074,7 @@ def require_profile_match(
                 registration_argument_words=int(profile_words),
                 context=f"{context} profile",
             )
-        except StageAInputError as exc:
+        except ToolkitInputError as exc:
             raise CheckedExternalSiteContractError(str(exc)) from exc
         profile_behavior = (
             "registration"

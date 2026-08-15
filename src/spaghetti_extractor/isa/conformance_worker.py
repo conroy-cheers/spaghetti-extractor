@@ -14,7 +14,7 @@ from .conformance_bochs import run_bochs_corpus
 from .conformance_lean import run_lean_isa_conformance_with_definedness
 from .conformance_shards import lean_semantic_forms_payload
 from .conformance_unicorn import run_unicorn_corpus
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 
 
 def run_isa_conformance_worker(
@@ -30,7 +30,7 @@ def run_isa_conformance_worker(
     """Execute one backend and emit a canonical report plus thin result."""
 
     if backend not in {"lean", "unicorn", "bochs"}:
-        raise StageAInputError(f"unsupported ISA conformance backend {backend!r}")
+        raise ToolkitInputError(f"unsupported ISA conformance backend {backend!r}")
     corpus = parse_isa_conformance_corpus(
         json.loads(Path(corpus_path).read_text(encoding="utf-8"))
     )
@@ -72,7 +72,7 @@ def run_isa_conformance_worker(
         report = run_unicorn_corpus(corpus)
     else:
         if bochs_runner is None:
-            raise StageAInputError("Bochs conformance requires a runner")
+            raise ToolkitInputError("Bochs conformance requires a runner")
         report = run_bochs_corpus(corpus, runner=Path(bochs_runner))
     payload = serialize_isa_conformance_report(report, corpus=corpus)
     Path(out).parent.mkdir(parents=True, exist_ok=True)
@@ -81,14 +81,13 @@ def run_isa_conformance_worker(
         encoding="utf-8",
     )
     return {
-        "format": "stage-a-isa-conformance-check-v1",
+        "format": "spaghetti-extractor-isa-conformance-check-v1",
         "status": "checked",
         "backend": payload["backend"],
         "qualification": payload["qualification"],
         "counts": payload["counts"],
         "out": str(out),
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }
 
 

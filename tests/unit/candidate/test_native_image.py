@@ -7,7 +7,7 @@ from pathlib import Path
 from tests.pe_fixtures import pe32_import_image
 
 from spaghetti_extractor.roundtrip_fuzz.image_io import (
-    write_stage_a_load_image_contract,
+    write_spx_load_image_contract,
 )
 from spaghetti_extractor.candidate.image import (
     derive_native_image_inputs,
@@ -24,7 +24,7 @@ class NativeImageTests(unittest.TestCase):
             original.write_bytes(
                 pe32_import_image(b"\xc3", symbol="ExitProcess")
             )
-            write_stage_a_load_image_contract(original_pe=original, out=contract)
+            write_spx_load_image_contract(original_pe=original, out=contract)
 
             inputs = derive_native_image_inputs(load_image_contract=contract)
             termination = select_native_termination_import(

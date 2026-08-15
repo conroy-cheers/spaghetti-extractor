@@ -7,11 +7,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..extraction.binary_inventory import parse_binary_cutpoint_inventory
-from ..pe32.stage_binary import BlockSide, StageAInputError, _parse_stage_a_pe
+from ..errors import ToolkitInputError
+from ..pe32.image import parse_pe_image
+from ..pe32.model import BlockSide
 from .semantics.transfer import semantic_transfers
-from ..roundtrip_fuzz.image_io import write_stage_a_load_image_contract
+from ..roundtrip_fuzz.image_io import write_spx_load_image_contract
 from ..util import sha256_bytes, sha256_file, write_json
-from .model import StaticProgramContract, StaticUnitContext
+from .codec import parse_static_program_contract
+from .model import StaticUnitContext
 
 
 STATIC_PROGRAM_EXPORT_FORMAT = "spaghetti-extractor-static-program-export-v1"
@@ -21,7 +24,7 @@ _NO_LINKER_MAP_SHA256 = sha256_bytes(b"")
 def _span(row: Mapping[str, Any]) -> tuple[int, int]:
     value = row.get("span")
     if not isinstance(value, Mapping):
-        raise StageAInputError("static-program unit span is malformed")
+        raise ToolkitInputError("static-program unit span is malformed")
     start = int(value["rva_start"])
     return start, start + int(value["size"])
 
@@ -158,7 +161,7 @@ def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     )
 
 
-def stage_a_export_static_program(
+def spx_export_static_program(
     *, original: Path, inventory: Path, out: Path
 ) -> dict[str, Any]:
     original = Path(original).resolve()
@@ -170,25 +173,25 @@ def stage_a_export_static_program(
         or not inventory.is_file()
         or inventory.is_symlink()
     ):
-        raise StageAInputError("static-program inputs must be regular files")
+        raise ToolkitInputError("static-program inputs must be regular files")
     try:
         parsed_inventory = parse_binary_cutpoint_inventory(
             json.loads(inventory.read_text(encoding="utf-8"))
         )
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"could not read binary inventory: {exc}") from exc
+        raise ToolkitInputError(f"could not read binary inventory: {exc}") from exc
     if parsed_inventory["status"] != "pass" or parsed_inventory["side"] != "original":
-        raise StageAInputError(
+        raise ToolkitInputError(
             "static-program export requires a passing original inventory"
         )
     if parsed_inventory["linker_map_sha256"] != _NO_LINKER_MAP_SHA256:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "static-program authority cannot contain linker-map provenance"
         )
     if sha256_file(original) != parsed_inventory["binary_sha256"]:
-        raise StageAInputError("static-program binary hash differs from its inventory")
+        raise ToolkitInputError("static-program binary hash differs from its inventory")
 
-    binary = _parse_stage_a_pe(original)
+    binary = parse_pe_image(original)
     try:
         units: list[dict[str, Any]] = []
         contexts: list[StaticUnitContext] = []
@@ -196,7 +199,7 @@ def stage_a_export_static_program(
             start, end = _span(region)
             data = bytes(binary.pe.get_data(start, end - start))
             if len(data) != end - start:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"static-program unit {index} bytes are unreadable"
                 )
             source = dict(region["source"])
@@ -275,15 +278,18 @@ def stage_a_export_static_program(
             for row in parsed_inventory["padding_waivers"]
         ]
         status = "complete" if not issues else "incomplete"
-        contract = StaticProgramContract(
-            binary=_binary_payload(binary),
-            structural_universe={
+        contract = parse_static_program_contract({
+            "format": "spaghetti-extractor-static-program-contract-v2",
+            "generator": "spaghetti-extractor-static-program",
+            "profile": "x86-pe32-static-reconstruction-v1",
+            "binary": _binary_payload(binary),
+            "structural_universe": {
                 "units": units,
                 "padding": padding,
                 "roots": roots,
                 "cfg_edges": cfg_edges,
             },
-            families={
+            "families": {
                 "pe_layout": {"status": "complete"},
                 "executable_coverage": {
                     "status": "complete",
@@ -301,14 +307,14 @@ def stage_a_export_static_program(
                 "cfg": {"status": "complete", "edge_sources": len(cfg_edges)},
                 "imports": {"status": "complete", "count": len(binary.imports)},
             },
-            sidecars={
+            "sidecars": {
                 "semantic_transfers": {
                     "path": semantic_path.name,
                     "sha256": semantic_sha256,
                 }
             },
-            issues=tuple(issues),
-            counts={
+            "issues": issues,
+            "counts": {
                 "units": len(units),
                 "padding": len(padding),
                 "roots": len(roots),
@@ -316,12 +322,18 @@ def stage_a_export_static_program(
                 "semantic_transfers": len(semantic_rows),
                 "issues": len(issues),
             },
-            status=status,
-        )
+            "status": status,
+            "trust": {
+                "executes_original_binary": False,
+                "input_image_count": 1,
+                "uses_cross_image_mapping": False,
+                "behavioral_reachability_separate": True,
+            },
+        })
         contract_path = out / "static-program-contract.json"
         write_json(contract_path, contract.payload())
         load_image_path = out / "load-image-contract.json"
-        load_image = write_stage_a_load_image_contract(
+        load_image = write_spx_load_image_contract(
             original_pe=original, out=load_image_path
         )
     finally:
@@ -356,4 +368,4 @@ def stage_a_export_static_program(
     return manifest
 
 
-__all__ = ["STATIC_PROGRAM_EXPORT_FORMAT", "stage_a_export_static_program"]
+__all__ = ["STATIC_PROGRAM_EXPORT_FORMAT", "spx_export_static_program"]

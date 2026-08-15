@@ -22,12 +22,12 @@ from ..reconstruction.control import (
     pe32_jump_table_index_expression,
     recover_static_pe32_jump_table_inventory,
 )
-from ..pe32.stage_binary import StageABinary
+from ..pe32.model import ParsedPEImage
 
 
 def replay_exact_static_recoveries_v2(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[Mapping[str, Any]],
     indirect_exits: Sequence[Mapping[str, Any]],
     checked_control_invariants: Sequence[Mapping[str, Any]] = (),
@@ -140,7 +140,7 @@ def replay_exact_static_recoveries_v2(
 
 def replay_inductive_static_hypotheses_v2(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[Mapping[str, Any]],
     indirect_exits: Sequence[Mapping[str, Any]],
     hypotheses: Sequence[Mapping[str, Any]],
@@ -221,7 +221,7 @@ def replay_inductive_static_hypotheses_v2(
         if not isinstance(source_unit_id, str):
             continue
         finite_domain = {
-            "format": "stage-a-finite-u32-expression-domain-v1",
+            "format": "spaghetti-extractor-finite-u32-expression-domain-v1",
             "status": "complete",
             "source_unit_id": source_unit_id,
             "expression_sha256": _expression_sha256(expression),
@@ -308,7 +308,7 @@ def _expression_sha256(expression: Mapping[str, Any]) -> str:
 def _checked_control_domains(
     records: Sequence[Mapping[str, Any]],
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     machine_ir_sha256: str | None,
     indirect_exits: Sequence[Mapping[str, Any]],
     units_by_id: Mapping[str, Mapping[str, Any]],
@@ -401,7 +401,7 @@ def _checked_control_domains(
             ).encode("ascii")
         ).hexdigest()
         result[exit_id] = {
-            "format": "stage-a-finite-u32-expression-domain-v1",
+            "format": "spaghetti-extractor-finite-u32-expression-domain-v1",
             "status": "complete",
             "source_unit_id": unit_id,
             "expression_sha256": expression_sha256,

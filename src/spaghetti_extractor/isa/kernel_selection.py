@@ -39,7 +39,7 @@ from .kernel_qualification import (
 
 
 ISA_KERNEL_SELECTION_AUTHORITY_FORMAT = (
-    "stage-a-binary-isa-kernel-selection-authority-v1"
+    "spaghetti-extractor-binary-isa-kernel-selection-authority-v1"
 )
 BINARY_ISA_KERNEL_SELECTION_AUTHORITY_FORMAT = (
     ISA_KERNEL_SELECTION_AUTHORITY_FORMAT

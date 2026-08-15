@@ -6,14 +6,14 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from ..artifacts.formats import NATIVE_ENGINE_PACKAGE_FORMAT
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_file, write_json
-from .engine_layout import render_stage_b_engine_layout_c
+from .engine_layout import render_spx_engine_layout_c
 from .engine_render import _bridge_assembly, _wrapper_header, _wrapper_source
 from .x87 import TYPED_NATIVE_X87_OPERATION_FORMAT
 
 
-def write_stage_b_native_engine_package(
+def write_spx_native_engine_package(
     *,
     machine_ir: Path,
     machine_ir_manifest: Path,
@@ -33,11 +33,11 @@ def write_stage_b_native_engine_package(
 ) -> dict[str, Any]:
     """Write deterministic wrapper sources and a fail-closed build plan."""
 
-    from .engine import plan_stage_b_native_engine
+    from .engine import plan_spx_native_engine
 
     input_path = Path(machine_ir)
     out = Path(out)
-    plan = plan_stage_b_native_engine(
+    plan = plan_spx_native_engine(
         machine_ir=machine_ir,
         machine_ir_manifest=machine_ir_manifest,
         recovered_executable_data=recovered_executable_data,
@@ -54,7 +54,7 @@ def write_stage_b_native_engine_package(
         selected_portable_components=selected_portable_components,
     )
     if plan.status != "ready":
-        raise StageAInputError("native engine plan is incomplete; no sources were written")
+        raise ToolkitInputError("native engine plan is incomplete; no sources were written")
     out.mkdir(parents=True, exist_ok=True)
     plan_path = out / "native-engine-plan.json"
     write_json(plan_path, plan.payload(state_machine_sha256=sha256_file(input_path)))
@@ -66,7 +66,7 @@ def write_stage_b_native_engine_package(
     source.write_text(_wrapper_source(plan), encoding="ascii")
     assembly.write_text(_bridge_assembly(plan), encoding="ascii")
     layout_source.write_text(
-        render_stage_b_engine_layout_c(
+        render_spx_engine_layout_c(
             flag_storage="split-and-packed",
             include_fs_base=True,
             include_original_rva=True,

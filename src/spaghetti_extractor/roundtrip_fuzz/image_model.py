@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..errors import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes, sha256_file, write_json
 
 
-STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT = "stage-a-load-image-contract-v1"
+SPX_LOAD_IMAGE_CONTRACT_FORMAT = "spaghetti-extractor-load-image-contract-v1"
 _HASH_ALGORITHM = "sha256"
 _COVERAGE_KINDS = (
     "runtime_pe_headers",
@@ -65,9 +65,9 @@ def _payload_sha256(value: Any) -> str:
 
 def _mapping(value: Any, context: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     if not all(isinstance(key, str) for key in value):
-        raise StageAInputError(f"{context} field names must be strings")
+        raise ToolkitInputError(f"{context} field names must be strings")
     return value
 
 
@@ -83,18 +83,18 @@ def _exact_fields(
             details.append(f"missing fields: {', '.join(missing)}")
         if unexpected:
             details.append(f"unexpected fields: {', '.join(unexpected)}")
-        raise StageAInputError(f"{context} has {'; '.join(details)}")
+        raise ToolkitInputError(f"{context} has {'; '.join(details)}")
 
 
 def _list(value: Any, context: str) -> list[Any]:
     if not isinstance(value, list):
-        raise StageAInputError(f"{context} must be a list")
+        raise ToolkitInputError(f"{context} must be a list")
     return value
 
 
 def _integer(value: Any, context: str, *, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} must be an integer greater than or equal to {minimum}"
         )
     return value
@@ -109,14 +109,14 @@ def _optional_integer(value: Any, context: str) -> int | None:
 def _string(value: Any, context: str, *, nonempty: bool = True) -> str:
     if not isinstance(value, str) or (nonempty and not value):
         suffix = " a nonempty string" if nonempty else " a string"
-        raise StageAInputError(f"{context} must be{suffix}")
+        raise ToolkitInputError(f"{context} must be{suffix}")
     return value
 
 
 def _sha256(value: Any, context: str) -> str:
     text = _string(value, context)
     if len(text) != 64 or any(ch not in "0123456789abcdef" for ch in text):
-        raise StageAInputError(f"{context} must be a lowercase SHA-256 digest")
+        raise ToolkitInputError(f"{context} must be a lowercase SHA-256 digest")
     return text
 
 
@@ -125,9 +125,9 @@ def _hex_bytes(value: Any, context: str) -> bytes:
     try:
         decoded = bytes.fromhex(encoded)
     except ValueError as exc:
-        raise StageAInputError(f"{context} must be canonical hexadecimal") from exc
+        raise ToolkitInputError(f"{context} must be canonical hexadecimal") from exc
     if decoded.hex() != encoded:
-        raise StageAInputError(f"{context} must be lowercase canonical hexadecimal")
+        raise ToolkitInputError(f"{context} must be lowercase canonical hexadecimal")
     return decoded
 
 
@@ -207,7 +207,7 @@ class RuntimePEHeaders:
         data = _hex_bytes(payload["data_hex"], f"{context}.data_hex")
         size = _integer(payload["size"], f"{context}.size", minimum=1)
         if size != len(data):
-            raise StageAInputError(f"{context}.size does not match data_hex")
+            raise ToolkitInputError(f"{context}.size does not match data_hex")
         return cls(
             rva=_integer(payload["rva"], f"{context}.rva"),
             data=data,
@@ -236,7 +236,7 @@ class InitializedRange:
         _exact_fields(payload, {"rva", "size", "data_hex", "data_sha256"}, context)
         data = _hex_bytes(payload["data_hex"], f"{context}.data_hex")
         if _integer(payload["size"], f"{context}.size") != len(data):
-            raise StageAInputError(f"{context}.size does not match data_hex")
+            raise ToolkitInputError(f"{context}.size does not match data_hex")
         return cls(
             rva=_integer(payload["rva"], f"{context}.rva"),
             data=data,
@@ -298,7 +298,7 @@ class SectionInitialization:
         }, context)
         executable = payload["executable"]
         if not isinstance(executable, bool):
-            raise StageAInputError(f"{context}.executable must be a boolean")
+            raise ToolkitInputError(f"{context}.executable must be a boolean")
         initialized = tuple(
             InitializedRange.parse(
                 _mapping(item, f"{context}.initialized[{index}]"),
@@ -459,7 +459,7 @@ class BaseRelocation:
             or not isinstance(adjustment, int)
             or not -0x8000 <= adjustment <= 0x7FFF
         ):
-            raise StageAInputError(f"{context}.adjustment must fit signed 16 bits")
+            raise ToolkitInputError(f"{context}.adjustment must fit signed 16 bits")
         return cls(
             slot_index=_integer(payload["slot_index"], f"{context}.slot_index"),
             consumed_slots=_integer(
@@ -570,7 +570,7 @@ class TLSInitialization:
         }, context)
         data = _hex_bytes(payload["template_data_hex"], f"{context}.template_data_hex")
         if _integer(payload["template_size"], f"{context}.template_size") != len(data):
-            raise StageAInputError(f"{context}.template_size does not match its bytes")
+            raise ToolkitInputError(f"{context}.template_size does not match its bytes")
         return cls(
             directory_rva=_integer(payload["directory_rva"], f"{context}.directory_rva"),
             directory_size=_integer(
@@ -658,7 +658,7 @@ class CompletenessInventory:
         complete = payload["complete"]
         tls_present = payload["tls_present"]
         if not isinstance(complete, bool) or not isinstance(tls_present, bool):
-            raise StageAInputError(f"{context} boolean fields must be booleans")
+            raise ToolkitInputError(f"{context} boolean fields must be booleans")
 
         def integers(field: str) -> tuple[int, ...]:
             return tuple(
@@ -757,7 +757,7 @@ class ContractHashes:
 
 
 @dataclass(frozen=True)
-class StageALoadImageContract:
+class LoadImageContract:
     identity: PEImageIdentity
     runtime_headers: RuntimePEHeaders
     sections: tuple[SectionInitialization, ...]
@@ -766,7 +766,7 @@ class StageALoadImageContract:
     tls: TLSInitialization | None
     completeness: CompletenessInventory
     hashes: ContractHashes
-    format: str = STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT
+    format: str = SPX_LOAD_IMAGE_CONTRACT_FORMAT
 
     def _core_payload(self) -> dict[str, Any]:
         return {
@@ -793,32 +793,32 @@ class StageALoadImageContract:
                 observed_size = original_pe.stat().st_size
                 observed_sha256 = sha256_file(original_pe)
             except OSError as exc:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"cannot verify original PE {original_pe}: {exc}"
                 ) from exc
             if (
                 observed_size != self.identity.file_size
                 or observed_sha256 != self.identity.pe_sha256
             ):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     "load-image contract does not bind the supplied original PE"
                 )
-            from .image_io import build_stage_a_load_image_contract
+            from .image_io import build_spx_load_image_contract
 
-            if build_stage_a_load_image_contract(original_pe) != self:
-                raise StageAInputError(
+            if build_spx_load_image_contract(original_pe) != self:
+                raise ToolkitInputError(
                     "load-image contract contents do not match the supplied original PE"
                 )
 
     @classmethod
-    def parse(cls, payload: Mapping[str, Any]) -> "StageALoadImageContract":
-        context = "Stage A load-image contract"
+    def parse(cls, payload: Mapping[str, Any]) -> "LoadImageContract":
+        context = "static analysis load-image contract"
         _exact_fields(payload, {
             "format", "identity", "runtime_headers", "sections", "imports",
             "relocations", "tls", "completeness", "hashes",
         }, context)
-        if payload["format"] != STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT:
-            raise StageAInputError("unsupported Stage A load-image contract format")
+        if payload["format"] != SPX_LOAD_IMAGE_CONTRACT_FORMAT:
+            raise ToolkitInputError("unsupported static analysis load-image contract format")
         raw_tls = payload["tls"]
         contract = cls(
             identity=PEImageIdentity.parse(

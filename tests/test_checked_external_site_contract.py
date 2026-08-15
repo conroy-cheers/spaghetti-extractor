@@ -19,7 +19,7 @@ from spaghetti_extractor.external.machine_import_profiles import (
     load_machine_import_profile_set,
 )
 from spaghetti_extractor.candidate.runtime import (
-    StageBNativeRuntimeError,
+    CandidateRuntimeError,
     _external_range_rules,
 )
 from spaghetti_extractor.util import sha256_file
@@ -50,7 +50,7 @@ def _profile_entry() -> dict[str, object]:
 
 def _write_profile(path: Path, entry: dict[str, object] | None = None) -> dict[str, object]:
     payload: dict[str, object] = {
-        "format": "stage-a-static-machine-import-profile-v1",
+        "format": "spaghetti-extractor-static-machine-import-profile-v1",
         "id": "fixture-profile",
         "machine_import_signatures": [entry or _profile_entry()],
     }
@@ -106,7 +106,7 @@ def _callback_evidence(
     instance: object = None,
 ) -> dict[str, object]:
     return {
-        "format": "stage-a-callback-registration-provenance-v1",
+        "format": "spaghetti-extractor-callback-registration-provenance-v1",
         "record_kind": "callback_registration",
         "status": "complete",
         "failure": None,
@@ -628,12 +628,12 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
                 "checked_external_contract_required"
             ] = True
             with self.assertRaisesRegex(
-                StageBNativeRuntimeError, "no checked external contract"
+                CandidateRuntimeError, "no checked external contract"
             ):
                 _external_range_rules(missing, profile)
 
             with self.assertRaisesRegex(
-                StageBNativeRuntimeError,
+                CandidateRuntimeError,
                 "complete implementation reachability",
             ):
                 _external_range_rules(

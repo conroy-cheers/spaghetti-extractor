@@ -17,7 +17,13 @@ from .io import load_index, load_plan, write_manifest
 from .model import INDEX_FORMAT, PLAN_FORMAT, canonical_json
 from .planning import MODES, build_suite_plan, changed_paths_from_git
 from .rebuild import explain_index_rebuild, explain_plan_rebuild
-from .scaffold import apply_scaffold_plan, plan_fixture_scaffold, plan_phase_scaffold, plan_test_scaffold
+from .scaffold import (
+    apply_scaffold_plan,
+    plan_fixture_scaffold,
+    plan_phase_scaffold,
+    plan_target_scaffold,
+    plan_test_scaffold,
+)
 from .static_manifest import refresh_repository_metadata
 
 
@@ -75,9 +81,9 @@ def _build_parser() -> argparse.ArgumentParser:
     explain.add_argument("--artifact")
 
     scaffold = subcommands.add_parser("scaffold", help="create convention-correct files")
-    scaffold.add_argument("kind", choices=("test", "phase", "fixture"))
-    scaffold.add_argument("first", help="subsystem, phase kind, or fixture kind")
-    scaffold.add_argument("second", help="new item name")
+    scaffold.add_argument("kind", choices=("test", "phase", "fixture", "target"))
+    scaffold.add_argument("first", help="subsystem, phase kind, fixture kind, or target id")
+    scaffold.add_argument("second", nargs="?", help="new item name")
     scaffold.add_argument("--tier", default="unit")
     scaffold.add_argument("--capability")
     scaffold.add_argument("--json", action="store_true")
@@ -143,7 +149,13 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("explain-rebuild accepts test impact indexes or suite plans")
             print(canonical_json(explanation), end="")
             return 0
-        if args.kind == "test":
+        if args.kind == "target":
+            if args.second is not None:
+                parser.error("target scaffolds accept only a target id")
+            scaffold_plan = plan_target_scaffold(target_id=args.first)
+        elif args.second is None:
+            parser.error(f"{args.kind} scaffolds require a kind and item name")
+        elif args.kind == "test":
             scaffold_plan = plan_test_scaffold(subsystem=args.first, name=args.second, tier=args.tier, capability=args.capability)
         elif args.kind == "phase":
             scaffold_plan = plan_phase_scaffold(phase_kind=args.first, name=args.second)

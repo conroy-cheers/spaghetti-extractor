@@ -7,14 +7,14 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.reconstruction.state_machine import (
-    STAGE_A_SEMANTIC_IR_MODEL,
-    STAGE_A_SEMANTIC_TRANSFER_FORMAT,
-    _load_stage_a_semantic_transfer_rows,
+    SPX_SEMANTIC_IR_MODEL,
+    SPX_SEMANTIC_TRANSFER_FORMAT,
+    _load_spx_semantic_transfer_rows,
     _validate_restartable_string_events,
-    normalize_stage_a_semantic_transfer,
+    normalize_spx_semantic_transfer,
 )
 from spaghetti_extractor.static_program.model import StaticProgramContractBinding
-from spaghetti_extractor.pe32.stage_binary import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 
 
 class StateMachineSchemaTests(unittest.TestCase):
@@ -44,7 +44,7 @@ class StateMachineSchemaTests(unittest.TestCase):
         ):
             with self.subTest(mutation=mutation):
                 malformed = {**event, **mutation}
-                with self.assertRaises(StageAInputError):
+                with self.assertRaises(ToolkitInputError):
                     _validate_restartable_string_events(
                         {
                             "external_events": [malformed],
@@ -94,7 +94,7 @@ class StateMachineSchemaTests(unittest.TestCase):
         ):
             with self.subTest(mutation=mutation):
                 malformed = {**event, **mutation}
-                with self.assertRaises(StageAInputError):
+                with self.assertRaises(ToolkitInputError):
                     _validate_restartable_string_events(
                         {
                             "external_events": [malformed],
@@ -106,7 +106,7 @@ class StateMachineSchemaTests(unittest.TestCase):
     def test_blocking_instruction_is_preserved_as_hash_bound_diagnostic(self) -> None:
         row = _blocked_transfer()
 
-        normalized = normalize_stage_a_semantic_transfer(row)
+        normalized = normalize_spx_semantic_transfer(row)
         self.assertEqual(normalized["blocking_instruction"], row["blocking_instruction"])
 
         changed = _blocked_transfer()
@@ -116,7 +116,7 @@ class StateMachineSchemaTests(unittest.TestCase):
         }
         self.assertNotEqual(
             normalized["contract_sha256"],
-            normalize_stage_a_semantic_transfer(changed)["contract_sha256"],
+            normalize_spx_semantic_transfer(changed)["contract_sha256"],
         )
 
     def test_public_export_loader_accepts_explicit_blocking_instruction(self) -> None:
@@ -140,7 +140,7 @@ class StateMachineSchemaTests(unittest.TestCase):
                 semantic_transfers_sha256=sidecar_sha256,
             )
 
-            loaded = _load_stage_a_semantic_transfer_rows(sidecar, static_program)
+            loaded = _load_spx_semantic_transfer_rows(sidecar, static_program)
 
         self.assertEqual(len(loaded), 1)
         self.assertEqual(
@@ -151,7 +151,7 @@ class StateMachineSchemaTests(unittest.TestCase):
 def _blocked_transfer() -> dict[str, object]:
     empty_digest = hashlib.sha256(b"").hexdigest()
     return {
-        "format": STAGE_A_SEMANTIC_TRANSFER_FORMAT,
+        "format": SPX_SEMANTIC_TRANSFER_FORMAT,
         "id": "semantic-transfer:blocked",
         "function": "fixture",
         "block_id": "block:fixture",
@@ -160,7 +160,7 @@ def _blocked_transfer() -> dict[str, object]:
         "span": {"rva_start": 0x1000, "rva_end": 0x1000, "size": 0},
         "instructions": [],
         "instruction_bytes_sha256": empty_digest,
-        "expression_model": STAGE_A_SEMANTIC_IR_MODEL,
+        "expression_model": SPX_SEMANTIC_IR_MODEL,
         "pre_state": {},
         "register_writes": [],
         "flag_writes": [],

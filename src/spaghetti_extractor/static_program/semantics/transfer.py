@@ -14,10 +14,7 @@ from ...artifacts.formats import (
 )
 from ...extraction.cutpoints import semantic_cutpoint_spans_for_side
 from ...extraction.executable_classification import _capstone_mode, _instruction_report
-from ...pe32.stage_binary import (
-    BlockSide,
-    StageABinary,
-)
+from ...pe32.model import BlockSide, ParsedPEImage
 from ...util import sha256_bytes
 from ..model import StaticUnitContext
 from .expressions import _expr_json
@@ -33,7 +30,7 @@ from .symbolic_execution import (
 )
 
 def semantic_transfers(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     mappings: list[StaticUnitContext],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -79,7 +76,7 @@ def semantic_transfers(
     return sorted(rows, key=lambda item: (str(item.get("function") or ""), str(item.get("block_id") or "")))
 
 def semantic_transfer(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     mapped: StaticUnitContext,
     function_name: str,
     *,
@@ -180,7 +177,7 @@ def semantic_transfer(
             "blocker_category": "x87_physical_state_requires_native_exact_command_replay",
             "blocker": (
                 "legacy symbolic x87 observables do not contain the physical "
-                "StageA.X87.PhysicalState required by Stage B"
+                "SpaghettiExtractor.ISA.X87.PhysicalState required by the transfer model"
             ),
             "next_action": (
                 "replay each exact x87 singleton with the checked Lean decoder and "
@@ -195,19 +192,19 @@ def semantic_transfer(
         "status": "reimplementable",
         "blocker_category": None,
         "blocker": None,
-        "next_action": "implement this block so the compiled candidate reproduces the transfer contract, then rerun Stage A",
+        "next_action": "the transfer contract is complete and ready for downstream lowering",
         **effects,
     }
     if instruction_effect_schedule is not None:
         result["instruction_effect_schedule"] = instruction_effect_schedule
     return result
 
-def _semantic_disassemble_block(binary: StageABinary, side: BlockSide, data: bytes) -> list[dict[str, Any]]:
+def _semantic_disassemble_block(binary: ParsedPEImage, side: BlockSide, data: bytes) -> list[dict[str, Any]]:
     dis = capstone.Cs(capstone.CS_ARCH_X86, _capstone_mode(binary))
     dis.detail = True
     return [_instruction_report(binary, insn) for insn in dis.disasm(data, binary.image_base + side.rva_start)]
 
-def _semantic_pre_state(binary: StageABinary) -> dict[str, Any]:
+def _semantic_pre_state(binary: ParsedPEImage) -> dict[str, Any]:
     registers = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp") if binary.bitness == 32 else ("rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp")
     flags = ("cf", "zf", "sf", "of", "pf", "df")
     return {
@@ -295,13 +292,13 @@ _X87_PHYSICAL_OBSERVABLE_FIELDS = (
 
 _X87_REPLAY_OBLIGATION_MODEL = "native_exact_x87_command_replay_obligation_v1"
 
-_X87_SINGLETON_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
+_X87_SINGLETON_CHECKED_DECODER = "SpaghettiExtractor.ISA.Formal.decodeInstructionExact"
 
-_X87_SINGLETON_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
+_X87_SINGLETON_CHECKED_EXECUTOR = "SpaghettiExtractor.ISA.Formal.executeInstruction"
 
-_ORDINARY_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
+_ORDINARY_CHECKED_DECODER = "SpaghettiExtractor.ISA.Formal.decodeInstructionExact"
 
-_ORDINARY_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
+_ORDINARY_CHECKED_EXECUTOR = "SpaghettiExtractor.ISA.Formal.executeInstruction"
 
 _SEMANTIC_X87_SINGLETON_MNEMONICS = frozenset(
     {
@@ -397,14 +394,14 @@ def _semantic_fpu_state_from_observables(
     return {
         "model": _X87_REPLAY_OBLIGATION_MODEL,
         "status": "required",
-        "authoritative_state_type": "StageA.X87.PhysicalState",
+        "authoritative_state_type": "SpaghettiExtractor.ISA.X87.PhysicalState",
         "required_fields": [
             output_name for output_name, _input_name in _X87_PHYSICAL_OBSERVABLE_FIELDS
         ],
         "missing_or_invalid_fields": missing_or_invalid,
         "logical_state_guidance": logical_guidance,
         "replay": {
-            "format": "stage-a-native-exact-x87-command-replay-obligation-v1",
+            "format": "spaghetti-extractor-native-exact-x87-command-replay-obligation-v1",
             "checked_decoder": _X87_SINGLETON_CHECKED_DECODER,
             "checked_decoder_scope": "each_x87_singleton_instruction",
             "checked_executor": _X87_SINGLETON_CHECKED_EXECUTOR,
@@ -426,7 +423,7 @@ def _semantic_x87_expression_valid(value: Any) -> bool:
     return isinstance(value, dict) and isinstance(value.get("op"), str)
 
 def _semantic_x87_replay_binding(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     side: BlockSide,
     data: bytes,
     instructions: list[dict[str, Any]],
@@ -463,7 +460,7 @@ def _semantic_transfer_inventory_contains_x87(
     )
 
 def _semantic_instruction_effect_schedule(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     side: BlockSide,
     data: bytes,
     instructions: list[dict[str, Any]],
@@ -473,7 +470,7 @@ def _semantic_instruction_effect_schedule(
 
     Capstone reports are inventory hints only.  Every classification remains bound
     to exact PE bytes and names the Lean decoder/executor that must replay it.  The
-    ledger is also the Stage B authority for ordering effects across instructions;
+    ledger is also authoritative for ordering effects across instructions;
     aggregate final-state expressions cannot recover that ordering around calls.
     """
 

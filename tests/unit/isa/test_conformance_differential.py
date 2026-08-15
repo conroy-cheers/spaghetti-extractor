@@ -9,7 +9,7 @@ from spaghetti_extractor.isa.conformance_unicorn import (
     run_unicorn_corpus,
     unicorn_available,
 )
-from tests.test_stage_a_isa_conformance_unicorn import _corpus
+from tests.test_isa_conformance_unicorn import _corpus
 
 
 class ISAConformanceDifferentialTests(unittest.TestCase):

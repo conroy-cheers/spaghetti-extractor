@@ -6,7 +6,7 @@ import copy
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..pe32.stage_binary import StageABinary
+from ..pe32.model import ParsedPEImage
 from .ir_decoding import _sanitize_metadata
 from .ir_model import (
     INDIRECT_TARGET_PROFILE_FORMAT,
@@ -185,7 +185,7 @@ def _static_program_issues(payload: Mapping[str, Any] | None) -> list[ExportIssu
     return result
 
 
-def _binary_inventory(binary: StageABinary) -> dict[str, Any]:
+def _binary_inventory(binary: ParsedPEImage) -> dict[str, Any]:
     return {
         "sha256": binary.sha256,
         "machine": binary.machine,

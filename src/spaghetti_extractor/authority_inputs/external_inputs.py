@@ -42,7 +42,9 @@ from ..external.machine_import_profiles import (
     SelectedMachineImportContract,
     load_machine_import_profile_set,
 )
-from ..pe32.stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
+from ..errors import ToolkitInputError
+from ..pe32.image import parse_pe_image
+from ..pe32.model import ParsedPEImage
 from ..authority._schema import AnalysisV3Error, mapping, sequence, text, uint
 from ..authority.authority_common import PrimaryBlockerV3
 from ..authority.exact_units import ExactUnitV3
@@ -459,7 +461,7 @@ def _load_machine_units(
     return tuple(sorted(result, key=lambda row: row.unit_id))
 
 
-def _exact_unit_bytes(binary: StageABinary, unit: ExactUnitV3) -> bytes:
+def _exact_unit_bytes(binary: ParsedPEImage, unit: ExactUnitV3) -> bytes:
     candidates = [
         section
         for section in binary.sections
@@ -481,7 +483,7 @@ def _exact_unit_bytes(binary: StageABinary, unit: ExactUnitV3) -> bytes:
     return data
 
 
-def _validate_root_unit(binary: StageABinary, unit: ExactUnitV3) -> None:
+def _validate_root_unit(binary: ParsedPEImage, unit: ExactUnitV3) -> None:
     observed = hashlib.sha256(_exact_unit_bytes(binary, unit)).hexdigest()
     if observed != unit.instruction_bytes_sha256:
         raise ExternalInputAdapterV3Error(
@@ -606,7 +608,7 @@ def _adapt_launch_roots(
             )
         )
     try:
-        binary = _parse_stage_a_pe(binary_path)
+        binary = parse_pe_image(binary_path)
         if binary.machine != "i386" or binary.bitness != 32:
             raise ExternalInputAdapterV3Error("launch-root adapter requires PE32 i386")
         roots = generate_behavioral_roots(binary_path)
@@ -692,7 +694,7 @@ def _adapt_launch_roots(
     except (
         ExternalInputAdapterV3Error,
         BehavioralRootsError,
-        StageAInputError,
+        ToolkitInputError,
         AnalysisV3Error,
         OSError,
     ) as exc:

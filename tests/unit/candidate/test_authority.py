@@ -59,7 +59,7 @@ def _write_json(path: Path, value: object) -> None:
 
 def _unit() -> dict[str, object]:
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": "unit:1000",
         "source": {
@@ -84,13 +84,13 @@ class CandidateAuthorityV3Tests(unittest.TestCase):
         self.machine_ir_sha256 = hashlib.sha256(self.machine_ir.read_bytes()).hexdigest()
         self.manifest = self.root / "machine-ir-manifest.json"
         _write_json(self.manifest, {
-            "format": "stage-a-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v2",
             "binary": {"sha256": PE_SHA256},
             "inputs": {"original_pe": {"sha256": PE_SHA256}},
             "counts": {"units": 1},
             "artifacts": {
                 "machine_ir": {
-                    "format": "stage-a-machine-ir-v2",
+                    "format": "spaghetti-extractor-machine-ir-v2",
                     "sha256": self.machine_ir_sha256,
                 }
             },
@@ -175,7 +175,7 @@ class CandidateAuthorityV3Tests(unittest.TestCase):
             "machine_ir_record_sha256": self.unit_sha256,
             "lowering_transfer_sha256": "d" * 64,
             "implementation_kind": "machine_ir_fallback",
-            "dispatch_lookup": "stage_b_program_lookup",
+            "dispatch_lookup": "spx_program_lookup",
             "portable_replacement": None,
         }
         entry = {**entry_core, "entry_sha256": canonical_sha256_v3(entry_core)}
@@ -481,7 +481,7 @@ class CandidateAuthorityV3Tests(unittest.TestCase):
 
     def test_candidate_receipt_content_id_mutation_is_rejected(self) -> None:
         payload = self._build().to_payload()
-        payload["content_id"] = "stage-b-candidate-authority-v3:" + "0" * 64
+        payload["content_id"] = "spaghetti-extractor-candidate-authority-v3:" + "0" * 64
         with self.assertRaisesRegex(CandidateAuthorityV3Error, "stale"):
             parse_candidate_authority(payload)
 

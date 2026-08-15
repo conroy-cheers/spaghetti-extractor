@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[3]
 
 class LinkedLibrariesNixTests(unittest.TestCase):
     def test_generic_dag_is_static_content_addressed_and_phase_split(self) -> None:
-        module = (ROOT / "nix" / "stage-b-linked-libraries.nix").read_text(encoding="utf-8")
+        module = (ROOT / "nix" / "linked-libraries.nix").read_text(encoding="utf-8")
         for phase in (
             "artifactIndex",
             "generatedCatalogLock",
@@ -32,7 +32,7 @@ class LinkedLibrariesNixTests(unittest.TestCase):
         self.assertNotIn("executes_original_binary = true", module.lower())
 
     def test_component_activation_requires_separate_behavioral_evidence(self) -> None:
-        module = (ROOT / "nix" / "stage-b-components.nix").read_text(
+        module = (ROOT / "nix" / "component-workflow.nix").read_text(
             encoding="utf-8"
         )
         self.assertIn("produce_component_evidence", module)

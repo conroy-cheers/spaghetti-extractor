@@ -11,7 +11,8 @@ from typing import Any
 
 import capstone
 
-from ..pe32.stage_binary import StageABinary, StageAInputError
+from ..errors import ToolkitInputError
+from ..pe32.model import ParsedPEImage
 from .x87_profile import instruction_is_x87
 
 
@@ -65,7 +66,7 @@ def _instruction_can_follow_alignment_padding(instruction: Any) -> bool:
 
 
 def decode_semantic_cutpoint_span(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     span: dict[str, int],
     block_id: str,
     *,
@@ -78,7 +79,7 @@ def decode_semantic_cutpoint_span(
         disassembler.disasm(data, binary.image_base + span["rva_start"])
     )
     if not decoded or sum(int(instruction.size) for instruction in decoded) != len(data):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"mapping block {block_id} does not decode exactly for semantic "
             "cutpoint projection"
         )
@@ -86,7 +87,7 @@ def decode_semantic_cutpoint_span(
 
 
 def semantic_cutpoint_spans_for_side(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     span: dict[str, int],
     block_id: str,
     *,
@@ -136,8 +137,8 @@ def semantic_cutpoint_spans_for_side(
 
 
 def paired_semantic_cutpoint_spans(
-    original: StageABinary,
-    candidate: StageABinary,
+    original: ParsedPEImage,
+    candidate: ParsedPEImage,
     original_span: dict[str, int],
     candidate_span: dict[str, int],
     block_id: str,
@@ -166,7 +167,7 @@ def paired_semantic_cutpoint_spans(
         span["rva_end"] for span in candidate_spans
     ]
     if len(original_boundaries) != len(candidate_boundaries):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"mapping block {block_id} has mismatched semantic cutpoint counts: "
             f"original={len(original_boundaries) - 2}, "
             f"candidate={len(candidate_boundaries) - 2}"

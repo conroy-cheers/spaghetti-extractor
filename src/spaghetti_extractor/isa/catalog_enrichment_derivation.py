@@ -19,7 +19,7 @@ from .catalog_enrichment import (
     _string,
     _uint,
 )
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 
 def _signed32(value: int) -> int:
     value &= 0xFFFFFFFF
@@ -29,7 +29,7 @@ def _signed32(value: int) -> int:
 def _register(value: Any, context: str) -> str:
     register = _string(value, context)
     if register not in _GPRS:
-        raise StageAInputError(f"{context} is not an IA-32 general-purpose register")
+        raise ToolkitInputError(f"{context} is not an IA-32 general-purpose register")
     return register
 
 
@@ -168,9 +168,9 @@ def _address(value: Any, context: str) -> dict[str, Any]:
     index = None if raw_index is None else _register(raw_index, f"{context}.index")
     scale_shift = _uint(payload.get("scale_shift"), 3, f"{context}.scale_shift")
     if scale_shift > 3:
-        raise StageAInputError(f"{context}.scale_shift exceeds IA-32 SIB width")
+        raise ToolkitInputError(f"{context}.scale_shift exceeds IA-32 SIB width")
     if index is None and scale_shift != 0:
-        raise StageAInputError(f"{context} has a scale without an index")
+        raise ToolkitInputError(f"{context} has a scale without an index")
     return {
         "base": base,
         "index": index,
@@ -225,7 +225,7 @@ def _x87_format_width(value: Any, context: str) -> int:
     try:
         return widths[format_name]
     except KeyError as exc:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} is not a reviewed x87 memory format"
         ) from exc
 
@@ -233,13 +233,13 @@ def _x87_format_width(value: Any, context: str) -> int:
 def _x87_index(value: Any, context: str) -> int:
     index = _uint(value, 8, context)
     if index >= 8:
-        raise StageAInputError(f"{context} exceeds the x87 register stack")
+        raise ToolkitInputError(f"{context} exceeds the x87 register stack")
     return index
 
 
 def _operand32(value: Any, context: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     kind = value.get("kind")
     if kind == "register":
         payload = _exact_fields(value, {"kind", "register"}, context)
@@ -259,13 +259,13 @@ def _operand32(value: Any, context: str) -> dict[str, Any]:
             "kind": "immediate",
             "value": _uint(payload.get("value"), 32, f"{context}.value"),
         }
-    raise StageAInputError(f"{context}.kind is unsupported")
+    raise ToolkitInputError(f"{context}.kind is unsupported")
 
 
 def _width_bits(value: Any, context: str) -> int:
     width_bits = _uint(value, 8, context)
     if width_bits not in {8, 16, 32}:
-        raise StageAInputError(f"{context} must be 8, 16, or 32")
+        raise ToolkitInputError(f"{context} must be 8, 16, or 32")
     return width_bits
 
 
@@ -273,7 +273,7 @@ def _byte_register(value: Any, context: str) -> dict[str, Any]:
     payload = _exact_fields(value, {"parent", "high"}, context)
     high = payload.get("high")
     if not isinstance(high, bool):
-        raise StageAInputError(f"{context}.high must be a boolean")
+        raise ToolkitInputError(f"{context}.high must be a boolean")
     return {
         "register": _register(payload.get("parent"), f"{context}.parent"),
         "high": high,
@@ -282,7 +282,7 @@ def _byte_register(value: Any, context: str) -> dict[str, Any]:
 
 def _operand8(value: Any, context: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     kind = value.get("kind")
     if kind == "register":
         payload = _exact_fields(value, {"kind", "register"}, context)
@@ -302,12 +302,12 @@ def _operand8(value: Any, context: str) -> dict[str, Any]:
             "kind": "immediate",
             "value": _uint(payload.get("value"), 8, f"{context}.value"),
         }
-    raise StageAInputError(f"{context}.kind is unsupported")
+    raise ToolkitInputError(f"{context}.kind is unsupported")
 
 
 def _shift_count(value: Any, context: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     kind = value.get("kind")
     if kind == "cl":
         _exact_fields(value, {"kind"}, context)
@@ -318,7 +318,7 @@ def _shift_count(value: Any, context: str) -> dict[str, Any]:
             "kind": "immediate",
             "value": _uint(payload.get("value"), 8, f"{context}.value"),
         }
-    raise StageAInputError(f"{context}.kind is unsupported")
+    raise ToolkitInputError(f"{context}.kind is unsupported")
 
 
 def _has_high_byte_register(*values: Mapping[str, Any]) -> bool:
@@ -362,7 +362,7 @@ def _operand_access(
             )
         )
     elif operand["kind"] != "immediate":
-        raise StageAInputError("decoded operand kind is invalid")
+        raise ToolkitInputError("decoded operand kind is invalid")
     return reads, writes, memory
 
 
@@ -413,7 +413,7 @@ def _condition_name(value: Any, context: str) -> str:
 def _binary_operation(value: Any, context: str) -> tuple[str, int]:
     operation = _condition_name(value, context)
     if operation not in {"add", "sub", "xor", "and", "or", "compare", "test"}:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} is not a reviewed binary operation"
         )
     flags = (
@@ -427,7 +427,7 @@ def _binary_operation(value: Any, context: str) -> tuple[str, int]:
 def _shift_operation(value: Any, context: str) -> str:
     operation = _condition_name(value, context)
     if operation not in {"left", "right", "arithmeticRight"}:
-        raise StageAInputError(f"{context} is not a reviewed shift operation")
+        raise ToolkitInputError(f"{context} is not a reviewed shift operation")
     return operation
 
 
@@ -468,7 +468,7 @@ def _condition_inputs(condition: str) -> tuple[tuple[int, int], tuple[int, int]]
     try:
         return table[condition]
     except KeyError as exc:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"decoded branch condition {condition!r} is unsupported"
         ) from exc
 
@@ -609,7 +609,7 @@ def _derive_enrichment(
     instruction_bytes = bytes(encoding["instruction_bytes"])
     semantic_form = str(encoding["semantic_form"])
     if decoded.get("status") != "decoded":
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"Lean failed to decode proposal encoding {encoding['encoding_id']}"
         )
     decoded = _exact_fields(
@@ -624,13 +624,13 @@ def _derive_enrichment(
         f"Lean metadata for {encoding['encoding_id']}",
     )
     if decoded.get("encoding_id") != encoding["encoding_id"]:
-        raise StageAInputError("Lean metadata names the wrong encoding")
+        raise ToolkitInputError("Lean metadata names the wrong encoding")
     if decoded.get("semantic_form") != semantic_form:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"Lean semantic form changed for encoding {encoding['encoding_id']}"
         )
     if decoded.get("decoded_size") != len(instruction_bytes):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"Lean decoded size changed for encoding {encoding['encoding_id']}"
         )
     prefix_reason = _prefix_unresolved_reason(instruction_bytes)
@@ -639,7 +639,7 @@ def _derive_enrichment(
 
     instruction = decoded.get("instruction")
     if not isinstance(instruction, Mapping):
-        raise StageAInputError("Lean decoded instruction metadata must be an object")
+        raise ToolkitInputError("Lean decoded instruction metadata must be an object")
     constructor = _string(
         instruction.get("constructor"),
         f"Lean metadata for {encoding['encoding_id']} constructor",
@@ -659,6 +659,6 @@ def _derive_enrichment(
         )
         if result is not None:
             return result
-    raise StageAInputError(
+    raise ToolkitInputError(
         f"{context}.constructor was not emitted by the reviewed Lean exporter"
     )

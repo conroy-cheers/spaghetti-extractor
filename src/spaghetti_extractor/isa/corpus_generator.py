@@ -70,9 +70,9 @@ from .conformance import (
 )
 
 
-STRUCTURAL_COVERAGE_CELL_FORMAT = "stage-a-isa-structural-coverage-cell-v1"
-BOUNDARY_MACHINE_STATE_CASE_FORMAT = "stage-a-isa-boundary-state-case-v1"
-GENERATED_ISA_CORPUS_FORMAT = "stage-a-generated-isa-corpus-v1"
+STRUCTURAL_COVERAGE_CELL_FORMAT = "spaghetti-extractor-isa-structural-coverage-cell-v1"
+BOUNDARY_MACHINE_STATE_CASE_FORMAT = "spaghetti-extractor-isa-boundary-state-case-v1"
+GENERATED_ISA_CORPUS_FORMAT = "spaghetti-extractor-generated-isa-corpus-v1"
 
 IMAGE_BASE = 0x00400000
 TEST_EIP = 0x00401000

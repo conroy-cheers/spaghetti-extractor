@@ -7,8 +7,8 @@ from pathlib import Path
 from spaghetti_extractor.extraction.executable_classification import (
     _is_padding_bytes,
 )
-from spaghetti_extractor.pe32.stage_binary import (
-    _parse_stage_a_pe,
+from spaghetti_extractor.pe32.image import (
+    parse_pe_image,
 )
 
 from tests.pe_fixtures import pe32_image
@@ -20,7 +20,7 @@ class ExecutableClassificationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "alignment-thunk.exe"
             path.write_bytes(pe32_image(code))
-            binary = _parse_stage_a_pe(path)
+            binary = parse_pe_image(path)
 
             self.assertFalse(_is_padding_bytes(binary, 0x1000, code[:16]))
             self.assertTrue(_is_padding_bytes(binary, 0x1005, code[5:16]))

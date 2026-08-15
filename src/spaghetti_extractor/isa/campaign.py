@@ -34,7 +34,7 @@ from .kernel_qualification import (
 )
 
 
-ISA_QUALIFICATION_CAMPAIGN_FORMAT = "stage-a-isa-qualification-campaign-v1"
+ISA_QUALIFICATION_CAMPAIGN_FORMAT = "spaghetti-extractor-isa-qualification-campaign-v1"
 ISA_QUALIFICATION_CAMPAIGN_TRUST_ROLE = "isa_qualification_campaign_planning_only"
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
@@ -98,7 +98,6 @@ class CampaignReasonCode(str, Enum):
 class CampaignTrust:
     role: str = ISA_QUALIFICATION_CAMPAIGN_TRUST_ROLE
     proof_authority: bool = False
-    closes_stage_a_proof: bool = False
 
 
 @dataclass(frozen=True)
@@ -1101,7 +1100,6 @@ def _trust_payload(value: CampaignTrust) -> dict[str, Any]:
     return {
         "role": value.role,
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }
 
 
@@ -1109,7 +1107,7 @@ def _parse_trust(value: Any) -> CampaignTrust:
     payload = _object(value, "ISA campaign.trust")
     _exact_fields(
         payload,
-        {"role", "proof_authority", "closes_stage_a_proof"},
+        {"role", "proof_authority"},
         "ISA campaign.trust",
     )
     if payload.get("role") != ISA_QUALIFICATION_CAMPAIGN_TRUST_ROLE:
@@ -1119,10 +1117,6 @@ def _parse_trust(value: Any) -> CampaignTrust:
     if payload.get("proof_authority") is not False:
         raise ISAQualificationCampaignError(
             "ISA campaign.trust.proof_authority must be false"
-        )
-    if payload.get("closes_stage_a_proof") is not False:
-        raise ISAQualificationCampaignError(
-            "ISA campaign.trust.closes_stage_a_proof must be false"
         )
     return CampaignTrust()
 

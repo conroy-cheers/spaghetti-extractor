@@ -53,7 +53,7 @@ def _unit(
             "kind": "return",
         },
         "expression_model": "spaghetti-extractor-static-semantic-ir-v1",
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "id": unit_id,
         "instructions": [
             {

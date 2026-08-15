@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from .semantic import (
     AdjustStack,
     AssignRegister,
@@ -80,7 +80,7 @@ def lower_semantic_program_to_gnu_assembly(
     }
     unknown_variant_blocks = sorted(referenced_variant_blocks - known_block_ids)
     if unknown_variant_blocks:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"lowering variant names unknown blocks {unknown_variant_blocks}"
         )
     block_symbols = {
@@ -161,7 +161,7 @@ def lower_semantic_program_to_gnu_assembly(
             next_id = _next_block_id_from_order(ordered_blocks, block_index)
             if block.id in set(variant.fallthrough_branch_blocks):
                 if next_id != fallthrough:
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"branch block {block.id!r} declares fallthrough to "
                         f"{fallthrough!r}, but the next lowered block is {next_id!r}"
                     )
@@ -213,12 +213,12 @@ def build_gnu_pe32(
 ) -> LinkedPE32:
     executable = shutil.which(compiler)
     if executable is None:
-        raise StageAInputError(f"PE32 compiler is not available: {compiler}")
+        raise ToolkitInputError(f"PE32 compiler is not available: {compiler}")
     source = Path(source)
     binary = Path(binary)
     linker_map = Path(linker_map)
     if source.parent.resolve() != binary.parent.resolve() or source.parent.resolve() != linker_map.parent.resolve():
-        raise StageAInputError("PE32 source, object, binary, and map must share a build directory")
+        raise ToolkitInputError("PE32 source, object, binary, and map must share a build directory")
     binary.parent.mkdir(parents=True, exist_ok=True)
     object_path = binary.with_suffix(".o")
     compile_command = [
@@ -264,13 +264,13 @@ def build_gnu_pe32(
             check=False,
         )
         if process.returncode != 0:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"PE32 {phase} failed:\n"
                 + process.stdout[-2000:]
                 + process.stderr[-8000:]
             )
     if not object_path.is_file() or not binary.is_file() or not linker_map.is_file():
-        raise StageAInputError("PE32 toolchain omitted the object, binary, or linker map")
+        raise ToolkitInputError("PE32 toolchain omitted the object, binary, or linker map")
     compiler_version = _tool_output([executable, "-dumpfullversion", "-dumpversion"])
     linker_version = _tool_output([executable, "-Wl,--version"], first_line=True)
     return LinkedPE32(
@@ -306,7 +306,7 @@ def build_llvm_msvc_pe32(
         if executable is None
     ]
     if missing:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "PE32 LLVM/MSVC-compatible toolchain is unavailable: "
             + ", ".join(missing)
         )
@@ -315,21 +315,21 @@ def build_llvm_msvc_pe32(
     assert mingw_executable is not None
     clang_executable = Path(clang_cl_executable).with_name("clang")
     if not clang_executable.is_file():
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"clang-cl companion assembler is unavailable: {clang_executable}"
         )
     source = Path(source)
     binary = Path(binary)
     linker_map = Path(linker_map)
     if source.parent.resolve() != binary.parent.resolve() or source.parent.resolve() != linker_map.parent.resolve():
-        raise StageAInputError("PE32 source, object, binary, and map must share a build directory")
+        raise ToolkitInputError("PE32 source, object, binary, and map must share a build directory")
     binary.parent.mkdir(parents=True, exist_ok=True)
     object_path = binary.with_suffix(".obj")
     kernel32_path = Path(
         _tool_output([mingw_executable, "-print-file-name=libkernel32.a"])
     )
     if not kernel32_path.is_file():
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"MinGW kernel32 import library is unavailable: {kernel32_path}"
         )
     compile_command = [
@@ -376,13 +376,13 @@ def build_llvm_msvc_pe32(
             check=False,
         )
         if process.returncode != 0:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"PE32 LLVM/MSVC-compatible {phase} failed:\n"
                 + process.stdout[-2000:]
                 + process.stderr[-8000:]
             )
     if not object_path.is_file() or not binary.is_file() or not linker_map.is_file():
-        raise StageAInputError(
+        raise ToolkitInputError(
             "PE32 LLVM/MSVC-compatible toolchain omitted the object, binary, or linker map"
         )
     return LinkedPE32(
@@ -498,7 +498,7 @@ def _ordered_blocks(
     expected = {block.id for block in program.blocks}
     supplied = tuple(variant.block_order)
     if len(supplied) != len(set(supplied)) or set(supplied) != expected:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "lowering variant block_order must be a permutation of all blocks"
         )
     by_id = {block.id: block for block in program.blocks}
@@ -522,6 +522,6 @@ def _tool_output(command: list[str], *, first_line: bool = False) -> str:
         check=False,
     )
     if process.returncode != 0 or not process.stdout.strip():
-        raise StageAInputError(f"cannot identify PE32 toolchain: {' '.join(command)}")
+        raise ToolkitInputError(f"cannot identify PE32 toolchain: {' '.join(command)}")
     output = process.stdout.strip()
     return output.splitlines()[0] if first_line else output

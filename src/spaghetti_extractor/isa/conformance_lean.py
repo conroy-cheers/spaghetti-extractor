@@ -1,7 +1,7 @@
 """Concrete evaluator for the authoritative Lean IA-32 semantics.
 
 This module generates Lean source and executes the same decoder and machine
-semantics used by Stage A. Its reports qualify the ISA model but do not by
+semantics used by static analysis. Its reports qualify the ISA model but do not by
 themselves qualify a reconstructed candidate.
 """
 
@@ -44,7 +44,7 @@ from ..build_support.lean_runner import run_lean_module_graph
 from .semantic_forms import lean_semantic_form_classifier_sha256
 
 
-LEAN_ISA_BACKEND_ID = "stage-a-lean-machine-semantics"
+LEAN_ISA_BACKEND_ID = "spaghetti-extractor-lean-machine-semantics"
 LEAN_ISA_BACKEND_VERSION = "formal-default-v3-x87-definedness-v1"
 LEAN_KERNEL_CACHE_ENV = "SPAGHETTI_LEAN_KERNEL_CACHE"
 _LEAN_KERNEL_MODULES = (
@@ -277,9 +277,9 @@ def _generated_module(
     cases: list[Any], *, executable_case_ids: set[str]
 ) -> str:
     definitions: list[str] = [
-        "import StageA.ISAConformanceRunner",
+        "import SpaghettiExtractor.ISA.ISAConformanceRunner",
         "",
-        "open StageA.Formal",
+        "open SpaghettiExtractor.ISA.Formal",
         "open Lean",
         "",
         "set_option maxRecDepth 1000000",
@@ -332,23 +332,23 @@ def _copy_lean_sources(
     destination: Path, *, kernel_cache: Path | None = None
 ) -> None:
     source = (
-        Path(kernel_cache) / "StageA"
+        Path(kernel_cache) / "SpaghettiExtractor/ISA"
         if kernel_cache is not None
-        else Path(__file__).parent.parent / "lean" / "StageA"
+        else Path(__file__).parent.parent / "lean" / "SpaghettiExtractor/ISA"
     )
-    stage_a = destination / "StageA"
-    stage_a.mkdir(parents=True)
+    isa_modules = destination / "SpaghettiExtractor/ISA"
+    isa_modules.mkdir(parents=True)
     for module in _LEAN_KERNEL_MODULES:
-        shutil.copyfile(source / f"{module}.lean", stage_a / f"{module}.lean")
+        shutil.copyfile(source / f"{module}.lean", isa_modules / f"{module}.lean")
         if kernel_cache is not None:
             for suffix in ("olean", "c", "o"):
-                cached = Path(kernel_cache) / "StageA" / f"{module}.{suffix}"
+                cached = Path(kernel_cache) / "SpaghettiExtractor/ISA" / f"{module}.{suffix}"
                 if not cached.is_file():
                     raise ISAConformanceError(
-                        f"Lean kernel cache omits StageA.{module}.{suffix}"
+                        f"Lean kernel cache omits SpaghettiExtractor.ISA.{module}.{suffix}"
                     )
                 if suffix != "o":
-                    shutil.copyfile(cached, stage_a / f"{module}.{suffix}")
+                    shutil.copyfile(cached, isa_modules / f"{module}.{suffix}")
 
 
 def _required_kernel_cache(kernel_cache: Path | None) -> Path:
@@ -366,10 +366,10 @@ def _required_kernel_cache(kernel_cache: Path | None) -> Path:
         )
     configured = Path(configured)
     missing = [
-        f"StageA/{module}.{suffix}"
+        f"SpaghettiExtractor/ISA/{module}.{suffix}"
         for module in _LEAN_KERNEL_MODULES
         for suffix in ("olean", "c", "o")
-        if not (configured / "StageA" / f"{module}.{suffix}").is_file()
+        if not (configured / "SpaghettiExtractor/ISA" / f"{module}.{suffix}").is_file()
     ]
     if missing:
         raise ISAConformanceError(
@@ -575,7 +575,7 @@ def _run_lean_isa_conformance(
             with tempfile.TemporaryDirectory(prefix="isa-conformance-lean-") as temporary:
                 lean_dir = Path(temporary)
                 _copy_lean_sources(lean_dir, kernel_cache=kernel_cache)
-                generated = lean_dir / "StageA" / "GeneratedISAConformance.lean"
+                generated = lean_dir / "SpaghettiExtractor/ISA" / "GeneratedISAConformance.lean"
                 generated.write_text(
                     _generated_module(
                         list(corpus.cases),
@@ -606,9 +606,9 @@ def _run_lean_isa_conformance(
                         raise ISAConformanceError("Lean native compiler is unavailable")
                     runner = lean_dir / "isa-conformance-runner"
                     native_inputs = [
-                        str(Path(kernel_cache) / "StageA" / f"{module}.o")
+                        str(Path(kernel_cache) / "SpaghettiExtractor/ISA" / f"{module}.o")
                         for module in _LEAN_KERNEL_MODULES
-                    ] + ["StageA/GeneratedISAConformance.c"]
+                    ] + ["SpaghettiExtractor/ISA/GeneratedISAConformance.c"]
                     linked = subprocess.run(
                         [leanc, "-O2", "-o", str(runner), *native_inputs],
                         cwd=lean_dir,

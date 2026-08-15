@@ -13,7 +13,7 @@ from typing import Any, Mapping, Sequence
 
 import capstone
 
-from .stage_binary import StageABinary
+from .model import ParsedPEImage
 
 
 TARGET_CUTPOINT_PLAN_V2_FORMAT = (
@@ -50,7 +50,7 @@ _TERMINAL_MNEMONICS = frozenset(
 
 def plan_recovered_target_cutpoints_v2(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[Mapping[str, Any]],
     recoveries: Sequence[Mapping[str, Any]],
     required_targets: Mapping[int, Sequence[str]] | None = None,
@@ -153,7 +153,7 @@ def plan_recovered_target_cutpoints_v2(
 
 def _plan_target(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     units: Sequence[Mapping[str, Any]],
     starts: Mapping[int, Mapping[str, Any]],
     data_ranges: Sequence[tuple[int, int]],

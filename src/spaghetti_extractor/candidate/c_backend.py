@@ -18,7 +18,7 @@ from .c_domains import (
 from ..util import sha256_bytes, sha256_file, write_json
 
 
-STAGE_B_C_BACKEND_FORMAT = "stage-b-semantic-c-backend-v1"
+SPX_C_BACKEND_FORMAT = "spaghetti-extractor-semantic-c-backend-v1"
 
 _LEAF_OPS = {
     "const",
@@ -117,14 +117,14 @@ _SUPPORTED_EVENT_KINDS = _CALL_EVENT_KINDS | {
 }
 
 
-def write_stage_b_semantic_c_backend(
+def write_spx_semantic_c_backend(
     out_dir: Path,
     rows: Iterable[dict[str, Any]],
     *,
     state_machine_binding: dict[str, str] | None = None,
     machine_call_catalog: MachineCallCatalog | None = None,
 ) -> dict[str, Any]:
-    """Emit conservative C transition functions directly from Stage A transfer IR."""
+    """Emit conservative C transition functions directly from static analysis transfer IR."""
 
     out_dir.mkdir(parents=True, exist_ok=True)
     header = out_dir / "state-machine-runtime.h"
@@ -155,9 +155,9 @@ def write_stage_b_semantic_c_backend(
     write_json(
         runtime_obligations_path,
         {
-            "format": "stage-b-runtime-call-obligations-v1",
+            "format": "spaghetti-extractor-runtime-call-obligations-v1",
             "status": "complete" if inventory_complete else "incomplete",
-            "authority": "stage-a-semantic-transfer-contracts",
+            "authority": "spaghetti-extractor-semantic-transfer-contracts",
             "state_machine": state_machine_binding,
             "machine_call_catalog": machine_call_catalog.binding if machine_call_catalog is not None else None,
             "counts": {
@@ -178,9 +178,9 @@ def write_stage_b_semantic_c_backend(
     write_json(
         api_adapters_report_path,
         {
-            "format": "stage-b-generated-api-adapters-v1",
+            "format": "spaghetti-extractor-generated-api-adapters-v1",
             "status": "complete" if not api_adapter_plan["unmatched"] else "incomplete",
-            "authority": "machine-call catalog plus Stage A semantic call boundaries",
+            "authority": "machine-call catalog plus static analysis semantic call boundaries",
             "catalog": machine_call_catalog.binding if machine_call_catalog is not None else None,
             "counts": {
                 "external_calls": api_adapter_plan["external_call_count"],
@@ -277,8 +277,8 @@ def write_stage_b_semantic_c_backend(
     write_json(
         implementation_manifest_path,
         {
-            "format": "stage-b-semantic-c-implementation-v1",
-            "authority": "stage-a-semantic-transfer-contracts",
+            "format": "spaghetti-extractor-semantic-c-implementation-v1",
+            "authority": "spaghetti-extractor-semantic-transfer-contracts",
             "status": (
                 "complete"
                 if inventory_complete and not unsupported and not duplicate_rvas and not runtime_obligations
@@ -306,10 +306,10 @@ def write_stage_b_semantic_c_backend(
         },
     )
     report = {
-        "format": STAGE_B_C_BACKEND_FORMAT,
+        "format": SPX_C_BACKEND_FORMAT,
         "status": "complete" if inventory_complete and not unsupported and not runtime_obligations else "incomplete",
         "source_generation_status": "complete" if inventory_complete and not unsupported else "incomplete",
-        "authority": "stage-a-semantic-transfer-contracts",
+        "authority": "spaghetti-extractor-semantic-transfer-contracts",
         "state_machine": state_machine_binding,
         "machine_call_catalog": machine_call_catalog.binding if machine_call_catalog is not None else None,
         "role": "compiler-consumable repair substrate; candidate assurance remains separate",
@@ -374,7 +374,7 @@ def write_stage_b_semantic_c_backend(
         "constraints": {
             "original_instruction_bytes_embedded": False,
             "original_runtime_execution_required": False,
-            "generation_authority": "stage-a-semantic-transfer-contracts",
+            "generation_authority": "spaghetti-extractor-semantic-transfer-contracts",
             "manual_repairs_must_preserve_transfer_bindings": True,
             "external_events_supported": "through_explicit_runtime_protocol_contract",
             "x87_supported": False,
@@ -385,7 +385,7 @@ def write_stage_b_semantic_c_backend(
                 "full_machine_state_including_x87_physical_state; handler output "
                 "becomes the post-call state"
             ),
-            "terminal_control_api": "stage_b_run_function_result",
+            "terminal_control_api": "spx_run_function_result",
             "mixed_memory_read_write_supported": "requires_complete_ordered_events",
         },
     }
@@ -641,7 +641,7 @@ def _api_adapter_blockers(
 
 def _api_adapter_next_action(reasons: list[str]) -> str:
     if "missing_machine_call_catalog" in reasons:
-        return "provide the checked Stage A relation contract or a reviewed machine-call catalog"
+        return "provide the checked static analysis relation contract or a reviewed machine-call catalog"
     if "missing_machine_call_signature" in reasons:
         return "add a reviewed machine-level signature for this exact DLL and symbol or ordinal"
     if "ambiguous_calling_convention" in reasons:
@@ -746,7 +746,7 @@ def _strict_candidate_blockers(
 def _unique_transfer_symbol(row: dict[str, Any], used: set[str]) -> str:
     identity = str(row.get("id") or row.get("block_id") or "transfer")
     stem = re.sub(r"[^A-Za-z0-9_]", "_", identity).strip("_") or "transfer"
-    stem = f"stage_b_transfer_{stem}"
+    stem = f"spx_transfer_{stem}"
     symbol = stem
     suffix = 2
     while symbol in used:
@@ -757,23 +757,23 @@ def _unique_transfer_symbol(row: dict[str, Any], used: set[str]) -> str:
 
 
 def _runtime_header() -> str:
-    return """#ifndef STAGE_B_STATE_MACHINE_RUNTIME_H
-#define STAGE_B_STATE_MACHINE_RUNTIME_H
+    return """#ifndef SPX_STATE_MACHINE_RUNTIME_H
+#define SPX_STATE_MACHINE_RUNTIME_H
 
-#define STAGE_B_MACHINE_STATE_HAS_EFLAGS 1
+#define SPX_MACHINE_STATE_HAS_EFLAGS 1
 
 #include <stdint.h>
 
-typedef struct stage_b_x87_value {
+typedef struct spx_x87_value {
   uint8_t value_bytes[10];
   uint32_t empty;
   uint8_t tag;
-} stage_b_x87_value;
+} spx_x87_value;
 
-typedef struct stage_b_machine_state {
+typedef struct spx_machine_state {
   uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp;
   uint32_t cf, zf, sf, of, pf, df;
-  stage_b_x87_value x87_stack[8];
+  spx_x87_value x87_stack[8];
   uint16_t x87_control;
   uint16_t x87_status;
   uint8_t x87_pending_exception;
@@ -785,29 +785,29 @@ typedef struct stage_b_machine_state {
   uint32_t eflags;
   uint32_t fs_base;
   uint32_t original_rva;
-} stage_b_machine_state;
+} spx_machine_state;
 
-_Static_assert(sizeof(((stage_b_x87_value *)0)->value_bytes) == 10U,
+_Static_assert(sizeof(((spx_x87_value *)0)->value_bytes) == 10U,
     "x87 payload must be exactly 80 bits");
-_Static_assert(sizeof(((stage_b_x87_value *)0)->empty) == 4U,
+_Static_assert(sizeof(((spx_x87_value *)0)->empty) == 4U,
     "x87 occupancy must match EngineField.x87Empty");
-_Static_assert(sizeof(((stage_b_x87_value *)0)->tag) == 1U,
+_Static_assert(sizeof(((spx_x87_value *)0)->tag) == 1U,
     "x87 tag must match EngineField.x87Tag");
 
-typedef struct stage_b_stack_input {
+typedef struct spx_stack_input {
   uint32_t offset;
   uint32_t width;
   uint32_t value;
-} stage_b_stack_input;
+} spx_stack_input;
 
-typedef enum stage_b_call_event_kind {
-  STAGE_B_CALL_EXTERNAL_IMPORT = 0,
-  STAGE_B_CALL_INTERNAL_DIRECT = 1,
-  STAGE_B_CALL_INDIRECT = 2
-} stage_b_call_event_kind;
+typedef enum spx_call_event_kind {
+  SPX_CALL_EXTERNAL_IMPORT = 0,
+  SPX_CALL_INTERNAL_DIRECT = 1,
+  SPX_CALL_INDIRECT = 2
+} spx_call_event_kind;
 
-typedef struct stage_b_call_event {
-  stage_b_call_event_kind kind;
+typedef struct spx_call_event {
+  spx_call_event_kind kind;
   uint32_t instruction_rva;
   uint32_t call_index;
   uint32_t target_rva;
@@ -818,36 +818,36 @@ typedef struct stage_b_call_event {
   uint32_t has_ordinal;
   const uint32_t *arguments;
   uint32_t argument_count;
-  const stage_b_stack_input *stack_inputs;
+  const spx_stack_input *stack_inputs;
   uint32_t stack_input_count;
-} stage_b_call_event;
+} spx_call_event;
 
-#define STAGE_B_MAX_EXTERNAL_ARGUMENTS 256U
-typedef struct stage_b_external_call_snapshot {
+#define SPX_MAX_EXTERNAL_ARGUMENTS 256U
+typedef struct spx_external_call_snapshot {
   uint32_t instruction_rva;
   uint32_t target_iat_rva;
   uint32_t argument_base_offset;
   uint32_t argument_count;
-  uint32_t arguments[STAGE_B_MAX_EXTERNAL_ARGUMENTS];
-} stage_b_external_call_snapshot;
+  uint32_t arguments[SPX_MAX_EXTERNAL_ARGUMENTS];
+} spx_external_call_snapshot;
 
-typedef struct stage_b_runtime stage_b_runtime;
+typedef struct spx_runtime spx_runtime;
 
-typedef enum stage_b_call_status {
-  STAGE_B_CALL_OK = 0,
-  STAGE_B_CALL_UNIMPLEMENTED = 1,
-  STAGE_B_CALL_DIVIDE_ERROR = 2,
-  STAGE_B_CALL_MEMORY_FAULT = 3,
-  STAGE_B_CALL_EXTERNAL_FAULT = 4
-} stage_b_call_status;
+typedef enum spx_call_status {
+  SPX_CALL_OK = 0,
+  SPX_CALL_UNIMPLEMENTED = 1,
+  SPX_CALL_DIVIDE_ERROR = 2,
+  SPX_CALL_MEMORY_FAULT = 3,
+  SPX_CALL_EXTERNAL_FAULT = 4
+} spx_call_status;
 
-typedef stage_b_call_status (*stage_b_external_call_handler)(
-    stage_b_runtime *runtime,
-    const stage_b_call_event *event,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output);
+typedef spx_call_status (*spx_external_call_handler)(
+    spx_runtime *runtime,
+    const spx_call_event *event,
+    const spx_machine_state *input,
+    spx_machine_state *output);
 
-typedef void (*stage_b_atomic_compare_exchange_handler)(
+typedef void (*spx_atomic_compare_exchange_handler)(
     void *context,
     uint32_t address,
     uint32_t width,
@@ -857,7 +857,7 @@ typedef void (*stage_b_atomic_compare_exchange_handler)(
     uint32_t *exchanged,
     uint32_t *fault);
 
-typedef void (*stage_b_atomic_exchange_handler)(
+typedef void (*spx_atomic_exchange_handler)(
     void *context,
     uint32_t address,
     uint32_t width,
@@ -865,40 +865,34 @@ typedef void (*stage_b_atomic_exchange_handler)(
     uint32_t *observed,
     uint32_t *fault);
 
-typedef uint32_t (*stage_b_code_target_resolver)(
-    stage_b_runtime *runtime,
+typedef uint32_t (*spx_code_target_resolver)(
+    spx_runtime *runtime,
     uint32_t target_word,
     uint32_t *target_rva);
 
-typedef stage_b_call_status (*stage_b_callable_external_jump_handler)(
-    stage_b_runtime *runtime,
+typedef spx_call_status (*spx_callable_external_jump_handler)(
+    spx_runtime *runtime,
     uint32_t source_rva,
     uint32_t target_word,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output);
+    const spx_machine_state *input,
+    spx_machine_state *output);
 
-typedef void (*stage_b_transfer_trace_handler)(
-    void *context,
-    uint32_t rva,
-    const stage_b_machine_state *state);
-
-struct stage_b_runtime {
+struct spx_runtime {
   void *context;
   uint32_t (*read)(void *context, uint32_t address, uint32_t width, uint32_t *fault);
   void (*write)(void *context, uint32_t address, uint32_t width, uint32_t value, uint32_t *fault);
-  stage_b_atomic_compare_exchange_handler atomic_compare_exchange;
-  stage_b_atomic_exchange_handler atomic_exchange;
+  spx_atomic_compare_exchange_handler atomic_compare_exchange;
+  spx_atomic_exchange_handler atomic_exchange;
   uint32_t (*undefined_value)(
-      void *context, uint32_t slot, const stage_b_machine_state *input,
+      void *context, uint32_t slot, const spx_machine_state *input,
       uint32_t defined_value);
-  stage_b_external_call_handler external_call_fallback;
-  stage_b_transfer_trace_handler trace_transfer;
-  stage_b_code_target_resolver resolve_code_target;
-  stage_b_callable_external_jump_handler invoke_callable_external_jump;
+  spx_external_call_handler external_call_fallback;
+  spx_code_target_resolver resolve_code_target;
+  spx_callable_external_jump_handler invoke_callable_external_jump;
 };
 
-void stage_b_runtime_atomic_compare_exchange(
-    stage_b_runtime *runtime,
+void spx_runtime_atomic_compare_exchange(
+    spx_runtime *runtime,
     uint32_t address,
     uint32_t width,
     uint32_t expected,
@@ -907,44 +901,44 @@ void stage_b_runtime_atomic_compare_exchange(
     uint32_t *exchanged,
     uint32_t *fault);
 
-void stage_b_runtime_atomic_exchange(
-    stage_b_runtime *runtime,
+void spx_runtime_atomic_exchange(
+    spx_runtime *runtime,
     uint32_t address,
     uint32_t width,
     uint32_t desired,
     uint32_t *observed,
     uint32_t *fault);
 
-stage_b_call_status stage_b_invoke_call(
-    stage_b_runtime *runtime,
-    const stage_b_call_event *event,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output);
+spx_call_status spx_invoke_call(
+    spx_runtime *runtime,
+    const spx_call_event *event,
+    const spx_machine_state *input,
+    spx_machine_state *output);
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime,
-    const stage_b_call_event *event,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output);
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime,
+    const spx_call_event *event,
+    const spx_machine_state *input,
+    spx_machine_state *output);
 
-typedef enum stage_b_control_kind {
-  STAGE_B_FALLTHROUGH = 0,
-  STAGE_B_JUMP = 1,
-  STAGE_B_BRANCH = 2,
-  STAGE_B_RETURN = 3,
-  STAGE_B_INDIRECT_JUMP = 4,
-  STAGE_B_DIVIDE_ERROR = 5,
-  STAGE_B_MEMORY_FAULT = 6,
-  STAGE_B_UNIMPLEMENTED = 7,
-  STAGE_B_EXTERNAL_FAULT = 8,
-  STAGE_B_EXTERNAL_JUMP = 9
-} stage_b_control_kind;
+typedef enum spx_control_kind {
+  SPX_FALLTHROUGH = 0,
+  SPX_JUMP = 1,
+  SPX_BRANCH = 2,
+  SPX_RETURN = 3,
+  SPX_INDIRECT_JUMP = 4,
+  SPX_DIVIDE_ERROR = 5,
+  SPX_MEMORY_FAULT = 6,
+  SPX_UNIMPLEMENTED = 7,
+  SPX_EXTERNAL_FAULT = 8,
+  SPX_EXTERNAL_JUMP = 9
+} spx_control_kind;
 
-typedef struct stage_b_step_result {
-  stage_b_control_kind kind;
+typedef struct spx_step_result {
+  spx_control_kind kind;
   uint32_t target_rva;
   uint32_t value;
-} stage_b_step_result;
+} spx_step_result;
 
 #endif
 """
@@ -952,12 +946,12 @@ typedef struct stage_b_step_result {
 
 def _transfers_header(rows: list[tuple[dict[str, Any], str, bool, list[str]]]) -> str:
     declarations = [
-        f"stage_b_step_result {symbol}(stage_b_runtime *rt, stage_b_machine_state *state);"
+        f"spx_step_result {symbol}(spx_runtime *rt, spx_machine_state *state);"
         for _row, symbol, _generated, _reasons in rows
     ]
     return "\n".join([
-        "#ifndef STAGE_B_STATE_MACHINE_TRANSFERS_H",
-        "#define STAGE_B_STATE_MACHINE_TRANSFERS_H",
+        "#ifndef SPX_STATE_MACHINE_TRANSFERS_H",
+        "#define SPX_STATE_MACHINE_TRANSFERS_H",
         "",
         '#include "state-machine-runtime.h"',
         "",
@@ -999,11 +993,11 @@ def _render_repairs_source(
         reason_text = _c_comment(", ".join(reasons))
         lines.extend(
             [
-                f"/* Stage B repair required: {identity}; blockers: {reason_text}. */",
-                f"stage_b_step_result {symbol}(stage_b_runtime *rt, stage_b_machine_state *state) {{",
+                f"/* candidate reconstruction repair required: {identity}; blockers: {reason_text}. */",
+                f"spx_step_result {symbol}(spx_runtime *rt, spx_machine_state *state) {{",
                 "  (void)rt;",
                 "  (void)state;",
-                "  return (stage_b_step_result){ STAGE_B_UNIMPLEMENTED, 0U, 0U };",
+                "  return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };",
                 "}",
             ]
         )
@@ -1012,29 +1006,29 @@ def _render_repairs_source(
 
 
 def _dispatch_header() -> str:
-    return """#ifndef STAGE_B_STATE_MACHINE_DISPATCH_H
-#define STAGE_B_STATE_MACHINE_DISPATCH_H
+    return """#ifndef SPX_STATE_MACHINE_DISPATCH_H
+#define SPX_STATE_MACHINE_DISPATCH_H
 
 #include <stdint.h>
 #include "state-machine-transfers.h"
 
-typedef stage_b_step_result (*stage_b_transfer_function)(stage_b_runtime *, stage_b_machine_state *);
+typedef spx_step_result (*spx_transfer_function)(spx_runtime *, spx_machine_state *);
 
-typedef struct stage_b_transfer_descriptor {
+typedef struct spx_transfer_descriptor {
   uint32_t source_rva;
   const char *contract_id;
   const char *contract_sha256;
-  stage_b_transfer_function step;
+  spx_transfer_function step;
   uint32_t generated_from_semantics;
-} stage_b_transfer_descriptor;
+} spx_transfer_descriptor;
 
-extern const stage_b_transfer_descriptor stage_b_transfer_table[];
-extern const uint32_t stage_b_transfer_count;
+extern const spx_transfer_descriptor spx_transfer_table[];
+extern const uint32_t spx_transfer_count;
 
-const stage_b_transfer_descriptor *stage_b_lookup_transfer(uint32_t source_rva);
-stage_b_step_result stage_b_step_by_rva(
-    stage_b_runtime *rt,
-    stage_b_machine_state *state,
+const spx_transfer_descriptor *spx_lookup_transfer(uint32_t source_rva);
+spx_step_result spx_step_by_rva(
+    spx_runtime *rt,
+    spx_machine_state *state,
     uint32_t source_rva);
 
 #endif
@@ -1055,29 +1049,29 @@ def _dispatch_source(rows: list[tuple[dict[str, Any], str, bool, list[str]]]) ->
         [
             '#include "state-machine-dispatch.h"',
             "",
-            "const stage_b_transfer_descriptor stage_b_transfer_table[] = {",
+            "const spx_transfer_descriptor spx_transfer_table[] = {",
             *entries,
             "};",
-            f"const uint32_t stage_b_transfer_count = {len(rows)}U;",
+            f"const uint32_t spx_transfer_count = {len(rows)}U;",
             "",
-            "const stage_b_transfer_descriptor *stage_b_lookup_transfer(uint32_t source_rva) {",
-            "  const stage_b_transfer_descriptor *match = 0;",
+            "const spx_transfer_descriptor *spx_lookup_transfer(uint32_t source_rva) {",
+            "  const spx_transfer_descriptor *match = 0;",
             "  uint32_t index;",
-            "  for (index = 0U; index < stage_b_transfer_count; ++index) {",
-            "    if (stage_b_transfer_table[index].source_rva != source_rva) continue;",
+            "  for (index = 0U; index < spx_transfer_count; ++index) {",
+            "    if (spx_transfer_table[index].source_rva != source_rva) continue;",
             "    if (match != 0) return 0;",
-            "    match = &stage_b_transfer_table[index];",
+            "    match = &spx_transfer_table[index];",
             "  }",
             "  return match;",
             "}",
             "",
-            "stage_b_step_result stage_b_step_by_rva(",
-            "    stage_b_runtime *rt,",
-            "    stage_b_machine_state *state,",
+            "spx_step_result spx_step_by_rva(",
+            "    spx_runtime *rt,",
+            "    spx_machine_state *state,",
             "    uint32_t source_rva) {",
-            "  const stage_b_transfer_descriptor *entry = stage_b_lookup_transfer(source_rva);",
+            "  const spx_transfer_descriptor *entry = spx_lookup_transfer(source_rva);",
             "  if (entry == 0 || entry->step == 0)",
-            "    return (stage_b_step_result){ STAGE_B_UNIMPLEMENTED, source_rva, 0U };",
+            "    return (spx_step_result){ SPX_UNIMPLEMENTED, source_rva, 0U };",
             "  state->original_rva = source_rva;",
             "  return entry->step(rt, state);",
             "}",
@@ -1087,27 +1081,27 @@ def _dispatch_source(rows: list[tuple[dict[str, Any], str, bool, list[str]]]) ->
 
 
 def _engine_header() -> str:
-    return """#ifndef STAGE_B_STATE_MACHINE_ENGINE_H
-#define STAGE_B_STATE_MACHINE_ENGINE_H
+    return """#ifndef SPX_STATE_MACHINE_ENGINE_H
+#define SPX_STATE_MACHINE_ENGINE_H
 
 #include "state-machine-dispatch.h"
 
-typedef struct stage_b_engine_result {
-  stage_b_call_status status;
-  stage_b_step_result control;
-} stage_b_engine_result;
+typedef struct spx_engine_result {
+  spx_call_status status;
+  spx_step_result control;
+} spx_engine_result;
 
-stage_b_engine_result stage_b_run_function_result(
-    stage_b_runtime *runtime,
+spx_engine_result spx_run_function_result(
+    spx_runtime *runtime,
     uint32_t entry_rva,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output);
+    const spx_machine_state *input,
+    spx_machine_state *output);
 
-stage_b_call_status stage_b_run_function(
-    stage_b_runtime *runtime,
+spx_call_status spx_run_function(
+    spx_runtime *runtime,
     uint32_t entry_rva,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output);
+    const spx_machine_state *input,
+    spx_machine_state *output);
 
 #endif
 """
@@ -1116,131 +1110,129 @@ stage_b_call_status stage_b_run_function(
 def _engine_source() -> str:
     return """#include "state-machine-engine.h"
 
-static stage_b_call_status stage_b_resolve_code_target(
-    stage_b_runtime *runtime,
+static spx_call_status spx_resolve_code_target(
+    spx_runtime *runtime,
     uint32_t target_word,
     uint32_t *target_rva) {
   if (runtime == 0 || runtime->resolve_code_target == 0)
-    return STAGE_B_CALL_UNIMPLEMENTED;
+    return SPX_CALL_UNIMPLEMENTED;
   if (runtime->resolve_code_target(runtime, target_word, target_rva) != 0U)
-    return STAGE_B_CALL_UNIMPLEMENTED;
-  return STAGE_B_CALL_OK;
+    return SPX_CALL_UNIMPLEMENTED;
+  return SPX_CALL_OK;
 }
 
-static stage_b_engine_result stage_b_engine_result_make(
-    stage_b_call_status status,
-    stage_b_step_result control) {
-  stage_b_engine_result result;
+static spx_engine_result spx_engine_result_make(
+    spx_call_status status,
+    spx_step_result control) {
+  spx_engine_result result;
   result.status = status;
   result.control = control;
   return result;
 }
 
-stage_b_engine_result stage_b_run_function_result(
-    stage_b_runtime *runtime,
+spx_engine_result spx_run_function_result(
+    spx_runtime *runtime,
     uint32_t entry_rva,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output) {
-  stage_b_machine_state state;
+    const spx_machine_state *input,
+    spx_machine_state *output) {
+  spx_machine_state state;
   uint32_t current_rva;
   if (input == 0 || output == 0)
-    return stage_b_engine_result_make(
-        STAGE_B_CALL_UNIMPLEMENTED,
-        (stage_b_step_result){ STAGE_B_UNIMPLEMENTED, entry_rva, 0U });
+    return spx_engine_result_make(
+        SPX_CALL_UNIMPLEMENTED,
+        (spx_step_result){ SPX_UNIMPLEMENTED, entry_rva, 0U });
   state = *input;
   current_rva = entry_rva;
   for (;;) {
-    if (runtime != 0 && runtime->trace_transfer != 0)
-      runtime->trace_transfer(runtime->context, current_rva, &state);
-    stage_b_step_result result = stage_b_step_by_rva(runtime, &state, current_rva);
+    spx_step_result result = spx_step_by_rva(runtime, &state, current_rva);
     switch (result.kind) {
-      case STAGE_B_FALLTHROUGH:
-      case STAGE_B_JUMP:
-      case STAGE_B_BRANCH:
+      case SPX_FALLTHROUGH:
+      case SPX_JUMP:
+      case SPX_BRANCH:
         current_rva = result.target_rva;
         break;
-      case STAGE_B_INDIRECT_JUMP: {
-        stage_b_call_status status = stage_b_resolve_code_target(runtime, result.value, &current_rva);
-        if (status != STAGE_B_CALL_OK && runtime != 0 &&
+      case SPX_INDIRECT_JUMP: {
+        spx_call_status status = spx_resolve_code_target(runtime, result.value, &current_rva);
+        if (status != SPX_CALL_OK && runtime != 0 &&
             runtime->invoke_callable_external_jump != 0) {
-          stage_b_machine_state external_output = state;
+          spx_machine_state external_output = state;
           status = runtime->invoke_callable_external_jump(
               runtime, current_rva, result.value, &state, &external_output);
-          if (status == STAGE_B_CALL_OK) {
+          if (status == SPX_CALL_OK) {
             *output = external_output;
-            return stage_b_engine_result_make(
-                STAGE_B_CALL_OK,
-                (stage_b_step_result){ STAGE_B_EXTERNAL_JUMP, current_rva,
+            return spx_engine_result_make(
+                SPX_CALL_OK,
+                (spx_step_result){ SPX_EXTERNAL_JUMP, current_rva,
                                        result.value });
           }
         }
-        if (status != STAGE_B_CALL_OK)
-          return stage_b_engine_result_make(status, result);
+        if (status != SPX_CALL_OK)
+          return spx_engine_result_make(status, result);
         break;
       }
-      case STAGE_B_RETURN:
-      case STAGE_B_EXTERNAL_JUMP:
+      case SPX_RETURN:
+      case SPX_EXTERNAL_JUMP:
         *output = state;
-        return stage_b_engine_result_make(STAGE_B_CALL_OK, result);
-      case STAGE_B_DIVIDE_ERROR:
-        return stage_b_engine_result_make(STAGE_B_CALL_DIVIDE_ERROR, result);
-      case STAGE_B_MEMORY_FAULT:
-        return stage_b_engine_result_make(STAGE_B_CALL_MEMORY_FAULT, result);
-      case STAGE_B_EXTERNAL_FAULT:
-        return stage_b_engine_result_make(STAGE_B_CALL_EXTERNAL_FAULT, result);
-      case STAGE_B_UNIMPLEMENTED:
+        return spx_engine_result_make(SPX_CALL_OK, result);
+      case SPX_DIVIDE_ERROR:
+        return spx_engine_result_make(SPX_CALL_DIVIDE_ERROR, result);
+      case SPX_MEMORY_FAULT:
+        return spx_engine_result_make(SPX_CALL_MEMORY_FAULT, result);
+      case SPX_EXTERNAL_FAULT:
+        return spx_engine_result_make(SPX_CALL_EXTERNAL_FAULT, result);
+      case SPX_UNIMPLEMENTED:
       default:
-        return stage_b_engine_result_make(STAGE_B_CALL_UNIMPLEMENTED, result);
+        return spx_engine_result_make(SPX_CALL_UNIMPLEMENTED, result);
     }
   }
 }
 
-stage_b_call_status stage_b_run_function(
-    stage_b_runtime *runtime,
+spx_call_status spx_run_function(
+    spx_runtime *runtime,
     uint32_t entry_rva,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output) {
-  return stage_b_run_function_result(
+    const spx_machine_state *input,
+    spx_machine_state *output) {
+  return spx_run_function_result(
       runtime, entry_rva, input, output).status;
 }
 
-stage_b_call_status stage_b_invoke_call(
-    stage_b_runtime *runtime,
-    const stage_b_call_event *event,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output) {
+spx_call_status spx_invoke_call(
+    spx_runtime *runtime,
+    const spx_call_event *event,
+    const spx_machine_state *input,
+    spx_machine_state *output) {
   uint32_t target_rva;
-  if (event == 0) return STAGE_B_CALL_UNIMPLEMENTED;
+  if (event == 0) return SPX_CALL_UNIMPLEMENTED;
   switch (event->kind) {
-    case STAGE_B_CALL_INTERNAL_DIRECT:
-      return stage_b_run_function(runtime, event->target_rva, input, output);
-    case STAGE_B_CALL_INDIRECT: {
-      stage_b_call_status status = stage_b_resolve_code_target(
+    case SPX_CALL_INTERNAL_DIRECT:
+      return spx_run_function(runtime, event->target_rva, input, output);
+    case SPX_CALL_INDIRECT: {
+      spx_call_status status = spx_resolve_code_target(
           runtime, event->target_rva, &target_rva);
-      if (status == STAGE_B_CALL_OK)
-        return stage_b_run_function(runtime, target_rva, input, output);
-      return stage_b_dispatch_external_call(runtime, event, input, output);
+      if (status == SPX_CALL_OK)
+        return spx_run_function(runtime, target_rva, input, output);
+      return spx_dispatch_external_call(runtime, event, input, output);
     }
-    case STAGE_B_CALL_EXTERNAL_IMPORT:
-      return stage_b_dispatch_external_call(runtime, event, input, output);
+    case SPX_CALL_EXTERNAL_IMPORT:
+      return spx_dispatch_external_call(runtime, event, input, output);
     default:
-      return STAGE_B_CALL_UNIMPLEMENTED;
+      return SPX_CALL_UNIMPLEMENTED;
   }
 }
 """
 
 
 def _api_adapters_header() -> str:
-    return """#ifndef STAGE_B_STATE_MACHINE_API_ADAPTERS_H
-#define STAGE_B_STATE_MACHINE_API_ADAPTERS_H
+    return """#ifndef SPX_STATE_MACHINE_API_ADAPTERS_H
+#define SPX_STATE_MACHINE_API_ADAPTERS_H
 
 #include "state-machine-runtime.h"
 
-stage_b_call_status stage_b_dispatch_external_call(
-    stage_b_runtime *runtime,
-    const stage_b_call_event *event,
-    const stage_b_machine_state *input,
-    stage_b_machine_state *output);
+spx_call_status spx_dispatch_external_call(
+    spx_runtime *runtime,
+    const spx_call_event *event,
+    const spx_machine_state *input,
+    spx_machine_state *output);
 
 #endif
 """
@@ -1250,29 +1242,29 @@ def _api_adapters_source(signatures: list[MachineCallSignature]) -> str:
     lines = [
         '#include "state-machine-api-adapters.h"',
         "",
-        "static uint32_t stage_b_api_undefined(stage_b_runtime *runtime, uint32_t slot, const stage_b_machine_state *input, uint32_t defined_value) {",
+        "static uint32_t spx_api_undefined(spx_runtime *runtime, uint32_t slot, const spx_machine_state *input, uint32_t defined_value) {",
         "  return runtime != 0 && runtime->undefined_value != 0",
         "      ? runtime->undefined_value(runtime->context, slot, input, defined_value) : slot;",
         "}",
         "",
-        "static uint32_t stage_b_api_read_word(",
-        "    stage_b_runtime *runtime, uint32_t address, uint32_t *value) {",
+        "static uint32_t spx_api_read_word(",
+        "    spx_runtime *runtime, uint32_t address, uint32_t *value) {",
         "  uint32_t fault = 0U;",
         "  if (runtime == 0 || runtime->read == 0 || value == 0) return 1U;",
         "  *value = runtime->read(runtime->context, address, 4U, &fault);",
         "  return fault;",
         "}",
         "",
-        "static uint32_t stage_b_api_ascii_lower(uint32_t value) {",
+        "static uint32_t spx_api_ascii_lower(uint32_t value) {",
         "  return value >= (uint32_t)'A' && value <= (uint32_t)'Z' ? value + 32U : value;",
         "}",
         "",
-        "static uint32_t stage_b_api_string_equal(const char *left, const char *right, uint32_t fold_case) {",
+        "static uint32_t spx_api_string_equal(const char *left, const char *right, uint32_t fold_case) {",
         "  if (left == 0 || right == 0) return left == right;",
         "  while (*left != '\\0' && *right != '\\0') {",
         "    uint32_t l = (uint32_t)(unsigned char)*left++;",
         "    uint32_t r = (uint32_t)(unsigned char)*right++;",
-        "    if (fold_case) { l = stage_b_api_ascii_lower(l); r = stage_b_api_ascii_lower(r); }",
+        "    if (fold_case) { l = spx_api_ascii_lower(l); r = spx_api_ascii_lower(r); }",
         "    if (l != r) return 0U;",
         "  }",
         "  return *left == *right;",
@@ -1285,7 +1277,7 @@ def _api_adapters_source(signatures: list[MachineCallSignature]) -> str:
             [
                 "",
                 f"extern uint32_t __attribute__(({signature.calling_convention}, dllimport))",
-                f"    stage_b_import_{index}({arguments}) __asm__({_c_string(signature.symbol)});",
+                f"    spx_import_{index}({arguments}) __asm__({_c_string(signature.symbol)});",
             ]
         )
     for index, signature in enumerate(signatures):
@@ -1293,30 +1285,30 @@ def _api_adapters_source(signatures: list[MachineCallSignature]) -> str:
     lines.extend(
         [
             "",
-            "stage_b_call_status stage_b_dispatch_external_call(",
-            "    stage_b_runtime *runtime,",
-            "    const stage_b_call_event *event,",
-            "    const stage_b_machine_state *input,",
-            "    stage_b_machine_state *output) {",
-            "  if (event == 0) return STAGE_B_CALL_UNIMPLEMENTED;",
+            "spx_call_status spx_dispatch_external_call(",
+            "    spx_runtime *runtime,",
+            "    const spx_call_event *event,",
+            "    const spx_machine_state *input,",
+            "    spx_machine_state *output) {",
+            "  if (event == 0) return SPX_CALL_UNIMPLEMENTED;",
         ]
     )
     for index, signature in enumerate(signatures):
         assert signature.symbol is not None
         lines.extend(
             [
-                "  if (stage_b_api_string_equal(event->dll, "
+                "  if (spx_api_string_equal(event->dll, "
                 f"{_c_string(signature.dll)}, 1U) &&",
-                "      stage_b_api_string_equal(event->symbol, "
+                "      spx_api_string_equal(event->symbol, "
                 f"{_c_string(signature.symbol)}, 0U) && !event->has_ordinal)",
-                f"    return stage_b_api_adapter_{index}(runtime, input, output);",
+                f"    return spx_api_adapter_{index}(runtime, input, output);",
             ]
         )
     lines.extend(
         [
             "  if (runtime != 0 && runtime->external_call_fallback != 0)",
             "    return runtime->external_call_fallback(runtime, event, input, output);",
-            "  return STAGE_B_CALL_UNIMPLEMENTED;",
+            "  return SPX_CALL_UNIMPLEMENTED;",
             "}",
             "",
         ]
@@ -1326,18 +1318,18 @@ def _api_adapters_source(signatures: list[MachineCallSignature]) -> str:
 
 def _render_api_adapter(index: int, signature: MachineCallSignature) -> list[str]:
     lines = [
-        f"static stage_b_call_status stage_b_api_adapter_{index}(",
-        "    stage_b_runtime *runtime,",
-        "    const stage_b_machine_state *input,",
-        "    stage_b_machine_state *output) {",
-        "  if (input == 0 || output == 0) return STAGE_B_CALL_UNIMPLEMENTED;",
+        f"static spx_call_status spx_api_adapter_{index}(",
+        "    spx_runtime *runtime,",
+        "    const spx_machine_state *input,",
+        "    spx_machine_state *output) {",
+        "  if (input == 0 || output == 0) return SPX_CALL_UNIMPLEMENTED;",
     ]
     for argument_index, offset in enumerate(signature.stack_argument_offsets):
         lines.extend(
             [
                 f"  uint32_t argument_{argument_index};",
-                f"  if (stage_b_api_read_word(runtime, input->esp + {offset}U, &argument_{argument_index}))",
-                "    return STAGE_B_CALL_MEMORY_FAULT;",
+                f"  if (spx_api_read_word(runtime, input->esp + {offset}U, &argument_{argument_index}))",
+                "    return SPX_CALL_MEMORY_FAULT;",
             ]
         )
     call_arguments = ", ".join(
@@ -1346,7 +1338,7 @@ def _render_api_adapter(index: int, signature: MachineCallSignature) -> list[str
     lines.extend(
         [
             "  *output = *input;",
-            f"  output->eax = stage_b_import_{index}({call_arguments});",
+            f"  output->eax = spx_import_{index}({call_arguments});",
         ]
     )
     for register in signature.clobbered_registers:
@@ -1355,17 +1347,17 @@ def _render_api_adapter(index: int, signature: MachineCallSignature) -> list[str
         if register in _REGISTER_NAMES:
             slot = _stable_slot(f"api:{signature.dll}:{signature.symbol}:{register}")
             lines.append(
-                f"  output->{register} = stage_b_api_undefined(runtime, {slot}U, input, 0U);"
+                f"  output->{register} = spx_api_undefined(runtime, {slot}U, input, 0U);"
             )
     for flag in _FLAG_NAMES:
         slot = _stable_slot(f"api:{signature.dll}:{signature.symbol}:{flag}")
         lines.append(
-            f"  output->{flag} = stage_b_api_undefined(runtime, {slot}U, input, 0U) & 1U;"
+            f"  output->{flag} = spx_api_undefined(runtime, {slot}U, input, 0U) & 1U;"
         )
     lines.extend(
         [
             f"  output->esp = input->esp + {signature.stack_result_delta}U;",
-            "  return STAGE_B_CALL_OK;",
+            "  return SPX_CALL_OK;",
             "}",
         ]
     )
@@ -1400,8 +1392,8 @@ def _semantic_c_source_map(
             }
         )
     return {
-        "format": "stage-b-semantic-c-source-map-v1",
-        "authority": "stage-a-semantic-transfer-contracts",
+        "format": "spaghetti-extractor-semantic-c-source-map-v1",
+        "authority": "spaghetti-extractor-semantic-transfer-contracts",
         "transfers": transfers,
     }
 

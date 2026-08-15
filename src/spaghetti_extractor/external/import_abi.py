@@ -16,11 +16,12 @@ from .machine_import_profiles import (
     MachineImportIdentity,
     load_machine_import_profile_set,
 )
-from ..pe32.stage_binary import StageAInputError, _parse_stage_a_pe
+from ..errors import ToolkitInputError
+from ..pe32.image import parse_pe_image
 from ..util import sha256_file, write_json
 
 
-IMPORT_ABI_POLICY_FORMAT = "stage-a-import-abi-policy-v1"
+IMPORT_ABI_POLICY_FORMAT = "spaghetti-extractor-import-abi-policy-v1"
 
 
 @dataclass(frozen=True)
@@ -69,38 +70,38 @@ def expand_import_abi_policy(
     try:
         payload = json.loads(policy_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read import ABI policy: {exc}") from exc
+        raise ToolkitInputError(f"cannot read import ABI policy: {exc}") from exc
     if not isinstance(payload, Mapping) or payload.get("format") != IMPORT_ABI_POLICY_FORMAT:
-        raise StageAInputError("unsupported import ABI policy format")
+        raise ToolkitInputError("unsupported import ABI policy format")
     policy_id = payload.get("id")
     rules = payload.get("rules")
     if not isinstance(policy_id, str) or not policy_id:
-        raise StageAInputError("import ABI policy has no ID")
+        raise ToolkitInputError("import ABI policy has no ID")
     if not isinstance(rules, list):
-        raise StageAInputError("import ABI policy rules must be a list")
+        raise ToolkitInputError("import ABI policy rules must be a list")
 
     by_dll: dict[str, str] = {}
     for index, raw in enumerate(rules):
         if not isinstance(raw, Mapping):
-            raise StageAInputError(f"import ABI policy rule {index} must be an object")
+            raise ToolkitInputError(f"import ABI policy rule {index} must be an object")
         if set(raw) != {"dll", "abi_template"}:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"import ABI policy rule {index} fields do not match"
             )
         dll = raw.get("dll")
         template = raw.get("abi_template")
         if not isinstance(dll, str) or not dll:
-            raise StageAInputError(f"import ABI policy rule {index} has no DLL")
+            raise ToolkitInputError(f"import ABI policy rule {index} has no DLL")
         normalized = dll.lower()
         if normalized in by_dll:
-            raise StageAInputError(f"duplicate import ABI policy DLL {normalized}")
+            raise ToolkitInputError(f"duplicate import ABI policy DLL {normalized}")
         if resolve_machine_call_abi(template) is None:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"import ABI policy rule {index} has an unsupported template"
             )
         by_dll[normalized] = str(template)
 
-    binary = _parse_stage_a_pe(Path(original_pe).resolve())
+    binary = parse_pe_image(Path(original_pe).resolve())
     try:
         rows: dict[tuple[str, str, str | int], dict[str, Any]] = {}
         missing: set[str] = set()
@@ -128,7 +129,7 @@ def expand_import_abi_policy(
                 },
             }
         if missing:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "import ABI policy does not cover DLLs: " + ", ".join(sorted(missing))
             )
         entries = []
@@ -168,7 +169,7 @@ def load_selected_import_abis(
     for selected in profile_set.contracts:
         abi = resolve_machine_call_abi(selected.contract.get("abi_template"))
         if abi is None:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "machine import profile entry has no supported ABI template: "
                 f"{selected.identity.dll}!{selected.identity.value}"
             )

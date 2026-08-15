@@ -12,7 +12,7 @@ from ..util import sha256_file
 from . import native_build
 from .build_model import (
     INTERPRETER_NATIVE_SOURCE_BUNDLE_FORMAT,
-    StageBInterpreterNativeBuildError,
+    CandidateNativeBuildError,
     _Artifact,
     _C_IDENTIFIER,
     _INCLUDE_DIRECTIVE,
@@ -46,15 +46,15 @@ def _compile_units(
     if not interpreter_roles.issubset(
         {item.role for item in interpreter.artifacts}
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "interpreter package omits required compilation units"
         )
     if not runtime_roles.issubset({item.role for item in runtime.artifacts}):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native-runtime package omits its source compilation unit"
         )
     if not any(item.path.suffix.lower() == ".s" for item in engine.artifacts):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native-engine package has no assembly bridge source"
         )
 
@@ -63,12 +63,12 @@ def _compile_units(
         try:
             text = item.path.read_text(encoding="ascii")
         except (OSError, UnicodeError) as exc:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"source is not readable ASCII: {item.relative_path}"
             ) from exc
         source_texts.append(text)
         if native_build._PLACEHOLDER_INT3.search(text):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"placeholder INT3 source: {item.relative_path}"
             )
     escaped = re.escape(entry_symbol)
@@ -77,7 +77,7 @@ def _compile_units(
         or re.search(rf"\b{escaped}\s*\([^;{{}}]*\)\s*\{{", text)
         for text in source_texts
     ):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"native-engine package does not define payload entry {entry_symbol}"
         )
 
@@ -109,7 +109,7 @@ def _canonical_source_root_label(owner: str) -> str:
     try:
         return labels[owner]
     except KeyError as exc:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"unsupported native-build source owner: {owner}"
         ) from exc
 
@@ -139,7 +139,7 @@ def _native_row_artifacts(
         )
         artifact = by_binding.get(key)
         if artifact is None:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "native object row references an unknown package artifact"
             )
         result.append(artifact)
@@ -150,12 +150,12 @@ def _write_native_source_bundle(
     *, output: Path, row: Mapping[str, Any], artifacts: Sequence[_Artifact]
 ) -> dict[str, Any]:
     if not artifacts:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native source bundle has no source artifact"
         )
     unit_id = str(row["id"])
     if _C_IDENTIFIER.fullmatch(unit_id.replace("-", "_")) is None:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native source bundle unit ID is not path-safe"
         )
     bundle_path = Path("bundles") / unit_id
@@ -210,23 +210,23 @@ def _load_native_source_bundle(
         path = path / "native-source-bundle.json"
     payload = _read_json_object(path, "native source bundle")
     if payload.get("format") != INTERPRETER_NATIVE_SOURCE_BUNDLE_FORMAT:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "unsupported native source bundle format"
         )
     core = dict(payload)
     expected = core.pop("bundle_sha256", None)
     if expected != native_build._canonical_sha256(core):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native source bundle self-hash is stale"
         )
     if payload.get("status") != "ready" or payload.get("executes_original_binary") is not False:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native source bundle is not ready"
         )
     dependencies = payload.get("dependencies")
     roots = payload.get("root_mappings")
     if not isinstance(dependencies, list) or not isinstance(roots, list) or not roots:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native source bundle inventories are malformed"
         )
     return path.parent, payload
@@ -238,15 +238,15 @@ def _bound_bundle_artifact(
     relative = _relative_path(binding.get("bundle_path"), f"{label} path")
     path = bundle_root / relative
     if not path.is_file():
-        raise StageBInterpreterNativeBuildError(f"{label} is missing")
+        raise CandidateNativeBuildError(f"{label} is missing")
     try:
         path.resolve().relative_to(bundle_root.resolve())
     except ValueError as exc:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"{label} escapes its source bundle"
         ) from exc
     if sha256_file(path) != binding.get("sha256"):
-        raise StageBInterpreterNativeBuildError(f"{label} binding is stale")
+        raise CandidateNativeBuildError(f"{label} binding is stale")
     return path
 
 
@@ -261,7 +261,7 @@ def _native_source_dependency_closure(
         for artifact in package.artifacts:
             resolved = artifact.path.resolve()
             if resolved in by_path:
-                raise StageBInterpreterNativeBuildError(
+                raise CandidateNativeBuildError(
                     "native package artifacts resolve to the same source path"
                 )
             by_path[resolved] = artifact
@@ -274,7 +274,7 @@ def _native_source_dependency_closure(
         try:
             lines = current.path.read_text(encoding="ascii").splitlines()
         except (OSError, UnicodeError) as exc:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"native source is not readable ASCII: {current.relative_path}"
             ) from exc
         for line_number, line in enumerate(lines, start=1):
@@ -286,13 +286,13 @@ def _native_source_dependency_closure(
                 continue
             quoted = _QUOTED_INCLUDE.fullmatch(operand)
             if quoted is None:
-                raise StageBInterpreterNativeBuildError(
+                raise CandidateNativeBuildError(
                     "native source uses an unsupported computed include at "
                     f"{current.relative_path}:{line_number}"
                 )
             include = Path(quoted.group(1))
             if include.is_absolute() or ".." in include.parts:
-                raise StageBInterpreterNativeBuildError(
+                raise CandidateNativeBuildError(
                     "native source quoted include is not package-relative at "
                     f"{current.relative_path}:{line_number}"
                 )
@@ -301,13 +301,13 @@ def _native_source_dependency_closure(
             )
             selected = next((path.resolve() for path in candidates if path.is_file()), None)
             if selected is None:
-                raise StageBInterpreterNativeBuildError(
+                raise CandidateNativeBuildError(
                     "native source quoted include is unresolved at "
                     f"{current.relative_path}:{line_number}: {include.as_posix()}"
                 )
             dependency = by_path.get(selected)
             if dependency is None:
-                raise StageBInterpreterNativeBuildError(
+                raise CandidateNativeBuildError(
                     "native source quoted include is not content-bound by a package "
                     f"manifest: {include.as_posix()}"
                 )
@@ -368,7 +368,7 @@ def _native_object_graph_row(
         for dependency in dependencies
     ]
     compile_key_core = {
-        "format": "stage-b-native-compile-key-v1",
+        "format": "spaghetti-extractor-native-compile-key-v1",
         "source": artifact.payload(),
         "dependencies": [dependency.payload() for dependency in dependencies],
         "language": language,
@@ -402,12 +402,12 @@ def _native_object_graph_row(
 def _native_compiler_binding(compiler: Path | str) -> dict[str, Any]:
     path = Path(compiler).resolve()
     if not path.is_file():
-        raise StageBInterpreterNativeBuildError(f"native compiler does not exist: {path}")
+        raise CandidateNativeBuildError(f"native compiler does not exist: {path}")
     completed = subprocess.run(
         [str(path), "--version"], check=False, capture_output=True, text=True
     )
     if completed.returncode != 0:
-        raise StageBInterpreterNativeBuildError("native compiler version query failed")
+        raise CandidateNativeBuildError("native compiler version query failed")
     return {
         "path": str(path),
         "sha256": sha256_file(path),
@@ -424,12 +424,12 @@ def _compile_flags(
         "interpreter", "engine", "runtime", "region-overrides"
     )[:len(roots)]
     if len(labels) != len(roots):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "unsupported native-build source-root inventory"
         )
     for label, root in zip(labels, roots, strict=True):
         for prefix in ("file", "debug", "macro"):
-            flags.append(f"-f{prefix}-prefix-map={root}=/stage-b/{label}")
+            flags.append(f"-f{prefix}-prefix-map={root}=/candidate/{label}")
     return flags
 
 
@@ -445,7 +445,7 @@ def _canonical_compile_flags(
     for label in labels:
         for prefix in ("file", "debug", "macro"):
             flags.append(
-                f"-f{prefix}-prefix-map=<{label}-package>=/stage-b/{label}"
+                f"-f{prefix}-prefix-map=<{label}-package>=/candidate/{label}"
             )
     return flags
 

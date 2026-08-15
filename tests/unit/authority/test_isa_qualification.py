@@ -47,7 +47,7 @@ BINDING = ArtifactBindingV3("binary", "pe32", "fixture.exe", PE_SHA256)
 def _unit() -> dict[str, object]:
     instruction = {"rva_start": 0x1000, "rva_end": 0x1001}
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": "unit:1000",
         "status": "qualified",

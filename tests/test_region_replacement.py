@@ -18,7 +18,7 @@ from spaghetti_extractor.components.region_replacement import (
     validate_region_replacement,
     write_region_replacement_manifest,
 )
-from spaghetti_extractor.pe32.stage_binary import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 from spaghetti_extractor.util import sha256_file
 
 
@@ -35,10 +35,10 @@ def _source(root: Path, name: str = "replacement.c", symbol: str = "replace_loop
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         '#include "state-machine-runtime.h"\n'
-        f"stage_b_step_result {symbol}(stage_b_runtime *rt, stage_b_machine_state *state) {{\n"
+        f"spx_step_result {symbol}(spx_runtime *rt, spx_machine_state *state) {{\n"
         "  (void)rt;\n"
         "  state->eax += 1U;\n"
-        "  return (stage_b_step_result){ STAGE_B_RETURN, 0U, state->eax };\n"
+        "  return (spx_step_result){ SPX_RETURN, 0U, state->eax };\n"
         "}\n",
         encoding="utf-8",
     )
@@ -281,7 +281,7 @@ class RegionReplacementTests(unittest.TestCase):
             self.assertNotIn("original", json.dumps(persisted).lower())
 
             root.joinpath("replacement.c").write_text("tampered\n", encoding="utf-8")
-            with self.assertRaisesRegex(StageAInputError, "source hash"):
+            with self.assertRaisesRegex(ToolkitInputError, "source hash"):
                 load_region_replacement_manifest(path, source_root=root)
 
     def test_manifest_rejects_bad_hash_unknown_evidence_and_overlapping_spans(self):
@@ -294,14 +294,14 @@ class RegionReplacementTests(unittest.TestCase):
             bad_hash["source"]["symbol"] = "different_symbol"
             bad_hash_path = root / "bad-hash.json"
             bad_hash_path.write_text(json.dumps(bad_hash), encoding="utf-8")
-            with self.assertRaisesRegex(StageAInputError, "manifest hash"):
+            with self.assertRaisesRegex(ToolkitInputError, "manifest hash"):
                 load_region_replacement_manifest(
                     bad_hash_path, source_root=root
                 )
 
             unknown = _manifest_payload(root)
             unknown["live_state"]["outputs"][0]["evidence_ids"] = ["evidence:missing"]
-            with self.assertRaisesRegex(StageAInputError, "unknown evidence"):
+            with self.assertRaisesRegex(ToolkitInputError, "unknown evidence"):
                 write_region_replacement_manifest(
                     root / "unknown.json", unknown, source_root=root
                 )
@@ -310,21 +310,21 @@ class RegionReplacementTests(unittest.TestCase):
             overlap["cluster"]["rva_spans"].append(
                 {"start": 0x1010, "end": 0x1030}
             )
-            with self.assertRaisesRegex(StageAInputError, "overlapping RVA"):
+            with self.assertRaisesRegex(ToolkitInputError, "overlapping RVA"):
                 write_region_replacement_manifest(
                     root / "overlap.json", overlap, source_root=root
                 )
 
             wrong_format = _manifest_payload(root)
-            wrong_format["format"] = "stage-b-region-replacement-v0"
-            with self.assertRaisesRegex(StageAInputError, "must use"):
+            wrong_format["format"] = "spaghetti-extractor-region-replacement-v0"
+            with self.assertRaisesRegex(ToolkitInputError, "must use"):
                 write_region_replacement_manifest(
                     root / "wrong-format.json", wrong_format, source_root=root
                 )
 
             wrong_symbol = _manifest_payload(root)
             wrong_symbol["source"]["symbol"] = "symbol_not_in_declared_lines"
-            with self.assertRaisesRegex(StageAInputError, "outside its declared"):
+            with self.assertRaisesRegex(ToolkitInputError, "outside its declared"):
                 write_region_replacement_manifest(
                     root / "wrong-symbol.json", wrong_symbol, source_root=root
                 )
@@ -333,7 +333,7 @@ class RegionReplacementTests(unittest.TestCase):
             symlink.symlink_to(root / "replacement.c")
             symlinked = _manifest_payload(root)
             symlinked["source"]["path"] = symlink.name
-            with self.assertRaisesRegex(StageAInputError, "non-symlink"):
+            with self.assertRaisesRegex(ToolkitInputError, "non-symlink"):
                 write_region_replacement_manifest(
                     root / "symlinked.json", symlinked, source_root=root
                 )
@@ -510,7 +510,7 @@ class RegionReplacementTests(unittest.TestCase):
                 **payload["expectations"]["external_events"][0]["comparison"],
                 "mode": "ignore_machine_state_v1",
             }
-            with self.assertRaisesRegex(StageAInputError, "must be one of"):
+            with self.assertRaisesRegex(ToolkitInputError, "must be one of"):
                 write_region_replacement_manifest(
                     root / "invalid-machine-abi.json", invalid, source_root=root
                 )
@@ -742,7 +742,7 @@ class RegionReplacementTests(unittest.TestCase):
                     text=True,
                 )
 
-            with self.assertRaisesRegex(StageAInputError, "fallback IDs"):
+            with self.assertRaisesRegex(ToolkitInputError, "fallback IDs"):
                 generate_region_override_table(
                     manifests=[first_path],
                     source_root=root,
@@ -764,7 +764,7 @@ class RegionReplacementTests(unittest.TestCase):
                 source_name="overlap.c",
                 symbol="replace_overlap",
             )
-            with self.assertRaisesRegex(StageAInputError, "RVA spans overlap"):
+            with self.assertRaisesRegex(ToolkitInputError, "RVA spans overlap"):
                 generate_region_override_table(
                     manifests=[first_path, overlap_path],
                     source_root=root,
@@ -781,7 +781,7 @@ class RegionReplacementTests(unittest.TestCase):
                 source_name="duplicate.c",
                 symbol="replace_duplicate",
             )
-            with self.assertRaisesRegex(StageAInputError, "entry unit ids"):
+            with self.assertRaisesRegex(ToolkitInputError, "entry unit ids"):
                 generate_region_override_table(
                     manifests=[first_path, duplicate_path],
                     source_root=root,
@@ -804,7 +804,7 @@ class RegionReplacementTests(unittest.TestCase):
             write_region_replacement_manifest(
                 mismatch_path, mismatch_payload, source_root=root
             )
-            with self.assertRaisesRegex(StageAInputError, "same machine IR"):
+            with self.assertRaisesRegex(ToolkitInputError, "same machine IR"):
                 generate_region_override_table(
                     manifests=[first_path, mismatch_path],
                     source_root=root,
@@ -812,7 +812,7 @@ class RegionReplacementTests(unittest.TestCase):
                 )
 
             root.joinpath("replacement.c").write_text("tampered\n", encoding="utf-8")
-            with self.assertRaisesRegex(StageAInputError, "source hash"):
+            with self.assertRaisesRegex(ToolkitInputError, "source hash"):
                 generate_region_override_table(
                     manifests=[first_path], source_root=root,
                     out_dir=root / "tampered-out",
@@ -822,7 +822,7 @@ class RegionReplacementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             path, _ = _write_manifest(root, evidence_status="incomplete")
-            with self.assertRaisesRegex(StageAInputError, "non-qualified evidence"):
+            with self.assertRaisesRegex(ToolkitInputError, "non-qualified evidence"):
                 generate_region_override_table(
                     manifests=[path], source_root=root, out_dir=root / "out"
                 )
@@ -833,14 +833,14 @@ def _write_runtime_header(root: Path) -> None:
         """#ifndef TEST_STATE_MACHINE_RUNTIME_H
 #define TEST_STATE_MACHINE_RUNTIME_H
 #include <stdint.h>
-typedef struct stage_b_runtime { uint32_t unused; } stage_b_runtime;
-typedef struct stage_b_machine_state { uint32_t eax; } stage_b_machine_state;
-typedef enum stage_b_control_kind { STAGE_B_RETURN = 3 } stage_b_control_kind;
-typedef struct stage_b_step_result {
-  stage_b_control_kind kind;
+typedef struct spx_runtime { uint32_t unused; } spx_runtime;
+typedef struct spx_machine_state { uint32_t eax; } spx_machine_state;
+typedef enum spx_control_kind { SPX_RETURN = 3 } spx_control_kind;
+typedef struct spx_step_result {
+  spx_control_kind kind;
   uint32_t target_rva;
   uint32_t value;
-} stage_b_step_result;
+} spx_step_result;
 #endif
 """,
         encoding="ascii",

@@ -1,4 +1,4 @@
-"""Public Stage B native runtime generation API."""
+"""Public candidate reconstruction native runtime generation API."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Any
 from ..artifacts.formats import (
     NATIVE_ENGINE_PACKAGE_FORMAT,
     NATIVE_RUNTIME_PACKAGE_FORMAT,
-    STAGE_B_INTERPRETER_PACKAGE_FORMAT,
+    SPX_INTERPRETER_PACKAGE_FORMAT,
 )
 from ..external.machine_import_profiles import (
     MachineImportProfileError,
@@ -24,7 +24,7 @@ from .runtime_model import (
     NATIVE_RUNTIME_SOURCE_FILENAME,
     NativeRuntimePlan,
     NativeUndefinedPolicy,
-    StageBNativeRuntimeError,
+    CandidateRuntimeError,
     _INTERPRETER_MANIFEST_FILENAME,
     _NATIVE_ENGINE_MANIFEST_FILENAME,
 )
@@ -55,7 +55,7 @@ from .runtime_values import (
 )
 
 
-def plan_stage_b_native_runtime(
+def plan_spx_native_runtime(
     *,
     interpreter_package: Path | str,
     native_engine_package: Path | str,
@@ -78,12 +78,12 @@ def plan_stage_b_native_runtime(
     )
     native = _read_json_object(native_manifest_path, "native-engine package manifest")
 
-    if interpreter.get("format") != STAGE_B_INTERPRETER_PACKAGE_FORMAT:
-        raise StageBNativeRuntimeError(
+    if interpreter.get("format") != SPX_INTERPRETER_PACKAGE_FORMAT:
+        raise CandidateRuntimeError(
             "interpreter package has an unsupported format"
         )
     if interpreter.get("status") != "ready":
-        raise StageBNativeRuntimeError("interpreter package is not ready")
+        raise CandidateRuntimeError("interpreter package is not ready")
     input_mode, interpreter_state = _semantic_input_binding(
         interpreter, "interpreter package"
     )
@@ -98,13 +98,13 @@ def plan_stage_b_native_runtime(
     )
     runtime_header_path = interpreter_sources.get("runtime_header")
     if runtime_header_path is None:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "interpreter source inventory has no runtime_header role"
         )
     try:
         runtime_header = runtime_header_path.read_text(encoding="ascii")
     except (OSError, UnicodeError) as exc:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "cannot read the bound interpreter runtime header"
         ) from exc
     interpreter_has_typed_x87_abi = "execute_typed_x87_operation" in runtime_header
@@ -123,11 +123,11 @@ def plan_stage_b_native_runtime(
     )
 
     if native.get("format") != NATIVE_ENGINE_PACKAGE_FORMAT:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine package has an unsupported format"
         )
     if native.get("status") != "ready":
-        raise StageBNativeRuntimeError("native-engine package is not ready")
+        raise CandidateRuntimeError("native-engine package is not ready")
     native_input_mode, native_input = _semantic_input_binding(
         native, "native-engine package"
     )
@@ -137,7 +137,7 @@ def plan_stage_b_native_runtime(
             native_input.get("sha256"), "native-engine semantic-input SHA-256"
         ) != state_machine_sha256
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "interpreter and native-engine packages bind different semantic inputs"
         )
     _verify_artifact_inventory(
@@ -153,19 +153,19 @@ def plan_stage_b_native_runtime(
     native_plan = _read_json_object(native_plan_path, "native-engine plan")
     native_policy = _required_object(native.get("policy"), "native-engine policy")
     if native_policy.get("execution_scope") != "complete-static-authority":
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine package does not require complete static authority"
         )
     if native.get("callback_adapter_receipts") != native_plan.get(
         "callback_adapter_receipts"
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine manifest and plan bind different callback adapter receipts"
         )
     if native.get("implementation_dispatch_receipt") != native_plan.get(
         "implementation_dispatch_receipt"
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine manifest and plan bind different implementation dispatch receipts"
         )
     _validate_complete_semantic_coverage(
@@ -177,7 +177,7 @@ def plan_stage_b_native_runtime(
     _validate_typed_x87_operations(operations)
     x87_handler_mode = "typed" if operations else "none"
     if x87_handler_mode == "typed" and not interpreter_has_typed_x87_abi:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine typed x87 operations require the interpreter typed ABI"
         )
     (
@@ -206,14 +206,14 @@ def plan_stage_b_native_runtime(
         try:
             profile_set = load_machine_import_profile_set([external_profile_path])
         except MachineImportProfileError as exc:
-            raise StageBNativeRuntimeError(str(exc)) from exc
+            raise CandidateRuntimeError(str(exc)) from exc
         profile_root = external_profile_path.parent
         graph: list[tuple[Path, str, str]] = []
         for profile in profile_set.profiles:
             try:
                 profile.path.relative_to(profile_root)
             except ValueError as exc:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "external profile includes must remain beneath the root profile directory"
                 ) from exc
             graph.append((profile.path, profile.profile_id, profile.sha256))
@@ -261,7 +261,7 @@ def plan_stage_b_native_runtime(
     )
 
 
-def write_stage_b_native_runtime_package(
+def write_spx_native_runtime_package(
     *,
     interpreter_package: Path | str,
     native_engine_package: Path | str,
@@ -270,7 +270,7 @@ def write_stage_b_native_runtime_package(
 ) -> dict[str, Any]:
     """Write deterministic freestanding runtime sources and their manifest."""
 
-    plan = plan_stage_b_native_runtime(
+    plan = plan_spx_native_runtime(
         interpreter_package=interpreter_package,
         native_engine_package=native_engine_package,
         external_profile=external_profile,
@@ -290,11 +290,11 @@ def write_stage_b_native_runtime_package(
         try:
             profile_path.write_bytes(plan.external_profile_path.read_bytes())
         except OSError as exc:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "cannot copy the external environment profile into the runtime package"
             ) from exc
         if sha256_file(profile_path) != plan.external_profile_sha256:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "copied external environment profile SHA-256 mismatch"
             )
         profile_source = {
@@ -311,18 +311,18 @@ def write_stage_b_native_runtime_package(
             relative = source.relative_to(profile_root)
             target = out_path / relative
             if target.exists():
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"included external profile collides with package artifact {relative}"
                 )
             target.parent.mkdir(parents=True, exist_ok=True)
             try:
                 target.write_bytes(source.read_bytes())
             except OSError as exc:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "cannot copy an included external profile into the runtime package"
                 ) from exc
             if sha256_file(target) != expected_sha256:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "copied included external profile SHA-256 mismatch"
                 )
             profile_dependencies.append({
@@ -417,7 +417,7 @@ __all__ = [
     "NATIVE_RUNTIME_SOURCE_FILENAME",
     "NativeRuntimePlan",
     "NativeUndefinedPolicy",
-    "StageBNativeRuntimeError",
-    "plan_stage_b_native_runtime",
-    "write_stage_b_native_runtime_package",
+    "CandidateRuntimeError",
+    "plan_spx_native_runtime",
+    "write_spx_native_runtime_package",
 ]

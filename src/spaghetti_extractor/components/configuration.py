@@ -257,9 +257,9 @@ def compose_component_configuration(
                 "rva": unit["rva"],
                 "implementation_kind": ownership_state,
                 "dispatch_lookup": (
-                    "stage_b_region_override_lookup"
+                    "spx_region_override_lookup"
                     if ownership_state == "portable_replacement"
-                    else "stage_b_program_lookup"
+                    else "spx_program_lookup"
                     if ownership_state == "machine_ir_fallback"
                     else None
                 ),

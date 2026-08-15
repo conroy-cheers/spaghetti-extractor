@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import fields
 import re
+from typing import get_type_hints
 import unittest
 from pathlib import Path
 
@@ -11,6 +13,16 @@ from spaghetti_extractor.build_support.python_module_index import (
     production_unreachable_modules,
 )
 from spaghetti_extractor.authority.registry import AUTHORITY_PHASE_REGISTRY_V3
+from spaghetti_extractor.candidate.authority.model import (
+    CandidateAuthorityV3Checks,
+    CandidateAuthorityV3Inputs,
+    CandidateAuthorityV3Receipt,
+)
+from spaghetti_extractor.static_program.model import (
+    StaticBinaryIdentity,
+    StaticProgramContract,
+    StaticStructuralUniverse,
+)
 
 
 TESTKIT = {
@@ -128,7 +140,7 @@ class RepositoryBoundaryTests(unittest.TestCase):
     def test_pipeline_families_have_no_flat_compatibility_modules(self) -> None:
         package = self.root / "src/spaghetti_extractor"
         forbidden_patterns = (
-            "stage_b_*.py",
+            "spx_*.py",
             "isa_*.py",
             "reconstruction_*.py",
             "external_*.py",
@@ -264,6 +276,26 @@ class RepositoryBoundaryTests(unittest.TestCase):
                 "Authorizing phase records use typed immutable fields. Catch-all "
                 "JSON mappings belong in parse/encode functions, not checked records."
             ),
+        )
+
+    def test_cross_phase_gate_records_use_named_typed_boundaries(self) -> None:
+        static_hints = get_type_hints(StaticProgramContract)
+        candidate_hints = get_type_hints(CandidateAuthorityV3Receipt)
+        self.assertIs(static_hints["binary"], StaticBinaryIdentity)
+        self.assertIs(
+            static_hints["structural_universe"], StaticStructuralUniverse
+        )
+        self.assertIs(candidate_hints["inputs"], CandidateAuthorityV3Inputs)
+        self.assertIs(candidate_hints["checks"], CandidateAuthorityV3Checks)
+        self.assertEqual(
+            {field.name for field in fields(CandidateAuthorityV3Inputs)},
+            {
+                "final_authority",
+                "machine_ir",
+                "machine_ir_manifest",
+                "fallback_coverage_receipt",
+                "component_runtime_package",
+            },
         )
 
     def test_record_source_closures_do_not_pull_authority_checkers(self) -> None:
@@ -438,13 +470,13 @@ class RepositoryBoundaryTests(unittest.TestCase):
         )
         for removed in (
             "spaghetti-extractor-slice",
-            "stage-b-generate-skeleton",
-            "stage-b-generate-semantic-c",
-            "stage-a-jq-fixtures-check",
-            "stage-b-jq-skeleton",
-            "stage-b-record-candidate",
-            '"stage-b-validate-candidate"',
-            "stage-b-explain-delta",
+            "spaghetti-extractor-generate-skeleton",
+            "spaghetti-extractor-generate-semantic-c",
+            "spaghetti-extractor-jq-fixtures-check",
+            "spaghetti-extractor-jq-skeleton",
+            "spaghetti-extractor-record-candidate",
+            '"spaghetti-extractor-validate-candidate"',
+            "spaghetti-extractor-explain-delta",
         ):
             with self.subTest(removed=removed):
                 self.assertNotIn(removed, public)

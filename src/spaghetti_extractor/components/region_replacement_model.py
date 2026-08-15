@@ -10,17 +10,17 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..artifacts.formats import REGION_REPLACEMENT_BUNDLE_FORMAT
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 
-REGION_REPLACEMENT_FORMAT = "stage-b-region-replacement-v1"
+REGION_REPLACEMENT_FORMAT = "spaghetti-extractor-region-replacement-v1"
 _REGION_REPLACEMENT_FORMATS = frozenset(
     {REGION_REPLACEMENT_FORMAT, REGION_REPLACEMENT_BUNDLE_FORMAT}
 )
-REGION_OBSERVATIONS_FORMAT = "stage-b-region-observations-v1"
+REGION_OBSERVATIONS_FORMAT = "spaghetti-extractor-region-observations-v1"
 REGION_REPLACEMENT_VALIDATION_FORMAT = (
-    "stage-b-region-replacement-validation-v1"
+    "spaghetti-extractor-region-replacement-validation-v1"
 )
-REGION_OVERRIDE_TABLE_FORMAT = "stage-b-region-override-table-v1"
+REGION_OVERRIDE_TABLE_FORMAT = "spaghetti-extractor-region-override-table-v1"
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9_.:/-]{0,254}[A-Za-z0-9])?")
@@ -122,11 +122,11 @@ def _json_copy(value: Any) -> Any:
 
 def _object(value: Any, context: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     return value
 
 
 def _array(value: Any, context: str) -> list[Any]:
     if not isinstance(value, list):
-        raise StageAInputError(f"{context} must be a list")
+        raise ToolkitInputError(f"{context} must be a list")
     return value

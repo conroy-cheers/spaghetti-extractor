@@ -17,7 +17,7 @@ from spaghetti_extractor.external.interface_profiles import (
 from spaghetti_extractor.external.machine_import_profiles import (
     load_machine_import_profile_set,
 )
-from spaghetti_extractor.pe32.stage_binary import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 from spaghetti_extractor.util import sha256_file
 
 
@@ -116,7 +116,7 @@ class ExternalInterfaceAstTests(unittest.TestCase):
             invalid_payload["opaque_resource_types"] = ["MISSPELLED_HANDLE"]
             invalid_spec.write_text(json.dumps(invalid_payload), encoding="utf-8")
             with self.assertRaisesRegex(
-                StageAInputError,
+                ToolkitInputError,
                 "opaque resource type is absent from the pinned AST",
             ):
                 extract_external_interface_profile(
@@ -430,7 +430,7 @@ class ExternalInterfaceAstTests(unittest.TestCase):
             ] = "INotTheDeclaredType"
             spec.write_text(json.dumps(complete_spec), encoding="utf-8")
             with self.assertRaisesRegex(
-                StageAInputError, "contradicts the pinned AST type"
+                ToolkitInputError, "contradicts the pinned AST type"
             ):
                 extract_external_interface_profile(
                     ast_json=ast,

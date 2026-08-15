@@ -52,9 +52,9 @@ def logical_c_type(type_name: object, *, source_abi: object) -> str | None:
     if kind == "scalar":
         return str(type_name)
     if kind == "read_only_bytes":
-        return "const stage_b_ro_bytes_v1 *"
+        return "const spx_ro_bytes_v1 *"
     if kind == "nul_terminated_bytes":
-        return "const stage_b_c_string_v1 *"
+        return "const spx_c_string_v1 *"
     return None
 
 
@@ -168,23 +168,23 @@ def source_abi_error(
 def logical_abi_header() -> str:
     """Render the stable source-level object view ABI."""
 
-    return """#ifndef STAGE_B_OBJECT_ABI_H
-#define STAGE_B_OBJECT_ABI_H
+    return """#ifndef SPX_OBJECT_ABI_H
+#define SPX_OBJECT_ABI_H
 
 #include <stdint.h>
 
-struct stage_b_ro_bytes_v1 {
+struct spx_ro_bytes_v1 {
   void *context;
   uint32_t extent;
   uint32_t (*read_u8)(void *, uint32_t, uint8_t *);
 };
-typedef struct stage_b_ro_bytes_v1 stage_b_ro_bytes_v1;
+typedef struct spx_ro_bytes_v1 spx_ro_bytes_v1;
 
-struct stage_b_c_string_v1 {
+struct spx_c_string_v1 {
   void *context;
   uint32_t (*read_u8)(void *, uint32_t, uint8_t *);
 };
-typedef struct stage_b_c_string_v1 stage_b_c_string_v1;
+typedef struct spx_c_string_v1 spx_c_string_v1;
 
 #endif
 """

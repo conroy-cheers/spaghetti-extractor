@@ -70,7 +70,6 @@ terminal(statuses)
         self.assertEqual(first.counts.mismatched, 1)
         self.assertEqual(first.qualification, ReportQualification.VETOED)
         self.assertFalse(first.trust.proof_authority)
-        self.assertFalse(first.trust.closes_stage_a_proof)
 
     @unittest.skipUnless(
         _SOURCE_BOCHS_RUNNER.is_file(),
@@ -208,7 +207,7 @@ terminal(statuses)
         case["expected"].update(control="fault", fault="divide_error")
         corpus = parse_isa_conformance_corpus(
             {
-                "format": "stage-a-isa-conformance-corpus-v1",
+                "format": "spaghetti-extractor-isa-conformance-corpus-v1",
                 "id": "bochs-divide-error-protocol-v1",
                 "cases": [case],
             }
@@ -238,7 +237,6 @@ terminal(["complete"])
         self.assertEqual(report.observations[0].status, ObservationStatus.MATCH)
         self.assertEqual(report.observations[0].actual.fault.value, "divide_error")
         self.assertFalse(report.trust.proof_authority)
-        self.assertFalse(report.trust.closes_stage_a_proof)
 
     def test_unsupported_observation_is_preserved_and_unqualifies_report(self):
         corpus = _corpus("unsupported-case")

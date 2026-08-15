@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from spaghetti_extractor.candidate.c_backend import write_stage_b_semantic_c_backend
+from spaghetti_extractor.candidate.c_backend import write_spx_semantic_c_backend
 
 
 def _transfer(*, fpu_state: object = None) -> dict[str, object]:
@@ -36,7 +36,7 @@ class SemanticCBackendX87Tests(unittest.TestCase):
     def test_symbolic_x87_fails_closed_in_favor_of_checked_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            report = write_stage_b_semantic_c_backend(
+            report = write_spx_semantic_c_backend(
                 root,
                 [
                     _transfer(
@@ -60,22 +60,22 @@ class SemanticCBackendX87Tests(unittest.TestCase):
             )
             repairs = (root / "state-machine-repairs.c").read_text(encoding="ascii")
             self.assertIn("x87_checked_replay_required", repairs)
-            self.assertIn("STAGE_B_UNIMPLEMENTED", repairs)
+            self.assertIn("SPX_UNIMPLEMENTED", repairs)
             for source in root.glob("*.c"):
                 rendered = source.read_text(encoding="ascii")
                 self.assertNotIn("long double", rendered)
-                self.assertNotIn("stage_b_x87_binary", rendered)
-                self.assertNotIn("stage_b_x87_unpack", rendered)
+                self.assertNotIn("spx_x87_binary", rendered)
+                self.assertNotIn("spx_x87_unpack", rendered)
 
     def test_non_x87_direct_backend_has_no_host_floating_helpers(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            report = write_stage_b_semantic_c_backend(root, [_transfer()])
+            report = write_spx_semantic_c_backend(root, [_transfer()])
 
             self.assertEqual(report["status"], "complete")
             source = (root / "state-machine-transfers.c").read_text(encoding="ascii")
             self.assertNotIn("long double", source)
-            self.assertNotIn("stage_b_copy_bytes", source)
+            self.assertNotIn("spx_copy_bytes", source)
             self.assertNotIn("x87_fault", source)
 
             compiler = shutil.which("cc")
@@ -101,11 +101,11 @@ class SemanticCBackendX87Tests(unittest.TestCase):
     def test_shared_machine_state_keeps_replay_physical_fields(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            write_stage_b_semantic_c_backend(root, [_transfer()])
+            write_spx_semantic_c_backend(root, [_transfer()])
             header = (root / "state-machine-runtime.h").read_text(encoding="ascii")
 
             for declaration in (
-                "stage_b_x87_value x87_stack[8]",
+                "spx_x87_value x87_stack[8]",
                 "uint16_t x87_control",
                 "uint16_t x87_status",
                 "uint8_t x87_pending_exception",

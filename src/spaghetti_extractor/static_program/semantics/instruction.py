@@ -11,13 +11,8 @@ from ...extraction.executable_classification import (
     _instruction_report,
     _resolved_branch_target,
 )
-from ...pe32.stage_binary import (
-    BlockSide,
-    StageABinary,
-    StageAImport,
-    StageASection,
-    _section_for_rva,
-)
+from ...pe32.model import BlockSide, ParsedPEImage, PEImport, PESection
+from ...pe32.queries import section_for_rva
 from ...util import sha256_bytes
 from .support import (
     _count_by,
@@ -68,7 +63,7 @@ def _instruction_register_access(insn: Any) -> tuple[set[str], set[str]]:
     return reads, writes
 
 def _abi_instruction_memory_accesses(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     insn: Any,
     register_definitions: dict[str, dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -116,7 +111,7 @@ def _abi_operand_memory_access_kind(insn: Any, operand_index: int) -> str | None
     return "read"
 
 def _abi_memory_access_report(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     insn: Any,
     operand: Any,
     access_kind: str,
@@ -136,7 +131,7 @@ def _abi_memory_access_report(
         imported = _import_for_thunk_rva(binary, memory_rva)
         if imported is not None:
             access["import"] = _abi_import_report(imported)
-        section = _section_for_rva(binary, memory_rva)
+        section = section_for_rva(binary, memory_rva)
         if section is not None:
             access["memory_section"] = _abi_section_report(section)
         string_literal = _abi_string_literal_at_rva(binary, memory_rva)
@@ -220,7 +215,7 @@ def _abi_x86_register_family(register: str | None) -> str:
             return full
     return name
 
-def _abi_loop_hints(binary: StageABinary, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
+def _abi_loop_hints(binary: ParsedPEImage, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
     hints: list[dict[str, Any]] = []
     for insn in instructions:
         target = _resolved_branch_target(binary, insn)
@@ -246,7 +241,7 @@ def _abi_ret_imm(insn: Any) -> int:
         return 0
     return int(insn.operands[0].imm)
 
-def _abi_stack_pointer_adjustment(binary: StageABinary, insn: Any) -> int | None:
+def _abi_stack_pointer_adjustment(binary: ParsedPEImage, insn: Any) -> int | None:
     if len(insn.operands) < 2:
         return None
     mnemonic = str(insn.mnemonic)
@@ -261,15 +256,15 @@ def _abi_stack_pointer_adjustment(binary: StageABinary, insn: Any) -> int | None
     value = int(src.imm)
     return value if mnemonic == "add" else -value
 
-def _abi_value_to_rva(binary: StageABinary, value: int) -> int | None:
+def _abi_value_to_rva(binary: ParsedPEImage, value: int) -> int | None:
     if binary.image_base <= value < binary.image_base + binary.size_of_image:
         return value - binary.image_base
-    if 0 <= value < binary.size_of_image and _section_for_rva(binary, value) is not None:
+    if 0 <= value < binary.size_of_image and section_for_rva(binary, value) is not None:
         return value
     return None
 
-def _abi_string_literal_at_rva(binary: StageABinary, rva: int) -> dict[str, Any] | None:
-    section = _section_for_rva(binary, rva)
+def _abi_string_literal_at_rva(binary: ParsedPEImage, rva: int) -> dict[str, Any] | None:
+    section = section_for_rva(binary, rva)
     if section is None or not section.readable or section.executable:
         return None
     data = binary.pe.get_data(rva, 256)
@@ -304,7 +299,7 @@ def _abi_mem_operand_report(insn: Any, operand: Any) -> dict[str, Any]:
         "disp": int(mem.disp),
     }
 
-def _abi_section_report(section: StageASection) -> dict[str, Any]:
+def _abi_section_report(section: PESection) -> dict[str, Any]:
     return {
         "name": section.name,
         "rva_start": section.rva_start,
@@ -341,7 +336,7 @@ def _abi_memory_role(source: dict[str, Any]) -> str:
         return "computed_pointer_deref"
     return "computed_memory"
 
-def _abi_import_report(item: StageAImport) -> dict[str, Any]:
+def _abi_import_report(item: PEImport) -> dict[str, Any]:
     return {
         "dll": item.dll,
         "symbol": item.symbol,
@@ -349,7 +344,7 @@ def _abi_import_report(item: StageAImport) -> dict[str, Any]:
         "thunk_rva": item.thunk_rva,
     }
 
-def _abi_absolute_addressing_rva(binary: StageABinary, addressing: dict[str, Any]) -> int | None:
+def _abi_absolute_addressing_rva(binary: ParsedPEImage, addressing: dict[str, Any]) -> int | None:
     if addressing.get("base") or addressing.get("index"):
         return None
     address = _safe_int(addressing.get("disp"))

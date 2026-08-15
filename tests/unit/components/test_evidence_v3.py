@@ -162,7 +162,7 @@ class ComponentEvidenceTests(unittest.TestCase):
         self._use_object_fixture()
         package = self._object_source(
             """
-uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
+uint32_t identity(const spx_ro_bytes_v1 *value, uint32_t length) {
   uint8_t byte = 0U;
   if (length == 0U) return 0U;
   return value->read_u8(value->context, 0U, &byte) == 0U ? byte : 0U;
@@ -183,7 +183,7 @@ uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
         self._use_object_fixture()
         package = self._object_source(
             """
-uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
+uint32_t identity(const spx_ro_bytes_v1 *value, uint32_t length) {
   uint8_t byte = 0U;
   (void)length;
   (void)value->read_u8(value->context, value->extent, &byte);
@@ -217,7 +217,7 @@ uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
         self._use_object_fixture()
         package = self._object_source(
             """
-uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
+uint32_t identity(const spx_ro_bytes_v1 *value, uint32_t length) {
   (void)value;
   (void)length;
   __builtin_trap();
@@ -239,7 +239,7 @@ uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
         self._use_object_fixture()
         package = self._object_source(
             """
-uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
+uint32_t identity(const spx_ro_bytes_v1 *value, uint32_t length) {
   (void)value;
   (void)length;
   __builtin_trap();
@@ -260,7 +260,7 @@ uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
         self._use_object_fixture()
         package = self._object_source(
             """
-uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
+uint32_t identity(const spx_ro_bytes_v1 *value, uint32_t length) {
   (void)value;
   (void)length;
   for (;;) {}
@@ -281,7 +281,7 @@ uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
         self._use_object_fixture()
         package = self._object_source(
             """
-uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
+uint32_t identity(const spx_ro_bytes_v1 *value, uint32_t length) {
   uint8_t byte = 0U;
   (void)length;
   return value->read_u8(value->context, 0U, &byte) == 0U ? byte : 0U;
@@ -315,7 +315,7 @@ uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
         self._use_object_fixture()
         package = self._object_source(
             """
-uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
+uint32_t identity(const spx_ro_bytes_v1 *value, uint32_t length) {
   uint8_t byte = 0U;
   (void)length;
   return value->read_u8(value->context, 0U, &byte) == 0U ? byte : 0U;
@@ -362,7 +362,7 @@ uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
         self._use_object_fixture()
         package = self._object_source(
             """
-uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
+uint32_t identity(const spx_ro_bytes_v1 *value, uint32_t length) {
   uint8_t byte = 0U;
   (void)length;
   return value->read_u8(value->context, 0U, &byte) == 0U ? byte : 0U;
@@ -418,7 +418,7 @@ uint32_t identity(const stage_b_ro_bytes_v1 *value, uint32_t length) {
             logical_c_type(
                 READ_ONLY_BYTES_V1, source_abi=LOGICAL_OBJECT_C_V1
             ),
-            "const stage_b_ro_bytes_v1 *",
+            "const spx_ro_bytes_v1 *",
         )
         logical_abi_header().encode("ascii")
 

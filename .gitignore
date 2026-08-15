@@ -9,3 +9,5 @@ target/
 scratch/
 result
 result-*
+nix/builders.local
+nix/trusted-public-keys.local

@@ -32,10 +32,10 @@ let
     inherit (context) pythonEnv;
     pythonSource = context.sources.fullSource;
   };
-  analysisComponent = callWith ./stage-b-component-analysis.nix analysisCommon;
+  analysisComponent = callWith ./component-analysis.nix analysisCommon;
   authorityWorkflow = callWith ./authority-workflow.nix authorityCommon;
-  componentWorkflow = callWith ./stage-b-components.nix analysisCommon;
-  hybridCandidate = callWith ./stage-b-hybrid-candidate.nix candidateCommon;
+  componentWorkflow = callWith ./component-workflow.nix analysisCommon;
+  hybridCandidate = callWith ./candidate-hybrid.nix candidateCommon;
   runtimeFrontierReport = callWith ./runtime-frontier-report.nix analysisCommon;
   candidateTestSuite = callWith ./candidate-test-suite.nix candidateCommon;
   targetBundleLint = callWith ./target-bundle-lint.nix analysisCommon;
@@ -643,7 +643,7 @@ in
     component = analysisComponent;
     authority = authorityWorkflow;
     externalInterfaceProfile = callWith
-      ./stage-a-external-interface-profile.nix analysisCommon;
+      ./external-interface-profile.nix analysisCommon;
   };
   candidate = {
     hybrid = hybridCandidate;
@@ -651,7 +651,7 @@ in
     testSuite = candidateTestSuite;
   };
   lifting = {
-    linkedLibraries = callWith ./stage-b-linked-libraries.nix analysisCommon;
+    linkedLibraries = callWith ./linked-libraries.nix analysisCommon;
     components = componentWorkflow;
   };
   validation = {

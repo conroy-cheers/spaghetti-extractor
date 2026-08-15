@@ -7,16 +7,16 @@ from enum import IntEnum, IntFlag
 from typing import Iterable, Mapping
 
 
-STAGE_B_ENGINE_LAYOUT_FORMAT = "stage-b-engine-layout-table-v2"
-STAGE_B_ENGINE_LAYOUT_MAGIC_BYTES = b"SBEL"
-STAGE_B_ENGINE_LAYOUT_MAGIC = int.from_bytes(
-    STAGE_B_ENGINE_LAYOUT_MAGIC_BYTES, "little"
+SPX_ENGINE_LAYOUT_FORMAT = "spaghetti-extractor-engine-layout-table-v2"
+SPX_ENGINE_LAYOUT_MAGIC_BYTES = b"SBEL"
+SPX_ENGINE_LAYOUT_MAGIC = int.from_bytes(
+    SPX_ENGINE_LAYOUT_MAGIC_BYTES, "little"
 )
-STAGE_B_ENGINE_LAYOUT_VERSION = 2
-STAGE_B_ENGINE_LAYOUT_HEADER_WORDS = 10
-STAGE_B_ENGINE_LAYOUT_RECORD_WORDS = 4
-STAGE_B_ENGINE_LAYOUT_TABLE_SYMBOL = "stage_b_engine_layout_table"
-STAGE_B_ENGINE_LAYOUT_SECTION = ".rdata$SBEL"
+SPX_ENGINE_LAYOUT_VERSION = 2
+SPX_ENGINE_LAYOUT_HEADER_WORDS = 10
+SPX_ENGINE_LAYOUT_RECORD_WORDS = 4
+SPX_ENGINE_LAYOUT_TABLE_SYMBOL = "spx_engine_layout_table"
+SPX_ENGINE_LAYOUT_SECTION = ".rdata$SBEL"
 
 _MAX_FIELD_COUNT = 64
 _MAX_X87_SLOT_COUNT = 32
@@ -179,8 +179,8 @@ class EngineLayoutCSpec:
     fields: tuple[EngineLayoutCField, ...]
     x87_slot_count: int = 8
     runtime_header: str = "state-machine-runtime.h"
-    state_type: str = "stage_b_machine_state"
-    table_symbol: str = STAGE_B_ENGINE_LAYOUT_TABLE_SYMBOL
+    state_type: str = "spx_machine_state"
+    table_symbol: str = SPX_ENGINE_LAYOUT_TABLE_SYMBOL
 
     def __post_init__(self) -> None:
         fields = tuple(self.fields)
@@ -227,18 +227,18 @@ class EngineLayout:
         return {entry.field: entry for entry in self.fields}
 
 
-def canonical_stage_b_machine_state_spec(
+def canonical_spx_machine_state_spec(
     *,
     runtime_header: str = "state-machine-runtime.h",
-    state_type: str = "stage_b_machine_state",
-    table_symbol: str = STAGE_B_ENGINE_LAYOUT_TABLE_SYMBOL,
+    state_type: str = "spx_machine_state",
+    table_symbol: str = SPX_ENGINE_LAYOUT_TABLE_SYMBOL,
     flag_storage: str = "split-and-packed",
     x87_slot_count: int = 8,
     include_fs_base: bool = False,
     include_original_rva: bool = False,
     member_overrides: Mapping[EngineField, str] | None = None,
 ) -> EngineLayoutCSpec:
-    """Build canonical semantic bindings for a stage_b_machine_state variant."""
+    """Build canonical semantic bindings for a spx_machine_state variant."""
 
     if flag_storage not in {"split", "packed", "split-and-packed"}:
         raise ValueError(
@@ -340,12 +340,12 @@ def canonical_stage_b_machine_state_spec(
     )
 
 
-def render_stage_b_engine_layout_c(
+def render_spx_engine_layout_c(
     spec: EngineLayoutCSpec | None = None,
     *,
     runtime_header: str = "state-machine-runtime.h",
-    state_type: str = "stage_b_machine_state",
-    table_symbol: str = STAGE_B_ENGINE_LAYOUT_TABLE_SYMBOL,
+    state_type: str = "spx_machine_state",
+    table_symbol: str = SPX_ENGINE_LAYOUT_TABLE_SYMBOL,
     flag_storage: str = "split-and-packed",
     x87_slot_count: int = 8,
     include_fs_base: bool = False,
@@ -355,7 +355,7 @@ def render_stage_b_engine_layout_c(
     """Render deterministic C which materializes one layout table."""
 
     if spec is None:
-        spec = canonical_stage_b_machine_state_spec(
+        spec = canonical_spx_machine_state_spec(
             runtime_header=runtime_header,
             state_type=state_type,
             table_symbol=table_symbol,
@@ -367,8 +367,8 @@ def render_stage_b_engine_layout_c(
         )
     elif (
         runtime_header != "state-machine-runtime.h"
-        or state_type != "stage_b_machine_state"
-        or table_symbol != STAGE_B_ENGINE_LAYOUT_TABLE_SYMBOL
+        or state_type != "spx_machine_state"
+        or table_symbol != SPX_ENGINE_LAYOUT_TABLE_SYMBOL
         or flag_storage != "split-and-packed"
         or x87_slot_count != 8
         or include_fs_base
@@ -382,11 +382,11 @@ def render_stage_b_engine_layout_c(
     fields = spec.fields
     features = spec.features
     total_words = (
-        STAGE_B_ENGINE_LAYOUT_HEADER_WORDS
-        + STAGE_B_ENGINE_LAYOUT_RECORD_WORDS * len(fields)
+        SPX_ENGINE_LAYOUT_HEADER_WORDS
+        + SPX_ENGINE_LAYOUT_RECORD_WORDS * len(fields)
     )
     lines = [
-        "/* Generated Stage B semantic-engine layout metadata.",
+        "/* Generated candidate reconstruction semantic-engine layout metadata.",
         " * This table is structural data only and has no proof or acceptance authority.",
         " */",
         "#include <stddef.h>",
@@ -394,18 +394,18 @@ def render_stage_b_engine_layout_c(
         f'#include "{spec.runtime_header}"',
         "",
         "#if defined(_MSC_VER)",
-        f'#pragma section("{STAGE_B_ENGINE_LAYOUT_SECTION}", read)',
-        "#define STAGE_B_ENGINE_LAYOUT_READ_ONLY \\",
-        f'  __declspec(allocate("{STAGE_B_ENGINE_LAYOUT_SECTION}"))',
+        f'#pragma section("{SPX_ENGINE_LAYOUT_SECTION}", read)',
+        "#define SPX_ENGINE_LAYOUT_READ_ONLY \\",
+        f'  __declspec(allocate("{SPX_ENGINE_LAYOUT_SECTION}"))',
         "#elif defined(__GNUC__) || defined(__clang__)",
-        "#define STAGE_B_ENGINE_LAYOUT_READ_ONLY \\",
-        f'  __attribute__((used, section("{STAGE_B_ENGINE_LAYOUT_SECTION}"), aligned(4)))',
+        "#define SPX_ENGINE_LAYOUT_READ_ONLY \\",
+        f'  __attribute__((used, section("{SPX_ENGINE_LAYOUT_SECTION}"), aligned(4)))',
         "#else",
-        "#define STAGE_B_ENGINE_LAYOUT_READ_ONLY",
+        "#define SPX_ENGINE_LAYOUT_READ_ONLY",
         "#endif",
         "",
         f"_Static_assert(sizeof({spec.state_type}) <= UINT32_MAX,",
-        '    "stage_b_machine_state size does not fit the layout table");',
+        '    "spx_machine_state size does not fit the layout table");',
     ]
     for entry in fields:
         lines.extend(
@@ -413,19 +413,19 @@ def render_stage_b_engine_layout_c(
                 f"_Static_assert(offsetof({spec.state_type}, {entry.member})",
                 f"        + sizeof((({spec.state_type} *)0)->{entry.member})",
                 f"        <= sizeof({spec.state_type}),",
-                f'    "layout member {entry.field.name} is outside stage_b_machine_state");',
+                f'    "layout member {entry.field.name} is outside spx_machine_state");',
             )
         )
     lines.extend(
         (
             "",
-            "STAGE_B_ENGINE_LAYOUT_READ_ONLY",
+            "SPX_ENGINE_LAYOUT_READ_ONLY",
             f"const uint32_t {spec.table_symbol}[{total_words}] = {{",
-            f"  0x{STAGE_B_ENGINE_LAYOUT_MAGIC:08x}U, /* magic: SBEL */",
-            f"  {STAGE_B_ENGINE_LAYOUT_VERSION}U, /* version */",
+            f"  0x{SPX_ENGINE_LAYOUT_MAGIC:08x}U, /* magic: SBEL */",
+            f"  {SPX_ENGINE_LAYOUT_VERSION}U, /* version */",
             f"  {total_words}U, /* total words */",
-            f"  {STAGE_B_ENGINE_LAYOUT_HEADER_WORDS}U, /* header words */",
-            f"  {STAGE_B_ENGINE_LAYOUT_RECORD_WORDS}U, /* words per field */",
+            f"  {SPX_ENGINE_LAYOUT_HEADER_WORDS}U, /* header words */",
+            f"  {SPX_ENGINE_LAYOUT_RECORD_WORDS}U, /* words per field */",
             f"  {len(fields)}U, /* field count */",
             f"  (uint32_t)sizeof({spec.state_type}), /* state size */",
             f"  {spec.x87_slot_count}U, /* x87 slot count */",
@@ -448,14 +448,14 @@ def render_stage_b_engine_layout_c(
             "",
             f"const uint32_t {spec.table_symbol}_word_count = {total_words}U;",
             "",
-            "#undef STAGE_B_ENGINE_LAYOUT_READ_ONLY",
+            "#undef SPX_ENGINE_LAYOUT_READ_ONLY",
             "",
         )
     )
     return "\n".join(lines)
 
 
-def parse_stage_b_engine_layout_payload(
+def parse_spx_engine_layout_payload(
     payload: bytes | bytearray | memoryview,
     *,
     required_fields: Iterable[EngineField] = (),
@@ -467,10 +467,10 @@ def parse_stage_b_engine_layout_payload(
     if not isinstance(payload, (bytes, bytearray, memoryview)):
         raise TypeError("engine-layout payload must be bytes-like")
     data = bytes(payload)
-    minimum_size = STAGE_B_ENGINE_LAYOUT_HEADER_WORDS * 4
+    minimum_size = SPX_ENGINE_LAYOUT_HEADER_WORDS * 4
     maximum_size = (
-        STAGE_B_ENGINE_LAYOUT_HEADER_WORDS
-        + STAGE_B_ENGINE_LAYOUT_RECORD_WORDS * _MAX_FIELD_COUNT
+        SPX_ENGINE_LAYOUT_HEADER_WORDS
+        + SPX_ENGINE_LAYOUT_RECORD_WORDS * _MAX_FIELD_COUNT
     ) * 4
     if len(data) < minimum_size:
         raise EngineLayoutFormatError("engine-layout payload is shorter than its header")
@@ -491,14 +491,14 @@ def parse_stage_b_engine_layout_payload(
         x87_slot_count,
         raw_features,
         reserved,
-    ) = words[:STAGE_B_ENGINE_LAYOUT_HEADER_WORDS]
-    if magic != STAGE_B_ENGINE_LAYOUT_MAGIC:
+    ) = words[:SPX_ENGINE_LAYOUT_HEADER_WORDS]
+    if magic != SPX_ENGINE_LAYOUT_MAGIC:
         raise EngineLayoutFormatError("engine-layout magic does not match SBEL")
-    if version != STAGE_B_ENGINE_LAYOUT_VERSION:
+    if version != SPX_ENGINE_LAYOUT_VERSION:
         raise EngineLayoutFormatError(f"unsupported engine-layout version {version}")
-    if header_words != STAGE_B_ENGINE_LAYOUT_HEADER_WORDS:
+    if header_words != SPX_ENGINE_LAYOUT_HEADER_WORDS:
         raise EngineLayoutFormatError("engine-layout header size is not canonical")
-    if record_words != STAGE_B_ENGINE_LAYOUT_RECORD_WORDS:
+    if record_words != SPX_ENGINE_LAYOUT_RECORD_WORDS:
         raise EngineLayoutFormatError("engine-layout field-record size is not canonical")
     if total_words != len(words):
         raise EngineLayoutFormatError("engine-layout declared size does not match its payload")
@@ -766,15 +766,15 @@ __all__ = [
     "EngineLayoutFeature",
     "EngineLayoutFormatError",
     "EngineRegister",
-    "STAGE_B_ENGINE_LAYOUT_FORMAT",
-    "STAGE_B_ENGINE_LAYOUT_HEADER_WORDS",
-    "STAGE_B_ENGINE_LAYOUT_MAGIC",
-    "STAGE_B_ENGINE_LAYOUT_MAGIC_BYTES",
-    "STAGE_B_ENGINE_LAYOUT_RECORD_WORDS",
-    "STAGE_B_ENGINE_LAYOUT_SECTION",
-    "STAGE_B_ENGINE_LAYOUT_TABLE_SYMBOL",
-    "STAGE_B_ENGINE_LAYOUT_VERSION",
-    "canonical_stage_b_machine_state_spec",
-    "parse_stage_b_engine_layout_payload",
-    "render_stage_b_engine_layout_c",
+    "SPX_ENGINE_LAYOUT_FORMAT",
+    "SPX_ENGINE_LAYOUT_HEADER_WORDS",
+    "SPX_ENGINE_LAYOUT_MAGIC",
+    "SPX_ENGINE_LAYOUT_MAGIC_BYTES",
+    "SPX_ENGINE_LAYOUT_RECORD_WORDS",
+    "SPX_ENGINE_LAYOUT_SECTION",
+    "SPX_ENGINE_LAYOUT_TABLE_SYMBOL",
+    "SPX_ENGINE_LAYOUT_VERSION",
+    "canonical_spx_machine_state_spec",
+    "parse_spx_engine_layout_payload",
+    "render_spx_engine_layout_c",
 ]

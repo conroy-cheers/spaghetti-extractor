@@ -11,14 +11,14 @@ from ..artifacts.formats import (
     CALLER_MEMORY_FRAME_MODEL as _CALLER_MEMORY_FRAME_MODEL,
     SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL as SAME_LIBRARY_CALLTHROUGH_EFFECT_MODEL,
 )
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_file
 
 
 MACHINE_IMPORT_PROFILE_FORMATS = frozenset({
-    "stage-a-external-environment-profile-v1",
-    "stage-a-external-interface-profile-v1",
-    "stage-a-static-machine-import-profile-v1",
+    "spaghetti-extractor-external-environment-profile-v1",
+    "spaghetti-extractor-external-interface-profile-v1",
+    "spaghetti-extractor-static-machine-import-profile-v1",
 })
 NATIVE_DLL_CALLTHROUGH_EFFECT_MODEL = "exact_native_dll_callthrough_v1"
 NATIVE_DLL_CALLTHROUGH_PREREQUISITES = frozenset({
@@ -48,7 +48,7 @@ _NATIVE_CALLTHROUGH_CALLBACK_FIELDS = frozenset({
 _PE32_RESULT_REGISTERS = frozenset({"eax", "edx"})
 
 
-class MachineImportProfileError(StageAInputError):
+class MachineImportProfileError(ToolkitInputError):
     """A machine-import profile graph is malformed or ambiguous."""
 
 

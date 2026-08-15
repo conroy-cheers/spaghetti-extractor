@@ -48,13 +48,23 @@ def _add_target_arguments(parser: argparse.ArgumentParser) -> None:
         help=(
             "Nix builders inventory; defaults to "
             "$SPAGHETTI_EXTRACTOR_BUILDERS_FILE or the nearest "
-            "nix/stage-a-builders"
+            "nix/builders.local, then XDG configuration"
         ),
     )
     execution.add_argument(
         "--local",
         action="store_true",
         help="disable remote Nix builders for this command",
+    )
+    parser.add_argument(
+        "--trusted-public-keys-file",
+        type=Path,
+        metavar="FILE",
+        help=(
+            "trusted Nix cache keys; defaults to "
+            "$SPAGHETTI_EXTRACTOR_TRUSTED_PUBLIC_KEYS_FILE, a companion "
+            "nix/trusted-public-keys.local, then XDG configuration"
+        ),
     )
 
 
@@ -127,6 +137,7 @@ def _build(args: argparse.Namespace, suffix: str, *, no_link: bool = False) -> i
         builder_arguments(
             target_flake=str(args.target_flake),
             builders_file=args.builders_file,
+            trusted_public_keys_file=args.trusted_public_keys_file,
             local=args.local,
         )
     )
@@ -146,6 +157,7 @@ def _realize_json(args: argparse.Namespace, suffix: str, filename: str) -> dict[
             *builder_arguments(
                 target_flake=str(args.target_flake),
                 builders_file=args.builders_file,
+                trusted_public_keys_file=args.trusted_public_keys_file,
                 local=args.local,
             ),
             _flake_installable(args, _operator_attribute(args, suffix)),

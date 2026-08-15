@@ -38,7 +38,7 @@ from .machine_abi import (
     resolve_machine_call_abi,
 )
 from .machine_import_profiles import MachineImportIdentity
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 
 MAX_ARGUMENT_WORDS = 64
 MAX_TABLE_SLOT = 0xFFFF
@@ -50,7 +50,7 @@ def _import_json(identity: MachineImportIdentity) -> dict[str, Any]:
     return {"dll": identity.dll, identity.kind: identity.value}
 
 
-class ExternalOperationProfileError(StageAInputError):
+class ExternalOperationProfileError(ToolkitInputError):
     """An external-operation profile or contract is malformed or ambiguous."""
 
 

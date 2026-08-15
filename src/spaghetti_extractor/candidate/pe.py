@@ -14,7 +14,7 @@ from ..artifacts.formats import (
 )
 from ..pe32.recovered_executable_data import RecoveredExecutableDataContract
 from ..roundtrip_fuzz.image_model import (
-    StageALoadImageContract,
+    LoadImageContract,
 )
 from ..util import sha256_bytes
 from .pe_model import (
@@ -27,7 +27,7 @@ from .pe_model import (
     PECompositionPlan,
     PayloadRelocation,
     PayloadRelocationInventory,
-    StageBPECompositionError,
+    PECompositionError,
     _DIRECTORY_BASE_RELOCATION,
     _DIRECTORY_NAMES,
     _IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE,
@@ -75,7 +75,7 @@ def _encode_relocation_directory(
     pages: dict[int, list[int]] = {}
     for relocation in relocations:
         if relocation.type != _IMAGE_REL_BASED_HIGHLOW or relocation.width != 4:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "only PE32 HIGHLOW relocations can be encoded"
             )
         page_rva = relocation.target_rva & ~0xFFF
@@ -88,7 +88,7 @@ def _encode_relocation_directory(
     for page_rva in sorted(pages):
         slots = sorted(pages[page_rva])
         if len(set(slots)) != len(slots):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "merged relocation directory contains a duplicate slot"
             )
         if len(slots) % 2:
@@ -99,9 +99,9 @@ def _encode_relocation_directory(
     return bytes(result)
 
 
-def plan_stage_b_pe_composition(
+def plan_spx_pe_composition(
     *,
-    load_image_contract: Path | str | Mapping[str, Any] | StageALoadImageContract,
+    load_image_contract: Path | str | Mapping[str, Any] | LoadImageContract,
     payload_pe: Path | str | bytes | bytearray,
     anchor_manifest: Path | str | Mapping[str, Any] | ExecutableAnchorManifest,
     payload_relocation_inventory: (
@@ -164,7 +164,7 @@ def plan_stage_b_pe_composition(
     )
     if payload_relocation_inventory is None:
         if not payload_relocation_directory_present:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "payload without a base-relocation directory requires a complete "
                 "payload relocation inventory"
             )
@@ -178,7 +178,7 @@ def plan_stage_b_pe_composition(
             and relocation_inventory.relocations
             != parsed_payload_inventory.relocations
         ):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "payload relocation inventory disagrees with the PE directory"
             )
     _validate_payload_relocation_inventory(
@@ -223,7 +223,7 @@ def plan_stage_b_pe_composition(
         + bool(relocation_data)
     )
     if total_sections > _UINT16_MAX:
-        raise StageBPECompositionError("composed PE section count exceeds 16 bits")
+        raise PECompositionError("composed PE section count exceeds 16 bits")
     new_table_end = section_table_offset + total_sections * 40
     original_size_of_headers = contract.identity.size_of_headers
     new_size_of_headers = max(
@@ -231,7 +231,7 @@ def plan_stage_b_pe_composition(
         _align_up(new_table_end, file_alignment),
     )
     if new_size_of_headers > _UINT32_MAX:
-        raise StageBPECompositionError("expanded PE headers exceed PE32 file offsets")
+        raise PECompositionError("expanded PE headers exceed PE32 file offsets")
     original_raw_pointer_shift = new_size_of_headers - original_size_of_headers
     original_sections = _shift_original_raw_pointers(
         contract_original_sections, original_raw_pointer_shift
@@ -283,7 +283,7 @@ def plan_stage_b_pe_composition(
         )
         relocation_raw_size = _align_up(len(relocation_data), file_alignment)
         if relocation_rva > _UINT32_MAX - relocation_raw_size:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "merged relocation section exceeds PE32 RVA space"
             )
         relocation_section = _Section(
@@ -363,12 +363,12 @@ def _original_section_bytes(
     else:
         typed = typed_sections[section.index]
         if len(typed.initialized) != 1:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"non-executable section {section.index} lost initialized bytes"
             )
         result = bytearray(typed.initialized[0].data)
         if len(result) != section.raw_size:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"non-executable section {section.index} changed raw size"
             )
 
@@ -381,7 +381,7 @@ def _original_section_bytes(
             offset = rewrite.field_rva - section.rva
             observed = struct.unpack_from("<I", result, offset)[0]
             if observed != rewrite.old_value:
-                raise StageBPECompositionError(
+                raise PECompositionError(
                     f"{rewrite.kind} {rewrite.index} changed before header growth"
                 )
             struct.pack_into("<I", result, offset, rewrite.new_value)
@@ -403,7 +403,7 @@ def _append_payload_sections(image: bytearray, plan: PECompositionPlan) -> None:
             continue
         data = plan.payload_bytes[source.raw_pointer : source.raw_end]
         if len(data) != source.raw_size:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"payload section {source.index} raw bytes changed after planning"
             )
         image[output.raw_pointer : output.raw_end] = data
@@ -427,12 +427,12 @@ def _write_relocation_section(image: bytearray, plan: PECompositionPlan) -> None
     section = plan.relocation_section
     if section is None:
         if plan.relocation_data:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "merged relocations have no output section"
             )
         return
     if len(plan.relocation_data) > section.raw_size:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "merged relocation directory exceeds its output section"
         )
     image[section.raw_pointer : section.raw_end] = plan.relocation_data.ljust(
@@ -532,28 +532,28 @@ def _validate_candidate(image: bytes, plan: PECompositionPlan, checksum: int) ->
         () if plan.relocation_section is None else (plan.relocation_section,)
     )
     if sections != expected_sections:
-        raise StageBPECompositionError("composed candidate section table changed unexpectedly")
+        raise PECompositionError("composed candidate section table changed unexpectedly")
     if int(pe.FILE_HEADER.NumberOfSections) != len(expected_sections):
-        raise StageBPECompositionError("composed candidate section count did not update")
+        raise PECompositionError("composed candidate section count did not update")
     if int(pe.OPTIONAL_HEADER.ImageBase) != plan.contract.identity.preferred_base:
-        raise StageBPECompositionError("composed candidate image base changed")
+        raise PECompositionError("composed candidate image base changed")
     if int(pe.OPTIONAL_HEADER.SizeOfImage) != plan.new_size_of_image:
-        raise StageBPECompositionError("composed candidate SizeOfImage did not update")
+        raise PECompositionError("composed candidate SizeOfImage did not update")
     if int(pe.OPTIONAL_HEADER.SizeOfHeaders) != plan.new_size_of_headers:
-        raise StageBPECompositionError("composed candidate SizeOfHeaders did not update")
+        raise PECompositionError("composed candidate SizeOfHeaders did not update")
     if int(pe.FILE_HEADER.PointerToSymbolTable) or int(pe.FILE_HEADER.NumberOfSymbols):
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "composed candidate retains an unavailable COFF symbol table"
         )
     if int(pe.OPTIONAL_HEADER.AddressOfEntryPoint) != plan.anchor_manifest.entry_anchor_rva:
-        raise StageBPECompositionError("composed candidate entry point did not update")
+        raise PECompositionError("composed candidate entry point did not update")
     if int(pe.OPTIONAL_HEADER.CheckSum) != checksum or not pe.verify_checksum():
-        raise StageBPECompositionError("composed candidate checksum is invalid")
+        raise PECompositionError("composed candidate checksum is invalid")
     relocations_stripped = bool(
         int(pe.FILE_HEADER.Characteristics) & _IMAGE_FILE_RELOCS_STRIPPED
     )
     if relocations_stripped == plan.runtime_relocations:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "composed candidate relocation availability changed"
         )
     dynamic_base = bool(
@@ -561,13 +561,13 @@ def _validate_candidate(image: bytes, plan: PECompositionPlan, checksum: int) ->
         & _IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE
     )
     if dynamic_base != plan.dynamic_base:
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "composed candidate dynamic-base policy changed"
         )
     expected_directories = list(plan.original_directories)
     expected_directories[_DIRECTORY_BASE_RELOCATION] = plan.relocation_directory
     if _directories(pe, context="composed candidate") != tuple(expected_directories):
-        raise StageBPECompositionError(
+        raise PECompositionError(
             "composed candidate changed a non-relocation data directory"
         )
     for source, output in zip(
@@ -588,7 +588,7 @@ def _validate_candidate(image: bytes, plan: PECompositionPlan, checksum: int) ->
             output.raw_size,
             output.characteristics,
         ):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"composed original section {source.index} changed its runtime layout"
             )
         expected_pointer = (
@@ -597,13 +597,13 @@ def _validate_candidate(image: bytes, plan: PECompositionPlan, checksum: int) ->
             else 0
         )
         if output.raw_pointer != expected_pointer:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"composed original section {source.index} has a noncanonical raw shift"
             )
         if output.raw_size and image[output.raw_pointer : output.raw_end] != _original_section_bytes(
             plan, output
         ):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"composed original section {source.index} bytes changed"
             )
     for source, output in zip(plan.payload_sections, plan.output_payload_sections):
@@ -622,7 +622,7 @@ def _validate_candidate(image: bytes, plan: PECompositionPlan, checksum: int) ->
                     relocation.preferred_value.to_bytes(relocation.width, "little")
                 )
         if image[output.raw_pointer : output.raw_end] != expected:
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 f"composed payload section {source.index} bytes changed"
             )
     if plan.runtime_relocations:
@@ -635,7 +635,7 @@ def _validate_candidate(image: bytes, plan: PECompositionPlan, checksum: int) ->
         if tuple(item.rva for item in parsed_relocations.relocations) != tuple(
             item.target_rva for item in plan.merged_relocations
         ):
-            raise StageBPECompositionError(
+            raise PECompositionError(
                 "composed candidate relocation targets differ from the merge plan"
             )
     pe.close()
@@ -817,9 +817,9 @@ def _composition_manifest(
     }
 
 
-def compose_stage_b_pe(
+def compose_spx_pe(
     *,
-    load_image_contract: Path | str | Mapping[str, Any] | StageALoadImageContract,
+    load_image_contract: Path | str | Mapping[str, Any] | LoadImageContract,
     payload_pe: Path | str | bytes | bytearray,
     anchor_manifest: Path | str | Mapping[str, Any] | ExecutableAnchorManifest,
     payload_relocation_inventory: (
@@ -836,7 +836,7 @@ def compose_stage_b_pe(
 ) -> dict[str, Any]:
     """Compose and emit ``candidate.exe`` and a non-authoritative manifest."""
 
-    plan = plan_stage_b_pe_composition(
+    plan = plan_spx_pe_composition(
         load_image_contract=load_image_contract,
         payload_pe=payload_pe,
         anchor_manifest=anchor_manifest,
@@ -886,7 +886,7 @@ def compose_stage_b_pe(
                 temporary.unlink()
             except FileNotFoundError:
                 pass
-        raise StageBPECompositionError(f"cannot emit PE composition: {exc}") from exc
+        raise PECompositionError(f"cannot emit PE composition: {exc}") from exc
     return manifest
 
 
@@ -902,7 +902,7 @@ __all__ = [
     "PECompositionPlan",
     "PayloadRelocation",
     "PayloadRelocationInventory",
-    "StageBPECompositionError",
-    "compose_stage_b_pe",
-    "plan_stage_b_pe_composition",
+    "PECompositionError",
+    "compose_spx_pe",
+    "plan_spx_pe_composition",
 ]

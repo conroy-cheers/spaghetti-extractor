@@ -128,7 +128,7 @@ def _profile() -> ISAProfileBinding:
 
 def _kernel() -> SemanticKernelBinding:
     return SemanticKernelBinding(
-        id="stage-a-lean-machine-semantics:test",
+        id="spaghetti-extractor-lean-machine-semantics:test",
         decoder_sha256=SHA0,
         semantics_sha256=SHA1,
         lean_version="4.19.0",
@@ -154,7 +154,7 @@ def _suite() -> OracleSuiteBinding:
             ),
             BackendBinding(
                 BackendRole.LEAN,
-                "stage-a-lean-machine-semantics",
+                "spaghetti-extractor-lean-machine-semantics",
                 "formal-default-v1",
             ),
         )
@@ -395,7 +395,6 @@ class ISAQualificationCampaignTests(unittest.TestCase):
         )
         self.assertEqual(first.sha256(), second.sha256())
         self.assertFalse(first.trust.proof_authority)
-        self.assertFalse(first.trust.closes_stage_a_proof)
 
     def test_no_evidence_is_visible_as_unqualified_or_not_applicable(self):
         campaign = build_isa_qualification_campaign(catalog=_catalog())

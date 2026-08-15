@@ -1,4 +1,4 @@
-"""Non-authoritative C rendering for recovered Stage B operations.
+"""Non-authoritative C rendering for recovered candidate reconstruction operations.
 
 This module deliberately has no dependency on source-call substitution.  An
 operation catalog describes how an already identified operation may be written

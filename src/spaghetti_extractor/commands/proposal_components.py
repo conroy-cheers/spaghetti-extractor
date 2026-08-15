@@ -9,7 +9,7 @@ from .common import Handler, path_argument
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name != "stage-b-discover-components":
+    if name != "component-discover":
         raise ValueError(f"unsupported component proposal command: {name}")
     path_argument(command, "machine_ir", required=True)
     path_argument(command, "reconstruction_plan", required=True)

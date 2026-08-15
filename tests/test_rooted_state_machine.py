@@ -10,7 +10,7 @@ from spaghetti_extractor.reconstruction.rooted_state_machine import (
     _merge_roots,
     _rooted_direct_reachability,
 )
-from spaghetti_extractor.pe32.stage_binary import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 
 
 def _row(
@@ -118,7 +118,7 @@ class RootedDirectControlTests(unittest.TestCase):
             )
         ]
 
-        with self.assertRaisesRegex(StageAInputError, "internal call target"):
+        with self.assertRaisesRegex(ToolkitInputError, "internal call target"):
             _rooted_direct_reachability(
                 rows, [{"kind": "pe_entrypoint", "rva": 0x1000}]
             )
@@ -175,7 +175,7 @@ class RootedDirectControlTests(unittest.TestCase):
             path = Path(temporary) / "manifest.json"
             path.write_text(json.dumps(manifest), encoding="utf-8")
 
-            with self.assertRaisesRegex(StageAInputError, "state machine binding"):
+            with self.assertRaisesRegex(ToolkitInputError, "state machine binding"):
                 _manifest_seed_roots(
                     path,
                     state_machine_sha256="1" * 64,
@@ -213,7 +213,7 @@ class RootedDirectControlTests(unittest.TestCase):
 
 def _manifest() -> dict:
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "inputs": {
             "state_machine": {"sha256": "1" * 64},
             "original_pe": {"sha256": "2" * 64},

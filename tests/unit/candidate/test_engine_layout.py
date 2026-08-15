@@ -16,13 +16,13 @@ from spaghetti_extractor.candidate.engine_layout import (
     EngineLayoutFeature,
     EngineLayoutFormatError,
     EngineRegister,
-    STAGE_B_ENGINE_LAYOUT_HEADER_WORDS,
-    STAGE_B_ENGINE_LAYOUT_MAGIC,
-    STAGE_B_ENGINE_LAYOUT_RECORD_WORDS,
-    STAGE_B_ENGINE_LAYOUT_VERSION,
-    canonical_stage_b_machine_state_spec,
-    parse_stage_b_engine_layout_payload,
-    render_stage_b_engine_layout_c,
+    SPX_ENGINE_LAYOUT_HEADER_WORDS,
+    SPX_ENGINE_LAYOUT_MAGIC,
+    SPX_ENGINE_LAYOUT_RECORD_WORDS,
+    SPX_ENGINE_LAYOUT_VERSION,
+    canonical_spx_machine_state_spec,
+    parse_spx_engine_layout_payload,
+    render_spx_engine_layout_c,
 )
 
 
@@ -85,13 +85,13 @@ def _payload(
             size = 4
         records.extend((int(field.kind), field.index, offset, size))
         offset += size
-    total_words = STAGE_B_ENGINE_LAYOUT_HEADER_WORDS + len(records)
+    total_words = SPX_ENGINE_LAYOUT_HEADER_WORDS + len(records)
     words = [
-        STAGE_B_ENGINE_LAYOUT_MAGIC,
-        STAGE_B_ENGINE_LAYOUT_VERSION,
+        SPX_ENGINE_LAYOUT_MAGIC,
+        SPX_ENGINE_LAYOUT_VERSION,
         total_words,
-        STAGE_B_ENGINE_LAYOUT_HEADER_WORDS,
-        STAGE_B_ENGINE_LAYOUT_RECORD_WORDS,
+        SPX_ENGINE_LAYOUT_HEADER_WORDS,
+        SPX_ENGINE_LAYOUT_RECORD_WORDS,
         len(fields),
         offset,
         x87_slot_count,
@@ -110,7 +110,7 @@ def _mutate(payload: bytes, index: int, value: int) -> bytes:
 
 class EngineLayoutTests(unittest.TestCase):
     def test_render_is_deterministic_and_uses_compiler_layout_operators(self) -> None:
-        spec = canonical_stage_b_machine_state_spec(
+        spec = canonical_spx_machine_state_spec(
             include_fs_base=True,
             include_original_rva=True,
             member_overrides={
@@ -122,7 +122,7 @@ class EngineLayoutTests(unittest.TestCase):
             x87_slot_count=spec.x87_slot_count,
         )
 
-        source = render_stage_b_engine_layout_c(spec)
+        source = render_spx_engine_layout_c(spec)
 
         self.assertEqual(
             spec.features,
@@ -131,32 +131,32 @@ class EngineLayoutTests(unittest.TestCase):
             | EngineLayoutFeature.FS_BASE
             | EngineLayoutFeature.ORIGINAL_RVA,
         )
-        self.assertEqual(source, render_stage_b_engine_layout_c(spec))
-        self.assertIn("const uint32_t stage_b_engine_layout_table", source)
+        self.assertEqual(source, render_spx_engine_layout_c(spec))
+        self.assertIn("const uint32_t spx_engine_layout_table", source)
         self.assertIn('.rdata$SBEL', source)
-        self.assertIn("offsetof(stage_b_machine_state, eax)", source)
+        self.assertIn("offsetof(spx_machine_state, eax)", source)
         self.assertIn(
-            "sizeof(((stage_b_machine_state *)0)->x87_stack[7].value_bytes)",
+            "sizeof(((spx_machine_state *)0)->x87_stack[7].value_bytes)",
             source,
         )
         self.assertIn(
-            "sizeof(((stage_b_machine_state *)0)->x87_stack[7].tag)",
+            "sizeof(((spx_machine_state *)0)->x87_stack[7].tag)",
             source,
         )
         self.assertIn(
-            "sizeof(((stage_b_machine_state *)0)->x87_instruction_pointer)",
+            "sizeof(((spx_machine_state *)0)->x87_instruction_pointer)",
             source,
         )
-        self.assertIn("offsetof(stage_b_machine_state, segments.fs_base)", source)
-        self.assertIn("offsetof(stage_b_machine_state, original_rva)", source)
+        self.assertIn("offsetof(spx_machine_state, segments.fs_base)", source)
+        self.assertIn("offsetof(spx_machine_state, original_rva)", source)
         self.assertIn("no proof or acceptance authority", source)
         self.assertEqual(
-            render_stage_b_engine_layout_c(reversed_spec),
+            render_spx_engine_layout_c(reversed_spec),
             source,
         )
 
     def test_schema_rejects_missing_duplicate_and_injected_members(self) -> None:
-        spec = canonical_stage_b_machine_state_spec()
+        spec = canonical_spx_machine_state_spec()
         missing_status = tuple(
             entry
             for entry in spec.fields
@@ -167,7 +167,7 @@ class EngineLayoutTests(unittest.TestCase):
 
         eax = EngineField.register(EngineRegister.EAX)
         with self.assertRaisesRegex(ValueError, "duplicate member"):
-            canonical_stage_b_machine_state_spec(
+            canonical_spx_machine_state_spec(
                 member_overrides={eax: "ebx"}
             )
         with self.assertRaisesRegex(ValueError, "invalid C member"):
@@ -179,13 +179,13 @@ class EngineLayoutTests(unittest.TestCase):
             | EngineLayoutFeature.FS_BASE
             | EngineLayoutFeature.ORIGINAL_RVA
         )
-        layout = parse_stage_b_engine_layout_payload(
+        layout = parse_spx_engine_layout_payload(
             _payload(features=features),
             expected_features=features,
             expected_x87_slot_count=8,
         )
 
-        self.assertEqual(layout.version, STAGE_B_ENGINE_LAYOUT_VERSION)
+        self.assertEqual(layout.version, SPX_ENGINE_LAYOUT_VERSION)
         self.assertEqual(layout.features, features)
         self.assertEqual(layout.x87_slot_count, 8)
         self.assertEqual(
@@ -215,20 +215,20 @@ class EngineLayoutTests(unittest.TestCase):
             field for field in fields if field.kind != EngineFieldKind.X87_STATUS
         ]
         with self.assertRaisesRegex(EngineLayoutFormatError, "missing x87_status"):
-            parse_stage_b_engine_layout_payload(
+            parse_spx_engine_layout_payload(
                 _payload(features=features, fields=without_status)
             )
 
         fs_base = EngineField(EngineFieldKind.FS_BASE)
         with self.assertRaisesRegex(EngineLayoutFormatError, "caller-required.*fs_base"):
-            parse_stage_b_engine_layout_payload(
+            parse_spx_engine_layout_payload(
                 _payload(features=features), required_fields=(fs_base,)
             )
 
         packed_with_split_flag = _fields(EngineLayoutFeature.PACKED_EFLAGS)
         packed_with_split_flag.insert(9, EngineField.flag(EngineFlag.CF))
         with self.assertRaisesRegex(EngineLayoutFormatError, "unexpected flag:cf"):
-            parse_stage_b_engine_layout_payload(
+            parse_spx_engine_layout_payload(
                 _payload(
                     features=EngineLayoutFeature.PACKED_EFLAGS,
                     fields=packed_with_split_flag,
@@ -237,8 +237,8 @@ class EngineLayoutTests(unittest.TestCase):
 
     def test_parser_rejects_header_identity_bounds_overlap_and_order_errors(self) -> None:
         payload = _payload()
-        first = STAGE_B_ENGINE_LAYOUT_HEADER_WORDS
-        second = first + STAGE_B_ENGINE_LAYOUT_RECORD_WORDS
+        first = SPX_ENGINE_LAYOUT_HEADER_WORDS
+        second = first + SPX_ENGINE_LAYOUT_RECORD_WORDS
         state_size = struct.unpack_from("<I", payload, 6 * 4)[0]
         cases = {
             "magic": (_mutate(payload, 0, 0), "magic"),
@@ -270,19 +270,19 @@ class EngineLayoutTests(unittest.TestCase):
         for name, (malformed, message) in cases.items():
             with self.subTest(name=name):
                 with self.assertRaisesRegex(EngineLayoutFormatError, message):
-                    parse_stage_b_engine_layout_payload(malformed)
+                    parse_spx_engine_layout_payload(malformed)
 
         words = list(struct.unpack(f"<{len(payload) // 4}I", payload))
-        first_record = words[first : first + STAGE_B_ENGINE_LAYOUT_RECORD_WORDS]
-        second_record = words[second : second + STAGE_B_ENGINE_LAYOUT_RECORD_WORDS]
-        words[first : first + STAGE_B_ENGINE_LAYOUT_RECORD_WORDS] = second_record
-        words[second : second + STAGE_B_ENGINE_LAYOUT_RECORD_WORDS] = first_record
+        first_record = words[first : first + SPX_ENGINE_LAYOUT_RECORD_WORDS]
+        second_record = words[second : second + SPX_ENGINE_LAYOUT_RECORD_WORDS]
+        words[first : first + SPX_ENGINE_LAYOUT_RECORD_WORDS] = second_record
+        words[second : second + SPX_ENGINE_LAYOUT_RECORD_WORDS] = first_record
         reordered = struct.pack(f"<{len(words)}I", *words)
         with self.assertRaisesRegex(EngineLayoutFormatError, "not canonical"):
-            parse_stage_b_engine_layout_payload(reordered)
+            parse_spx_engine_layout_payload(reordered)
 
         with self.assertRaisesRegex(EngineLayoutFormatError, "declared size"):
-            parse_stage_b_engine_layout_payload(payload[:-4])
+            parse_spx_engine_layout_payload(payload[:-4])
 
     def test_compiler_materializes_target_abi_offsets_and_sizes(self) -> None:
         compiler = shutil.which("cc")
@@ -293,7 +293,7 @@ class EngineLayoutTests(unittest.TestCase):
             | EngineLayoutFeature.FS_BASE
             | EngineLayoutFeature.ORIGINAL_RVA
         )
-        spec = canonical_stage_b_machine_state_spec(
+        spec = canonical_spx_machine_state_spec(
             flag_storage="packed",
             include_fs_base=True,
             include_original_rva=True,
@@ -303,8 +303,8 @@ class EngineLayoutTests(unittest.TestCase):
             for index, entry in enumerate(spec.fields)
         )
         expected_words = (
-            STAGE_B_ENGINE_LAYOUT_HEADER_WORDS
-            + STAGE_B_ENGINE_LAYOUT_RECORD_WORDS * len(spec.fields)
+            SPX_ENGINE_LAYOUT_HEADER_WORDS
+            + SPX_ENGINE_LAYOUT_RECORD_WORDS * len(spec.fields)
         )
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -314,17 +314,17 @@ class EngineLayoutTests(unittest.TestCase):
 #define STATE_MACHINE_RUNTIME_H
 #include <stdint.h>
 
-typedef struct stage_b_x87_value {
+typedef struct spx_x87_value {
   uint8_t value_bytes[10];
   uint32_t empty;
   uint8_t tag;
-} stage_b_x87_value;
+} spx_x87_value;
 
-typedef struct stage_b_machine_state {
+typedef struct spx_machine_state {
   uint8_t target_abi_prefix;
   uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp;
   uint32_t eflags;
-  stage_b_x87_value x87_stack[8];
+  spx_x87_value x87_stack[8];
   uint16_t x87_control;
   uint16_t x87_status;
   uint8_t x87_pending_exception;
@@ -335,14 +335,14 @@ typedef struct stage_b_machine_state {
   uint16_t x87_data_selector;
   uint32_t fs_base;
   uint32_t original_rva;
-} stage_b_machine_state;
+} spx_machine_state;
 
 #endif
 """,
                 encoding="utf-8",
             )
             (root / "layout.c").write_text(
-                render_stage_b_engine_layout_c(spec), encoding="utf-8"
+                render_spx_engine_layout_c(spec), encoding="utf-8"
             )
             (root / "harness.c").write_text(
                 f"""#include <stddef.h>
@@ -350,25 +350,25 @@ typedef struct stage_b_machine_state {
 #include <stdio.h>
 #include "state-machine-runtime.h"
 
-extern const uint32_t stage_b_engine_layout_table[];
-extern const uint32_t stage_b_engine_layout_table_word_count;
+extern const uint32_t spx_engine_layout_table[];
+extern const uint32_t spx_engine_layout_table_word_count;
 
 #define CHECK_FIELD(index_, member_) do {{ \\
-  size_t base_ = {STAGE_B_ENGINE_LAYOUT_HEADER_WORDS}U \\
-      + (size_t)(index_) * {STAGE_B_ENGINE_LAYOUT_RECORD_WORDS}U; \\
-  if (stage_b_engine_layout_table[base_ + 2U] \\
-      != (uint32_t)offsetof(stage_b_machine_state, member_)) return 20; \\
-  if (stage_b_engine_layout_table[base_ + 3U] \\
-      != (uint32_t)sizeof(((stage_b_machine_state *)0)->member_)) return 21; \\
+  size_t base_ = {SPX_ENGINE_LAYOUT_HEADER_WORDS}U \\
+      + (size_t)(index_) * {SPX_ENGINE_LAYOUT_RECORD_WORDS}U; \\
+  if (spx_engine_layout_table[base_ + 2U] \\
+      != (uint32_t)offsetof(spx_machine_state, member_)) return 20; \\
+  if (spx_engine_layout_table[base_ + 3U] \\
+      != (uint32_t)sizeof(((spx_machine_state *)0)->member_)) return 21; \\
 }} while (0)
 
 int main(void) {{
-  if (stage_b_engine_layout_table_word_count != {expected_words}U) return 1;
-  if (stage_b_engine_layout_table[6] != sizeof(stage_b_machine_state)) return 2;
+  if (spx_engine_layout_table_word_count != {expected_words}U) return 1;
+  if (spx_engine_layout_table[6] != sizeof(spx_machine_state)) return 2;
 {checks}
-  if (fwrite(stage_b_engine_layout_table, sizeof(uint32_t),
-      stage_b_engine_layout_table_word_count, stdout)
-      != stage_b_engine_layout_table_word_count) return 3;
+  if (fwrite(spx_engine_layout_table, sizeof(uint32_t),
+      spx_engine_layout_table_word_count, stdout)
+      != spx_engine_layout_table_word_count) return 3;
   return 0;
 }}
 """,
@@ -398,7 +398,7 @@ int main(void) {{
                 capture_output=True,
             )
 
-        layout = parse_stage_b_engine_layout_payload(
+        layout = parse_spx_engine_layout_payload(
             result.stdout,
             expected_features=features,
             expected_x87_slot_count=8,

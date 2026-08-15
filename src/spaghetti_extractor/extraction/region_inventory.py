@@ -7,13 +7,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..artifacts.formats import STATIC_ANALYSIS_PROFILE_ID
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes
 from .schema import STATIC_ANALYSIS_MODEL_ID
 
 
-SIDE_EXTRACTION_REQUEST_FORMAT = "stage-a-static-region-request-v1"
-SIDE_EXTRACTION_RESULT_FORMAT = "stage-a-static-region-inventory-v1"
+SIDE_EXTRACTION_REQUEST_FORMAT = "spaghetti-extractor-static-region-request-v1"
+SIDE_EXTRACTION_RESULT_FORMAT = "spaghetti-extractor-static-region-inventory-v1"
 SIDE_EXTRACTION_RESULT_STATUS = (
     "untrusted_proposal_requires_lean_decode_replay"
 )
@@ -49,7 +49,7 @@ _RESULT_REGION_FIELDS = _REQUEST_REGION_FIELDS | {
 
 def _object(value: Any, context: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     return value
 
 
@@ -64,24 +64,24 @@ def _exact_fields(
             details.append(f"missing fields {missing}")
         if extra:
             details.append(f"unexpected fields {extra}")
-        raise StageAInputError(f"{context} has " + " and ".join(details))
+        raise ToolkitInputError(f"{context} has " + " and ".join(details))
 
 
 def _sha256(value: Any, context: str) -> str:
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise StageAInputError(f"{context} must be 64 lowercase hex characters")
+        raise ToolkitInputError(f"{context} must be 64 lowercase hex characters")
     return value
 
 
 def _integer(value: Any, context: str, *, minimum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise StageAInputError(f"{context} must be an integer >= {minimum}")
+        raise ToolkitInputError(f"{context} must be an integer >= {minimum}")
     return value
 
 
 def _string(value: Any, context: str) -> str:
     if not isinstance(value, str) or not value:
-        raise StageAInputError(f"{context} must be a nonempty string")
+        raise ToolkitInputError(f"{context} must be a nonempty string")
     return value
 
 
@@ -107,7 +107,7 @@ class SideExtractionSpan:
         rva_start = _integer(row["rva_start"], f"{context}.rva_start", minimum=0)
         size = _integer(row["size"], f"{context}.size", minimum=1)
         if rva_start >= 2**32 or rva_start + size > 2**32:
-            raise StageAInputError(f"{context} must fit in the PE32 RVA space")
+            raise ToolkitInputError(f"{context} must fit in the PE32 RVA space")
         return cls(rva_start=rva_start, size=size)
 
     def to_payload(self) -> dict[str, int]:
@@ -130,7 +130,7 @@ class SideExtractionRegion:
         _exact_fields(row, _REQUEST_REGION_FIELDS, context)
         index = _integer(row["index"], f"{context}.index", minimum=0)
         if index != expected_index:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "side extraction request region indices are not canonical"
             )
         return cls(
@@ -175,21 +175,21 @@ def parse_request(payload: Any) -> SideExtractionRequest:
     request = _object(payload, "side extraction request")
     _exact_fields(request, _REQUEST_FIELDS, "side extraction request")
     if request["format"] != SIDE_EXTRACTION_REQUEST_FORMAT:
-        raise StageAInputError("unsupported side extraction request format")
+        raise ToolkitInputError("unsupported side extraction request format")
     if request["profile"] != STATIC_ANALYSIS_PROFILE_ID:
-        raise StageAInputError("side extraction request profile mismatch")
+        raise ToolkitInputError("side extraction request profile mismatch")
     if request["model"] != STATIC_ANALYSIS_MODEL_ID:
-        raise StageAInputError("side extraction request model mismatch")
+        raise ToolkitInputError("side extraction request model mismatch")
     side = request["side"]
     if side not in _SIDES:
-        raise StageAInputError("side extraction request side is invalid")
+        raise ToolkitInputError("side extraction request side is invalid")
     binary_sha256 = _sha256(
         request["binary_sha256"], "side extraction request binary_sha256"
     )
 
     raw_regions = request["regions"]
     if not isinstance(raw_regions, list):
-        raise StageAInputError("side extraction request regions must be a list")
+        raise ToolkitInputError("side extraction request regions must be a list")
     regions = tuple(
         SideExtractionRegion.parse(row, expected_index=index)
         for index, row in enumerate(raw_regions)
@@ -197,9 +197,9 @@ def parse_request(payload: Any) -> SideExtractionRequest:
     ids = [region.id for region in regions]
     numeric_ids = [region.numeric_id for region in regions]
     if len(ids) != len(set(ids)):
-        raise StageAInputError("side extraction request region ids must be unique")
+        raise ToolkitInputError("side extraction request region ids must be unique")
     if len(numeric_ids) != len(set(numeric_ids)):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side extraction request region numeric ids must be unique"
         )
     return SideExtractionRequest(
@@ -207,47 +207,6 @@ def parse_request(payload: Any) -> SideExtractionRequest:
         binary_sha256=binary_sha256,
         regions=regions,
     )
-
-
-def request_payload(
-    contract: Mapping[str, Any], side: str, binary_sha256: str,
-) -> dict[str, Any]:
-    relation_contract = _object(contract, "normalized relation contract")
-    if side not in _SIDES:
-        raise StageAInputError("side extraction request side is invalid")
-    _sha256(binary_sha256, "side extraction request binary_sha256")
-
-    raw_regions = relation_contract.get("regions")
-    if not isinstance(raw_regions, list):
-        raise StageAInputError("normalized relation contract regions must be a list")
-    regions: list[dict[str, Any]] = []
-    for index, raw_region in enumerate(raw_regions):
-        context = f"normalized relation contract region {index}"
-        region = _object(raw_region, context)
-        if "id" not in region or "numeric_id" not in region or side not in region:
-            raise StageAInputError(f"{context} is missing side extraction identity")
-        span = _object(region[side], f"{context}.{side}")
-        if "rva_start" not in span or "size" not in span:
-            raise StageAInputError(f"{context}.{side} is missing its span")
-        regions.append({
-            "index": index,
-            "id": region["id"],
-            "numeric_id": region["numeric_id"],
-            "span": {
-                "rva_start": span["rva_start"],
-                "size": span["size"],
-            },
-        })
-
-    payload = {
-        "format": SIDE_EXTRACTION_REQUEST_FORMAT,
-        "profile": STATIC_ANALYSIS_PROFILE_ID,
-        "model": STATIC_ANALYSIS_MODEL_ID,
-        "side": side,
-        "binary_sha256": binary_sha256,
-        "regions": regions,
-    }
-    return parse_request(payload).to_payload()
 
 
 def canonical_request_sha256(
@@ -270,16 +229,16 @@ def result_payload(
     behavior_terms: list[str],
 ) -> dict[str, Any]:
     if not isinstance(request, SideExtractionRequest):
-        raise StageAInputError("side extraction result requires a parsed request")
+        raise ToolkitInputError("side extraction result requires a parsed request")
     request = parse_request(request.to_payload())
     decoder_sha256 = _sha256(
         decoder_semantics_sha256,
         "side extraction result decoder_semantics_sha256",
     )
     if not isinstance(behavior_terms, list):
-        raise StageAInputError("side extraction behavior terms must be a list")
+        raise ToolkitInputError("side extraction behavior terms must be a list")
     if len(behavior_terms) != len(request.regions):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side extraction behavior count does not match the request"
         )
 
@@ -317,7 +276,7 @@ def parse_result(
     expected_decoder_semantics_sha256: str,
 ) -> list[str]:
     if not isinstance(expected_request, SideExtractionRequest):
-        raise StageAInputError("side extraction result requires a parsed request")
+        raise ToolkitInputError("side extraction result requires a parsed request")
     expected_request = parse_request(expected_request.to_payload())
     expected_decoder_sha256 = _sha256(
         expected_decoder_semantics_sha256,
@@ -326,13 +285,13 @@ def parse_result(
     result = _object(payload, "side extraction result")
     _exact_fields(result, _RESULT_FIELDS, "side extraction result")
     if result["format"] != SIDE_EXTRACTION_RESULT_FORMAT:
-        raise StageAInputError("unsupported side extraction result format")
+        raise ToolkitInputError("unsupported side extraction result format")
     if result["profile"] != STATIC_ANALYSIS_PROFILE_ID:
-        raise StageAInputError("side extraction result profile mismatch")
+        raise ToolkitInputError("side extraction result profile mismatch")
     if result["model"] != STATIC_ANALYSIS_MODEL_ID:
-        raise StageAInputError("side extraction result model mismatch")
+        raise ToolkitInputError("side extraction result model mismatch")
     if result["status"] != SIDE_EXTRACTION_RESULT_STATUS:
-        raise StageAInputError("side extraction result status mismatch")
+        raise ToolkitInputError("side extraction result status mismatch")
 
     expected_identities = {
         "side": expected_request.side,
@@ -342,13 +301,13 @@ def parse_result(
     }
     for field, expected in expected_identities.items():
         if result[field] != expected:
-            raise StageAInputError(f"side extraction result {field} mismatch")
+            raise ToolkitInputError(f"side extraction result {field} mismatch")
 
     raw_regions = result["regions"]
     if not isinstance(raw_regions, list):
-        raise StageAInputError("side extraction result regions must be a list")
+        raise ToolkitInputError("side extraction result regions must be a list")
     if len(raw_regions) != len(expected_request.regions):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side extraction result region count does not match the request"
         )
 
@@ -364,7 +323,7 @@ def parse_result(
             field: region[field] for field in _REQUEST_REGION_FIELDS
         }
         if observed_identity != expected_identity:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "side extraction result regions do not match canonical request order"
             )
         term = _string(region["behavior_term"], f"{context}.behavior_term")
@@ -372,7 +331,7 @@ def parse_result(
             region["behavior_sha256"], f"{context}.behavior_sha256"
         )
         if behavior_sha256 != sha256_bytes(term.encode("utf-8")):
-            raise StageAInputError(f"{context} behavior hash mismatch")
+            raise ToolkitInputError(f"{context} behavior hash mismatch")
         behavior_terms.append(term)
     return behavior_terms
 
@@ -388,7 +347,7 @@ def parse_result_unbound(
     _exact_fields(result, _RESULT_FIELDS, "side extraction result")
     raw_regions = result.get("regions")
     if not isinstance(raw_regions, list):
-        raise StageAInputError("side extraction result regions must be a list")
+        raise ToolkitInputError("side extraction result regions must be a list")
     request = parse_request({
         "format": SIDE_EXTRACTION_REQUEST_FORMAT,
         "profile": result.get("profile"),
@@ -406,11 +365,11 @@ def parse_result_unbound(
         ],
     })
     if request.side != expected_side:
-        raise StageAInputError("side extraction result side mismatch")
+        raise ToolkitInputError("side extraction result side mismatch")
     if request.binary_sha256 != _sha256(
         expected_binary_sha256, "expected side extraction binary SHA-256"
     ):
-        raise StageAInputError("side extraction result binary_sha256 mismatch")
+        raise ToolkitInputError("side extraction result binary_sha256 mismatch")
     terms = parse_result(
         result,
         expected_request=request,
@@ -438,7 +397,7 @@ def select_result_spans(
     ):
         key = (region.span.rva_start, region.span.size)
         if key in by_span:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "side extraction result contains duplicate executable spans"
             )
         by_span[key] = term
@@ -447,7 +406,7 @@ def select_result_spans(
         key = (region.span.rva_start, region.span.size)
         term = by_span.get(key)
         if term is None:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"side extraction result omits required span {key[0]:#x}+{key[1]}"
             )
         selected.append(term)

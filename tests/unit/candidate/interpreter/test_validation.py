@@ -28,8 +28,8 @@ class InterpreterValidationTests(unittest.TestCase):
                     row = _row()
                     row["ordered_events"] = [{**base, **mutation}]
                     _write_machine(machine, [row])
-                    with self.assertRaisesRegex(StageBInterpreterError, message) as raised:
-                        compile_stage_b_interpreter_program(machine)
+                    with self.assertRaisesRegex(CandidateInterpreterError, message) as raised:
+                        compile_spx_interpreter_program(machine)
                     self.assertEqual(
                         raised.exception.code, "malformed_rep_stosd_event"
                     )
@@ -52,16 +52,16 @@ class InterpreterValidationTests(unittest.TestCase):
                 row = _row()
                 row["ordered_events"] = [{**_rep_scas_event(), **mutation}]
                 _write_machine(machine, [row])
-                with self.assertRaisesRegex(StageBInterpreterError, message) as raised:
-                    compile_stage_b_interpreter_program(machine)
+                with self.assertRaisesRegex(CandidateInterpreterError, message) as raised:
+                    compile_spx_interpreter_program(machine)
                 self.assertEqual(raised.exception.code, "malformed_rep_scas_event")
 
     def test_unsupported_operation_fails_before_emission(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             machine = Path(temporary) / "state-machine.jsonl"
             _write_machine(machine, [_row(expression={"op": "target_specific_magic"})])
-            with self.assertRaisesRegex(StageBInterpreterError, "unsupported semantic op"):
-                compile_stage_b_interpreter_program(machine)
+            with self.assertRaisesRegex(CandidateInterpreterError, "unsupported semantic op"):
+                compile_spx_interpreter_program(machine)
 
     def test_duplicate_rva_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -69,8 +69,8 @@ class InterpreterValidationTests(unittest.TestCase):
             second = dict(_row())
             second["id"] = "semantic-transfer:other"
             _write_machine(machine, [_row(), second])
-            with self.assertRaisesRegex(StageBInterpreterError, "duplicate transfer RVA"):
-                compile_stage_b_interpreter_program(machine)
+            with self.assertRaisesRegex(CandidateInterpreterError, "duplicate transfer RVA"):
+                compile_spx_interpreter_program(machine)
 
     def test_symbolic_x87_state_requires_checked_replay(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -84,9 +84,9 @@ class InterpreterValidationTests(unittest.TestCase):
             }
             _write_machine(machine, [row])
             with self.assertRaisesRegex(
-                StageBInterpreterError, "exact checked replay schedule"
+                CandidateInterpreterError, "exact checked replay schedule"
             ) as raised:
-                compile_stage_b_interpreter_program(machine)
+                compile_spx_interpreter_program(machine)
             self.assertEqual(raised.exception.code, "x87_checked_replay_required")
             self.assertIn("instruction-ordered effect schedule", raised.exception.next_action)
 

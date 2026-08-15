@@ -1,9 +1,9 @@
 # Bochs ISA conformance backend
 
-This directory implements the pinned Bochs executor used by Stage A's
-evidence-only ISA conformance checks. Bochs is an independent veto oracle. Its
+This directory implements the pinned Bochs executor used by the
+static-authority ISA conformance checks. Bochs is an independent veto oracle. Its
 observations can reject a Lean semantic implementation, but they never close a
-Stage A proof obligation.
+static-authority proof obligation.
 
 The Nix package builds Bochs 3.0 with this instrumentation linked at compile
 time, builds a minimal protected-mode guest, and installs only the strict batch
@@ -80,7 +80,7 @@ observations remain explicitly unsupported.
 Build the full current Bochs corpus check with:
 
 ```console
-nix build .#stage-a-isa-conformance-bochs-80386 --no-link
+nix build .#spaghetti-extractor-isa-conformance-bochs-80386 --no-link
 ```
 
 The next capability increments should add other reviewed architectural fault

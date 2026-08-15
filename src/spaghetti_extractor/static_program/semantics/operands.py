@@ -6,7 +6,7 @@ from typing import Any
 
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
-from ...pe32.stage_binary import StageAImport
+from ...pe32.model import PEImport
 from ..model import StaticUnitContext
 from .expressions import (
     _canonical_expr,
@@ -267,7 +267,7 @@ def _internal_call_event(
 
 def _external_import_call_event(
     event_index: int,
-    imported: StageAImport,
+    imported: PEImport,
     return_rva: int,
     registers: dict[str, tuple[Any, ...]],
     flags: dict[str, tuple[Any, ...]],

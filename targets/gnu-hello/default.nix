@@ -47,7 +47,6 @@ let
   };
   defaultConfiguration = target.workflow.default_configuration;
   components = workflow.components;
-  componentRuntime = workflow.componentRuntimeFor defaultConfiguration;
   candidateTests = {
     "gnu-hello-default-candidate" = workflow.candidateTestFor {
       id = "gnu-hello-default-candidate";
@@ -84,6 +83,5 @@ sdk.target.pe32Bundle {
     startup-compare-route-adapter = components.adapterPlans.startup-compare-route;
     startup-compare-route-evidence = components.evidences.startup-compare-route;
     startup-compare-route-qualification = components.qualifications.startup-compare-route;
-    lifted-component-runtime = componentRuntime;
   };
 }

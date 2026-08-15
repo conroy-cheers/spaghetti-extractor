@@ -62,7 +62,7 @@
       "required_features": []
     }
   ],
-  "format": "stage-a-isa-form-catalog-v2",
+  "format": "spaghetti-extractor-isa-form-catalog-v2",
   "profile": "pe32-i686-v1",
   "source": {
     "extractor": "xed-isa-catalog+checked-encoding-enrichment",

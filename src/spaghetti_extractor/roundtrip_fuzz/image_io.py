@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..errors import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes, sha256_file, write_json
 
 
@@ -17,7 +17,7 @@ from .image_model import (
     ContractHashes,
     PEImageIdentity,
     RuntimePEHeaders,
-    StageALoadImageContract,
+    LoadImageContract,
     _HASH_ALGORITHM,
     _mapping,
 )
@@ -32,14 +32,14 @@ from .image_parsing import (
     _parse_pe_headers,
 )
 
-def build_stage_a_load_image_contract(original_pe: Path) -> StageALoadImageContract:
+def build_spx_load_image_contract(original_pe: Path) -> LoadImageContract:
     """Read an original PE statically and produce its opaque-safe image contract."""
 
     original_pe = Path(original_pe)
     try:
         data = original_pe.read_bytes()
     except OSError as exc:
-        raise StageAInputError(f"cannot read original PE {original_pe}: {exc}") from exc
+        raise ToolkitInputError(f"cannot read original PE {original_pe}: {exc}") from exc
     headers = _parse_pe_headers(data, exact_file_size=len(data))
     reader = _ImageReader(data, headers)
     sections = _extract_sections(data, headers)
@@ -76,7 +76,7 @@ def build_stage_a_load_image_contract(original_pe: Path) -> StageALoadImageContr
         completeness_sha256="0" * 64,
         contract_sha256="0" * 64,
     )
-    provisional = StageALoadImageContract(
+    provisional = LoadImageContract(
         identity=identity,
         runtime_headers=runtime_headers,
         sections=sections,
@@ -95,7 +95,7 @@ def build_stage_a_load_image_contract(original_pe: Path) -> StageALoadImageContr
         tls=tls,
         completeness=completeness,
     )
-    contract = StageALoadImageContract(
+    contract = LoadImageContract(
         identity=identity,
         runtime_headers=runtime_headers,
         sections=sections,
@@ -109,24 +109,24 @@ def build_stage_a_load_image_contract(original_pe: Path) -> StageALoadImageContr
     return contract
 
 
-def write_stage_a_load_image_contract(
+def write_spx_load_image_contract(
     *, original_pe: Path, out: Path
-) -> StageALoadImageContract:
-    contract = build_stage_a_load_image_contract(original_pe)
+) -> LoadImageContract:
+    contract = build_spx_load_image_contract(original_pe)
     write_json(Path(out), contract.to_payload())
     return contract
 
 
-def load_stage_a_load_image_contract(
+def load_spx_load_image_contract(
     path: Path, *, original_pe: Path | None = None
-) -> StageALoadImageContract:
+) -> LoadImageContract:
     path = Path(path)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read Stage A load-image contract {path}: {exc}") from exc
-    contract = StageALoadImageContract.parse(
-        _mapping(payload, "Stage A load-image contract")
+        raise ToolkitInputError(f"cannot read static analysis load-image contract {path}: {exc}") from exc
+    contract = LoadImageContract.parse(
+        _mapping(payload, "static analysis load-image contract")
     )
     if original_pe is not None:
         contract.validate(original_pe=original_pe)
@@ -134,7 +134,7 @@ def load_stage_a_load_image_contract(
 
 
 __all__ = [
-    "STAGE_A_LOAD_IMAGE_CONTRACT_FORMAT",
+    "SPX_LOAD_IMAGE_CONTRACT_FORMAT",
     "BaseRelocation",
     "CompletenessInventory",
     "ContractHashes",
@@ -145,11 +145,11 @@ __all__ = [
     "RelocationBlock",
     "RuntimePEHeaders",
     "SectionInitialization",
-    "StageALoadImageContract",
+    "LoadImageContract",
     "TLSCallback",
     "TLSInitialization",
     "ZeroFillRange",
-    "build_stage_a_load_image_contract",
-    "load_stage_a_load_image_contract",
-    "write_stage_a_load_image_contract",
+    "build_spx_load_image_contract",
+    "load_spx_load_image_contract",
+    "write_spx_load_image_contract",
 ]

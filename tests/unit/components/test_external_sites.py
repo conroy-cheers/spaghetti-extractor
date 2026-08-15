@@ -10,6 +10,7 @@ from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactRecordV3,
     ArtifactSetWriterV3,
     CanonicalValueV3,
+    RecordDependencyV3,
     canonical_sha256_v3,
 )
 from spaghetti_extractor.authority.authority_common import PrimaryBlockerV3
@@ -116,6 +117,27 @@ def _record(
     )
 
 
+def _record_blocked_above_complete_sites(unit_id: str) -> ArtifactRecordV3:
+    complete = CANONICAL_EXTERNAL_SITE_CODEC_V3.read(
+        _record(unit_id, complete=True)
+    ).value
+    blocker = PrimaryBlockerV3(
+        "incomplete", "transition_summary_incomplete", "transition_summaries", unit_id
+    )
+    value = CanonicalExternalSiteRecordV3(
+        record_id=unit_id,
+        unit_sha256=complete.unit_sha256,
+        status="incomplete",
+        authorizing=False,
+        sites=complete.sites,
+        primary_blocker=blocker,
+        dependencies=(RecordDependencyV3("transition_summaries", unit_id),),
+    )
+    return ArtifactRecordV3.create(
+        unit_id, CANONICAL_EXTERNAL_SITE_CODEC_V3.encode(value)
+    )
+
+
 def _write_artifact(root: Path, *, complete: bool, unrelated_symbol: str) -> Path:
     output = root / f"artifact-{unrelated_symbol}"
     ArtifactSetWriterV3(
@@ -173,6 +195,31 @@ class ComponentExternalSiteTests(unittest.TestCase):
         self.assertEqual(len(loaded.sites), 1)
         self.assertEqual(loaded.sites[0].contract.argument_words, 3)
         self.assertEqual(loaded.sites[0].contract.identity.symbol, "memcmp")
+
+    def test_accepts_record_blocked_independently_of_complete_sites(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            artifact = root / "artifact"
+            ArtifactSetWriterV3(
+                artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+                bindings=(),
+                status="incomplete",
+            ).write(
+                artifact,
+                [_record_blocked_above_complete_sites("unit:a")],
+            )
+            output = root / "slice.json"
+            payload = project_component_external_sites(
+                canonical_external_sites=artifact,
+                resolution=_resolution(),
+                lift_unit_id="a",
+                out=output,
+            )
+            loaded = load_component_external_site_slice(output)
+        self.assertEqual(payload["status"], "incomplete")
+        self.assertEqual(loaded.status, "incomplete")
+        self.assertEqual(len(loaded.sites), 1)
+        self.assertTrue(loaded.sites[0].authorizing)
 
     def test_loader_accepts_the_canonical_projection_package(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

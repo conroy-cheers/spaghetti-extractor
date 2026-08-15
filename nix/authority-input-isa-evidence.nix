@@ -24,7 +24,7 @@ let
       "spaghetti_extractor.extraction.isa_requirements"
       "spaghetti_extractor.authority_inputs.isa_requirements"
     ];
-    extraPaths = [ "spaghetti_extractor/lean/StageA" ];
+    extraPaths = [ "spaghetti_extractor/lean/SpaghettiExtractor/ISA" ];
     name = "${name}-requirements-python-closure";
   };
   requirements = pkgs.runCommand "${name}-requirements" (
@@ -100,7 +100,7 @@ let
       (.requirements_sha256 | test("^[0-9a-f]{64}$"))
     ' "$out/requirements.json" >/dev/null
   '';
-  qualification = import ./stage-a-machine-ir-isa-qualification-v2.nix {
+  qualification = import ./machine-ir-isa-qualification.nix {
     inherit
       pkgs
       pythonEnv

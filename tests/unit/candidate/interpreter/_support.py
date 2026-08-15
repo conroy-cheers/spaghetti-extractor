@@ -8,12 +8,12 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.candidate.interpreter import (
-    STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT,
-    StageBInterpreterError,
-    compile_stage_b_interpreter_machine_ir,
-    compile_stage_b_interpreter_program,
+    SPX_INTERPRETER_DEFINEDNESS_USE_FORMAT,
+    CandidateInterpreterError,
+    compile_spx_interpreter_machine_ir,
+    compile_spx_interpreter_program,
     write_fallback_capability_analysis,
-    write_stage_b_interpreter_package as _write_stage_b_interpreter_package,
+    write_spx_interpreter_package as _write_spx_interpreter_package,
 )
 
 
@@ -73,7 +73,7 @@ def _write_machine(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def _test_machine_ir_unit(row: dict[str, object]) -> dict[str, object]:
-    if row.get("format") == "stage-a-machine-ir-v2":
+    if row.get("format") == "spaghetti-extractor-machine-ir-v2":
         return row
     original = dict(row.get("original", {}))
     semantics = {
@@ -95,7 +95,7 @@ def _test_machine_ir_unit(row: dict[str, object]) -> dict[str, object]:
         )
     }
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": row["id"],
         "status": "incomplete" if row.get("status") == "incomplete" else "qualified",
@@ -135,13 +135,13 @@ def _without_raw_instruction_material(value):
     return value
 
 
-def write_stage_b_interpreter_package(*, machine_ir: Path, out: Path):
+def write_spx_interpreter_package(*, machine_ir: Path, out: Path):
     rows = [
         json.loads(line)
         for line in Path(machine_ir).read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    if all(row.get("format") == "stage-a-machine-ir-v2" for row in rows):
+    if all(row.get("format") == "spaghetti-extractor-machine-ir-v2" for row in rows):
         strict_input = Path(machine_ir)
     else:
         strict_input = Path(machine_ir).with_name(
@@ -151,7 +151,7 @@ def write_stage_b_interpreter_package(*, machine_ir: Path, out: Path):
             strict_input,
             [_test_machine_ir_unit(row) for row in rows],
         )
-    return _write_stage_b_interpreter_package(machine_ir=strict_input, out=out)
+    return _write_spx_interpreter_package(machine_ir=strict_input, out=out)
 
 
 def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
@@ -177,8 +177,8 @@ def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
             "classification": {
                 "status": "proposal_requires_lean_exact_byte_replay",
                 "proof_authority": False,
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             },
             "effects": {
                 **empty_effects,
@@ -199,8 +199,8 @@ def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
             "classification": {
                 "status": "proposal_requires_lean_exact_byte_replay",
                 "proof_authority": False,
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             },
             "effects": {
                 **empty_effects,
@@ -227,7 +227,7 @@ def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
         },
     ]
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": "semantic-transfer:pre-call-tail",
         "status": "qualified",
@@ -372,8 +372,8 @@ def _machine_ir_stack_call_after_register_reuse_unit() -> dict[str, object]:
             "classification": {
                 "status": "proposal_requires_lean_exact_byte_replay",
                 "proof_authority": False,
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             },
             "effects": {
                 **empty_effects,
@@ -388,8 +388,8 @@ def _machine_ir_stack_call_after_register_reuse_unit() -> dict[str, object]:
             "classification": {
                 "status": "proposal_requires_lean_exact_byte_replay",
                 "proof_authority": False,
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             },
             "effects": {
                 **empty_effects,
@@ -410,8 +410,8 @@ def _machine_ir_stack_call_after_register_reuse_unit() -> dict[str, object]:
             "classification": {
                 "status": "proposal_requires_lean_exact_byte_replay",
                 "proof_authority": False,
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             },
             "effects": {
                 **empty_effects,
@@ -432,8 +432,8 @@ def _machine_ir_stack_call_after_register_reuse_unit() -> dict[str, object]:
             "classification": {
                 "status": "proposal_requires_lean_exact_byte_replay",
                 "proof_authority": False,
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             },
             "effects": {
                 **empty_effects,
@@ -454,8 +454,8 @@ def _machine_ir_stack_call_after_register_reuse_unit() -> dict[str, object]:
             "classification": {
                 "status": "proposal_requires_lean_exact_byte_replay",
                 "proof_authority": False,
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             },
             "effects": {
                 **empty_effects,
@@ -474,7 +474,7 @@ def _machine_ir_stack_call_after_register_reuse_unit() -> dict[str, object]:
         },
     ]
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": "semantic-transfer:stack-call-after-register-reuse",
         "status": "qualified",
@@ -544,8 +544,8 @@ def _machine_ir_load_compare_branch_unit() -> dict[str, object]:
             "classification": {
                 "status": "proposal_requires_lean_exact_byte_replay",
                 "proof_authority": False,
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             },
             "effects": {
                 **empty_effects,
@@ -569,8 +569,8 @@ def _machine_ir_load_compare_branch_unit() -> dict[str, object]:
             "classification": {
                 "status": "proposal_requires_lean_exact_byte_replay",
                 "proof_authority": False,
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             },
             "effects": {
                 **empty_effects,
@@ -588,8 +588,8 @@ def _machine_ir_load_compare_branch_unit() -> dict[str, object]:
             "classification": {
                 "status": "proposal_requires_lean_exact_byte_replay",
                 "proof_authority": False,
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
+                "checked_decoder": "SpaghettiExtractor.ISA.Formal.decodeInstructionExact",
+                "checked_executor": "SpaghettiExtractor.ISA.Formal.executeInstruction",
             },
             "effects": {
                 **empty_effects,
@@ -603,7 +603,7 @@ def _machine_ir_load_compare_branch_unit() -> dict[str, object]:
         },
     ]
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": "semantic-transfer:load-compare-branch",
         "status": "qualified",

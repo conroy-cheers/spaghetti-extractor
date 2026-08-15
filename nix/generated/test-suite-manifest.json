@@ -1,9 +1,9 @@
 {
   "format": "spaghetti-extractor-static-test-manifest-v1",
-  "identity": "c543a5e61bfd4e85166bc389c999eca7ba7b474b920e96bcba81fcabead2d7e3",
+  "identity": "62f7c7b55bfa81e7c510dbbdc165d132487518dffaf5ca4de302c160713ec188",
   "modes": {
     "benchmark": {
-      "identity": "7f829aa7b31c39b25b78e7bd3881bd8f3135dff90ebe0e0440ff11c222a84fcd",
+      "identity": "519c5e5e232dbcc0fa52c58489ab3e7df157d27e11dbcd94d7afd2a2179b43ab",
       "selected_test_count": 2,
       "shard_ids": [
         "benchmark-05786cef6afb",
@@ -11,7 +11,7 @@
       ]
     },
     "catalog": {
-      "identity": "9db1bc15ca088ab95614b69749ac1f7a28486f139befc80b5491952d05c3c7db",
+      "identity": "f98057b200aa4e2a000ab8a08dda7fade7f95fe5ba24698d00cb347998caec29",
       "selected_test_count": 154,
       "shard_ids": [
         "benchmark-05786cef6afb",
@@ -121,7 +121,6 @@
         "pure-a227ef4d1913",
         "pure-a29cb1d79964",
         "pure-a3511737d3e8",
-        "pure-a4d6527cfa35",
         "pure-a7f410da5558",
         "pure-af2e64ded555",
         "pure-b6ee97b95659",
@@ -138,12 +137,12 @@
         "pure-c72807165493",
         "pure-c8c47f1837f4",
         "pure-c9047ce5008c",
-        "pure-cdc56bf0bc9d",
         "pure-ce0386c25d6c",
         "pure-ce848663bca9",
         "pure-d0626cfd1c50",
         "pure-d13b2612c937",
         "pure-d583e63bc5f7",
+        "pure-d61aff0013a5",
         "pure-d8905a721749",
         "pure-da218e7c8f65",
         "pure-da643b0e69b5",
@@ -154,14 +153,15 @@
         "pure-e0e210db3487",
         "pure-e180a80f6cc5",
         "pure-e1c55e0e3d01",
+        "pure-e2286df0897f",
         "pure-e4d48e365c2b",
         "pure-e69e68bc699a",
         "pure-e8956681dbbf",
+        "pure-e8aad6560c14",
         "pure-e9944f8cb94a",
         "pure-ebc7f2610b0b",
-        "pure-ec7556d35f53",
         "pure-ef7661707b9e",
-        "pure-f31308fa7880",
+        "pure-ef7d15c9d157",
         "pure-f33f8864137a",
         "pure-f8a0feb03432",
         "pure-fbf8bde86f43",
@@ -171,7 +171,7 @@
       ]
     },
     "full": {
-      "identity": "a425615f60ad3f951b08ad0b10ae8b57bb9bdef4c1ed47ccac25a40eacc32beb",
+      "identity": "c7df4c7ec8fa0b153ef3ac0d3d86e4ff056ef39aa7fb32b1fc68fd43e15b1e46",
       "selected_test_count": 152,
       "shard_ids": [
         "bochs-d906802c54f2",
@@ -279,7 +279,6 @@
         "pure-a227ef4d1913",
         "pure-a29cb1d79964",
         "pure-a3511737d3e8",
-        "pure-a4d6527cfa35",
         "pure-a7f410da5558",
         "pure-af2e64ded555",
         "pure-b6ee97b95659",
@@ -296,12 +295,12 @@
         "pure-c72807165493",
         "pure-c8c47f1837f4",
         "pure-c9047ce5008c",
-        "pure-cdc56bf0bc9d",
         "pure-ce0386c25d6c",
         "pure-ce848663bca9",
         "pure-d0626cfd1c50",
         "pure-d13b2612c937",
         "pure-d583e63bc5f7",
+        "pure-d61aff0013a5",
         "pure-d8905a721749",
         "pure-da218e7c8f65",
         "pure-da643b0e69b5",
@@ -312,14 +311,15 @@
         "pure-e0e210db3487",
         "pure-e180a80f6cc5",
         "pure-e1c55e0e3d01",
+        "pure-e2286df0897f",
         "pure-e4d48e365c2b",
         "pure-e69e68bc699a",
         "pure-e8956681dbbf",
+        "pure-e8aad6560c14",
         "pure-e9944f8cb94a",
         "pure-ebc7f2610b0b",
-        "pure-ec7556d35f53",
         "pure-ef7661707b9e",
-        "pure-f31308fa7880",
+        "pure-ef7d15c9d157",
         "pure-f33f8864137a",
         "pure-f8a0feb03432",
         "pure-fbf8bde86f43",
@@ -329,7 +329,7 @@
       ]
     },
     "smoke": {
-      "identity": "3c710edbcad4ea88d7abd2cc1f3538cfcb19a1f47904f3b52390931f2ae78156",
+      "identity": "50f1d8cf41dcb66385ab0f6888f705d2b1b403638a5234e20af0ff25109bb51c",
       "selected_test_count": 1,
       "shard_ids": [
         "smoke"
@@ -354,21 +354,18 @@
         "src/spaghetti_extractor/isa/kernel_qualification_reports.py",
         "src/spaghetti_extractor/isa/kernel_selection.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/util.py",
         "tests/benchmark/test_isa_request_planning_performance.py"
       ],
       "fixtures": [],
       "id": "benchmark-05786cef6afb",
-      "input_sha256": "22f99ff15aff125afce4ac4552a134bf115c3d7802a218622474606a84ccc610",
+      "input_sha256": "3f2d2f295f4a1dafa19a76924ca9a21d863fa7cd58b699749e4899d80125525b",
       "resource_class": "large",
       "test_paths": [
         "tests/benchmark/test_isa_request_planning_performance.py"
@@ -408,7 +405,6 @@
         "src/spaghetti_extractor/extraction/binary_inventory.py",
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -439,17 +435,21 @@
         "src/spaghetti_extractor/isa/qualification_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/static_program/__init__.py",
         "src/spaghetti_extractor/static_program/model.py",
         "src/spaghetti_extractor/static_program/semantics/__init__.py",
         "src/spaghetti_extractor/static_program/semantics/support.py",
         "src/spaghetti_extractor/util.py",
-        "tests/test_stage_a_isa_catalog.py",
-        "tests/test_stage_a_isa_corpus_generator.py",
+        "tests/test_isa_catalog.py",
+        "tests/test_isa_corpus_generator.py",
         "tests/unit/isa/test_cli.py"
       ],
       "fixtures": [
@@ -457,7 +457,7 @@
         "lean-isa-runner"
       ],
       "id": "bochs-d906802c54f2",
-      "input_sha256": "73fa0cca31b76e90f4ebafd75e970e61efbc3db771ff7acd82d633020b6bc237",
+      "input_sha256": "7403e16667b20a0796f38a634d55b984dc757e79f07847e1bfd74fe2fba9a731",
       "resource_class": "oracle",
       "test_paths": [
         "tests/unit/isa/test_cli.py"
@@ -519,9 +519,8 @@
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/native_engine/_support.py",
         "tests/unit/candidate/native_runtime/_support.py",
@@ -531,7 +530,7 @@
         "compiler"
       ],
       "id": "compiler-08064018d2ca",
-      "input_sha256": "8ab71b00d4503696fbed55884c7f84badaf8b920bf64fccea5a28bea00c3e4d0",
+      "input_sha256": "5a8eefc76a0a61ff9d4ccb29191d0983dc1f9b4b6b78dace5aaf70f6e7f34599",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/native_runtime/test_model.py"
@@ -577,9 +576,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -617,7 +619,7 @@
         "compiler"
       ],
       "id": "compiler-1f17093a93e7",
-      "input_sha256": "6c55a4568fb78a2945a469208341fd796e5998d7fb32c32dd4912a90442ead06",
+      "input_sha256": "daa812219c3afc93f32eb5c6c0465094867ed2978371a07271f50bb9a0061d38",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/components/test_evidence_v3.py"
@@ -649,9 +651,6 @@
         "src/spaghetti_extractor/machine_ir/definedness.py",
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/interpreter/_support.py",
         "tests/unit/candidate/interpreter/_x87_support.py",
@@ -661,7 +660,7 @@
         "compiler"
       ],
       "id": "compiler-235d7eab43fd",
-      "input_sha256": "a4de74d496e1a94349d8e3b2ec3782aeac7d90aa43d82899fbba0ffb50bbf0e5",
+      "input_sha256": "65073d1f59bbc93686d15fa7f711010045a51c86ee3442982f16a4e6dfb2bf7d",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/interpreter/test_x87_replay.py"
@@ -707,9 +706,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -748,7 +750,7 @@
         "compiler"
       ],
       "id": "compiler-31b60351b590",
-      "input_sha256": "32ebb782ca3c1c119af225e38645b864435fecbdf590160dce12659a521ee9d3",
+      "input_sha256": "3feeeb640d20649365190f7e7c05842382247f522364c7bdb01bc9b0cd007bfb",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/components/test_c_string_evidence.py"
@@ -780,9 +782,6 @@
         "src/spaghetti_extractor/machine_ir/definedness.py",
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/interpreter/_support.py",
         "tests/unit/candidate/interpreter/test_failure_policy.py"
@@ -791,7 +790,7 @@
         "compiler"
       ],
       "id": "compiler-465fb828848a",
-      "input_sha256": "b24e2c3c73f4db2068b39199bdc187bb5ed5820379cfdc277d6079192cae9d7b",
+      "input_sha256": "fa59cc0986f1ef7784c5608fa9eeda37b1105b2d7a92d38ee0a813f050841b90",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/interpreter/test_failure_policy.py"
@@ -853,9 +852,8 @@
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/native_engine/_support.py",
         "tests/unit/candidate/native_runtime/_support.py",
@@ -865,7 +863,7 @@
         "compiler"
       ],
       "id": "compiler-4b795d25ec83",
-      "input_sha256": "3b6195508064dc628e494d4610da70842f6e7a5cef3f9442e739e7f1d5887aef",
+      "input_sha256": "4a3270a9a6eb6b8caf7e5e7647eaf9fa4413fb03bb639c3b0eee36b2651eb81e",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/native_runtime/test_rendering.py"
@@ -897,9 +895,6 @@
         "src/spaghetti_extractor/machine_ir/definedness.py",
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/interpreter/_support.py",
         "tests/unit/candidate/interpreter/test_model_string_operations.py"
@@ -908,7 +903,7 @@
         "compiler"
       ],
       "id": "compiler-77760b3fc9f8",
-      "input_sha256": "a5622c599610e1937d2e2dc971a9b83cbedf35c5136abafeab3950ea5a12c49f",
+      "input_sha256": "485878cbbd39ecb1127e65e4ef592b918f8071222dee6b7bfb9ecaaa5d006372",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/interpreter/test_model_string_operations.py"
@@ -960,9 +955,6 @@
         "src/spaghetti_extractor/machine_ir/definedness.py",
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/interpreter/_support.py",
         "tests/unit/candidate/interpreter/test_model_execution.py"
@@ -971,7 +963,7 @@
         "compiler"
       ],
       "id": "compiler-7eebc60bc78e",
-      "input_sha256": "5c417f4e49616eb14283e9e781c46721dbd43ac207f3e41d4ce9d20994471e9a",
+      "input_sha256": "6dc3add013bdcab7d7644e4fdbebf1af9a4f29d758b9d4eac7c7cca41fcd19a4",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/interpreter/test_model_execution.py"
@@ -1022,8 +1014,7 @@
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/state_machine.py",
         "src/spaghetti_extractor/static_program/__init__.py",
@@ -1036,7 +1027,7 @@
         "compiler"
       ],
       "id": "compiler-9bc082416a22",
-      "input_sha256": "230942d6a17751c14b2f0c12e1347e48e56a73db1b9fb01d76c64beb8e18579d",
+      "input_sha256": "450528f80797fa86d8dd54b36e5eb598cea714f53f2624f5ac4cbe85efcb93dd",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/test_c_backend.py"
@@ -1068,9 +1059,6 @@
         "src/spaghetti_extractor/machine_ir/definedness.py",
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/interpreter/_support.py",
         "tests/unit/candidate/interpreter/test_rendering.py"
@@ -1079,7 +1067,7 @@
         "compiler"
       ],
       "id": "compiler-ad8add3685ad",
-      "input_sha256": "41bb7d71995ee60c81dd32e6d76bb48e9750ac88d4af6e8a2530e204acf16222",
+      "input_sha256": "3902a13024fe9987bf63ce974a47638a4b462b90dbd44e485230b6c32ecfe221",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/interpreter/test_rendering.py"
@@ -1101,9 +1089,8 @@
         "src/spaghetti_extractor/candidate/pe_model.py",
         "src/spaghetti_extractor/errors.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/roundtrip_fuzz/__init__.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_io.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_model.py",
@@ -1117,7 +1104,7 @@
         "compiler"
       ],
       "id": "compiler-c37f60795424",
-      "input_sha256": "f15d8624fa6648cf83afb964176f9fe1769c410770854a6d76664c615e1474f3",
+      "input_sha256": "85f8d59c1fa8cd0e90a3d4828eee06c21b0396042bc8785f62164205c797efc5",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/test_native_build.py"
@@ -1137,9 +1124,6 @@
         "src/spaghetti_extractor/components/region_replacement_render.py",
         "src/spaghetti_extractor/components/region_replacement_schema.py",
         "src/spaghetti_extractor/errors.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/test_region_replacement.py"
       ],
@@ -1147,7 +1131,7 @@
         "compiler"
       ],
       "id": "compiler-e137615c767a",
-      "input_sha256": "92316109d0c035bafc1a3e90e1d3bf260e3f83702225a19b5c195759eb655a6c",
+      "input_sha256": "c52c4daae9782d1906e25f16375c43f01e9e48063593ee8236678df9d0a444a1",
       "resource_class": "medium",
       "test_paths": [
         "tests/test_region_replacement.py"
@@ -1248,9 +1232,8 @@
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/roundtrip_fuzz/__init__.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_io.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_model.py",
@@ -1265,7 +1248,7 @@
         "compiler"
       ],
       "id": "compiler-fe0241e50a01",
-      "input_sha256": "654154d0efa77aed37a53025e4f3039fa018a10c03712779677c2573cd87c220",
+      "input_sha256": "0048689b0220d990b06868c23652bc8bfdcca4860b9de669a56a21702dfefe0d",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/native_build/test_integration.py"
@@ -1290,24 +1273,21 @@
         "src/spaghetti_extractor/isa/conformance_unicorn.py",
         "src/spaghetti_extractor/isa/conformance_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/util.py",
-        "tests/test_stage_a_isa_conformance_unicorn.py",
+        "tests/test_isa_conformance_unicorn.py",
         "tests/unit/isa/test_conformance_differential.py"
       ],
       "fixtures": [
         "lean-isa-runner"
       ],
       "id": "isa-4cd3ab60d689",
-      "input_sha256": "b1f0fee2903ec2f7a8abf2d22474ff0301b7bd54606c8e547d49c5a6601ba21f",
+      "input_sha256": "2485bd3330989003a8dbb82709c52cc20f425b25cdc70b063eea3539c78b2d76",
       "resource_class": "large",
       "test_paths": [
         "tests/unit/isa/test_conformance_differential.py"
@@ -1332,24 +1312,21 @@
         "src/spaghetti_extractor/isa/conformance_unicorn.py",
         "src/spaghetti_extractor/isa/conformance_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/util.py",
-        "tests/test_stage_a_isa_conformance_unicorn.py",
+        "tests/test_isa_conformance_unicorn.py",
         "tests/unit/isa/test_conformance_lean_fixture.py"
       ],
       "fixtures": [
         "lean-isa-runner"
       ],
       "id": "isa-77e0a6867f8a",
-      "input_sha256": "da7379aac8334e750fb90465768852a04ca2b9e8f9a43b864f03e6c574f67bb0",
+      "input_sha256": "fd9ca616149e5b58a249d680c52cf682930bfa49a384eef3d106ab3fa59a84b4",
       "resource_class": "large",
       "test_paths": [
         "tests/unit/isa/test_conformance_lean_fixture.py"
@@ -1543,7 +1520,6 @@
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -1579,12 +1555,12 @@
         "src/spaghetti_extractor/isa/qualification_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/artifact_parsers.py",
         "src/spaghetti_extractor/libraries/catalog.py",
@@ -1603,10 +1579,14 @@
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
         "src/spaghetti_extractor/pe32/recursive_decode.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/profiles/__init__.py",
         "src/spaghetti_extractor/profiles/registry.py",
@@ -1688,7 +1668,7 @@
         "pe32-minimal-import-call"
       ],
       "id": "native-2efaa480edbd",
-      "input_sha256": "3054249f23c56c595296677e52c15615e366ae538fccb2726ead2532644012f8",
+      "input_sha256": "2505f4c37bfbcb84e6ce19d0291958c8020efbb55b9dcd3b264d6df59cdce2f2",
       "resource_class": "medium",
       "test_paths": [
         "tests/integration/native/test_minimal_pe_fixture.py"
@@ -1789,9 +1769,8 @@
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/roundtrip_fuzz/__init__.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_io.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_model.py",
@@ -1804,7 +1783,7 @@
       ],
       "fixtures": [],
       "id": "native-304c5cbb1649",
-      "input_sha256": "46116870dc313fe143a9a24a612ea133cab637bd2776cd3ead057943e2d55eb3",
+      "input_sha256": "6f2bf87ae210ea76b9e41372a8bb61bd652ceb78b0aa8203a009d3e7da1169a0",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/native_build/test_validation.py"
@@ -1905,9 +1884,8 @@
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/roundtrip_fuzz/__init__.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_io.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_model.py",
@@ -1920,7 +1898,7 @@
       ],
       "fixtures": [],
       "id": "native-88ca87fc89eb",
-      "input_sha256": "0f7a1b94b788d41d3a926e6264704fada4644c38f9bd54531e1282430d0178ec",
+      "input_sha256": "9ee6a2d624ef86c162d5c28ff468a29e749393c25b95443ba8cb41c200600152",
       "resource_class": "medium",
       "test_paths": [
         "tests/unit/candidate/native_build/test_selection.py"
@@ -1960,21 +1938,18 @@
         "src/spaghetti_extractor/isa/kernel_qualification_reports.py",
         "src/spaghetti_extractor/isa/kernel_selection.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/util.py",
         "tests/test_isa_kernel_selection.py"
       ],
       "fixtures": [],
       "id": "pure-0005ba3c0d2e",
-      "input_sha256": "c6785661a3a93e944e0b3023b95b362f251710152ceca4de97eac732eacf5497",
+      "input_sha256": "c63386f8b2036a70a204ffe06cf2827e1d62f0bb05c1993a820420267dd43124",
       "resource_class": "small",
       "test_paths": [
         "tests/test_isa_kernel_selection.py"
@@ -2070,7 +2045,6 @@
         "src/spaghetti_extractor/extraction/binary_inventory.py",
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -2097,10 +2071,14 @@
         "src/spaghetti_extractor/isa/kernel_selection.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/static_program/__init__.py",
         "src/spaghetti_extractor/static_program/model.py",
         "src/spaghetti_extractor/static_program/semantics/__init__.py",
@@ -2110,7 +2088,7 @@
       ],
       "fixtures": [],
       "id": "pure-0563e16bd227",
-      "input_sha256": "2958273d32199f51045af16ee958b0f64b5ae7f57272bc637ba5bbca03332013",
+      "input_sha256": "e4aac6ade1d294c320cd4509761482eec6aa406bf0fd70d8542281c4a894e579",
       "resource_class": "small",
       "test_paths": [
         "tests/test_machine_ir_isa_catalog_v2.py"
@@ -2168,9 +2146,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -2208,7 +2189,7 @@
       ],
       "fixtures": [],
       "id": "pure-0ad2deb1d05c",
-      "input_sha256": "19f34a3d125930850f29c115b81313bab42cc80f705b6578a75aea0d4a441758",
+      "input_sha256": "0581ab4183305ec2b0320ddb18e82bf92a560ca4902288eec1b0d92b5636cc32",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/reconstruction/ir/test_model_roots.py"
@@ -2248,9 +2229,11 @@
         "src/spaghetti_extractor/candidate/pe_model.py",
         "src/spaghetti_extractor/errors.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/roundtrip_fuzz/__init__.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_io.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_model.py",
@@ -2262,7 +2245,7 @@
       ],
       "fixtures": [],
       "id": "pure-0e05f970169a",
-      "input_sha256": "5a09bb0495c9b00baa8cb8f12c60b9cd2c3f8f2af2a61529445ea86cbba7ad84",
+      "input_sha256": "b11c43f06ce09e0a09439cae38a47d331ae6dcb28075a748261a16d137295054",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/candidate/test_pe_composer.py"
@@ -2282,8 +2265,7 @@
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/state_machine.py",
         "src/spaghetti_extractor/static_program/__init__.py",
@@ -2294,7 +2276,7 @@
       ],
       "fixtures": [],
       "id": "pure-0e833965cea0",
-      "input_sha256": "bede16af9b5e987d4dfc4d898a3245c55fe9558f61ad4c9c51a4f15b9554e900",
+      "input_sha256": "50dadd1d8c0bc84c1768a71a3a917be745ae0b93a67572c92b35a369eb516973",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/reconstruction/test_state_machine_schema.py"
@@ -2366,9 +2348,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -2406,7 +2391,7 @@
       ],
       "fixtures": [],
       "id": "pure-161599ca60a7",
-      "input_sha256": "dc3a0efcf3aa159ba860669d23e3f683723463ffdf77857d5d188ce6eb4370b8",
+      "input_sha256": "dabe12a04a5e5a20b7796598ffc2e5002d29f9ba42617887e4a56abb5927ca86",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/reconstruction/ir/test_failure_policy.py"
@@ -2446,9 +2431,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -2484,7 +2472,7 @@
       ],
       "fixtures": [],
       "id": "pure-16ffe686fa02",
-      "input_sha256": "eae25abfd4f9884660803bd8d8ff9d9696242be95529309e3901763783409a63",
+      "input_sha256": "f3d85b45828eff24af4dcbdc2921461cd365e4b5ce02701ec1360cbd45cf7678",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_adapter_plan.py"
@@ -2518,9 +2506,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -2558,7 +2549,7 @@
       ],
       "fixtures": [],
       "id": "pure-17daaff995ca",
-      "input_sha256": "1c362b499d40c16f76111ec9573a4ba5b0801456bd9b557b36b74fe27315bf6a",
+      "input_sha256": "ed1220dbc79689f543592a4363ba2f768fc019ccbacc459c309967a63a647041",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/reconstruction/ir/test_model_materialization.py"
@@ -2773,7 +2764,6 @@
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -2793,7 +2783,7 @@
         "src/spaghetti_extractor/isa/conformance_nix.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA",
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/contracts.py",
         "src/spaghetti_extractor/machine_ir/__init__.py",
@@ -2804,9 +2794,13 @@
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -2855,7 +2849,7 @@
       ],
       "fixtures": [],
       "id": "pure-1d989d892a6a",
-      "input_sha256": "a22733d47d7cb1e846122cf2859a8e985816c4e68042bff517de6ca6435a6d2f",
+      "input_sha256": "630d9c12f04ba310b1a06ef48e829b09b5488cd365a6d55cab0a7fb052f5eb5e",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_status.py"
@@ -2876,15 +2870,12 @@
         "src/spaghetti_extractor/external/interface_profiles.py",
         "src/spaghetti_extractor/external/machine_abi.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/test_external_interface_call_through.py"
       ],
       "fixtures": [],
       "id": "pure-1e4c74963498",
-      "input_sha256": "9092673767c388205f77a9fca7e6ceaa1988646e656bfd5058793ce656d4464b",
+      "input_sha256": "b39f8b2cedcdf4a02a28f257b3153309077059564e352d9f3f03f5fdb2a4f334",
       "resource_class": "small",
       "test_paths": [
         "tests/test_external_interface_call_through.py"
@@ -2905,8 +2896,7 @@
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/state_machine.py",
         "src/spaghetti_extractor/static_program/__init__.py",
@@ -2917,7 +2907,7 @@
       ],
       "fixtures": [],
       "id": "pure-1f8fd7be9a4e",
-      "input_sha256": "f2fed20f0ef373481eb514df28920d714e45b273396a3b17f40098119b372278",
+      "input_sha256": "bc595009a615910190a6733786042f591016f6330526f3d9333b33b8cff21912",
       "resource_class": "small",
       "test_paths": [
         "tests/test_winmm_runtime_profile.py"
@@ -2953,8 +2943,8 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/model.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/static_program/__init__.py",
         "src/spaghetti_extractor/static_program/model.py",
         "src/spaghetti_extractor/static_program/semantics/__init__.py",
@@ -2971,7 +2961,7 @@
       ],
       "fixtures": [],
       "id": "pure-221434aab0dc",
-      "input_sha256": "92377b5b09b90116e6bca0f533674682c95d1031341fe4ab2b97f271737b87e9",
+      "input_sha256": "1b361b48df6fe6d68f578534fcf7534a9decdcda783e9acbb5a2be59ec1e3b2e",
       "resource_class": "small",
       "test_paths": [
         "tests/test_symbolic_execution.py"
@@ -3010,15 +3000,12 @@
         "src/spaghetti_extractor/external/interface_profiles.py",
         "src/spaghetti_extractor/external/machine_abi.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/test_external_interface_ast.py"
       ],
       "fixtures": [],
       "id": "pure-2325604f526f",
-      "input_sha256": "825e3592b10ef4e07eec0e9bc6f5f2b526c4dbb18d6705cc88b6f393e87eabaa",
+      "input_sha256": "17edf592ae95a9d6ed945e357faf48de8abd562f0d84fe79512094f573a5e7af",
       "resource_class": "small",
       "test_paths": [
         "tests/test_external_interface_ast.py"
@@ -3039,15 +3026,12 @@
         "src/spaghetti_extractor/external/interface_profiles.py",
         "src/spaghetti_extractor/external/machine_abi.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/test_external_interface_profiles.py"
       ],
       "fixtures": [],
       "id": "pure-241aaf39502d",
-      "input_sha256": "a1da7f9ea3e95cc49158e83cc63ea905d7abb5f0a2e54afdaff646e1f7bce32f",
+      "input_sha256": "8b4f582d534996ae22832fce82541231b3a3392e1fa8ca3731890502c77c296e",
       "resource_class": "small",
       "test_paths": [
         "tests/test_external_interface_profiles.py"
@@ -3084,15 +3068,17 @@
         "src/spaghetti_extractor/external/machine_import_profiles.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/pe_fixtures.py",
         "tests/unit/authority_inputs/test_external_inputs.py"
       ],
       "fixtures": [],
       "id": "pure-2500413ea1d1",
-      "input_sha256": "bdc6690e7270af0d80610ff588dbb94b3b9f50a4685fbe4a27fa7d324ddd480e",
+      "input_sha256": "2265870508b6880f0cc9546f9099ecdca31a0aa482a2b8740cdebb6acb3bf38b",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/authority_inputs/test_external_inputs.py"
@@ -3135,9 +3121,6 @@
         "src/spaghetti_extractor/external/machine_import_profiles.py",
         "src/spaghetti_extractor/external/operation_model.py",
         "src/spaghetti_extractor/external/operation_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
         "src/spaghetti_extractor/reconstruction/control_clusters.py",
@@ -3151,7 +3134,7 @@
       ],
       "fixtures": [],
       "id": "pure-2b0cd947a0c1",
-      "input_sha256": "ee4c9bcd52dc305deb6301ac349479c61349a7f3de8326f0da0c87c132279c23",
+      "input_sha256": "a6dc56ef83cc83d7b313de62802789575cad56726663ae47e8a18e5b18c51338",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/reconstruction/control/test_jump_tables.py"
@@ -3362,8 +3345,10 @@
         "src/spaghetti_extractor/libraries/refinement.py",
         "src/spaghetti_extractor/libraries/replacements.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/pe_fixtures.py",
         "tests/unit/libraries/__init__.py",
@@ -3372,7 +3357,7 @@
       ],
       "fixtures": [],
       "id": "pure-3e3853d94d49",
-      "input_sha256": "eb1213d2a2e1b60324a1ae6b5c46c20d2ca3cc21a10cf003dadf65079554293b",
+      "input_sha256": "ef0f928b588734e016879cbf9c8dc6c1d638cb37d7e7acd1c9ca897c28fbd1ef",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/libraries/test_replacements.py"
@@ -3436,8 +3421,8 @@
     },
     {
       "files": [
-        "nix/stage-b-fallback-coverage-receipt.nix",
-        "nix/stage-b-hybrid-candidate.nix",
+        "nix/candidate-hybrid.nix",
+        "nix/fallback-coverage-receipt.nix",
         "src/spaghetti_extractor/__init__.py",
         "src/spaghetti_extractor/artifacts/__init__.py",
         "src/spaghetti_extractor/artifacts/formats.py",
@@ -3450,7 +3435,7 @@
       ],
       "fixtures": [],
       "id": "pure-406a2bd3df79",
-      "input_sha256": "1972bb246a21b0417d4be3f51b5e2965e5ee7bd687edb74b2b3adb5808028a08",
+      "input_sha256": "2196c9c8a590605e1f8053013e88ff246bbf1f577e7c2405dbb68f6f8f9c12d1",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/candidate/test_fallback_coverage.py"
@@ -3464,19 +3449,17 @@
         "nix/authority-input-isa-evidence.nix",
         "src/spaghetti_extractor/__init__.py",
         "src/spaghetti_extractor/build_support/__init__.py",
+        "src/spaghetti_extractor/build_support/nix_invocation.py",
         "src/spaghetti_extractor/build_support/nix_support.py",
         "src/spaghetti_extractor/errors.py",
         "src/spaghetti_extractor/isa/__init__.py",
         "src/spaghetti_extractor/isa/conformance_nix.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/isa/test_conformance_nix.py"
       ],
       "fixtures": [],
       "id": "pure-40d94d1fb4ac",
-      "input_sha256": "b7e88897b4d9ee4d4285603dbcbc34f94f0ac0f01b85c96d9934e0d8cfaeea3d",
+      "input_sha256": "1df1f0d593b02975050df4a3c971a10b0dd3dd73f3ebeee017041687cf7a7ce8",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/isa/test_conformance_nix.py"
@@ -3508,15 +3491,12 @@
         "src/spaghetti_extractor/external/callbacks.py",
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/site_authority.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/components/test_external_sites.py"
       ],
       "fixtures": [],
       "id": "pure-44b1013221c3",
-      "input_sha256": "8c7dac842481bf71d48eab71d33fd37f78c0d1c18f8aa28b82e346ce10e4acd6",
+      "input_sha256": "db09cdc4390847528a6f6ffb3baf007d3b207c865d7b8b3f3ec9a32c9efe9550",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_external_sites.py"
@@ -3543,8 +3523,12 @@
         "src/spaghetti_extractor/extraction/schema.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/ir_decoding.py",
         "src/spaghetti_extractor/reconstruction/ir_evidence.py",
@@ -3575,7 +3559,7 @@
       ],
       "fixtures": [],
       "id": "pure-457f7bcd09e9",
-      "input_sha256": "ddad357adbd8340adcef4565cab301ef367fb23a64992382543b1dc50ffa0f6d",
+      "input_sha256": "e7f1313d2dc309cfd65c37877547ef57c32d992cf5540ab862b5dc205c08d247",
       "resource_class": "small",
       "test_paths": [
         "tests/test_opaque_reconstruction.py"
@@ -3632,9 +3616,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -3672,7 +3659,7 @@
       ],
       "fixtures": [],
       "id": "pure-4ab8026e98ea",
-      "input_sha256": "644474b42fba70b35287aefcd1fd1d48b2d7427b2de5903a73e32c2c3f897abd",
+      "input_sha256": "4c49f818bc8be6f169f5afd0cf941ae4cb5745170774b48993230d83fa9501dc",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/reconstruction/ir/test_receipts.py"
@@ -3734,9 +3721,8 @@
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/native_engine/_support.py",
         "tests/unit/candidate/native_runtime/_callback_support.py",
@@ -3745,7 +3731,7 @@
       ],
       "fixtures": [],
       "id": "pure-4f4205ad6917",
-      "input_sha256": "4c8e0f9e32bd143f3300d7c6c82534967198495d6534569782431632e13678f8",
+      "input_sha256": "95bdf9cc79ef76639e6a302b943e9f9b6c939bfc1f3e268992732ac94c0a5151",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/candidate/native_runtime/test_receipts.py"
@@ -3763,8 +3749,11 @@
         "src/spaghetti_extractor/extraction/__init__.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/static_program/__init__.py",
         "src/spaghetti_extractor/static_program/model.py",
         "src/spaghetti_extractor/static_program/semantics/__init__.py",
@@ -3775,7 +3764,7 @@
       ],
       "fixtures": [],
       "id": "pure-50942d06d37b",
-      "input_sha256": "de28c851a2d99ffe92f8e112c126dc3a42072652993d918558731b037ad5c109",
+      "input_sha256": "c5d6f940751d8dc74d08ca1f7f945d906c4afb06117c7f0b7126e72c58f35ac0",
       "resource_class": "small",
       "test_paths": [
         "tests/test_executable_classification.py"
@@ -3809,15 +3798,17 @@
         "src/spaghetti_extractor/__init__.py",
         "src/spaghetti_extractor/errors.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/pe_fixtures.py",
         "tests/unit/extraction/test_loader_image_diagnostics.py"
       ],
       "fixtures": [],
       "id": "pure-53ca39032b9a",
-      "input_sha256": "a951fad99fa352b1b1fa4224a8f6553c8e25d7a4f25bb3765dca97fecb337364",
+      "input_sha256": "40e5225f7fb47aec5c179007f6ba7b5a8db98bba2da022e89af58b18ddade544",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/extraction/test_loader_image_diagnostics.py"
@@ -3855,15 +3846,12 @@
         "src/spaghetti_extractor/external/callbacks.py",
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/authority_inputs/test_external_site_evidence.py"
       ],
       "fixtures": [],
       "id": "pure-57b0da1d7566",
-      "input_sha256": "cc8e70a6441e8170782e85eb4b628a08f3038dc205f7c9a9abea83c18b080d64",
+      "input_sha256": "f91eedb14d796bd33c5cfc53eafe8d101c9d0ceac5b81105a29e332b9b102b54",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/authority_inputs/test_external_site_evidence.py"
@@ -4057,7 +4045,6 @@
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -4093,12 +4080,12 @@
         "src/spaghetti_extractor/isa/qualification_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/artifact_parsers.py",
         "src/spaghetti_extractor/libraries/catalog.py",
@@ -4117,10 +4104,14 @@
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
         "src/spaghetti_extractor/pe32/recursive_decode.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/profiles/__init__.py",
         "src/spaghetti_extractor/profiles/registry.py",
@@ -4198,7 +4189,7 @@
       ],
       "fixtures": [],
       "id": "pure-589f18479ad3",
-      "input_sha256": "b6bce865ca8e71864432374e8fc8a0413cabce35b8138bd2b910dc08d64a2560",
+      "input_sha256": "dd94dd44cfaed5eddaca3ec855b2bc85fe4511cd5a44a19eb2db4c0d9e7490ab",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_planning.py"
@@ -4225,15 +4216,11 @@
         "src/spaghetti_extractor/external/callbacks.py",
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/runtime_projection.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
-        "src/spaghetti_extractor/util.py",
         "tests/test_external_runtime_projection.py"
       ],
       "fixtures": [],
       "id": "pure-5c3d8261e1fb",
-      "input_sha256": "3401c845bad7a536b9ca197f7e7a08b2ddac648f01449cb08ac7efd5ac7bac6e",
+      "input_sha256": "ff38d929a65ad82dbeb832a55d4885f923e76720702273a5d6dad8d5fd002c82",
       "resource_class": "small",
       "test_paths": [
         "tests/test_external_runtime_projection.py"
@@ -4259,8 +4246,10 @@
         "src/spaghetti_extractor/libraries/refinement.py",
         "src/spaghetti_extractor/libraries/replacements.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/pe_fixtures.py",
         "tests/unit/libraries/__init__.py",
@@ -4269,7 +4258,7 @@
       ],
       "fixtures": [],
       "id": "pure-5c82c0821888",
-      "input_sha256": "9410a05d474d07f39aa7a47b96ac9687afcf5fe9c7f2b92e45d5b7bf8acacd7d",
+      "input_sha256": "a3d2dc6ef8216fa72481cc0faa7ea44f678b4202def5dc6cb1b202eab3ff211a",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/libraries/test_refinement.py"
@@ -4284,16 +4273,18 @@
         "src/spaghetti_extractor/errors.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/pe_fixtures.py",
         "tests/test_behavioral_roots.py",
-        "tests/test_stage_a_pe_entry_surface.py"
+        "tests/test_pe_entry_surface.py"
       ],
       "fixtures": [],
       "id": "pure-5e7d6b89d449",
-      "input_sha256": "d0203ba57fdba27c7006c5cc4569b91fe7197f41b67319eba92232515ec39cd0",
+      "input_sha256": "ba21861bcc7a42a63b4ca02dde4ef5c97e7b0002b3f53f451c22ed64f13d87f3",
       "resource_class": "small",
       "test_paths": [
         "tests/test_behavioral_roots.py"
@@ -4412,9 +4403,12 @@
         "src/spaghetti_extractor/machine_ir/__init__.py",
         "src/spaghetti_extractor/machine_ir/entry_coordinates.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -4450,7 +4444,7 @@
       ],
       "fixtures": [],
       "id": "pure-65ce3fc535a0",
-      "input_sha256": "91a5571403ac23114c14068af3b9e6c6b602f7d1141a11c9fb1edf4925e6f51c",
+      "input_sha256": "1fc18dafc470d84f917f8e1ad2038efc9f242f6facc881d9ae4fb37bdda35060",
       "resource_class": "small",
       "test_paths": [
         "tests/test_component_interface.py"
@@ -4495,15 +4489,11 @@
         "src/spaghetti_extractor/external/callbacks.py",
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/machine_abi.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
-        "src/spaghetti_extractor/util.py",
         "tests/test_machine_abi.py"
       ],
       "fixtures": [],
       "id": "pure-68588df9e86b",
-      "input_sha256": "89b92818483a94734f24dd6c951d35c88140fb9621ecfeea05d8f40c0b366bef",
+      "input_sha256": "256cc72c46f314499e3fc835a7739efad6117be8ae91acd7cb401287af7d121c",
       "resource_class": "small",
       "test_paths": [
         "tests/test_machine_abi.py"
@@ -4546,8 +4536,12 @@
         "src/spaghetti_extractor/extraction/schema.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/roundtrip_fuzz/__init__.py",
         "src/spaghetti_extractor/roundtrip_fuzz/model.py",
         "src/spaghetti_extractor/roundtrip_fuzz/runner.py",
@@ -4561,7 +4555,7 @@
       ],
       "fixtures": [],
       "id": "pure-6ec1c59ecd0e",
-      "input_sha256": "a7262bb7738a3b93748d8053648df98daa7bfc75b7a7c5bcc3801e585f07e693",
+      "input_sha256": "9fc2c2ca67885ff5cfa7fa7d5ae1be77d125154ff21d76834309a0dd2ecb17bd",
       "resource_class": "small",
       "test_paths": [
         "tests/test_static_roundtrip.py"
@@ -4625,8 +4619,7 @@
         "src/spaghetti_extractor/external/operation_model.py",
         "src/spaghetti_extractor/external/operation_profiles.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
         "src/spaghetti_extractor/reconstruction/control_clusters.py",
@@ -4638,7 +4631,7 @@
       ],
       "fixtures": [],
       "id": "pure-754083ee5623",
-      "input_sha256": "7e4a568a7de1a493714a37e7bfbc4a372fe2e3ee1e97d6cafa94d77ec921aae2",
+      "input_sha256": "8b2ec6a589bf7d6c1094b24b4d766ab87796faa26ec8d585e8f85db29aa49882",
       "resource_class": "small",
       "test_paths": [
         "tests/test_static_indirect_replay_v2.py"
@@ -4649,24 +4642,29 @@
     },
     {
       "files": [
-        "nix/stage-a-isa-conformance-kernel.nix",
-        "nix/stage-a-isa-semantic-kernel.nix",
+        "nix/isa-conformance-kernel.nix",
+        "nix/isa-semantic-kernel.nix",
         "src/spaghetti_extractor/__init__.py",
+        "src/spaghetti_extractor/build_support/__init__.py",
+        "src/spaghetti_extractor/build_support/lean_runner.py",
         "src/spaghetti_extractor/errors.py",
         "src/spaghetti_extractor/extraction/__init__.py",
+        "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/schema.py",
         "src/spaghetti_extractor/isa/__init__.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
-        "src/spaghetti_extractor/lean/StageA",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/isa/test_lean_kernel_layout.py"
       ],
       "fixtures": [],
       "id": "pure-7792ef7cf8f9",
-      "input_sha256": "268a334d4f6acb09478a7f89d40b78978f98f681a3aa1f162b66da88ffe5774a",
+      "input_sha256": "c21bafaca86036f95bf6c28275bf9d001c24dc6cffa6bb3fc1c38e4e5b55d9c9",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/isa/test_lean_kernel_layout.py"
@@ -4705,9 +4703,6 @@
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/machine_abi.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/profiles/__init__.py",
         "src/spaghetti_extractor/profiles/registry.py",
         "src/spaghetti_extractor/util.py",
@@ -4715,7 +4710,7 @@
       ],
       "fixtures": [],
       "id": "pure-794f367378d6",
-      "input_sha256": "544001d32ccb03bfaa6bacfdac61b5e708b4c303a11c6ae4516842c04adf06d6",
+      "input_sha256": "a21248d5f63ee52c67cc04ea3e45370f8c423798692bd8b5212c8b26b43a0c38",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/profiles/test_registry.py"
@@ -4805,16 +4800,15 @@
         "src/spaghetti_extractor/machine_ir/__init__.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/native_engine/_support.py",
         "tests/unit/candidate/native_engine/test_strict_engine.py"
       ],
       "fixtures": [],
       "id": "pure-7fda3f24fd03",
-      "input_sha256": "dba2cec9c15c6d37d18bf0c2bc683c870754c59a113ae756967e7d0c4b136eb4",
+      "input_sha256": "1560072e3f26cd5e7909e2f9de59dc88c27f149b07122789b51e2c7426404993",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/candidate/native_engine/test_strict_engine.py"
@@ -4897,9 +4891,12 @@
         "src/spaghetti_extractor/machine_ir/__init__.py",
         "src/spaghetti_extractor/machine_ir/entry_coordinates.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -4935,7 +4932,7 @@
       ],
       "fixtures": [],
       "id": "pure-852686359950",
-      "input_sha256": "545229d927b30b24681253d164605fb1421996628a29cbe3d5da9e10e3ddc087",
+      "input_sha256": "d237317d5dd013fe7bd84d45da6cbb9600701110c49d250e44187be3de33e766",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_inputs_and_configuration.py"
@@ -5085,7 +5082,6 @@
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -5121,12 +5117,12 @@
         "src/spaghetti_extractor/isa/qualification_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/artifact_parsers.py",
         "src/spaghetti_extractor/libraries/catalog.py",
@@ -5145,10 +5141,14 @@
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
         "src/spaghetti_extractor/pe32/recursive_decode.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/profiles/__init__.py",
         "src/spaghetti_extractor/profiles/registry.py",
@@ -5227,7 +5227,7 @@
       ],
       "fixtures": [],
       "id": "pure-856944171a2c",
-      "input_sha256": "3b7f2a542787077009375df0afa8316971151755444f437b4b9314d56e2f7eb7",
+      "input_sha256": "1a4788284a02182678e7e251f9b91aded9be34096432d7c2aab48c860883f35a",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_analysis_nix.py"
@@ -5241,16 +5241,18 @@
         "src/spaghetti_extractor/__init__.py",
         "src/spaghetti_extractor/errors.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/pe_fixtures.py",
         "tests/test_recovered_executable_data.py"
       ],
       "fixtures": [],
       "id": "pure-869a42e03b0c",
-      "input_sha256": "01a595fb337bc17df4babedb09fac05e4cc14bc184b9369ad5316aafae6cc9ef",
+      "input_sha256": "1b5fe13deed50961ede61987558819a9c4d07c49c59e56bc60729129f0c0acf8",
       "resource_class": "small",
       "test_paths": [
         "tests/test_recovered_executable_data.py"
@@ -5274,9 +5276,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recursive_decode.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/rooted_state_machine.py",
         "src/spaghetti_extractor/reconstruction/state_machine.py",
@@ -5297,7 +5302,7 @@
       ],
       "fixtures": [],
       "id": "pure-86c08f7d9501",
-      "input_sha256": "0fb0ad850050e22c72eaf73a3d0f5c6234b79337a4f1cd1b883a2526de46ea9a",
+      "input_sha256": "d888c448ab655d23fb378e0a65babd584001c368619f995c3becdc11de47dd4d",
       "resource_class": "small",
       "test_paths": [
         "tests/test_rooted_state_machine.py"
@@ -5331,9 +5336,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -5371,7 +5379,7 @@
       ],
       "fixtures": [],
       "id": "pure-8b4f100b99a5",
-      "input_sha256": "6c8ce7ba73c9fa54d1ae37c869f6d10a32736b22bd4340c58c08e458b4df5618",
+      "input_sha256": "fab4266e7bb366d66b7a3b693ccbbb5a51294d11ca49413da5cf4a498f9c97eb",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/reconstruction/ir/test_validation.py"
@@ -5409,8 +5417,8 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/pe32/model.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/static_program/__init__.py",
         "src/spaghetti_extractor/static_program/model.py",
         "src/spaghetti_extractor/static_program/semantics/__init__.py",
@@ -5427,7 +5435,7 @@
       ],
       "fixtures": [],
       "id": "pure-903192c0879c",
-      "input_sha256": "9c151bb765e05346df1b2c965d61422afe5792feaaad29ac14529788a1fae6b6",
+      "input_sha256": "04b9e6507783e1bafc3bd90da32271a7bb3ddc4f7985561dc493d5f4c8284fdc",
       "resource_class": "small",
       "test_paths": [
         "tests/test_static_semantic_stack.py"
@@ -5509,15 +5517,12 @@
         "src/spaghetti_extractor/external/callbacks.py",
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/test_checked_external_site_contract.py"
       ],
       "fixtures": [],
       "id": "pure-993ae6fe5555",
-      "input_sha256": "5f282da05bb0a1b03479c6f77514985816b94a1f7a0bc0e9c52f0d7cff5f6d3a",
+      "input_sha256": "18d0e508c75a6ad9caf6f4fe7a30fe25bb5080984e41baefc45596331b759f53",
       "resource_class": "small",
       "test_paths": [
         "tests/test_checked_external_site_contract.py"
@@ -5607,16 +5612,13 @@
         "src/spaghetti_extractor/machine_ir/definedness.py",
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/interpreter/_support.py",
         "tests/unit/candidate/interpreter/test_validation.py"
       ],
       "fixtures": [],
       "id": "pure-a106d9df551e",
-      "input_sha256": "e7016bc86461a92696290ee60dfaae3ca0e700ec48791c606d8ab601978b48ae",
+      "input_sha256": "406a0ec223333ec78362e81e271a1281246f71e24f3e252e926a93e6e5b0f1eb",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/candidate/interpreter/test_validation.py"
@@ -5660,9 +5662,6 @@
         "src/spaghetti_extractor/external/machine_import_profiles.py",
         "src/spaghetti_extractor/external/operation_model.py",
         "src/spaghetti_extractor/external/operation_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
         "src/spaghetti_extractor/reconstruction/control_clusters.py",
@@ -5676,7 +5675,7 @@
       ],
       "fixtures": [],
       "id": "pure-a29cb1d79964",
-      "input_sha256": "2d191d758dfe8db8026d1041906031ec4a90261d3c9ac1fd749f24b68cdc5892",
+      "input_sha256": "3a0608dda84e43c828d97b6a3e76769096b1d22878deebc68c3609bacec05ca8",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/reconstruction/control/test_overlap_and_clusters.py"
@@ -5870,7 +5869,6 @@
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -5906,12 +5904,12 @@
         "src/spaghetti_extractor/isa/qualification_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/artifact_parsers.py",
         "src/spaghetti_extractor/libraries/catalog.py",
@@ -5930,10 +5928,14 @@
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
         "src/spaghetti_extractor/pe32/recursive_decode.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/profiles/__init__.py",
         "src/spaghetti_extractor/profiles/registry.py",
@@ -6011,36 +6013,13 @@
       ],
       "fixtures": [],
       "id": "pure-a3511737d3e8",
-      "input_sha256": "e34ecbace199fbe50ed76e145bb90da49fafd85258f4ddd83dca333690ea3a5f",
+      "input_sha256": "3c358612484f7f3de4dfdbe52f69c8360bd23a0be0bb90d833cfefe1caacc1da",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_services.py"
       ],
       "tests": [
         "tests/unit/testkit/test_services"
-      ]
-    },
-    {
-      "files": [
-        "src/spaghetti_extractor/__init__.py",
-        "src/spaghetti_extractor/isa/__init__.py",
-        "src/spaghetti_extractor/isa/catalog.py",
-        "src/spaghetti_extractor/isa/catalog_xed.py",
-        "src/spaghetti_extractor/isa/conformance.py",
-        "src/spaghetti_extractor/isa/corpus_generator.py",
-        "src/spaghetti_extractor/isa/corpus_observations.py",
-        "tests/test_stage_a_isa_catalog.py",
-        "tests/test_stage_a_isa_corpus_generator.py"
-      ],
-      "fixtures": [],
-      "id": "pure-a4d6527cfa35",
-      "input_sha256": "cbd6bdbf28a1044d09012cbe7cc571676e34aa705547e252c36801af5c882b19",
-      "resource_class": "small",
-      "test_paths": [
-        "tests/test_stage_a_isa_corpus_generator.py"
-      ],
-      "tests": [
-        "tests/test_stage_a_isa_corpus_generator"
       ]
     },
     {
@@ -6096,9 +6075,8 @@
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/native_engine/_support.py",
         "tests/unit/candidate/native_runtime/_support.py",
@@ -6106,7 +6084,7 @@
       ],
       "fixtures": [],
       "id": "pure-a7f410da5558",
-      "input_sha256": "ddddbce09a9d3118325c07e571100f9b0c7cd0ffc31af687419c6bc866017074",
+      "input_sha256": "095067ee2d9aeb44ccae179bf3bf1a0dc9531a691bcc2ad7c3af8559c58d840e",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/candidate/native_runtime/test_failure_policy.py"
@@ -6132,8 +6110,10 @@
         "src/spaghetti_extractor/libraries/refinement.py",
         "src/spaghetti_extractor/libraries/replacements.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/pe_fixtures.py",
         "tests/unit/libraries/__init__.py",
@@ -6142,7 +6122,7 @@
       ],
       "fixtures": [],
       "id": "pure-af2e64ded555",
-      "input_sha256": "0ac6066d0629f609e073045f3bc201718dff25915704ec875938cd530bd3f382",
+      "input_sha256": "920f64122da2dd0eaa52d077900d35ac30f8bcbe7657a0ca441c57626188f949",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/libraries/test_recognition.py"
@@ -6183,15 +6163,11 @@
         "src/spaghetti_extractor/external/__init__.py",
         "src/spaghetti_extractor/external/callbacks.py",
         "src/spaghetti_extractor/external/contracts.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
-        "src/spaghetti_extractor/util.py",
         "tests/unit/components/test_external_models.py"
       ],
       "fixtures": [],
       "id": "pure-b75060987c36",
-      "input_sha256": "9ae394dcd534c5e14b38c72be300f377b48fd6ab8d7c3e16d2e8395fd4451270",
+      "input_sha256": "6c612ac5f765486ed504f1fdd417632d2b1db6352ec3d66942287d60d02c2e8f",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_external_models.py"
@@ -6205,8 +6181,10 @@
         "src/spaghetti_extractor/__init__.py",
         "src/spaghetti_extractor/errors.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/util.py",
         "tests/pe_fixtures.py",
@@ -6214,7 +6192,7 @@
       ],
       "fixtures": [],
       "id": "pure-b9b2a8231084",
-      "input_sha256": "b06973a8ce44fc1dd7c37b48be2237623fd4d2c5c4e249fd25c6b67ce36bce47",
+      "input_sha256": "7a2d98cc591952faa14a1fbb8559ecb5a19d6a2f5351a621c1820279e5c91d36",
       "resource_class": "small",
       "test_paths": [
         "tests/test_target_cutpoint_materialization_v2.py"
@@ -6253,9 +6231,12 @@
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/contracts.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -6291,7 +6272,7 @@
       ],
       "fixtures": [],
       "id": "pure-bab6f91e0f33",
-      "input_sha256": "6d15ca2096422772d61e257ee0203c8921b55476d68dc20273e40cc790ddb8f8",
+      "input_sha256": "f4dd55b20dc997d800a713e4694a9fcaef5cd28f84f8de607beae3f05ca52a49",
       "resource_class": "small",
       "test_paths": [
         "tests/test_semantic_components.py"
@@ -6595,7 +6576,6 @@
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -6631,12 +6611,12 @@
         "src/spaghetti_extractor/isa/qualification_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/artifact_parsers.py",
         "src/spaghetti_extractor/libraries/catalog.py",
@@ -6655,10 +6635,14 @@
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
         "src/spaghetti_extractor/pe32/recursive_decode.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/profiles/__init__.py",
         "src/spaghetti_extractor/profiles/registry.py",
@@ -6736,7 +6720,7 @@
       ],
       "fixtures": [],
       "id": "pure-c1ce06948e75",
-      "input_sha256": "d9bea512782aab2004400227eacbe6b1223f6d4da2e37b87d32bbb57a115513c",
+      "input_sha256": "2a1ccf1b0b05b4a0f9b310eb079b6ac069ac59d22eece42ee5bcd32bf3cc3b4b",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_static_manifest.py"
@@ -6869,13 +6853,13 @@
     },
     {
       "files": [
-        "nix/stage-b-components.nix",
-        "nix/stage-b-linked-libraries.nix",
+        "nix/component-workflow.nix",
+        "nix/linked-libraries.nix",
         "tests/unit/candidate/test_linked_libraries_nix.py"
       ],
       "fixtures": [],
       "id": "pure-c8c47f1837f4",
-      "input_sha256": "25ce327e248ce053fe53cec5dbfc2ab6d09fac8e276695e304ee292222358a96",
+      "input_sha256": "121dbdcab03f509f18112278001b8e9c9b24b61ecf754b7445e6900cb2f89b33",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/candidate/test_linked_libraries_nix.py"
@@ -6917,28 +6901,6 @@
       ],
       "tests": [
         "tests/unit/authority/test_external_callback_authority_families"
-      ]
-    },
-    {
-      "files": [
-        "src/spaghetti_extractor/__init__.py",
-        "src/spaghetti_extractor/errors.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
-        "src/spaghetti_extractor/util.py",
-        "tests/pe_fixtures.py",
-        "tests/test_stage_a_pe_entry_surface.py"
-      ],
-      "fixtures": [],
-      "id": "pure-cdc56bf0bc9d",
-      "input_sha256": "ee819ac06a1779e1eab54268bfbd3253e67eaf540808d28ff75709ed5d25703b",
-      "resource_class": "small",
-      "test_paths": [
-        "tests/test_stage_a_pe_entry_surface.py"
-      ],
-      "tests": [
-        "tests/test_stage_a_pe_entry_surface"
       ]
     },
     {
@@ -7126,7 +7088,6 @@
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -7162,12 +7123,12 @@
         "src/spaghetti_extractor/isa/qualification_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/artifact_parsers.py",
         "src/spaghetti_extractor/libraries/catalog.py",
@@ -7186,10 +7147,14 @@
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
         "src/spaghetti_extractor/pe32/recursive_decode.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/profiles/__init__.py",
         "src/spaghetti_extractor/profiles/registry.py",
@@ -7267,7 +7232,7 @@
       ],
       "fixtures": [],
       "id": "pure-ce0386c25d6c",
-      "input_sha256": "8545f5de7d129ce07c63cc076172fe14a78edc46382ae8cceeb764bb5c9bd0ce",
+      "input_sha256": "f341e9a2694a2f6b0ea679626dd787ccff0fa111da4170d310a49d47566a8522",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_runner.py"
@@ -7323,15 +7288,12 @@
         "src/spaghetti_extractor/external/machine_import_profiles.py",
         "src/spaghetti_extractor/external/operation_model.py",
         "src/spaghetti_extractor/external/operation_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/test_external_operation_profiles.py"
       ],
       "fixtures": [],
       "id": "pure-d0626cfd1c50",
-      "input_sha256": "85c730a68b08d5f4c80523e8f693bf11f08706daf0c63b4b5a06114ec1dac792",
+      "input_sha256": "a5652d87049582ff9b2d2808460380c54a30806bc16866c3e810659e72619250",
       "resource_class": "small",
       "test_paths": [
         "tests/test_external_operation_profiles.py"
@@ -7364,8 +7326,10 @@
         "src/spaghetti_extractor/external/machine_abi.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/state_machine.py",
         "src/spaghetti_extractor/static_program/__init__.py",
@@ -7377,7 +7341,7 @@
       ],
       "fixtures": [],
       "id": "pure-d13b2612c937",
-      "input_sha256": "f376dbb4214ba9fa0797986b4a40b15d48c139d4b1d4bfd432084c4732f51cbf",
+      "input_sha256": "a49de63222f905498a34d284747f8c3d509a2fb446a4b279ddb055b18ad885bd",
       "resource_class": "small",
       "test_paths": [
         "tests/test_machine_import_profiles.py"
@@ -7397,15 +7361,12 @@
         "src/spaghetti_extractor/external/callbacks.py",
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/test_native_callthrough_profiles.py"
       ],
       "fixtures": [],
       "id": "pure-d583e63bc5f7",
-      "input_sha256": "e3da5bfd368c44df4eb942c9b6879ce0a6e75324f227b4025280062b5b69ffa4",
+      "input_sha256": "0a6ff0493f8e539b9885fd02cab363766706ed8edd4ccb1d55f483e925d2c740",
       "resource_class": "small",
       "test_paths": [
         "tests/test_native_callthrough_profiles.py"
@@ -7417,19 +7378,39 @@
     {
       "files": [
         "src/spaghetti_extractor/__init__.py",
+        "src/spaghetti_extractor/isa/__init__.py",
+        "src/spaghetti_extractor/isa/catalog.py",
+        "src/spaghetti_extractor/isa/catalog_xed.py",
+        "src/spaghetti_extractor/isa/conformance.py",
+        "src/spaghetti_extractor/isa/corpus_generator.py",
+        "src/spaghetti_extractor/isa/corpus_observations.py",
+        "tests/test_isa_catalog.py",
+        "tests/test_isa_corpus_generator.py"
+      ],
+      "fixtures": [],
+      "id": "pure-d61aff0013a5",
+      "input_sha256": "a1dcf52f6e345f6fdbbd5c0995f012052417a9b4b4bd3c353fc308b071ab418a",
+      "resource_class": "small",
+      "test_paths": [
+        "tests/test_isa_corpus_generator.py"
+      ],
+      "tests": [
+        "tests/test_isa_corpus_generator"
+      ]
+    },
+    {
+      "files": [
+        "src/spaghetti_extractor/__init__.py",
         "src/spaghetti_extractor/errors.py",
         "src/spaghetti_extractor/extraction/__init__.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/resources/ghidra",
         "src/spaghetti_extractor/util.py",
         "tests/unit/extraction/test_ghidra.py"
       ],
       "fixtures": [],
       "id": "pure-d8905a721749",
-      "input_sha256": "5c5b801567bbd75b3cb48c90f9e741f4e3da38f8057e1935c01d945239482820",
+      "input_sha256": "74081386e67d48e3cef0f69b4f5367a98ed0b1875a937160e3dc15fed34738b3",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/extraction/test_ghidra.py"
@@ -7459,15 +7440,12 @@
         "src/spaghetti_extractor/external/__init__.py",
         "src/spaghetti_extractor/external/callbacks.py",
         "src/spaghetti_extractor/external/contracts.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/components/test_evidence_expressions.py"
       ],
       "fixtures": [],
       "id": "pure-da218e7c8f65",
-      "input_sha256": "85d71dee1570f63fbe0d96b423480121e0f38518e181ccf96891c6a2bcee328e",
+      "input_sha256": "941eb2b2d816039e7db09bdb567fdfe99d8e3e1fa737c058ed8d5d3f498e49dc",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_evidence_expressions.py"
@@ -7524,9 +7502,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -7564,7 +7545,7 @@
       ],
       "fixtures": [],
       "id": "pure-db80b74149cf",
-      "input_sha256": "c44104b2e0bc856295dbd34defa8880bb94c14c9a6b5c4695e45d2ae84141a54",
+      "input_sha256": "5bbd131664159259849fca1553958d36bbb35d5b707a2a68d807bc8c30fb5006",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/reconstruction/ir/test_rendering.py"
@@ -7631,19 +7612,14 @@
     {
       "files": [
         "src/spaghetti_extractor/__init__.py",
-        "src/spaghetti_extractor/artifacts/__init__.py",
-        "src/spaghetti_extractor/artifacts/formats.py",
         "src/spaghetti_extractor/authority_inputs/__init__.py",
         "src/spaghetti_extractor/authority_inputs/isa_requirements.py",
         "src/spaghetti_extractor/build_support/__init__.py",
         "src/spaghetti_extractor/build_support/lean_runner.py",
         "src/spaghetti_extractor/errors.py",
         "src/spaghetti_extractor/extraction/__init__.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
-        "src/spaghetti_extractor/extraction/region_inventory.py",
         "src/spaghetti_extractor/extraction/schema.py",
-        "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/isa/__init__.py",
         "src/spaghetti_extractor/isa/conformance.py",
         "src/spaghetti_extractor/isa/kernel_qualification.py",
@@ -7652,16 +7628,18 @@
         "src/spaghetti_extractor/isa/kernel_qualification_reports.py",
         "src/spaghetti_extractor/isa/kernel_selection.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
-        "src/spaghetti_extractor/lean/StageA",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/test_machine_ir_isa_requirements_v2.py"
       ],
       "fixtures": [],
       "id": "pure-dedbf6c107cf",
-      "input_sha256": "23c11936598062063f21b518fe4393257ae790363af559eb3c331098d0f28fe4",
+      "input_sha256": "8fb465506cc40732338f2a4e1bd5bed5ff893415109795c044abd24dbbc138bb",
       "resource_class": "small",
       "test_paths": [
         "tests/test_machine_ir_isa_requirements_v2.py"
@@ -7796,6 +7774,26 @@
     },
     {
       "files": [
+        "src/spaghetti_extractor/__init__.py",
+        "src/spaghetti_extractor/isa/__init__.py",
+        "src/spaghetti_extractor/isa/catalog.py",
+        "src/spaghetti_extractor/isa/catalog_xed.py",
+        "src/spaghetti_extractor/isa/conformance.py",
+        "tests/test_isa_catalog.py"
+      ],
+      "fixtures": [],
+      "id": "pure-e2286df0897f",
+      "input_sha256": "bc119c871baf56d4aae42a452cadfd706b29a269cd05c054ab11b617b1cf09d4",
+      "resource_class": "small",
+      "test_paths": [
+        "tests/test_isa_catalog.py"
+      ],
+      "tests": [
+        "tests/test_isa_catalog"
+      ]
+    },
+    {
+      "files": [
         "nix",
         "src/spaghetti_extractor/__init__.py",
         "src/spaghetti_extractor/__main__.py",
@@ -7979,7 +7977,6 @@
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -8015,12 +8012,12 @@
         "src/spaghetti_extractor/isa/qualification_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/artifact_parsers.py",
         "src/spaghetti_extractor/libraries/catalog.py",
@@ -8039,10 +8036,14 @@
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
         "src/spaghetti_extractor/pe32/recursive_decode.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/profiles/__init__.py",
         "src/spaghetti_extractor/profiles/registry.py",
@@ -8120,7 +8121,7 @@
       ],
       "fixtures": [],
       "id": "pure-e4d48e365c2b",
-      "input_sha256": "dc6641f9c15fcb01b96c3e0358ee9360835dbbe26319679f6a2d8dc8579839eb",
+      "input_sha256": "a07b629a39e68fba0587dab1e1f85f442bed39a8b93e42589ee59880cb4285fa",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_discovery.py"
@@ -8142,9 +8143,6 @@
         "src/spaghetti_extractor/external/callbacks.py",
         "src/spaghetti_extractor/external/contracts.py",
         "src/spaghetti_extractor/external/machine_import_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/roundtrip_fuzz/__init__.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_io.py",
         "src/spaghetti_extractor/roundtrip_fuzz/image_model.py",
@@ -8156,7 +8154,7 @@
       ],
       "fixtures": [],
       "id": "pure-e69e68bc699a",
-      "input_sha256": "48aa59b592aea083ecb80080c8d188f3bba2d2aaabb36a0972a59ecbb26b4239",
+      "input_sha256": "a822fcdce7aba6e92842831dc1f79a0d2e7b8e28f074dcc0ace9d3e9fffd1f46",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/candidate/test_native_image.py"
@@ -8181,28 +8179,49 @@
         "src/spaghetti_extractor/isa/conformance_unicorn.py",
         "src/spaghetti_extractor/isa/conformance_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/util.py",
         "tests/test_isa_conformance_shards.py",
-        "tests/test_stage_a_isa_conformance_unicorn.py"
+        "tests/test_isa_conformance_unicorn.py"
       ],
       "fixtures": [],
       "id": "pure-e8956681dbbf",
-      "input_sha256": "6834b8537d2de597686f9245a4ba6979a420230bff511fd25f519f346da1f652",
+      "input_sha256": "7938de78d50f8f23ccf8f8c7427087c5e97d0c6a5b3d1da9059a702b70bcefbf",
       "resource_class": "small",
       "test_paths": [
         "tests/test_isa_conformance_shards.py"
       ],
       "tests": [
         "tests/test_isa_conformance_shards"
+      ]
+    },
+    {
+      "files": [
+        "src/spaghetti_extractor/__init__.py",
+        "src/spaghetti_extractor/errors.py",
+        "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
+        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/util.py",
+        "tests/pe_fixtures.py",
+        "tests/test_pe_entry_surface.py"
+      ],
+      "fixtures": [],
+      "id": "pure-e8aad6560c14",
+      "input_sha256": "667fa480d14c550068d3de877580392d4ca7ed1aaa5ad24831a67b6e84e3aa0c",
+      "resource_class": "small",
+      "test_paths": [
+        "tests/test_pe_entry_surface.py"
+      ],
+      "tests": [
+        "tests/test_pe_entry_surface"
       ]
     },
     {
@@ -8219,9 +8238,6 @@
         "src/spaghetti_extractor/external/machine_import_profiles.py",
         "src/spaghetti_extractor/external/operation_model.py",
         "src/spaghetti_extractor/external/operation_profiles.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
         "src/spaghetti_extractor/reconstruction/control_clusters.py",
@@ -8235,7 +8251,7 @@
       ],
       "fixtures": [],
       "id": "pure-e9944f8cb94a",
-      "input_sha256": "7d3e084c8ba45594276160aa1a97d4bfe8cfe1a61078de58d43d0fe3e6c28c4f",
+      "input_sha256": "d25ebf0ade4bfe692a2e0a55a2beacd1373ce11547878a701a89a3f629878fa0",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/reconstruction/control/test_reachability.py"
@@ -8387,7 +8403,6 @@
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -8407,7 +8422,7 @@
         "src/spaghetti_extractor/isa/conformance_nix.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA",
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/contracts.py",
         "src/spaghetti_extractor/machine_ir/__init__.py",
@@ -8418,9 +8433,13 @@
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/control.py",
@@ -8469,33 +8488,13 @@
       ],
       "fixtures": [],
       "id": "pure-ebc7f2610b0b",
-      "input_sha256": "b2f426ff7bf46df91c61ac998b9604c4fd6c18aff85e192349c276483e30ab19",
+      "input_sha256": "111878982d890918f5e80bb66417ef156fb2c30db1db7b378bf956687178ad9e",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/cli/test_public_commands.py"
       ],
       "tests": [
         "tests/unit/cli/test_public_commands"
-      ]
-    },
-    {
-      "files": [
-        "src/spaghetti_extractor/__init__.py",
-        "src/spaghetti_extractor/isa/__init__.py",
-        "src/spaghetti_extractor/isa/catalog.py",
-        "src/spaghetti_extractor/isa/catalog_xed.py",
-        "src/spaghetti_extractor/isa/conformance.py",
-        "tests/test_stage_a_isa_catalog.py"
-      ],
-      "fixtures": [],
-      "id": "pure-ec7556d35f53",
-      "input_sha256": "30e9b505e03957b93ac0db8685e1c302837f8a51d5454cd0144c4db7505135f3",
-      "resource_class": "small",
-      "test_paths": [
-        "tests/test_stage_a_isa_catalog.py"
-      ],
-      "tests": [
-        "tests/test_stage_a_isa_catalog"
       ]
     },
     {
@@ -8551,9 +8550,8 @@
         "src/spaghetti_extractor/machine_ir/fallback_capability.py",
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/candidate/native_engine/_support.py",
         "tests/unit/candidate/native_runtime/_callback_support.py",
@@ -8562,7 +8560,7 @@
       ],
       "fixtures": [],
       "id": "pure-ef7661707b9e",
-      "input_sha256": "a06024c0601abca796b1cc55db1934dbcf057a8460b771dca717862e752b1d1a",
+      "input_sha256": "cbe78a0602a898ecb494d4dde4ae0658710ee055b3d2b73f449fb5c424eafff6",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/candidate/native_runtime/test_validation.py"
@@ -8587,27 +8585,24 @@
         "src/spaghetti_extractor/isa/conformance_unicorn.py",
         "src/spaghetti_extractor/isa/conformance_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/util.py",
-        "tests/test_stage_a_isa_conformance_unicorn.py"
+        "tests/test_isa_conformance_unicorn.py"
       ],
       "fixtures": [],
-      "id": "pure-f31308fa7880",
-      "input_sha256": "888932fb8fb9774a442a5018d1373195b699bcd485fc4549b83ce19ccb29d29f",
+      "id": "pure-ef7d15c9d157",
+      "input_sha256": "ff2582c2ba5672b3ec213f7674dddf90823ad36d3947a77e6a5a3c5fe8aa45f1",
       "resource_class": "small",
       "test_paths": [
-        "tests/test_stage_a_isa_conformance_unicorn.py"
+        "tests/test_isa_conformance_unicorn.py"
       ],
       "tests": [
-        "tests/test_stage_a_isa_conformance_unicorn"
+        "tests/test_isa_conformance_unicorn"
       ]
     },
     {
@@ -8631,15 +8626,12 @@
         "src/spaghetti_extractor/external/__init__.py",
         "src/spaghetti_extractor/external/callbacks.py",
         "src/spaghetti_extractor/external/contracts.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/unit/components/test_runtime_adapter.py"
       ],
       "fixtures": [],
       "id": "pure-f33f8864137a",
-      "input_sha256": "5ad3ce446779fe298bfa9edd45e3baf13649ae22940465bae878988d02b13665",
+      "input_sha256": "b3efe5d125b1c8463e950ce4c8cd4d2a67519872ff58977f253340fd3d85354c",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_runtime_adapter.py"
@@ -8717,15 +8709,12 @@
         "src/spaghetti_extractor/external/operation_model.py",
         "src/spaghetti_extractor/external/operation_profiles.py",
         "src/spaghetti_extractor/external/source_operations.py",
-        "src/spaghetti_extractor/pe32/__init__.py",
-        "src/spaghetti_extractor/pe32/pe.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/util.py",
         "tests/test_source_operation_catalog.py"
       ],
       "fixtures": [],
       "id": "pure-fd271fd84dd5",
-      "input_sha256": "562f9479058ef646c14d7aec84c91f1eee2fa1234c106adae7617b06b07395f8",
+      "input_sha256": "5493a5705b9971cd14cf0ef0e579f699869ae14654eeb9e6152af41e4dc7e5eb",
       "resource_class": "small",
       "test_paths": [
         "tests/test_source_operation_catalog.py"
@@ -8758,9 +8747,12 @@
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/x87_profile.py",
         "src/spaghetti_extractor/pe32/__init__.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/reconstruction/__init__.py",
         "src/spaghetti_extractor/reconstruction/composition.py",
@@ -8799,7 +8791,7 @@
       ],
       "fixtures": [],
       "id": "pure-fd8c2e24d932",
-      "input_sha256": "be5c4e5c0fa2da58e1ee76509608695cb3ae01ec0731ad5ddee6aba24cf830b1",
+      "input_sha256": "60f6ed083b6c7e4f0503cd38b5dc17700d54faa698dac5d1530a94d7b3afb460",
       "resource_class": "small",
       "test_paths": [
         "tests/test_reconstruction_plan.py"
@@ -8993,7 +8985,6 @@
         "src/spaghetti_extractor/extraction/cutpoints.py",
         "src/spaghetti_extractor/extraction/executable_classification.py",
         "src/spaghetti_extractor/extraction/ghidra.py",
-        "src/spaghetti_extractor/extraction/instruction_support.py",
         "src/spaghetti_extractor/extraction/isa_inventory.py",
         "src/spaghetti_extractor/extraction/isa_requirements.py",
         "src/spaghetti_extractor/extraction/region_inventory.py",
@@ -9029,12 +9020,12 @@
         "src/spaghetti_extractor/isa/qualification_worker.py",
         "src/spaghetti_extractor/isa/semantic_forms.py",
         "src/spaghetti_extractor/isa/side_adapter.py",
-        "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-        "src/spaghetti_extractor/lean/StageA/Decode.lean",
-        "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
-        "src/spaghetti_extractor/lean/StageA/Machine.lean",
-        "src/spaghetti_extractor/lean/StageA/PE32.lean",
-        "src/spaghetti_extractor/lean/StageA/X87.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+        "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
         "src/spaghetti_extractor/libraries/__init__.py",
         "src/spaghetti_extractor/libraries/artifact_parsers.py",
         "src/spaghetti_extractor/libraries/catalog.py",
@@ -9053,10 +9044,14 @@
         "src/spaghetti_extractor/machine_ir/schema.py",
         "src/spaghetti_extractor/pe32/__init__.py",
         "src/spaghetti_extractor/pe32/behavioral_roots.py",
+        "src/spaghetti_extractor/pe32/image.py",
+        "src/spaghetti_extractor/pe32/linker_map.py",
+        "src/spaghetti_extractor/pe32/loader.py",
+        "src/spaghetti_extractor/pe32/model.py",
         "src/spaghetti_extractor/pe32/pe.py",
+        "src/spaghetti_extractor/pe32/queries.py",
         "src/spaghetti_extractor/pe32/recovered_executable_data.py",
         "src/spaghetti_extractor/pe32/recursive_decode.py",
-        "src/spaghetti_extractor/pe32/stage_binary.py",
         "src/spaghetti_extractor/pe32/target_cutpoint_materialization.py",
         "src/spaghetti_extractor/profiles/__init__.py",
         "src/spaghetti_extractor/profiles/registry.py",
@@ -9134,7 +9129,7 @@
       ],
       "fixtures": [],
       "id": "smoke",
-      "input_sha256": "fc23d10eb32c074379081657002ed7b76d3e8a8f95f53c40c01bc943920a0a69",
+      "input_sha256": "b5c7347cee64f88817bd51774311f25f039e9708b3198ebac85b8e93b267d044",
       "resource_class": "small",
       "test_paths": [
         "tests/smoke/test_testkit_cli.py"

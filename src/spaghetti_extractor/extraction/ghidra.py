@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_file, write_json
 
 
@@ -44,7 +44,7 @@ def _resolve_script_path(value: Path | None) -> Path:
         if candidate.is_dir() and (candidate / GHIDRA_SCRIPT).is_file():
             return candidate.resolve()
     rendered = ", ".join(str(candidate) for candidate in candidates)
-    raise StageAInputError(
+    raise ToolkitInputError(
         f"Ghidra proposal script {GHIDRA_SCRIPT} was not found; searched: {rendered}"
     )
 
@@ -90,7 +90,7 @@ def export_ghidra_proposal(
 
     binary = Path(binary)
     if not binary.is_file():
-        raise StageAInputError(f"Ghidra proposal input is not available: {binary}")
+        raise ToolkitInputError(f"Ghidra proposal input is not available: {binary}")
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     binary_sha256 = sha256_file(binary)

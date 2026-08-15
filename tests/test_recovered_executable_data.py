@@ -13,7 +13,7 @@ from spaghetti_extractor.pe32.recovered_executable_data import (
     load_recovered_executable_data_contract,
     recover_executable_data_ranges,
 )
-from spaghetti_extractor.pe32.stage_binary import _parse_stage_a_pe
+from spaghetti_extractor.pe32.image import parse_pe_image
 from spaghetti_extractor.util import sha256_bytes
 
 from tests.pe_fixtures import pe32_image
@@ -62,7 +62,7 @@ class RecoveredExecutableDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / "original.exe"
             original.write_bytes(pe32_image(image, virtual_size=len(image)))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 ranges = recover_executable_data_ranges(
                     binary=binary,
@@ -89,7 +89,7 @@ class RecoveredExecutableDataTests(unittest.TestCase):
             original = root / "original.exe"
             artifact = root / "recovered-executable-data.json"
             original.write_bytes(pe32_image(image, virtual_size=len(image)))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 contract = build_recovered_executable_data_contract(
                     binary=binary,
@@ -128,7 +128,7 @@ class RecoveredExecutableDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / "original.exe"
             original.write_bytes(pe32_image(image, virtual_size=len(image)))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 ranges = recover_executable_data_ranges(
                     binary=binary,
@@ -157,7 +157,7 @@ class RecoveredExecutableDataTests(unittest.TestCase):
                     original.write_bytes(
                         pe32_image(image, virtual_size=len(image))
                     )
-                    binary = _parse_stage_a_pe(original)
+                    binary = parse_pe_image(original)
                     try:
                         ranges = recover_executable_data_ranges(
                             binary=binary,
@@ -190,7 +190,7 @@ class RecoveredExecutableDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / "original.exe"
             original.write_bytes(pe32_image(image, virtual_size=len(image)))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 ranges = recover_executable_data_ranges(
                     binary=binary,
@@ -217,7 +217,7 @@ class RecoveredExecutableDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / "original.exe"
             original.write_bytes(pe32_image(image, virtual_size=len(image)))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 ranges = recover_executable_data_ranges(
                     binary=binary,
@@ -246,7 +246,7 @@ class RecoveredExecutableDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / "original.exe"
             original.write_bytes(pe32_image(image, virtual_size=len(image)))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 ranges = recover_executable_data_ranges(
                     binary=binary,
@@ -271,7 +271,7 @@ class RecoveredExecutableDataTests(unittest.TestCase):
             original = root / "original.exe"
             artifact = root / "recovered-executable-data.json"
             original.write_bytes(pe32_image(image, virtual_size=len(image)))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 payload = build_recovered_executable_data_contract(
                     binary=binary,
@@ -305,7 +305,7 @@ class RecoveredExecutableDataTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / "original.exe"
             original.write_bytes(pe32_image(image, virtual_size=len(image)))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 with self.assertRaisesRegex(
                     RecoveredExecutableDataError, "overlaps rooted reachable transfer"

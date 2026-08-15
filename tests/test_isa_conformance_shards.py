@@ -15,7 +15,7 @@ from spaghetti_extractor.isa.conformance_shards import (
     partition_isa_conformance_corpus,
 )
 from spaghetti_extractor.isa.conformance_unicorn import run_unicorn_corpus
-from tests.test_stage_a_isa_conformance_unicorn import _case, _corpus
+from tests.test_isa_conformance_unicorn import _case, _corpus
 
 
 class ISAConformanceShardTests(unittest.TestCase):

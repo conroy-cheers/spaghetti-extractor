@@ -1,5 +1,5 @@
 {
-  "format": "stage-a-callable-external-profile-v2",
+  "format": "spaghetti-extractor-callable-external-profile-v2",
   "id": "pe32-kernel32-callable-resolvers-v1",
   "model": "x86-pe32",
   "resolvers": [

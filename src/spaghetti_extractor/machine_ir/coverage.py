@@ -16,14 +16,14 @@ from typing import Any, Mapping, Sequence
 
 from ..artifacts.formats import (
     MACHINE_IR_FORMAT,
-    STAGE_B_INTERPRETER_PACKAGE_FORMAT,
-    STAGE_B_INTERPRETER_PROGRAM_FORMAT,
+    SPX_INTERPRETER_PACKAGE_FORMAT,
+    SPX_INTERPRETER_PROGRAM_FORMAT,
 )
 from ..components.formats import PORTABLE_SELECTION_V3_FORMAT
 from ..util import sha256_bytes, sha256_file, write_json
 
 
-FALLBACK_COVERAGE_RECEIPT_FORMAT = "stage-b-fallback-coverage-receipt-v3"
+FALLBACK_COVERAGE_RECEIPT_FORMAT = "spaghetti-extractor-fallback-coverage-receipt-v3"
 FALLBACK_COVERAGE_CHECKER_ID = "spaghetti-extractor-fallback-coverage-checker"
 FALLBACK_COVERAGE_CHECKER_VERSION = 3
 _PORTABLE_SELECTION_FIELDS = frozenset({
@@ -79,7 +79,7 @@ class FallbackCoverageReceipt:
         }
 
 
-def write_stage_b_fallback_coverage_receipt(
+def write_spx_fallback_coverage_receipt(
     *,
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
@@ -101,7 +101,7 @@ def write_stage_b_fallback_coverage_receipt(
     return payload
 
 
-def validate_stage_b_fallback_coverage_receipt(
+def validate_spx_fallback_coverage_receipt(
     *,
     receipt: Path | str,
     machine_ir: Path | str,
@@ -217,11 +217,11 @@ def _expected_fallback_coverage_payload(
             "lowering_transfer_sha256": lowering["transfer_sha256"],
             "implementation_kind": implementation_kind,
             "dispatch_lookup": (
-                "stage_b_region_override_lookup"
+                "spx_region_override_lookup"
                 if implementation_kind == "portable_replacement"
                 else "component_entry_subsumed"
                 if implementation_kind == "portable_component_member"
-                else "stage_b_program_lookup"
+                else "spx_program_lookup"
             ),
             "portable_replacement": replacement,
         }
@@ -247,8 +247,8 @@ def _expected_fallback_coverage_payload(
         "schemas": {
             "receipt": FALLBACK_COVERAGE_RECEIPT_FORMAT,
             "machine_ir": MACHINE_IR_FORMAT,
-            "semantic_interpreter_package": STAGE_B_INTERPRETER_PACKAGE_FORMAT,
-            "semantic_interpreter_program": STAGE_B_INTERPRETER_PROGRAM_FORMAT,
+            "semantic_interpreter_package": SPX_INTERPRETER_PACKAGE_FORMAT,
+            "semantic_interpreter_program": SPX_INTERPRETER_PROGRAM_FORMAT,
         },
         "policy": {
             "potential_transfers_may_be_deferred": False,
@@ -411,7 +411,7 @@ def _validate_interpreter_lowering(
         package.get("semantic_coverage"), "interpreter semantic coverage"
     )
     if (
-        package.get("format") != STAGE_B_INTERPRETER_PACKAGE_FORMAT
+        package.get("format") != SPX_INTERPRETER_PACKAGE_FORMAT
         or package.get("status") != "ready"
         or package.get("input_mode") != "sanitized_machine_ir_v2"
         or package_blockers
@@ -454,7 +454,7 @@ def _validate_interpreter_lowering(
     )
     transfers = _list(program.get("transfers"), "interpreter program transfers")
     if (
-        program.get("format") != STAGE_B_INTERPRETER_PROGRAM_FORMAT
+        program.get("format") != SPX_INTERPRETER_PROGRAM_FORMAT
         or program.get("status") != "ready"
         or program.get("state_machine_sha256") != machine_ir_sha256
         or program_blockers
@@ -526,11 +526,11 @@ def _validate_interpreter_lowering(
         {
             "package": {
                 **_artifact_binding(package_path, sha256_file(package_path)),
-                "format": STAGE_B_INTERPRETER_PACKAGE_FORMAT,
+                "format": SPX_INTERPRETER_PACKAGE_FORMAT,
             },
             "program": {
                 **_artifact_binding(program_path, program_sha256),
-                "format": STAGE_B_INTERPRETER_PROGRAM_FORMAT,
+                "format": SPX_INTERPRETER_PROGRAM_FORMAT,
             },
             "sources": sources,
             "adapted_semantics": adapted_semantics,
@@ -844,6 +844,6 @@ __all__ = [
     "PORTABLE_SELECTION_V3_FORMAT",
     "FallbackCoverageReceipt",
     "FallbackCoverageReceiptError",
-    "validate_stage_b_fallback_coverage_receipt",
-    "write_stage_b_fallback_coverage_receipt",
+    "validate_spx_fallback_coverage_receipt",
+    "write_spx_fallback_coverage_receipt",
 ]

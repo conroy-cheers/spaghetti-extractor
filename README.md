@@ -63,19 +63,19 @@ producer still validates every complete record before publishing the package.
 Component build and candidate commands remain unavailable until reviewed
 intent and a default configuration are declared together.
 
-Public realizations automatically use the nearest checked-in
-`nix/stage-a-builders` inventory when one exists. Use `--local` to disable
-remote builders for one command, or `--builders-file FILE` to select an
-explicit CA-capable inventory. This prevents unrelated host-global builder
-configuration from silently taking over an analysis; when no inventory can be
-found, the command explicitly uses the local builder.
+Public realizations use an explicit portable builder policy. They prefer a
+CLI-selected inventory, then `SPAGHETTI_EXTRACTOR_BUILDERS_FILE`, the nearest
+ignored `nix/builders.local`, and the XDG configuration file
+`$XDG_CONFIG_HOME/spaghetti-extractor/builders`. Use `--local` to disable
+remote builders for one command. When no inventory is found, the command
+explicitly selects local execution instead of inheriting host-global builders.
 
 Individual pipeline leaves are available only in the explicit expert namespace:
 
 ```console
-spaghetti-extractor expert stage-a-inventory-binary \
+spaghetti-extractor expert static-inventory-binary \
   --binary original.exe --out build/inventory.json
-spaghetti-extractor expert stage-a-inventory-isa \
+spaghetti-extractor expert isa-inventory \
   --binary original.exe --inventory build/inventory.json \
   --out build/isa.json
 spaghetti-extractor expert static-program-export \
@@ -112,6 +112,7 @@ nix run .#dev -- fixtures
 nix run .#dev -- refresh --check
 nix run .#dev -- scaffold test control branch_targets
 nix run .#dev -- scaffold phase map-sccs pointer_provenance
+nix run .#dev -- scaffold target sample-app
 nix run .#dev -- explain-rebuild --before before.json --after after.json
 ```
 

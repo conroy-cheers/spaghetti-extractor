@@ -10,19 +10,19 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..artifacts.formats import MACHINE_IR_FORMAT
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes
 
 
 MACHINE_IR_FILENAME = "machine-ir.jsonl"
 MACHINE_IR_MANIFEST_FILENAME = "machine-ir-manifest.json"
-PREPARED_MACHINE_IR_FORMAT = "stage-a-prepared-machine-ir-v1"
+PREPARED_MACHINE_IR_FORMAT = "spaghetti-extractor-prepared-machine-ir-v1"
 PREPARED_MACHINE_IR_FILENAME = "prepared-machine-ir.jsonl"
 PREPARED_MACHINE_IR_MANIFEST_FILENAME = "prepared-machine-ir-manifest.json"
-X87_MICRO_OP_FORMAT = "stage-a-x87-micro-op-v1"
-INDIRECT_TARGET_PROFILE_FORMAT = "stage-a-indirect-target-profile-v1"
+X87_MICRO_OP_FORMAT = "spaghetti-extractor-x87-micro-op-v1"
+INDIRECT_TARGET_PROFILE_FORMAT = "spaghetti-extractor-indirect-target-profile-v1"
 DECODED_CONTROL_RECONCILIATION_FORMAT = (
-    "stage-a-decoded-control-reconciliation-v1"
+    "spaghetti-extractor-decoded-control-reconciliation-v1"
 )
 
 _SEMANTIC_FIELDS = (
@@ -66,7 +66,7 @@ def _default_finite_dataflow_factory() -> Callable[..., Any]:
     return module.FiniteU32Dataflow
 
 
-class MachineIRExportError(StageAInputError):
+class MachineIRExportError(ToolkitInputError):
     """The input package cannot safely cross the reconstruction boundary."""
 
     def __init__(

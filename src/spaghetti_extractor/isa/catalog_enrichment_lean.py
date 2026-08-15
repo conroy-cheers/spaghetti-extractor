@@ -17,13 +17,13 @@ from .semantic_forms import (
     lean_semantic_form_classifier_sha256,
 )
 from ..build_support.lean_runner import run_lean_module_graph
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes
 
 _LEAN_METADATA_SUPPORT = r"""
-import StageA.ISAQualification
+import SpaghettiExtractor.ISA.ISAQualification
 
-namespace StageA.Formal
+namespace SpaghettiExtractor.ISA.Formal
 
 open Lean
 
@@ -572,7 +572,7 @@ def _generated_lean_module(encodings: Sequence[Mapping[str, Any]]) -> str:
     definitions.append("def _root_.main : IO Unit := do")
     for chunk_index in range(chunk_count):
         definitions.append(f"  emitMetadataChunk{chunk_index}")
-    definitions.extend(["", "end StageA.Formal", ""])
+    definitions.extend(["", "end SpaghettiExtractor.ISA.Formal", ""])
     return "\n".join(definitions)
 
 
@@ -588,38 +588,38 @@ def extract_lean_decoded_metadata(
         or not isinstance(timeout_seconds, int)
         or timeout_seconds <= 0
     ):
-        raise StageAInputError("Lean metadata timeout must be a positive integer")
+        raise ToolkitInputError("Lean metadata timeout must be a positive integer")
     expected_ids = [str(row["encoding_id"]) for row in encodings]
     if not expected_ids or expected_ids != sorted(set(expected_ids)):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "Lean metadata encodings must have unique canonical encoding IDs"
         )
     lean = shutil.which("lean")
     if lean is None:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "Lean is required to enrich exact side-ISA catalog encodings"
         )
 
     module_source = _generated_lean_module(encodings)
-    source_root = Path(__file__).parent.parent / "lean" / "StageA"
+    source_root = Path(__file__).parent.parent / "lean" / "SpaghettiExtractor/ISA"
     with tempfile.TemporaryDirectory(
         prefix="isa-catalog-enrichment-"
     ) as temporary:
         lean_dir = Path(temporary)
-        stage_a = lean_dir / "StageA"
-        stage_a.mkdir(parents=True)
+        isa_modules = lean_dir / "SpaghettiExtractor/ISA"
+        isa_modules.mkdir(parents=True)
         for module in LEAN_SEMANTIC_FORM_CLASSIFIER_MODULES:
             shutil.copyfile(
                 source_root / f"{module}.lean",
-                stage_a / f"{module}.lean",
+                isa_modules / f"{module}.lean",
             )
-        copied_classifier = lean_semantic_form_classifier_sha256(stage_a)
+        copied_classifier = lean_semantic_form_classifier_sha256(isa_modules)
         current_classifier = lean_semantic_form_classifier_sha256()
         if copied_classifier != current_classifier:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "Lean semantic classifier changed while preparing enrichment"
             )
-        generated = stage_a / "GeneratedISACatalogEnrichment.lean"
+        generated = isa_modules / "GeneratedISACatalogEnrichment.lean"
         generated.write_text(module_source, encoding="utf-8")
         compiled = run_lean_module_graph(
             lean_dir,
@@ -627,7 +627,7 @@ def extract_lean_decoded_metadata(
         )
         if compiled.get("status") != "checked":
             detail = str(compiled.get("stderr") or compiled.get("stdout"))
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "Lean exact-encoding metadata export did not compile: " + detail
             )
         try:
@@ -636,7 +636,7 @@ def extract_lean_decoded_metadata(
                     lean,
                     "--trust=0",
                     "--run",
-                    "StageA/GeneratedISACatalogEnrichment.lean",
+                    "SpaghettiExtractor/ISA/GeneratedISACatalogEnrichment.lean",
                 ],
                 cwd=lean_dir,
                 env={**os.environ, "LEAN_PATH": "."},
@@ -647,11 +647,11 @@ def extract_lean_decoded_metadata(
                 timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "Lean exact-encoding metadata export timed out"
             ) from exc
         except subprocess.CalledProcessError as exc:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "Lean exact-encoding metadata export failed: "
                 + (exc.stderr or exc.stdout or "unknown Lean failure")
             ) from exc
@@ -663,11 +663,11 @@ def extract_lean_decoded_metadata(
         try:
             raw = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"Lean metadata output line {line_number} is not JSON"
             ) from exc
         if not isinstance(raw, Mapping):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"Lean metadata output line {line_number} is not an object"
             )
         encoding_id = _string(
@@ -675,12 +675,12 @@ def extract_lean_decoded_metadata(
             f"Lean metadata output line {line_number} encoding_id",
         )
         if encoding_id in rows:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"Lean metadata output repeats encoding {encoding_id}"
             )
         rows[encoding_id] = dict(raw)
     if list(rows) != expected_ids:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "Lean metadata output does not cover encodings in canonical order"
         )
     version = subprocess.run(

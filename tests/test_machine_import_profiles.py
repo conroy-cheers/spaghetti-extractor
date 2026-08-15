@@ -164,7 +164,7 @@ class MachineImportProfileTests(unittest.TestCase):
             "disposition": "terminates",
         }
         base = {
-            "format": "stage-a-static-machine-import-profile-v1",
+            "format": "spaghetti-extractor-static-machine-import-profile-v1",
             "id": "base",
             "default_callback_effect": "none",
             "machine_import_signatures": [terminating],
@@ -210,7 +210,7 @@ class MachineImportProfileTests(unittest.TestCase):
     def test_control_disposition_projection_tracks_control_changes(self) -> None:
         def profile(words: int) -> dict:
             return {
-                "format": "stage-a-static-machine-import-profile-v1",
+                "format": "spaghetti-extractor-static-machine-import-profile-v1",
                 "id": f"fixture-{words}",
                 "machine_import_signatures": [{
                     "id": "exit",
@@ -448,7 +448,7 @@ class MachineImportProfileTests(unittest.TestCase):
                 pe32_import_image(b"\xc3", symbol="ShowWindow", dll="USER32.dll")
             )
             policy = _write(root / "policy.json", {
-                "format": "stage-a-import-abi-policy-v1",
+                "format": "spaghetti-extractor-import-abi-policy-v1",
                 "id": "fixture-policy",
                 "rules": [{
                     "dll": "user32.dll",
@@ -483,7 +483,7 @@ class MachineImportProfileTests(unittest.TestCase):
                 pe32_import_image(b"\xc3", symbol="ShowWindow", dll="USER32.dll")
             )
             policy = _write(root / "policy.json", {
-                "format": "stage-a-import-abi-policy-v1",
+                "format": "spaghetti-extractor-import-abi-policy-v1",
                 "id": "fixture-policy",
                 "rules": [{
                     "dll": "kernel32.dll",
@@ -502,12 +502,12 @@ class MachineImportProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             _write(root / "base.json", {
-                "format": "stage-a-external-environment-profile-v1",
+                "format": "spaghetti-extractor-external-environment-profile-v1",
                 "id": "base",
                 "machine_import_call_contracts": [_contract("Call", words=1)],
             })
             top = _write(root / "top.json", {
-                "format": "stage-a-static-machine-import-profile-v1",
+                "format": "spaghetti-extractor-static-machine-import-profile-v1",
                 "id": "top",
                 "includes": ["base.json"],
                 "machine_import_signatures": [{
@@ -529,12 +529,12 @@ class MachineImportProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             _write(root / "base.json", {
-                "format": "stage-a-external-environment-profile-v1",
+                "format": "spaghetti-extractor-external-environment-profile-v1",
                 "id": "base",
                 "machine_import_call_contracts": [_contract("Call")],
             })
             top = _write(root / "top.json", {
-                "format": "stage-a-static-machine-import-profile-v1",
+                "format": "spaghetti-extractor-static-machine-import-profile-v1",
                 "id": "top",
                 "includes": ["base.json"],
                 "machine_import_signatures": [_contract("Call")],
@@ -548,13 +548,13 @@ class MachineImportProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             first = _write(root / "first.json", {
-                "format": "stage-a-static-machine-import-profile-v1",
+                "format": "spaghetti-extractor-static-machine-import-profile-v1",
                 "id": "first",
                 "includes": ["second.json"],
                 "machine_import_signatures": [],
             })
             _write(root / "second.json", {
-                "format": "stage-a-static-machine-import-profile-v1",
+                "format": "spaghetti-extractor-static-machine-import-profile-v1",
                 "id": "second",
                 "includes": ["first.json"],
                 "machine_import_signatures": [],
@@ -565,7 +565,7 @@ class MachineImportProfileTests(unittest.TestCase):
     def test_variadic_minimum_is_not_materialized_as_exact_arguments(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             profile = _write(Path(temporary) / "profile.json", {
-                "format": "stage-a-static-machine-import-profile-v1",
+                "format": "spaghetti-extractor-static-machine-import-profile-v1",
                 "id": "variadic",
                 "machine_import_signatures": [{
                     "import": {"dll": "fixture.dll", "symbol": "Printf"},
@@ -684,7 +684,7 @@ class MachineImportProfileTests(unittest.TestCase):
     def test_selected_profile_evidence_survives_callsite_annotation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             profile = _write(Path(temporary) / "profile.json", {
-                "format": "stage-a-external-environment-profile-v1",
+                "format": "spaghetti-extractor-external-environment-profile-v1",
                 "id": "stateful-api",
                 "machine_import_call_contracts": [{
                     **_contract("Update", words=2),

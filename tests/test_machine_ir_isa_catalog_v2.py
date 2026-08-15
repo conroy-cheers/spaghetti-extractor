@@ -215,7 +215,7 @@ class MachineIRISACatalogV2Tests(unittest.TestCase):
             "decoded_size": 6,
             "instruction": {
                 "constructor": "unary",
-                "operation": "StageA.Formal.UnaryOperation.increment",
+                "operation": "SpaghettiExtractor.ISA.Formal.UnaryOperation.increment",
                 "destination": {
                     "kind": "memory",
                     "address": {
@@ -236,7 +236,7 @@ class MachineIRISACatalogV2Tests(unittest.TestCase):
 
         self.assertEqual(
             _x87_format_width(
-                "StageA.Formal.X87StoreFormat.int64", "x87 store format"
+                "SpaghettiExtractor.ISA.Formal.X87StoreFormat.int64", "x87 store format"
             ),
             64,
         )

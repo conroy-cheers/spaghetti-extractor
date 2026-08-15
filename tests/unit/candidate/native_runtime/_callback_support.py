@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 
 from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
-from spaghetti_extractor.candidate.engine import write_stage_b_native_engine_package
-from spaghetti_extractor.candidate.interpreter import write_stage_b_interpreter_package
+from spaghetti_extractor.candidate.engine import write_spx_native_engine_package
+from spaghetti_extractor.candidate.interpreter import write_spx_interpreter_package
 from spaghetti_extractor.external.contracts import (
     ExternalSiteIdentity,
     checked_external_site_contract_from_event,
@@ -55,7 +55,7 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
         "callback_abi": callback_abi,
     }
     profile.write_text(json.dumps({
-        "format": "stage-a-external-environment-profile-v1",
+        "format": "spaghetti-extractor-external-environment-profile-v1",
         "id": "fixture-callback-profile-v1",
         "machine_import_call_contracts": [profile_contract],
     }, sort_keys=True), encoding="utf-8")
@@ -116,7 +116,7 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
         size = 6 if registration else 1
         ordered = [event] if registration else []
         return {
-            "format": "stage-a-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v2",
             "record_kind": "unit",
             "id": f"semantic-transfer:typed-{rva:08x}",
             "status": "qualified",
@@ -176,7 +176,7 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
     )
     manifest = root / "callback-machine-ir-manifest.json"
     callback_evidence = {
-        "format": "stage-a-callback-registration-provenance-v1",
+        "format": "spaghetti-extractor-callback-registration-provenance-v1",
         "record_kind": "callback_registration",
         "status": "complete",
         "unit_id": registration["id"],
@@ -191,10 +191,10 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
         "failure": None,
     }
     manifest.write_text(json.dumps({
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "artifacts": {
             "machine_ir": {
-                "format": "stage-a-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v2",
                 "sha256": sha256_file(machine_ir),
             },
         },
@@ -245,8 +245,8 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
         contract=checked_contract,
         callback_target_rvas=(0x3000,),
     )
-    write_stage_b_interpreter_package(machine_ir=machine_ir, out=interpreter)
-    write_stage_b_native_engine_package(
+    write_spx_interpreter_package(machine_ir=machine_ir, out=interpreter)
+    write_spx_native_engine_package(
         machine_ir=machine_ir,
         machine_ir_manifest=manifest,
         entry_rva=0x1000,

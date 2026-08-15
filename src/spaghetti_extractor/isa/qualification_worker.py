@@ -24,27 +24,27 @@ from .kernel_qualification import (
     serialize_kernel_qualification,
 )
 from .semantic_forms import lean_semantic_form_id
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_file, write_json
 
 
-ISA_LEAN_FORM_CROSSWALK_FORMAT = "stage-a-isa-lean-form-crosswalk-v1"
+ISA_LEAN_FORM_CROSSWALK_FORMAT = "spaghetti-extractor-isa-lean-form-crosswalk-v1"
 
 
 def _read_json(path: Path, context: str) -> Mapping[str, Any]:
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read {context} {path}: {exc}") from exc
+        raise ToolkitInputError(f"cannot read {context} {path}: {exc}") from exc
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     return value
 
 
 def load_isa_semantic_kernel_binding(path: Path) -> SemanticKernelBinding:
     payload = _read_json(path, "ISA semantic-kernel binding")
-    if payload.get("format") != "stage-a-isa-semantic-kernel-binding-v1":
-        raise StageAInputError("unsupported ISA semantic-kernel binding format")
+    if payload.get("format") != "spaghetti-extractor-isa-semantic-kernel-binding-v1":
+        raise ToolkitInputError("unsupported ISA semantic-kernel binding format")
     try:
         return SemanticKernelBinding(
             id=str(payload["id"]),
@@ -53,7 +53,7 @@ def load_isa_semantic_kernel_binding(path: Path) -> SemanticKernelBinding:
             lean_version=str(payload["lean_version"]),
         )
     except KeyError as exc:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"ISA semantic-kernel binding omits {exc.args[0]}"
         ) from exc
 
@@ -70,23 +70,23 @@ def _lean_form_crosswalk(
     dict[str, Any],
 ]:
     typed_corpus = parse_isa_conformance_corpus(corpus)
-    if lean_forms.get("format") != "stage-a-lean-isa-semantic-forms-v1":
-        raise StageAInputError("unsupported Lean semantic-form artifact")
+    if lean_forms.get("format") != "spaghetti-extractor-lean-isa-semantic-forms-v1":
+        raise ToolkitInputError("unsupported Lean semantic-form artifact")
     if lean_forms.get("corpus_id") != typed_corpus.id:
-        raise StageAInputError("Lean semantic forms name the wrong corpus")
+        raise ToolkitInputError("Lean semantic forms name the wrong corpus")
     classifier_sha256 = lean_forms.get("classifier_sha256")
     if (
         not isinstance(classifier_sha256, str)
         or len(classifier_sha256) != 64
         or any(ch not in "0123456789abcdef" for ch in classifier_sha256)
     ):
-        raise StageAInputError("Lean semantic forms have an invalid classifier hash")
+        raise ToolkitInputError("Lean semantic forms have an invalid classifier hash")
     rows = lean_forms.get("cases")
     if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
-        raise StageAInputError("Lean semantic-form cases must be objects")
+        raise ToolkitInputError("Lean semantic-form cases must be objects")
     case_ids = [case.id for case in typed_corpus.cases]
     if [row.get("case_id") for row in rows] != case_ids:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "Lean semantic forms must classify every corpus case exactly once"
         )
     forms_by_case: dict[str, str] = {}
@@ -100,26 +100,26 @@ def _lean_form_crosswalk(
             case.id: case.form_id for case in typed_generated.cases
         }
         if set(catalog_forms_by_case) != set(case_ids):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "generated ISA corpus does not bind every executor case"
             )
     for row in rows:
         case_id = row.get("case_id")
         semantic_form = row.get("semantic_form")
         if not isinstance(case_id, str) or not isinstance(semantic_form, str):
-            raise StageAInputError("Lean semantic-form row is malformed")
+            raise ToolkitInputError("Lean semantic-form row is malformed")
         form_id = lean_semantic_form_id(
             semantic_form,
             classifier_sha256=classifier_sha256,
         )
         previous = semantic_forms_by_id.setdefault(form_id, semantic_form)
         if previous != semantic_form:
-            raise StageAInputError("Lean semantic-form identity collision")
+            raise ToolkitInputError("Lean semantic-form identity collision")
         forms_by_case[case_id] = form_id
         x87_defined = row.get("x87_defined_outputs")
         if x87_defined is not None:
             if not isinstance(x87_defined, Mapping):
-                raise StageAInputError("Lean x87 definedness must be an object")
+                raise ToolkitInputError("Lean x87 definedness must be an object")
             expected_fields = {
                 "control_word",
                 "status_word",
@@ -130,7 +130,7 @@ def _lean_form_crosswalk(
                 "registers",
             }
             if set(x87_defined) != expected_fields:
-                raise StageAInputError("Lean x87 definedness has invalid fields")
+                raise ToolkitInputError("Lean x87 definedness has invalid fields")
             registers = x87_defined.get("registers")
             if (
                 not isinstance(registers, list)
@@ -142,7 +142,7 @@ def _lean_form_crosswalk(
                     for value in registers
                 )
             ):
-                raise StageAInputError("Lean x87 register definedness is malformed")
+                raise ToolkitInputError("Lean x87 register definedness is malformed")
             widths = {
                 "control_word": 16,
                 "status_word": 16,
@@ -159,7 +159,7 @@ def _lean_form_crosswalk(
                     or isinstance(value, bool)
                     or not 0 <= value < 1 << width
                 ):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"Lean x87 definedness field {name!r} is malformed"
                     )
                 scalar[name] = value
@@ -183,7 +183,6 @@ def _lean_form_crosswalk(
         "trust": {
             "role": "lean_classifier_derived_isa_crosswalk",
             "proof_authority": False,
-            "closes_stage_a_proof": False,
         },
     }
     return (
@@ -229,7 +228,7 @@ def build_isa_kernel_qualification(
     )
     first_profile = typed_corpus.cases[0].profile
     if any(case.profile != first_profile for case in typed_corpus.cases):
-        raise StageAInputError("ISA corpus mixes qualification profiles")
+        raise ToolkitInputError("ISA corpus mixes qualification profiles")
     profile = ISAProfileBinding(
         id="pe32-i686-v1",
         architecture=first_profile.architecture,
@@ -247,7 +246,7 @@ def build_isa_kernel_qualification(
         )
     ]
     if len({report.backend.id for report in reports}) != 3:
-        raise StageAInputError("ISA qualification reports reuse a backend identity")
+        raise ToolkitInputError("ISA qualification reports reuse a backend identity")
     qualification = build_isa_kernel_qualification_from_reports(
         corpus=typed_corpus,
         reports=reports,
@@ -257,7 +256,7 @@ def build_isa_kernel_qualification(
         profile=profile,
         semantic_kernel=load_isa_semantic_kernel_binding(semantic_kernel),
         generator=GeneratorBinding(
-            id="stage-a-generic-isa-corpus-generator",
+            id="spaghetti-extractor-generic-isa-corpus-generator",
             version="v1",
         ),
         oracle_suite=OracleSuiteBinding(tuple(backends)),
@@ -266,14 +265,13 @@ def build_isa_kernel_qualification(
     if crosswalk_out is not None:
         write_json(crosswalk_out, crosswalk)
     return {
-        "format": "stage-a-isa-kernel-qualification-result-v1",
+        "format": "spaghetti-extractor-isa-kernel-qualification-result-v1",
         "status": qualification.status.value,
         "out": str(out),
         "sha256": sha256_file(out),
         "crosswalk_out": str(crosswalk_out) if crosswalk_out is not None else None,
         "counts": dict(qualification.counts),
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }
 
 

@@ -15,8 +15,8 @@ import json
 from typing import Any
 
 
-ISA_CONFORMANCE_CORPUS_FORMAT = "stage-a-isa-conformance-corpus-v1"
-ISA_CONFORMANCE_REPORT_FORMAT = "stage-a-isa-conformance-report-v2"
+ISA_CONFORMANCE_CORPUS_FORMAT = "spaghetti-extractor-isa-conformance-corpus-v1"
+ISA_CONFORMANCE_REPORT_FORMAT = "spaghetti-extractor-isa-conformance-report-v2"
 ISA_CONFORMANCE_TRUST_ROLE = "isa_conformance_evidence_only"
 GPR_NAMES = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 X87_REGISTER_COUNT = 8
@@ -275,7 +275,6 @@ class ReportCounts:
 class ReportTrust:
     role: str = ISA_CONFORMANCE_TRUST_ROLE
     proof_authority: bool = False
-    closes_stage_a_proof: bool = False
 
 
 @dataclass(frozen=True)
@@ -1075,7 +1074,7 @@ def _expected_qualification(
 def _parse_trust(value: Any, context: str, backend_kind: BackendKind) -> ReportTrust:
     payload = _object(value, context)
     _exact_fields(
-        payload, {"role", "proof_authority", "closes_stage_a_proof"}, context
+        payload, {"role", "proof_authority"}, context
     )
     if payload.get("role") != ISA_CONFORMANCE_TRUST_ROLE:
         raise ISAConformanceError(f"{context}.role is unsupported")
@@ -1083,10 +1082,6 @@ def _parse_trust(value: Any, context: str, backend_kind: BackendKind) -> ReportT
         if backend_kind is BackendKind.ORACLE:
             raise ISAConformanceError("oracle report cannot claim proof authority")
         raise ISAConformanceError("ISA conformance report cannot claim proof authority")
-    if payload.get("closes_stage_a_proof") is not False:
-        if backend_kind is BackendKind.ORACLE:
-            raise ISAConformanceError("oracle report cannot qualify a reconstructed candidate")
-        raise ISAConformanceError("ISA conformance report cannot qualify a reconstructed candidate")
     return ReportTrust()
 
 
@@ -1395,7 +1390,6 @@ def serialize_isa_conformance_report(
             "trust": {
                 "role": value.trust.role,
                 "proof_authority": value.trust.proof_authority,
-                "closes_stage_a_proof": value.trust.closes_stage_a_proof,
             },
         }
 

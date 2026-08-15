@@ -50,7 +50,7 @@ pkgs.runCommand name {
   )
   PY
   jq -e '
-    .format == "stage-a-static-machine-import-profile-v1" and
+    .format == "spaghetti-extractor-static-machine-import-profile-v1" and
     .id == "pe32-control-dispositions-v1" and
     .default_callback_effect == "none" and
     ([.machine_import_signatures[] |

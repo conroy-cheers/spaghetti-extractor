@@ -30,7 +30,6 @@ class ISAKernelQualificationTests(unittest.TestCase):
                 observation,
             )
             self.assertFalse(observation.trust.proof_authority)
-            self.assertFalse(observation.trust.closes_stage_a_proof)
 
     def test_agreeing_external_oracles_and_lean_mismatch_veto(self):
         consensus = _consensus(lean={"state": {"eax": 3, "eflags": 0x202}})
@@ -324,7 +323,7 @@ class ISAKernelQualificationTests(unittest.TestCase):
             ),
             _legacy_report(
                 {
-                    "id": "stage-a-lean-machine-semantics",
+                    "id": "spaghetti-extractor-lean-machine-semantics",
                     "kind": "semantic_model",
                     "version": "formal-default-v1",
                 },
@@ -378,7 +377,7 @@ class ISAKernelQualificationTests(unittest.TestCase):
             ),
             _legacy_report(
                 {
-                    "id": "stage-a-lean-machine-semantics",
+                    "id": "spaghetti-extractor-lean-machine-semantics",
                     "kind": "semantic_model",
                     "version": "formal-default-v1",
                 },
@@ -449,7 +448,7 @@ class ISAKernelQualificationTests(unittest.TestCase):
             ),
             _legacy_report(
                 {
-                    "id": "stage-a-lean-machine-semantics",
+                    "id": "spaghetti-extractor-lean-machine-semantics",
                     "kind": "semantic_model",
                     "version": "formal-default-v1",
                 },
@@ -507,7 +506,7 @@ class ISAKernelQualificationTests(unittest.TestCase):
             ),
             _legacy_report(
                 {
-                    "id": "stage-a-lean-machine-semantics",
+                    "id": "spaghetti-extractor-lean-machine-semantics",
                     "kind": "semantic_model",
                     "version": "formal-default-v1",
                 }

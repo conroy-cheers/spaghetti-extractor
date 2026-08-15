@@ -36,7 +36,7 @@ from .catalog_enrichment_derivation import (
     _string,
     _uint,
     _width_bits,
-    StageAInputError,
+    ToolkitInputError,
 )
 
 def _derive_integer_enrichment(
@@ -109,7 +109,7 @@ def _derive_integer_enrichment(
             )
             inverted = row.get("inverted")
             if not isinstance(inverted, bool):
-                raise StageAInputError(f"{context}.inverted must be a boolean")
+                raise ToolkitInputError(f"{context}.inverted must be a boolean")
             condition = "notEqual" if inverted else "equal"
             bits = 8
         else:
@@ -121,7 +121,7 @@ def _derive_integer_enrichment(
             condition = _condition_name(row.get("condition"), f"{context}.condition")
             size = _uint(row.get("size"), 8, f"{context}.size")
             if size not in {2, 6}:
-                raise StageAInputError(f"{context}.size is not a reviewed branch size")
+                raise ToolkitInputError(f"{context}.size is not a reviewed branch size")
             bits = 8 if size == 2 else 32
         displacement = _uint(
             row.get("displacement"), bits, f"{context}.displacement"
@@ -466,7 +466,7 @@ def _derive_integer_enrichment(
                 "increment",
                 "decrement",
             }:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{context}.operation is not a reviewed unary operation"
                 )
             destination = _operand32(
@@ -505,7 +505,7 @@ def _derive_integer_enrichment(
                 row.get("width_bits"), f"{context}.width_bits"
             )
             if width_bits not in {8, 16}:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{context}.width_bits is not a partial operand width"
                 )
             destination = _operand32(
@@ -517,7 +517,7 @@ def _derive_integer_enrichment(
                 row.get("destination"), f"{context}.destination"
             )
         if destination["kind"] == "immediate":
-            raise StageAInputError(f"{context}.destination cannot be immediate")
+            raise ToolkitInputError(f"{context}.destination cannot be immediate")
         eflags = _shift_eflags(width_bits, count)
         if eflags is None:
             return _resolved(effects=[], eflags=0)
@@ -566,7 +566,7 @@ def _derive_integer_enrichment(
                 row.get("width_bits"), f"{context}.width_bits"
             )
             if width_bits not in {8, 16}:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{context}.width_bits is not an extension source width"
                 )
             source = _operand32(row.get("source"), f"{context}.source")
@@ -610,7 +610,7 @@ def _derive_integer_enrichment(
             row.get("width_bits"), f"{context}.width_bits"
         )
         if width_bits not in {8, 16}:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context}.width_bits is not a partial operand width"
             )
         if constructor == "movFromOperandWidth":
@@ -670,7 +670,7 @@ def _derive_integer_enrichment(
             row.get("width_bits"), f"{context}.width_bits"
         )
         if width_bits not in {8, 16}:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context}.width_bits is not a partial operand width"
             )
         operation, flags = _binary_operation(
@@ -900,7 +900,7 @@ def _derive_integer_enrichment(
             context,
         )
         if not isinstance(row.get("subtract"), bool):
-            raise StageAInputError(f"{context}.subtract must be a boolean")
+            raise ToolkitInputError(f"{context}.subtract must be a boolean")
         destination = _operand32(
             row.get("destination"), f"{context}.destination"
         )
@@ -921,7 +921,7 @@ def _derive_integer_enrichment(
             )
             signed = row.get("signed")
             if not isinstance(signed, bool):
-                raise StageAInputError(f"{context}.signed must be a boolean")
+                raise ToolkitInputError(f"{context}.signed must be a boolean")
             source = _operand32(row.get("source"), f"{context}.source")
             return _resolved_operand_accesses(
                 accesses=[(source, True, False, 32, "source")],
@@ -960,12 +960,12 @@ def _derive_integer_enrichment(
             context,
         )
         if not isinstance(row.get("left"), bool):
-            raise StageAInputError(f"{context}.left must be a boolean")
+            raise ToolkitInputError(f"{context}.left must be a boolean")
         destination = _operand32(
             row.get("destination"), f"{context}.destination"
         )
         if destination["kind"] == "immediate":
-            raise StageAInputError(f"{context}.destination cannot be immediate")
+            raise ToolkitInputError(f"{context}.destination cannot be immediate")
         source = _register(row.get("source"), f"{context}.source")
         count = _shift_count(row.get("count"), f"{context}.count")
         eflags = _shift_eflags(32, count)
@@ -1005,7 +1005,7 @@ def _derive_integer_enrichment(
             or operation.endswith(".reverse")
             or ".trailingZeroCount" in operation
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context}.operation is not a reviewed bit-scan operation"
             )
         if ".trailingZeroCount" in operation:

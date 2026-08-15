@@ -1,7 +1,7 @@
 """Deterministic, non-authoritative semantic-component discovery.
 
 This module proposes overlapping component boundaries from the byte-free
-machine IR consumed by Stage B.  Proposals are navigation aids only: they do
+machine IR consumed by candidate reconstruction.  Proposals are navigation aids only: they do
 not validate a logical interface, authorize a replacement, or execute the
 original binary.  Unknown control flow is retained as a localized blocker.
 """

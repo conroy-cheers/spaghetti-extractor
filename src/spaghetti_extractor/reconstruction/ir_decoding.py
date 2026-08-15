@@ -53,7 +53,7 @@ _NON_FALLTHROUGH_MNEMONICS = frozenset({
 
 def _decoded_control_reconciliation(
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     instructions: Sequence[_Instruction],
     span: RvaSpan,
     outcome: Any,
@@ -281,7 +281,7 @@ def _decoded_control_reconciliation(
 
 
 def _decoded_control_effect(
-    binary: StageABinary, instruction: _Instruction
+    binary: ParsedPEImage, instruction: _Instruction
 ) -> dict[str, Any]:
     groups = frozenset(instruction.groups)
     mnemonic = instruction.mnemonic.lower()
@@ -339,7 +339,7 @@ def _decoded_control_effect(
 
 
 def _decoded_immediate_target_rva(
-    binary: StageABinary, operand: Mapping[str, Any] | None
+    binary: ParsedPEImage, operand: Mapping[str, Any] | None
 ) -> int | None:
     if operand is None or operand.get("kind") != "immediate":
         return None
@@ -350,7 +350,7 @@ def _decoded_immediate_target_rva(
 
 
 def _decoded_import_identity(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     instruction: _Instruction,
     direct_target_rva: int | None,
 ) -> dict[str, Any] | None:
@@ -377,7 +377,7 @@ def _decoded_import_identity(
 
 
 def _decoded_absolute_memory_rva(
-    binary: StageABinary, operand: Mapping[str, Any]
+    binary: ParsedPEImage, operand: Mapping[str, Any]
 ) -> int | None:
     if (
         operand.get("kind") != "memory"
@@ -397,7 +397,7 @@ def _decoded_absolute_memory_rva(
 
 
 def _decoded_direct_import_thunk_rva(
-    binary: StageABinary, target_rva: int
+    binary: ParsedPEImage, target_rva: int
 ) -> int | None:
     if not any(
         section.executable and section.rva_start <= target_rva < section.rva_end
@@ -483,7 +483,7 @@ def _semantic_call_events(value: Any) -> list[Mapping[str, Any]]:
 
 
 def _decoded_immutable_internal_target(
-    binary: StageABinary, decoded: Mapping[str, Any]
+    binary: ParsedPEImage, decoded: Mapping[str, Any]
 ) -> dict[str, Any] | None:
     """Resolve one absolute, initialized, non-writable PE pointer slot.
 
@@ -542,7 +542,7 @@ def _decoded_immutable_internal_target(
 def _reconcile_decoded_call_events(
     decoded_sites: Sequence[Mapping[str, Any]],
     *,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     external_events: Any,
     ordered_events: Any,
     record: Any,
@@ -775,7 +775,7 @@ def _semantic_unit_qualified(
 def _instructions(
     row: Mapping[str, Any],
     identity: str,
-    binary: StageABinary,
+    binary: ParsedPEImage,
     span: RvaSpan,
 ) -> tuple[tuple[_Instruction, ...], bytes]:
     raw_instructions = row.get("instructions")

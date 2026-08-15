@@ -11,7 +11,7 @@ from . import native_build
 from .build_model import (
     INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT,
     INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT,
-    StageBInterpreterNativeBuildError,
+    CandidateNativeBuildError,
     _Artifact,
     _PAYLOAD_SYMBOL,
     _Package,
@@ -40,46 +40,46 @@ def _load_native_object_graph(value: Path | str) -> tuple[Path, dict[str, Any]]:
         path = path / "native-object-graph.json"
     payload = _read_json_object(path, "native object graph")
     if payload.get("format") != INTERPRETER_NATIVE_OBJECT_GRAPH_FORMAT:
-        raise StageBInterpreterNativeBuildError("unsupported native object graph format")
+        raise CandidateNativeBuildError("unsupported native object graph format")
     core = dict(payload)
     expected = core.pop("graph_sha256", None)
     if expected != native_build._canonical_sha256(core):
-        raise StageBInterpreterNativeBuildError("native object graph self-hash is stale")
+        raise CandidateNativeBuildError("native object graph self-hash is stale")
     units = payload.get("units")
     if not isinstance(units, list) or not units:
-        raise StageBInterpreterNativeBuildError("native object graph has no compile units")
+        raise CandidateNativeBuildError("native object graph has no compile units")
     seen: set[str] = set()
     for row in units:
         if not isinstance(row, Mapping):
-            raise StageBInterpreterNativeBuildError("native object graph unit is malformed")
+            raise CandidateNativeBuildError("native object graph unit is malformed")
         unit_id = str(row.get("id"))
         if unit_id in seen:
-            raise StageBInterpreterNativeBuildError("native object graph has duplicate unit IDs")
+            raise CandidateNativeBuildError("native object graph has duplicate unit IDs")
         seen.add(unit_id)
         unit_core = dict(row)
         unit_expected = unit_core.pop("unit_sha256", None)
         if unit_expected != native_build._canonical_sha256(unit_core):
-            raise StageBInterpreterNativeBuildError("native object graph unit self-hash is stale")
+            raise CandidateNativeBuildError("native object graph unit self-hash is stale")
     bundles = payload.get("bundles")
     if not isinstance(bundles, list) or len(bundles) != len(units):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native object graph source-bundle inventory is incomplete"
         )
     bundle_ids: set[str] = set()
     by_id = {str(row["id"]): row for row in units}
     for binding in bundles:
         if not isinstance(binding, Mapping):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "native object graph source-bundle binding is malformed"
             )
         unit_id = str(binding.get("unit_id"))
         if unit_id in bundle_ids or unit_id not in by_id:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "native object graph source-bundle unit binding is invalid"
             )
         bundle_ids.add(unit_id)
         if binding.get("compile_key_sha256") != by_id[unit_id]["compile_key_sha256"]:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "native object graph source-bundle compile key is stale"
             )
         bundle_root = path.parent / _relative_path(
@@ -90,7 +90,7 @@ def _load_native_object_graph(value: Path | str) -> tuple[Path, dict[str, Any]]:
             not manifest.is_file()
             or sha256_file(manifest) != binding.get("manifest_sha256")
         ):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "native object graph source-bundle manifest is stale"
             )
         _, bundle = _load_native_source_bundle(manifest)
@@ -100,7 +100,7 @@ def _load_native_object_graph(value: Path | str) -> tuple[Path, dict[str, Any]]:
             != binding.get("compile_key_sha256")
             or bundle.get("bundle_sha256") != binding.get("bundle_sha256")
         ):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "native object graph source-bundle content binding is stale"
             )
     return path, payload
@@ -122,11 +122,11 @@ def _load_precompiled_native_objects(
         path = path / "native-object-package.json"
     payload = _read_json_object(path, "native object package")
     if payload.get("format") != INTERPRETER_NATIVE_OBJECT_PACKAGE_FORMAT:
-        raise StageBInterpreterNativeBuildError("unsupported native object package format")
+        raise CandidateNativeBuildError("unsupported native object package format")
     core = dict(payload)
     expected_hash = core.pop("package_sha256", None)
     if expected_hash != native_build._canonical_sha256(core):
-        raise StageBInterpreterNativeBuildError("native object package self-hash is stale")
+        raise CandidateNativeBuildError("native object package self-hash is stale")
     if (
         payload.get("status") != "complete"
         or payload.get("executes_original_binary") is not False
@@ -134,7 +134,7 @@ def _load_precompiled_native_objects(
         or payload.get("compiler") != _native_compiler_binding(compiler)
         or payload.get("entry_symbol") != entry_symbol
     ):
-        raise StageBInterpreterNativeBuildError("native object package build binding is stale")
+        raise CandidateNativeBuildError("native object package build binding is stale")
     units = payload.get("units")
     objects = payload.get("objects")
     if (
@@ -143,10 +143,10 @@ def _load_precompiled_native_objects(
         or len(units) != len(compile_units) + 1
         or len(objects) != len(units)
     ):
-        raise StageBInterpreterNativeBuildError("native object package inventory is incomplete")
+        raise CandidateNativeBuildError("native object package inventory is incomplete")
     graph_binding = payload.get("graph")
     if not isinstance(graph_binding, Mapping):
-        raise StageBInterpreterNativeBuildError("native object package graph binding is missing")
+        raise CandidateNativeBuildError("native object package graph binding is missing")
     bound_graph_path = Path(str(graph_binding.get("path"))) / str(
         graph_binding.get("manifest")
     )
@@ -155,7 +155,7 @@ def _load_precompiled_native_objects(
         or sha256_file(bound_graph_path) != graph_binding.get("manifest_sha256")
         or graph_binding.get("manifest_sha256") != payload.get("graph_artifact_sha256")
     ):
-        raise StageBInterpreterNativeBuildError("native object package graph artifact is stale")
+        raise CandidateNativeBuildError("native object package graph artifact is stale")
     relocation_location = Path(str(units[-1].get("source", {}).get("location")))
     graph_relocation_source = _file(
         bound_graph_path.parent / relocation_location
@@ -164,7 +164,7 @@ def _load_precompiled_native_objects(
         "cached relocation-anchor source",
     )
     if sha256_file(graph_relocation_source) != relocation_digest:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native object package relocation-anchor binding is stale"
         )
     expected_artifacts = [
@@ -192,7 +192,7 @@ def _load_precompiled_native_objects(
         for index, artifact in enumerate(expected_artifacts)
     ]
     if units != expected_rows:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native object package compile-unit definitions are stale"
         )
     package_root = path.parent
@@ -204,10 +204,10 @@ def _load_precompiled_native_objects(
             or object_row.get("compile_key_sha256")
             != expected_row["compile_key_sha256"]
         ):
-            raise StageBInterpreterNativeBuildError("native object package unit binding is stale")
+            raise CandidateNativeBuildError("native object package unit binding is stale")
         object_path = package_root / str(object_row.get("path"))
         if not object_path.is_file() or sha256_file(object_path) != object_row.get("sha256"):
-            raise StageBInterpreterNativeBuildError("native object package artifact is stale")
+            raise CandidateNativeBuildError("native object package artifact is stale")
         result.append((expected_row, object_path))
     return result
 
@@ -218,40 +218,40 @@ def _generate_anchor_manifest(
     symbols = _payload_symbol_rvas(
         linker_map, image_base=contract.identity.preferred_base
     )
-    entry_target = symbols.get("stage_b_payload_entry")
+    entry_target = symbols.get("spx_payload_entry")
     if entry_target is None:
-        raise StageBInterpreterNativeBuildError(
-            "linked payload map omits stage_b_payload_entry"
+        raise CandidateNativeBuildError(
+            "linked payload map omits spx_payload_entry"
         )
 
     callback_rows = engine.payload.get("callback_abis")
     if not isinstance(callback_rows, list):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native-engine callback ABI inventory is malformed"
         )
     callback_rvas: list[int] = []
     targets: dict[int, int] = {}
     for index, raw in enumerate(callback_rows):
         if not isinstance(raw, Mapping):
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"native-engine callback ABI {index} is not an object"
             )
         callback_rva = _u32(raw.get("rva"), f"callback ABI {index} RVA")
         symbol = raw.get("symbol")
-        expected_symbol = f"stage_b_payload_callback_{callback_rva:08x}"
+        expected_symbol = f"spx_payload_callback_{callback_rva:08x}"
         if symbol != expected_symbol:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"callback ABI {index} has a noncanonical bridge symbol"
             )
         target = symbols.get(expected_symbol)
         if target is None:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"linked payload map omits {expected_symbol}"
             )
         callback_rvas.append(callback_rva)
         targets[callback_rva] = target
     if len(set(callback_rvas)) != len(callback_rvas):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native-engine callback ABI inventory contains duplicate RVAs"
         )
 
@@ -260,7 +260,7 @@ def _generate_anchor_manifest(
     )
     missing_tls = sorted(set(tls_rvas) - set(callback_rvas))
     if missing_tls:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "native-engine package omits TLS callback bridges: "
             + ", ".join(f"{rva:#x}" for rva in missing_tls)
         )
@@ -281,7 +281,7 @@ def _generate_anchor_manifest(
     )
     for left, right in zip(anchors, anchors[1:]):
         if left.end_rva > right.rva:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 "generated executable anchors overlap"
             )
     return ExecutableAnchorManifest(
@@ -317,7 +317,7 @@ def _near_jump_covering_original_relocations(
             relocation_end = relocation_start + relocation.width
             if relocation_start < end_rva and source_rva < relocation_end:
                 if relocation_start < source_rva:
-                    raise StageBInterpreterNativeBuildError(
+                    raise CandidateNativeBuildError(
                         "original relocation begins before and overlaps a generated anchor"
                     )
                 if relocation_end > end_rva:
@@ -330,21 +330,21 @@ def _payload_symbol_rvas(linker_map: Path, *, image_base: int) -> dict[str, int]
     try:
         text = linker_map.read_text(encoding="utf-8", errors="strict")
     except (OSError, UnicodeError) as exc:
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"cannot read payload linker map: {exc}"
         ) from exc
     result: dict[str, int] = {}
     for match in _PAYLOAD_SYMBOL.finditer(text):
         address = int(match.group(1), 16)
         if address < image_base:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"payload symbol {match.group(2)} lies below the image base"
             )
         name = match.group(2).removeprefix("_")
         rva = _u32(address - image_base, f"payload symbol {name} RVA")
         previous = result.setdefault(name, rva)
         if previous != rva:
-            raise StageBInterpreterNativeBuildError(
+            raise CandidateNativeBuildError(
                 f"payload linker map gives ambiguous addresses for {name}"
             )
     return result
@@ -353,7 +353,7 @@ def _payload_symbol_rvas(linker_map: Path, *, image_base: int) -> dict[str, int]
 def _near_jump(source_rva: int, target_rva: int) -> bytes:
     displacement = target_rva - (source_rva + 5)
     if not -(1 << 31) <= displacement < (1 << 31):
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             "generated executable anchor target is outside near-jump range"
         )
     return b"\xe9" + struct.pack("<i", displacement)
@@ -372,13 +372,13 @@ def _compiler_runtime(compiler: Path) -> Path:
         value = native_build._tool_output(
             [str(compiler), "-print-libgcc-file-name"]
         )
-    except native_build.StageBNativeBuildError as exc:
-        raise StageBInterpreterNativeBuildError(
+    except native_build.CandidateNativeBuildError as exc:
+        raise CandidateNativeBuildError(
             f"cannot locate the compiler runtime: {exc}"
         ) from exc
     path = Path(value).resolve()
     if not path.is_file():
-        raise StageBInterpreterNativeBuildError(
+        raise CandidateNativeBuildError(
             f"compiler runtime does not exist: {path}"
         )
     return path

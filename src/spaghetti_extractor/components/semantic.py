@@ -292,7 +292,7 @@ def build_semantic_component_catalog(
             "machine_boundary_authority": "canonical_full_machine_state_v1",
             "logical_interface_authority": "operator_proposal_until_refined",
             "logical_interface_activation_gate": (
-                "checked_stage_b_component_interface_refinement_v1_required"
+                "checked_spx_component_interface_refinement_v1_required"
             ),
             "declaration_refinement_status_authority": "none",
             "membership_authority": "exact_machine_unit_ids_checked_against_machine_ir",

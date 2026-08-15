@@ -14,10 +14,7 @@ from ...extraction.executable_classification import (
     _external_import_jump,
     _resolved_branch_target,
 )
-from ...pe32.stage_binary import (
-    BlockSide,
-    StageABinary,
-)
+from ...pe32.model import BlockSide, ParsedPEImage
 from ..model import StaticUnitContext
 from .control import _abi_indexed_jump_table_contract
 from .instruction import _abi_mem_operand_report
@@ -116,7 +113,7 @@ class _InstructionTaggedEvents(list[tuple[Any, ...]]):
         self.ordered.append((self.kind, self.instruction_rva, item))
 
 def _symbolic_execute(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     side: BlockSide,
     data: bytes,
     binary_name: str,
@@ -128,7 +125,7 @@ def _symbolic_execute(
         return {
             "status": "incomplete",
             "category": "unsupported_semantics",
-            "blocker": "Stage A SMT symbolic execution is currently implemented only for x86 PE32 blocks",
+            "blocker": "static analysis SMT symbolic execution is currently implemented only for x86 PE32 blocks",
             "next_action": "use a checked generated mapping proof or add x86_64 PE32+ symbolic semantics",
             "binary": binary_name,
             "bitness": binary.bitness,

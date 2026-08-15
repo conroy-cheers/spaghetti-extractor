@@ -14,19 +14,21 @@ from ..pe32.recursive_decode import (
     discover_rooted_instruction_views,
 )
 from .state_machine import (
-    STAGE_B_STATE_MACHINE_FORMAT,
+    SPX_STATE_MACHINE_FORMAT,
     annotate_state_machine_import_contracts,
-    normalize_stage_a_semantic_transfer,
+    normalize_spx_semantic_transfer,
     semantic_direct_targets,
-    write_stage_b_state_machine,
+    write_spx_state_machine,
 )
-from ..pe32.stage_binary import BlockSide, StageAInputError, _parse_stage_a_pe
+from ..errors import ToolkitInputError
+from ..pe32.image import parse_pe_image
+from ..pe32.model import BlockSide
 from ..static_program.codec import load_static_program_contract_binding
 from ..static_program.model import StaticUnitContext
 from ..util import sha256_bytes, sha256_file, write_json
 
 
-ROOTED_STATE_MACHINE_CLOSURE_FORMAT = "stage-b-rooted-static-control-closure-v1"
+ROOTED_STATE_MACHINE_CLOSURE_FORMAT = "spaghetti-extractor-rooted-static-control-closure-v1"
 
 
 def close_state_machine_rooted_direct_control(
@@ -64,9 +66,9 @@ def close_state_machine_rooted_direct_control(
         else None
     )
     if instruction_budget <= 0:
-        raise StageAInputError("rooted decode instruction budget must be positive")
+        raise ToolkitInputError("rooted decode instruction budget must be positive")
     if iteration_budget <= 0:
-        raise StageAInputError("rooted decode iteration budget must be positive")
+        raise ToolkitInputError("rooted decode iteration budget must be positive")
 
     static_program = load_static_program_contract_binding(
         static_program_contract, original_pe=original_pe
@@ -82,7 +84,7 @@ def close_state_machine_rooted_direct_control(
     discovered_views: list[dict[str, Any]] = []
     merge_destinations: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
-    binary = _parse_stage_a_pe(original_pe)
+    binary = parse_pe_image(original_pe)
     try:
         binary_roots = _binary_roots(binary)
         manifest_seeds = (
@@ -193,7 +195,7 @@ def close_state_machine_rooted_direct_control(
 
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    write_stage_b_state_machine(out, merged)
+    write_spx_state_machine(out, merged)
     payload = {
         "format": ROOTED_STATE_MACHINE_CLOSURE_FORMAT,
         "status": status,
@@ -262,7 +264,7 @@ def _rooted_direct_reachability(
     for row in rows:
         start = _transfer_start(row)
         if start in starts:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"state machine has duplicate transfer start 0x{start:x}"
             )
         starts[start] = row
@@ -290,7 +292,7 @@ def _rooted_direct_reachability(
         successors = list(semantic_direct_targets(row))
         external_events = row.get("external_events")
         if not isinstance(external_events, list):
-            raise StageAInputError("semantic transfer external_events must be a list")
+            raise ToolkitInputError("semantic transfer external_events must be a list")
         for event_index, raw_event in enumerate(external_events):
             event = _mapping(raw_event, "semantic external event")
             kind = event.get("kind")
@@ -381,10 +383,10 @@ def _manifest_seed_roots(
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"control manifest is not valid JSON: {exc}") from exc
+        raise ToolkitInputError(f"control manifest is not valid JSON: {exc}") from exc
     manifest = _mapping(payload, "control manifest")
     if manifest.get("format") != MACHINE_IR_FORMAT:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"control manifest must have format {MACHINE_IR_FORMAT}"
         )
 
@@ -414,28 +416,28 @@ def _manifest_seed_roots(
     )
     for observed, expected, label in expected_bindings:
         if observed != expected:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"control manifest {label} binding differs from the supplied input"
             )
 
     binary = _mapping(manifest.get("binary"), "control manifest binary")
     if binary.get("sha256") != original_sha256:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "control manifest binary binding differs from the supplied original PE"
         )
     source_map = manifest.get("source_map")
     if not isinstance(source_map, list):
-        raise StageAInputError("control manifest source_map must be a list")
+        raise ToolkitInputError("control manifest source_map must be a list")
     units_by_id: dict[str, int] = {}
     for index, raw_source in enumerate(source_map):
         source = _mapping(raw_source, f"control manifest source_map[{index}]")
         unit_id = source.get("unit_id")
         if not isinstance(unit_id, str) or not unit_id:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"control manifest source_map[{index}] has no unit identity"
             )
         if unit_id in units_by_id:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"control manifest source_map has duplicate unit {unit_id}"
             )
         units_by_id[unit_id] = _u32(
@@ -449,13 +451,13 @@ def _manifest_seed_roots(
     )
     raw_reachable = reachability.get("reachable_units")
     if not isinstance(raw_reachable, list):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "control manifest reachable-unit inventory must be a list"
         )
     reachable: set[str] = set()
     for index, unit_id in enumerate(raw_reachable):
         if not isinstance(unit_id, str) or unit_id not in units_by_id:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "control manifest reachable-unit inventory contains an unknown "
                 f"unit at index {index}"
             )
@@ -465,7 +467,7 @@ def _manifest_seed_roots(
 
     raw_roots = control.get("roots")
     if not isinstance(raw_roots, list):
-        raise StageAInputError("control manifest root inventory must be a list")
+        raise ToolkitInputError("control manifest root inventory must be a list")
     for index, raw_root in enumerate(raw_roots):
         root = _mapping(raw_root, f"control manifest root[{index}]")
         rva = _u32(root.get("rva"), f"control manifest root[{index}] rva")
@@ -482,7 +484,7 @@ def _manifest_seed_roots(
 
     raw_direct = control.get("direct_targets")
     if not isinstance(raw_direct, list):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "control manifest direct-target inventory must be a list"
         )
     for index, raw_target in enumerate(raw_direct):
@@ -491,12 +493,12 @@ def _manifest_seed_roots(
         )
         source_id = target.get("source_unit_id")
         if not isinstance(source_id, str) or source_id not in units_by_id:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"control manifest direct_targets[{index}] has an unknown source"
             )
         status = target.get("status")
         if status not in {"resolved", "incomplete"}:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"control manifest direct_targets[{index}] has an invalid status"
             )
         rva = _u32(
@@ -521,7 +523,7 @@ def _manifest_seed_roots(
 
     raw_recovered = control.get("recovered_indirect_targets")
     if not isinstance(raw_recovered, list):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "control manifest recovered-target inventory must be a list"
         )
     for index, raw_recovery in enumerate(raw_recovered):
@@ -531,19 +533,19 @@ def _manifest_seed_roots(
         )
         source_id = recovery.get("source_unit_id")
         if not isinstance(source_id, str) or source_id not in units_by_id:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "control manifest recovered_indirect_targets"
                 f"[{index}] has an unknown source"
             )
         status = recovery.get("status")
         if status not in {"recovered", "incomplete"}:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "control manifest recovered_indirect_targets"
                 f"[{index}] has an invalid status"
             )
         target_rvas = recovery.get("target_rvas")
         if not isinstance(target_rvas, list):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "control manifest recovered-target RVA inventory must be a list"
             )
         for target_index, raw_rva in enumerate(target_rvas):
@@ -569,7 +571,7 @@ def _manifest_seed_roots(
                 )
     raw_callbacks = control.get("callback_cutpoint_proposals", [])
     if not isinstance(raw_callbacks, list):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "control manifest callback-cutpoint proposal inventory must be a list"
         )
     for index, raw_callback in enumerate(raw_callbacks):
@@ -578,7 +580,7 @@ def _manifest_seed_roots(
         )
         source_id = callback.get("source_unit_id")
         if not isinstance(source_id, str) or source_id not in units_by_id:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "control manifest callback-cutpoint proposal has an unknown source"
             )
         rva = _u32(
@@ -619,17 +621,17 @@ def _view_transfer(
     start = _u32(view.get("rva_start"), "rooted view start")
     end = _u32(view.get("rva_end"), "rooted view end")
     if end <= start:
-        raise StageAInputError("rooted view span is empty")
+        raise ToolkitInputError("rooted view span is empty")
     encoded = view.get("bytes")
     if not isinstance(encoded, str):
-        raise StageAInputError("rooted view byte proposal is malformed")
+        raise ToolkitInputError("rooted view byte proposal is malformed")
     try:
         proposed_bytes = bytes.fromhex(encoded)
     except ValueError as exc:
-        raise StageAInputError("rooted view byte proposal is malformed") from exc
+        raise ToolkitInputError("rooted view byte proposal is malformed") from exc
     image_bytes = bytes(binary.pe.get_data(start, end - start))
     if len(proposed_bytes) != end - start or proposed_bytes != image_bytes:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"rooted view 0x{start:x}-0x{end:x} differs from the original PE"
         )
     identity = f"rooted-view-{start:08x}-{end:08x}"
@@ -656,7 +658,7 @@ def _view_transfer(
         semantic_block_id=identity,
     )
     transfer_sha256 = sha256_bytes(_canonical_json(raw))
-    return normalize_stage_a_semantic_transfer(
+    return normalize_spx_semantic_transfer(
         raw,
         static_program_contract_sha256=static_program_sha256,
         semantic_transfer_sha256=transfer_sha256,
@@ -673,35 +675,35 @@ def _canonical_state_machine_rows(path: Path) -> list[dict[str, Any]]:
         try:
             value = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"invalid state-machine JSON on line {line_number}: {exc}"
             ) from exc
         row = _mapping(value, f"state-machine line {line_number}")
-        if row.get("stage_b_format") != STAGE_B_STATE_MACHINE_FORMAT:
-            raise StageAInputError(
+        if row.get("spx_format") != SPX_STATE_MACHINE_FORMAT:
+            raise ToolkitInputError(
                 f"state-machine line {line_number} is not canonical"
             )
-        normalized = normalize_stage_a_semantic_transfer(dict(row))
+        normalized = normalize_spx_semantic_transfer(dict(row))
         if normalized.get("contract_sha256") != row.get("contract_sha256"):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"state-machine line {line_number} has a stale contract digest"
             )
         rows.append(dict(row))
     if not rows:
-        raise StageAInputError("base state machine is empty")
+        raise ToolkitInputError("base state machine is empty")
     return rows
 
 
 def _regular_file(path: Path, context: str) -> Path:
     path = Path(path).resolve()
     if not path.is_file() or path.is_symlink():
-        raise StageAInputError(f"{context} must be a regular non-symlink file")
+        raise ToolkitInputError(f"{context} must be a regular non-symlink file")
     return path
 
 
 def _mapping(value: Any, context: str) -> dict[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     return dict(value)
 
 
@@ -716,7 +718,7 @@ def _u32(value: Any, context: str) -> int:
         or not isinstance(value, int)
         or not 0 <= value < 2**32
     ):
-        raise StageAInputError(f"{context} must be an unsigned 32-bit integer")
+        raise ToolkitInputError(f"{context} must be an unsigned 32-bit integer")
     return value
 
 

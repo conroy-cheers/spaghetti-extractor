@@ -409,7 +409,7 @@ class ReconstructionIRValidationTests(unittest.TestCase):
         )
         malformed = dict(row)
         malformed["external_events"] = "not-an-inventory"
-        malformed = normalize_stage_a_semantic_transfer(malformed)
+        malformed = normalize_spx_semantic_transfer(malformed)
 
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

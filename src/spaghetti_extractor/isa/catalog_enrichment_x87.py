@@ -19,7 +19,7 @@ from .catalog_enrichment_derivation import (
     _uint,
     _x87_format_width,
     _x87_index,
-    StageAInputError,
+    ToolkitInputError,
 )
 
 def _derive_x87_enrichment(
@@ -58,7 +58,7 @@ def _derive_x87_enrichment(
         inputs = _x87_index(row.get("index"), f"{context}.index") + 1
         pop = row.get("pop")
         if not isinstance(pop, bool):
-            raise StageAInputError(f"{context}.pop must be a boolean")
+            raise ToolkitInputError(f"{context}.pop must be a boolean")
         return _resolved_x87(
             stack_inputs=inputs,
             stack_outputs=max(0, inputs - int(pop)),
@@ -73,7 +73,7 @@ def _derive_x87_enrichment(
             row.get("operation"), f"{context}.operation"
         )
         if operation not in {"negate", "sine", "cosine"}:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context}.operation is not a reviewed x87 unary operation"
             )
         return _resolved_x87(stack_inputs=1, stack_outputs=1)
@@ -94,7 +94,7 @@ def _derive_x87_enrichment(
             "divide",
             "reverseDivide",
         }:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context}.operation is not a reviewed x87 binary operation"
             )
         destination = _x87_index(
@@ -103,7 +103,7 @@ def _derive_x87_enrichment(
         source = _x87_index(row.get("source"), f"{context}.source")
         pop = row.get("pop")
         if not isinstance(pop, bool):
-            raise StageAInputError(f"{context}.pop must be a boolean")
+            raise ToolkitInputError(f"{context}.pop must be a boolean")
         inputs = max(destination, source) + 1
         return _resolved_x87(
             stack_inputs=inputs,
@@ -120,17 +120,17 @@ def _derive_x87_enrichment(
             row.get("destination"), f"{context}.destination"
         )
         if mode not in {"ordered", "unordered"}:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context}.mode is not a reviewed x87 compare mode"
             )
         if destination not in {"status", "eflags"}:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context}.destination is not a reviewed x87 compare destination"
             )
         inputs = _x87_index(row.get("index"), f"{context}.index") + 1
         pop = row.get("pop")
         if not isinstance(pop, bool):
-            raise StageAInputError(f"{context}.pop must be a boolean")
+            raise ToolkitInputError(f"{context}.pop must be a boolean")
         return _resolved_x87(
             stack_inputs=inputs,
             stack_outputs=max(0, inputs - int(pop)),
@@ -155,7 +155,7 @@ def _derive_x87_enrichment(
             role = "destination"
             pop = row.get("pop")
             if not isinstance(pop, bool):
-                raise StageAInputError(f"{context}.pop must be a boolean")
+                raise ToolkitInputError(f"{context}.pop must be a boolean")
             stack_inputs = 1
             stack_outputs = 0 if pop else 1
         else:
@@ -186,20 +186,20 @@ def _derive_x87_enrichment(
                     "divide",
                     "reverseDivide",
                 }:
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"{context}.operation is not a reviewed x87 binary operation"
                     )
                 stack_inputs = stack_outputs = 1
             elif constructor == "x87CompareMemory":
                 mode = _condition_name(row.get("mode"), f"{context}.mode")
                 if mode not in {"ordered", "unordered"}:
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"{context}.mode is not a reviewed x87 compare mode"
                     )
                 address = _address(row.get("source"), f"{context}.source")
                 pop = row.get("pop")
                 if not isinstance(pop, bool):
-                    raise StageAInputError(f"{context}.pop must be a boolean")
+                    raise ToolkitInputError(f"{context}.pop must be a boolean")
                 stack_inputs = 1
                 stack_outputs = 0 if pop else 1
             else:

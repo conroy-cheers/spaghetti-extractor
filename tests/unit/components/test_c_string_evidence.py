@@ -35,7 +35,7 @@ class ComponentCStringEvidenceTests(unittest.TestCase):
             logical_c_type(
                 NUL_TERMINATED_BYTES_V1, source_abi=LOGICAL_OBJECT_C_V1
             ),
-            "const stage_b_c_string_v1 *",
+            "const spx_c_string_v1 *",
         )
 
     def test_view_and_pointer_offset_result_are_checked_together(self) -> None:
@@ -43,7 +43,7 @@ class ComponentCStringEvidenceTests(unittest.TestCase):
         self.fixture._write_c_string_contract()
         package = self.fixture._object_source(
             """
-uint32_t identity(const stage_b_c_string_v1 *value) {
+uint32_t identity(const spx_c_string_v1 *value) {
   uint8_t byte = 0U;
   if (value->read_u8(value->context, 0U, &byte) != 0U) return 0U;
   return byte == 0U ? 0U : 1U;
@@ -65,7 +65,7 @@ uint32_t identity(const stage_b_c_string_v1 *value) {
         self.fixture._write_c_string_contract()
         package = self.fixture._object_source(
             """
-uint32_t identity(const stage_b_c_string_v1 *value) {
+uint32_t identity(const spx_c_string_v1 *value) {
   (void)value;
   __builtin_trap();
 }

@@ -70,7 +70,7 @@ def _profile() -> ISAProfileBinding:
 
 def _kernel() -> SemanticKernelBinding:
     return SemanticKernelBinding(
-        id="stage-a-lean-machine-semantics:test",
+        id="spaghetti-extractor-lean-machine-semantics:test",
         decoder_sha256=SHA0,
         semantics_sha256=SHA1,
         lean_version="4.19.0",
@@ -96,7 +96,7 @@ def _suite() -> OracleSuiteBinding:
             ),
             BackendBinding(
                 BackendRole.LEAN,
-                "stage-a-lean-machine-semantics",
+                "spaghetti-extractor-lean-machine-semantics",
                 "formal-default-v1",
             ),
         )
@@ -242,7 +242,7 @@ def _legacy_corpus():
     state = _machine_state(eax=1)
     expected = _machine_state()
     return {
-        "format": "stage-a-isa-conformance-corpus-v1",
+        "format": "spaghetti-extractor-isa-conformance-corpus-v1",
         "id": "corpus:add-eax",
         "cases": [
             {
@@ -335,7 +335,6 @@ def _legacy_report(
         "trust": {
             "role": "isa_conformance_evidence_only",
             "proof_authority": False,
-            "closes_stage_a_proof": False,
         },
     }
 
@@ -420,7 +419,6 @@ def _fault_report(
         "trust": {
             "role": "isa_conformance_evidence_only",
             "proof_authority": False,
-            "closes_stage_a_proof": False,
         },
     }
 

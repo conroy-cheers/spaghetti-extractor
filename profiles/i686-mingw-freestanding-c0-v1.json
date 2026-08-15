@@ -1,5 +1,5 @@
 {
-  "format": "stage-a-c0-toolchain-profile-v1",
+  "format": "spaghetti-extractor-c0-toolchain-profile-v1",
   "id": "i686-mingw-freestanding-c0-v1",
   "target": "i686-w64-mingw32",
   "tools": {

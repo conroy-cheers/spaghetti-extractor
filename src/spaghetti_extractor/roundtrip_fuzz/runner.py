@@ -14,23 +14,23 @@ from pathlib import Path
 from typing import Any
 
 from ..extraction.binary_inventory import parse_binary_cutpoint_inventory
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_file, write_json
 from .model import CaseManifest, ExpectedDisposition, load_corpus_manifest
 from .semantic import SemanticProgram
 
 
-ROUNDTRIP_CASE_RESULT_FORMAT = "stage-a-roundtrip-case-result-v2"
-ROUNDTRIP_RUN_RESULT_FORMAT = "stage-a-roundtrip-run-result-v2"
+ROUNDTRIP_CASE_RESULT_FORMAT = "spaghetti-extractor-roundtrip-case-result-v2"
+ROUNDTRIP_RUN_RESULT_FORMAT = "spaghetti-extractor-roundtrip-run-result-v2"
 
 
 def _load_object(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read round-trip artifact {path}: {exc}") from exc
+        raise ToolkitInputError(f"cannot read round-trip artifact {path}: {exc}") from exc
     if not isinstance(value, dict):
-        raise StageAInputError(f"round-trip artifact must be an object: {path}")
+        raise ToolkitInputError(f"round-trip artifact must be an object: {path}")
     return value
 
 
@@ -118,12 +118,12 @@ def run_roundtrip_corpus(
     manifest = load_corpus_manifest(corpus_path)
     selected_ids = tuple(case_ids)
     if len(selected_ids) != len(set(selected_ids)):
-        raise StageAInputError("round-trip case selector contains duplicates")
+        raise ToolkitInputError("round-trip case selector contains duplicates")
     loaded = manifest.load_cases(corpus_path.parent)
     known = {case.id for case, _root in loaded}
     missing = sorted(set(selected_ids) - known)
     if missing:
-        raise StageAInputError(f"round-trip corpus has no selected cases {missing}")
+        raise ToolkitInputError(f"round-trip corpus has no selected cases {missing}")
     selected = [entry for entry in loaded if not selected_ids or entry[0].id in set(selected_ids)]
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)

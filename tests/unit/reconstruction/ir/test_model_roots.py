@@ -51,7 +51,7 @@ class ReconstructionIRRootModelTests(unittest.TestCase):
         callback_rva = 0x2200
         roots = _callback_root_proposals_from_provenance({
             "callback_registrations": [{
-                "format": "stage-a-callback-registration-provenance-v1",
+                "format": "spaghetti-extractor-callback-registration-provenance-v1",
                 "status": "complete",
                 "unit_id": "unit:register",
                 "event_index": 0,
@@ -82,7 +82,7 @@ class ReconstructionIRRootModelTests(unittest.TestCase):
         callback_rva = 0x2203
         roots = _callback_root_proposals_from_provenance({
             "callback_registrations": [{
-                "format": "stage-a-callback-registration-provenance-v1",
+                "format": "spaghetti-extractor-callback-registration-provenance-v1",
                 "status": "incomplete",
                 "unit_id": "unit:register",
                 "event_index": 0,

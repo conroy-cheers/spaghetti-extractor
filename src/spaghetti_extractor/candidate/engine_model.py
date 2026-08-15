@@ -1,7 +1,7 @@
-"""Generate the freestanding wrapper for a Stage B semantic engine.
+"""Generate the freestanding wrapper for a candidate reconstruction semantic engine.
 
 This module is candidate-generation machinery.  Its output has no proof
-authority: Stage A must decode the linked PE and prove the EngineRep macro
+authority: static analysis must decode the linked PE and prove the EngineRep macro
 steps before the candidate can be accepted.
 """
 
@@ -20,7 +20,7 @@ from ..artifacts.formats import (
 from ..external.contracts import (
     CheckedExternalSiteContract,
 )
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from .x87 import (
     TYPED_NATIVE_X87_OPERATION_FORMAT,
     TypedX87Operation,
@@ -42,7 +42,7 @@ _HEX_BYTES = re.compile(r"(?:[0-9a-fA-F]{2})+")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _X87_CHECKED_DECODER = X87_CHECKED_DECODER
 _X87_CHECKED_EXECUTOR = X87_CHECKED_EXECUTOR
-PE32_BASE_RELOCATION_EVIDENCE_FORMAT = "stage-b-pe32-base-relocation-evidence-v1"
+PE32_BASE_RELOCATION_EVIDENCE_FORMAT = "spaghetti-extractor-pe32-base-relocation-evidence-v1"
 _FNSAVE_IMAGE_SIZE = 108
 _MACHINE_STATE_SIZE = 252
 _MACHINE_REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
@@ -56,11 +56,11 @@ def _canonical_sha256(value: Any) -> str:
             value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         ).encode("ascii")
     except (TypeError, UnicodeEncodeError) as exc:
-        raise StageAInputError("machine-IR metadata is not canonical JSON") from exc
+        raise ToolkitInputError("machine-IR metadata is not canonical JSON") from exc
     return sha256_bytes(encoded)
 
 
-class _X87ReplayASLRUnsafe(StageAInputError):
+class _X87ReplayASLRUnsafe(ToolkitInputError):
     """Exact replay bytes would embed an unrelocated absolute address."""
 
 
@@ -270,11 +270,11 @@ class NativeCallbackTarget:
 
     @property
     def symbol(self) -> str:
-        return f"stage_b_payload_callback_{self.rva:08x}"
+        return f"spx_payload_callback_{self.rva:08x}"
 
     @property
     def dispatch_return_symbol(self) -> str:
-        return f"stage_b_native_callback_dispatch_return_{self.rva:08x}"
+        return f"spx_native_callback_dispatch_return_{self.rva:08x}"
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -317,7 +317,7 @@ class NativeCallbackAdapter:
 
     @property
     def symbol(self) -> str:
-        return f"stage_b_payload_callback_{self.callback_rva:08x}"
+        return f"spx_payload_callback_{self.callback_rva:08x}"
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -701,9 +701,9 @@ class NativeEnginePlan:
                 else {"kind": "relocatable"}
             ),
             "launch_wrapper_symbols": {
-                "entry_dispatch_return": "stage_b_native_entry_dispatch_return",
-                "entry_return": "stage_b_native_entry_return",
-                "termination": "stage_b_native_termination",
+                "entry_dispatch_return": "spx_native_entry_dispatch_return",
+                "entry_return": "spx_native_entry_return",
+                "termination": "spx_native_termination",
                 "callback_dispatch_returns": [
                     target.dispatch_return_symbol
                     for target in self.callback_targets

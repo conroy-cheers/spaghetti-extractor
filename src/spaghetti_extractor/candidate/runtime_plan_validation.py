@@ -19,7 +19,7 @@ from ..external.machine_import_profiles import (
 from .runtime_model import (
     NativeExternalRangeRule,
     NativeImplementationDispatch,
-    StageBNativeRuntimeError,
+    CandidateRuntimeError,
     _InterpreterTransferBinding,
 )
 from .runtime_receipts import (
@@ -52,19 +52,19 @@ def _validate_native_plan(
     tuple[tuple[int, int], ...],
 ]:
     if payload.get("format") != NATIVE_ENGINE_PLAN_FORMAT:
-        raise StageBNativeRuntimeError("native-engine plan has an unsupported format")
+        raise CandidateRuntimeError("native-engine plan has an unsupported format")
     if payload.get("status") != "ready":
-        raise StageBNativeRuntimeError("native-engine plan is not ready")
+        raise CandidateRuntimeError("native-engine plan is not ready")
     if payload.get("state_machine_sha256") != state_machine_sha256:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "interpreter and native-engine packages bind different state machines"
         )
     if payload.get("input_mode") != input_mode:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine plan and packages bind different semantic input modes"
         )
     if _required_list(payload.get("blockers"), "native-engine blockers"):
-        raise StageBNativeRuntimeError("ready native-engine plan contains blockers")
+        raise CandidateRuntimeError("ready native-engine plan contains blockers")
     implementation_dispatch_receipt, implementation_dispatches = (
         _validate_implementation_dispatch_receipt(
             payload,
@@ -79,11 +79,11 @@ def _validate_native_plan(
         )
     )
     if callback_targets != tuple(sorted(set(callback_targets))):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine callback RVAs must be sorted and unique"
         )
     if any(target not in transfer_rvas for target in callback_targets):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine callback lacks a checked interpreter transfer"
         )
     recovered_data = _required_object(
@@ -91,7 +91,7 @@ def _validate_native_plan(
         "native-engine recovered executable data",
     )
     if recovered_data.get("dispatch_policy") != "fail_closed_as_noncode":
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine recovered executable data is not fail-closed"
         )
     recovered_ranges: list[tuple[int, int]] = []
@@ -114,11 +114,11 @@ def _validate_native_plan(
             row.get("rva_end"), f"recovered executable-data range {index} end"
         )
         if end <= start:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine recovered executable-data range is empty"
             )
         if recovered_ranges and start < recovered_ranges[-1][1]:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine recovered executable-data ranges overlap or are unsorted"
             )
         recovered_ranges.append((start, end))
@@ -128,14 +128,14 @@ def _validate_native_plan(
         for target in (entry_rva, *callback_targets)
         for start, end in recovered_ranges
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native entry or callback target overlaps recovered executable data"
         )
     callback_abis = _required_list(
         payload.get("callback_abis"), "native-engine callback ABIs"
     )
     if len(callback_abis) != len(callback_targets):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine callback ABI inventory differs from callback targets"
         )
     for index, (raw, target) in enumerate(
@@ -143,12 +143,12 @@ def _validate_native_plan(
     ):
         callback = _required_object(raw, f"native-engine callback ABI {index}")
         if _required_u32(callback.get("rva"), "callback ABI RVA") != target:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback ABI RVA differs from its target"
             )
-        expected_symbol = f"stage_b_payload_callback_{target:08x}"
+        expected_symbol = f"spx_payload_callback_{target:08x}"
         if _required_string(callback.get("symbol"), "callback ABI symbol") != expected_symbol:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback ABI symbol is not the canonical RVA anchor"
             )
         _required_string(callback.get("transfer_id"), "callback ABI transfer id")
@@ -161,11 +161,11 @@ def _validate_native_plan(
         )
         if kind == "tls_callback":
             if cleanup != 12:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "PE32 TLS callback ABI must clean exactly 12 stack bytes"
                 )
         elif kind != "generic_callback":
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback ABI kind is unsupported"
             )
     callback_adapter_receipts = _validate_callback_adapter_receipts(
@@ -201,19 +201,19 @@ def _validate_native_plan(
             != "pass_through_environment_pointer"
             or key in seen_passthroughs
         ):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback passthrough is malformed or duplicate"
             )
         seen_passthroughs.add(key)
     if entry_rva not in transfer_rvas:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine entry RVA is absent from the interpreter transfer table"
         )
     counts = _required_object(payload.get("counts"), "native-engine counts")
     if _required_count(counts.get("transfers"), "native-engine transfer count") != len(
         transfer_rvas
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine and interpreter transfer counts differ"
         )
     if _required_count(
@@ -222,21 +222,21 @@ def _validate_native_plan(
     ) != len(_required_list(
         payload.get("callback_adapters"), "native-engine callback adapters"
     )):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine callback adapter count differs from its inventory"
         )
     if _required_count(
         counts.get("callback_adapter_receipts"),
         "native-engine callback adapter receipt count",
     ) != len(callback_adapter_receipts):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine callback adapter receipt count differs from its inventory"
         )
     if _required_count(
         counts.get("callback_passthroughs"),
         "native-engine callback passthrough count",
     ) != len(passthroughs):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine callback passthrough count differs from its inventory"
         )
     return entry_rva, tuple(
@@ -266,7 +266,7 @@ def _validate_native_termination(value: Any) -> bool:
     symbol = payload.get("symbol")
     ordinal = payload.get("ordinal")
     if (symbol is None) == (ordinal is None):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "termination import must provide exactly one symbol or ordinal"
         )
     if symbol is not None:
@@ -279,7 +279,7 @@ def _validate_native_termination(value: Any) -> bool:
         or payload.get("argument_source") != "cdecl-stack-word-0-from-eax"
         or payload.get("required_disposition") != "terminates"
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine termination import policy is unsupported"
         )
     return True
@@ -308,14 +308,14 @@ def _external_range_rules(
     if not has_external_site:
         selected_contracts = {}
     elif profile_path is None:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native runtime requires the canonical machine-import profile bundle"
         )
     else:
         try:
             profile_set = load_machine_import_profile_set([profile_path])
         except MachineImportProfileError as exc:
-            raise StageBNativeRuntimeError(str(exc)) from exc
+            raise CandidateRuntimeError(str(exc)) from exc
         selected_contracts = profile_set.by_identity()
 
     bindings: dict[tuple[str, str, str | int], dict[str, Any]] = {}
@@ -336,7 +336,7 @@ def _external_range_rules(
         _required_u32(binding.get("iat_va"), "import binding IAT VA")
         iat_rva = _required_u32(binding.get("iat_rva"), "import binding IAT RVA")
         if iat_rva == 0 or identity in bindings:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine import bindings are duplicate or use RVA zero"
             )
         bindings[identity] = dict(binding)
@@ -355,7 +355,7 @@ def _external_range_rules(
         "native-engine implementation reachability",
     )
     if dispatch_reachability.get("status") != "complete":
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native runtime requires complete implementation reachability"
         )
 
@@ -363,7 +363,7 @@ def _external_range_rules(
         *, site_index: int, site: Mapping[str, Any], category: str, detail: str
     ) -> None:
         del site_index, site, category
-        raise StageBNativeRuntimeError(detail)
+        raise CandidateRuntimeError(detail)
 
     for site_index, raw_site in enumerate(external_sites):
         site = _required_object(raw_site, f"native-engine external site {site_index}")
@@ -415,7 +415,7 @@ def _external_range_rules(
                 context=f"native-engine external site {site_index}",
             )
         except CheckedExternalSiteContractError as exc:
-            raise StageBNativeRuntimeError(str(exc)) from exc
+            raise CandidateRuntimeError(str(exc)) from exc
 
         imported_site = site.get("import")
         if isinstance(imported_site, Mapping):
@@ -425,9 +425,9 @@ def _external_range_rules(
                     context=f"native-engine external site {site_index}",
                 )
             except CheckedExternalSiteContractError as exc:
-                raise StageBNativeRuntimeError(str(exc)) from exc
+                raise CandidateRuntimeError(str(exc)) from exc
             if checked.identity != outer_identity:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"native-engine external site {site_index} identity differs from its checked contract"
                 )
 
@@ -444,7 +444,7 @@ def _external_range_rules(
             )
             selected = selected_contracts.get(profile_identity)
             if selected is None:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"native-engine external site {site_index} has no selected exact profile"
                 )
             if (
@@ -452,7 +452,7 @@ def _external_range_rules(
                 or checked.profile_binding.get("profile_sha256")
                 != selected.profile_sha256
             ):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"native-engine external site {site_index} binds a "
                     "different canonical profile"
                 )
@@ -463,7 +463,7 @@ def _external_range_rules(
             )
             binding = bindings.get(binding_identity)
             if binding is None and site.get("site_kind") == "dynamic_target":
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"native-engine external site {site_index} has no exact import binding"
                 )
             if site.get("site_kind") == "dynamic_target" and binding is not None:
@@ -497,17 +497,17 @@ def _external_range_rules(
             f"machine-call contract {contract_id} argument count",
         )
         if argument_count > 256:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 f"machine-call contract {contract_id} has too many arguments"
             )
         disposition = site.get("disposition")
         if disposition not in {"returns_here", "tail_jump"}:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 f"external site {instruction_rva:#x} has an unsupported disposition"
             )
         relations = contract.get("result_register_relations", [])
         if not isinstance(relations, list):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 f"machine-call contract {contract_id} has invalid result relations"
             )
         for relation_index, raw_relation in enumerate(relations):
@@ -521,7 +521,7 @@ def _external_range_rules(
                 relation.get("register"), "dynamic-range result register"
             ).lower()
             if register not in {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} uses an unsupported result register"
                 )
             size = _required_object(
@@ -569,16 +569,16 @@ def _external_range_rules(
                     or termination_max_units < termination_zero_units
                     or termination_max_units > 1048576
                 ):
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         f"machine-call contract {contract_id} has an invalid terminated range size"
                     )
             else:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has unsupported range size {kind!r}"
                 )
             for size_index in (size_argument, size_right_argument):
                 if size_index is not None and size_index >= argument_count:
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         f"machine-call contract {contract_id} range size argument is out of bounds"
                     )
             minimum_size = _required_count(
@@ -586,7 +586,7 @@ def _external_range_rules(
             )
             nullable = relation.get("nullable")
             if not isinstance(nullable, bool):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has invalid nullability"
                 )
             rules.append(
@@ -616,7 +616,7 @@ def _external_range_rules(
             )
             required_words = relation.get("required_words", [])
             if not isinstance(required_words, list):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has invalid required words"
                 )
             for word_index, raw_word in enumerate(required_words):
@@ -628,52 +628,52 @@ def _external_range_rules(
                 if shape is None:
                     continue
                 if word.get("relation") != "nullable_dynamic_pointer":
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         f"machine-call contract {contract_id} gives a shape to a non-pointer word"
                     )
                 shape = _required_object(shape, "dynamic-pointer pointee shape")
                 if shape.get("kind") != "null_terminated_pointer_vector":
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         f"machine-call contract {contract_id} has an unsupported pointee shape"
                     )
                 pointee_offset = _required_count(
                     word.get("offset"), "dynamic-pointer word offset"
                 )
                 if pointee_offset % 4 != 0 or pointee_offset + 4 > minimum_size:
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         f"machine-call contract {contract_id} has an out-of-range pointer word"
                     )
                 max_elements = _required_count(
                     shape.get("max_elements"), "pointer-vector element limit"
                 )
                 if max_elements == 0 or max_elements > 65536:
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         f"machine-call contract {contract_id} has an invalid pointer-vector limit"
                     )
                 element = _required_object(
                     shape.get("element"), "pointer-vector element shape"
                 )
                 if element.get("kind") != "bounded_terminated":
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         f"machine-call contract {contract_id} has an unsupported vector element shape"
                     )
                 element_unit_bytes = _required_count(
                     element.get("unit_bytes"), "terminated-element unit size"
                 )
                 if element_unit_bytes not in {1, 2, 4}:
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         f"machine-call contract {contract_id} has an unsupported element unit"
                     )
                 sentinel = element.get("sentinel")
                 if sentinel != [0] * element_unit_bytes:
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         f"machine-call contract {contract_id} has an unsupported element sentinel"
                     )
                 element_max_units = _required_count(
                     element.get("max_units"), "terminated-element unit limit"
                 )
                 if element_max_units == 0 or element_max_units > 1048576:
-                    raise StageBNativeRuntimeError(
+                    raise CandidateRuntimeError(
                         f"machine-call contract {contract_id} has an invalid element unit limit"
                     )
                 rules.append(
@@ -703,7 +703,7 @@ def _external_range_rules(
                 )
         out_pointer_relations = contract.get("out_pointer_relations", [])
         if not isinstance(out_pointer_relations, list):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 f"machine-call contract {contract_id} has invalid out-pointer relations"
             )
         for out_index, raw_out in enumerate(out_pointer_relations):
@@ -712,14 +712,14 @@ def _external_range_rules(
                 f"machine-call contract {contract_id} out pointer {out_index}",
             )
             if out_relation.get("relation") != "nullable_dynamic_pointer":
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has an unsupported out-pointer relation"
                 )
             argument = _required_count(
                 out_relation.get("argument"), "out-pointer argument"
             )
             if argument >= argument_count:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} out-pointer argument is out of bounds"
                 )
             pointee_offset = _required_count(
@@ -729,21 +729,21 @@ def _external_range_rules(
                 out_relation.get("pointee_shape"), "out-pointer pointee shape"
             )
             if shape.get("kind") != "null_terminated_pointer_vector":
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has an unsupported out-pointer shape"
                 )
             max_elements = _required_count(
                 shape.get("max_elements"), "out-pointer vector limit"
             )
             if max_elements == 0 or max_elements > 65536:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has an invalid out-pointer vector limit"
                 )
             element = _required_object(
                 shape.get("element"), "out-pointer vector element shape"
             )
             if element.get("kind") != "bounded_terminated":
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has an unsupported out-pointer element shape"
                 )
             element_unit_bytes = _required_count(
@@ -754,14 +754,14 @@ def _external_range_rules(
                 element_unit_bytes not in {1, 2, 4}
                 or sentinel != [0] * element_unit_bytes
             ):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has an unsupported out-pointer sentinel"
                 )
             element_max_units = _required_count(
                 element.get("max_units"), "out-pointer element unit limit"
             )
             if element_max_units == 0 or element_max_units > 1048576:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has an invalid out-pointer element limit"
                 )
             rules.append(
@@ -791,7 +791,7 @@ def _external_range_rules(
             )
         out_interface_relations = contract.get("out_interface_relations", [])
         if not isinstance(out_interface_relations, list):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 f"machine-call contract {contract_id} has invalid out-interface relations"
             )
         for out_index, raw_out in enumerate(out_interface_relations):
@@ -803,7 +803,7 @@ def _external_range_rules(
                 out_relation.get("argument_index"), "out-interface argument"
             )
             if argument >= argument_count:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} out-interface argument is out of bounds"
                 )
             pointee_offset = _required_count(
@@ -825,7 +825,7 @@ def _external_range_rules(
                 or out_relation.get("success_condition")
                 != "hresult_succeeded_eax"
             ):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} has an invalid out-interface shape"
                 )
             rules.append(
@@ -859,7 +859,7 @@ def _external_range_rules(
                 "dynamic-range release argument",
             )
             if argument >= argument_count:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     f"machine-call contract {contract_id} release argument is out of bounds"
                 )
             rules.append(

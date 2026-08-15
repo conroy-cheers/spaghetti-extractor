@@ -102,7 +102,7 @@ class LinkedLibraryTestCase(unittest.TestCase):
         write_json(
             self.machine / "machine-ir-manifest.json",
             {
-                "format": "stage-a-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v2",
                 "binary": {"sha256": sha256_file(self.original)},
                 "artifacts": {
                     "machine_ir": {

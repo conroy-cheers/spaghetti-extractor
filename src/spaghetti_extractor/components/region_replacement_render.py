@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from .region_replacement_model import (
     RegionReplacementManifest,
     _json_copy,
@@ -18,7 +18,7 @@ def _validate_override_inventory(contracts: Sequence[RegionReplacementManifest])
     for contract in contracts:
         nonqualified = [item["id"] for item in contract.evidence if item["status"] != "qualified"]
         if nonqualified:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"replacement {contract.id} has non-qualified evidence {nonqualified}"
             )
     for name, values in (
@@ -39,7 +39,7 @@ def _validate_override_inventory(contracts: Sequence[RegionReplacementManifest])
         for item in contracts
     }
     if len(bindings) != 1:
-        raise StageAInputError("override manifests do not bind the same machine IR and baseline")
+        raise ToolkitInputError("override manifests do not bind the same machine IR and baseline")
     spans = [
         {**span, "replacement_id": item.id}
         for item in contracts
@@ -48,7 +48,7 @@ def _validate_override_inventory(contracts: Sequence[RegionReplacementManifest])
     spans.sort(key=lambda span: (span["start"], span["end"], span["replacement_id"]))
     for left, right in zip(spans, spans[1:]):
         if right["start"] < left["end"]:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "override RVA spans overlap between "
                 f"{left['replacement_id']} and {right['replacement_id']}"
             )
@@ -58,31 +58,31 @@ def _render_override_header(
     contracts: Sequence[RegionReplacementManifest], runtime_header: str
 ) -> str:
     prototypes = "\n".join(
-        f"stage_b_step_result {item.source['symbol']}(stage_b_runtime *, stage_b_machine_state *);"
+        f"spx_step_result {item.source['symbol']}(spx_runtime *, spx_machine_state *);"
         for item in contracts
     )
-    return f"""#ifndef STAGE_B_REGION_OVERRIDES_H
-#define STAGE_B_REGION_OVERRIDES_H
+    return f"""#ifndef SPX_REGION_OVERRIDES_H
+#define SPX_REGION_OVERRIDES_H
 
 #include <stdint.h>
 #include \"{runtime_header}\"
 
-typedef stage_b_step_result (*stage_b_region_override_fn)(
-    stage_b_runtime *, stage_b_machine_state *);
+typedef spx_step_result (*spx_region_override_fn)(
+    spx_runtime *, spx_machine_state *);
 
-typedef struct stage_b_region_override {{
+typedef struct spx_region_override {{
   uint32_t entry_rva;
-  stage_b_region_override_fn function;
+  spx_region_override_fn function;
   uint32_t fallback_on_unimplemented;
   const char *replacement_id;
   const char *cluster_id;
-}} stage_b_region_override;
+}} spx_region_override;
 
 {prototypes}
 
-extern const stage_b_region_override stage_b_region_overrides[];
-extern const uint32_t stage_b_region_override_count;
-const stage_b_region_override *stage_b_region_override_lookup(uint32_t entry_rva);
+extern const spx_region_override spx_region_overrides[];
+extern const uint32_t spx_region_override_count;
+const spx_region_override *spx_region_override_lookup(uint32_t entry_rva);
 
 #endif
 """
@@ -105,23 +105,23 @@ def _render_override_source(
     return f"""#include <stdint.h>
 #include \"region-overrides.h\"
 
-const stage_b_region_override stage_b_region_overrides[] = {{
+const spx_region_override spx_region_overrides[] = {{
 {entries}
 }};
 
-const uint32_t stage_b_region_override_count =
-    (uint32_t)(sizeof(stage_b_region_overrides) / sizeof(stage_b_region_overrides[0]));
+const uint32_t spx_region_override_count =
+    (uint32_t)(sizeof(spx_region_overrides) / sizeof(spx_region_overrides[0]));
 
-const stage_b_region_override *stage_b_region_override_lookup(uint32_t entry_rva) {{
-  uint32_t low = 0U, high = stage_b_region_override_count;
+const spx_region_override *spx_region_override_lookup(uint32_t entry_rva) {{
+  uint32_t low = 0U, high = spx_region_override_count;
   while (low < high) {{
     uint32_t middle = low + (high - low) / 2U;
-    uint32_t observed = stage_b_region_overrides[middle].entry_rva;
+    uint32_t observed = spx_region_overrides[middle].entry_rva;
     if (observed < entry_rva) low = middle + 1U;
     else if (observed > entry_rva) high = middle;
-    else return &stage_b_region_overrides[middle];
+    else return &spx_region_overrides[middle];
   }}
-  return (const stage_b_region_override *)0;
+  return (const spx_region_override *)0;
 }}
 """
 

@@ -5,7 +5,7 @@
 
 let
   profile = name: entries: pkgs.writeText "${name}.json" (builtins.toJSON {
-    format = "stage-a-static-machine-import-profile-v1";
+    format = "spaghetti-extractor-static-machine-import-profile-v1";
     id = name;
     default_callback_effect = "none";
     machine_import_signatures = entries;

@@ -17,12 +17,12 @@ from .interface_profiles import (
 )
 from .machine_abi import resolve_machine_call_abi
 from .machine_import_profiles import MachineImportIdentity
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_file, write_json
 
 
 EXTERNAL_INTERFACE_EXTRACTION_SPEC_FORMAT = (
-    "stage-a-external-interface-extraction-spec-v1"
+    "spaghetti-extractor-external-interface-extraction-spec-v1"
 )
 _NAMED_POINTER = re.compile(
     r"^(?:struct\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\*$"
@@ -45,12 +45,12 @@ def extract_external_interface_profile(
     ast_path = Path(ast_json).resolve()
     payload = _read_object(spec_path, "external-interface extraction spec")
     if payload.get("format") != EXTERNAL_INTERFACE_EXTRACTION_SPEC_FORMAT:
-        raise StageAInputError("unsupported external-interface extraction spec")
+        raise ToolkitInputError("unsupported external-interface extraction spec")
     profile_id = _nonempty(payload.get("id"), "extraction spec ID")
     if payload.get("model") != "x86-pe32":
-        raise StageAInputError("external-interface extraction requires x86-pe32")
+        raise ToolkitInputError("external-interface extraction requires x86-pe32")
     if payload.get("effect_model") != SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "external-interface extraction does not opt into the supported "
             "same-library call-through effect model"
         )
@@ -59,7 +59,7 @@ def extract_external_interface_profile(
         for value in _array(payload.get("interface_prefixes"), "interface prefixes")
     )
     if not prefixes:
-        raise StageAInputError("external-interface extraction has no prefixes")
+        raise ToolkitInputError("external-interface extraction has no prefixes")
 
     expected_headers = {
         _nonempty(_object(raw, "header binding").get("include"), "header include"):
@@ -68,15 +68,15 @@ def extract_external_interface_profile(
     }
     supplied_headers = {Path(path).name: Path(path).resolve() for path in headers}
     if set(supplied_headers) != set(expected_headers):
-        raise StageAInputError("supplied interface headers differ from the reviewed spec")
+        raise ToolkitInputError("supplied interface headers differ from the reviewed spec")
     for name, path in supplied_headers.items():
         if sha256_file(path) != expected_headers[name]:
-            raise StageAInputError(f"interface header digest mismatch: {name}")
+            raise ToolkitInputError(f"interface header digest mismatch: {name}")
 
     try:
         ast = json.loads(ast_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read Clang AST: {exc}") from exc
+        raise ToolkitInputError(f"cannot read Clang AST: {exc}") from exc
     declarations = tuple(_walk_ast(ast))
     type_aliases = _type_aliases(declarations)
     opaque_resource_types = _opaque_resource_types(payload, declarations)
@@ -101,7 +101,7 @@ def extract_external_interface_profile(
     )
     unused_callback_specs = sorted(set(callback_specs) - used_callback_specs)
     if unused_callback_specs:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "callback specifications do not match pinned AST methods: "
             + ", ".join(
                 f"{interface}::{method} argument {argument}"
@@ -255,7 +255,7 @@ def _interface_aliases(
             continue
         prior = pointer_aliases.get(name)
         if prior is not None and prior != interface_id:
-            raise StageAInputError(f"ambiguous interface pointer alias {name}")
+            raise ToolkitInputError(f"ambiguous interface pointer alias {name}")
         pointer_aliases[name] = interface_id
 
     output_aliases: dict[str, str] = {}
@@ -372,7 +372,7 @@ def _callback_specs(
         )
         nullable = row.get("nullable")
         if not isinstance(nullable, bool):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"method callback specification {index} nullable must be boolean"
             )
         argument_origins: list[dict[str, Any]] = []
@@ -386,7 +386,7 @@ def _callback_specs(
                 f"{argument_origin_index}",
             )
             if set(origin) != {"argument_index", "kind", "interface_id"}:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"method callback specification {index} argument origin "
                     f"{argument_origin_index} has invalid fields"
                 )
@@ -399,7 +399,7 @@ def _callback_specs(
                 f"method callback specification {index} callback interface",
             )
             if origin.get("kind") != "interface_object":
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"method callback specification {index} argument origin "
                     "kind is unsupported"
                 )
@@ -411,12 +411,12 @@ def _callback_specs(
         if len({row["argument_index"] for row in argument_origins}) != len(
             argument_origins
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"method callback specification {index} duplicates an argument origin"
             )
         key = (interface_id, method, argument)
         if key in result:
-            raise StageAInputError(f"duplicate method callback specification {key}")
+            raise ToolkitInputError(f"duplicate method callback specification {key}")
         result[key] = {
             "lifetime": lifetime,
             "nullable": nullable,
@@ -474,7 +474,7 @@ def _method_callback_contract(
                 argument not in inferred_arguments
                 for argument in declared_arguments
             ):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{interface_id}::{method_name} callback argument protocol "
                     "contradicts the pinned AST type"
                 )
@@ -545,7 +545,7 @@ def _interfaces(
             for candidate in candidates
         }
         if len(signatures) != 1:
-            raise StageAInputError(f"ambiguous Clang vtable definition {vtable}")
+            raise ToolkitInputError(f"ambiguous Clang vtable definition {vtable}")
         fields = candidates[0]["fields"]
         interface_id = vtable[:-4]
         methods = []
@@ -553,7 +553,7 @@ def _interfaces(
             qualified = _qualified_type(field, f"{vtable} field {slot}")
             parameters = _function_pointer_parameters(qualified)
             if "__attribute__((stdcall))" not in qualified:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{vtable} field {slot} is not a PE32 stdcall method"
                 )
             method_name = _nonempty(
@@ -594,7 +594,7 @@ def _interfaces(
             })
         result.append({"id": interface_id, "vtable": vtable, "methods": methods})
     if not result:
-        raise StageAInputError("Clang AST contains no selected interface vtables")
+        raise ToolkitInputError("Clang AST contains no selected interface vtables")
     return result
 
 
@@ -628,12 +628,12 @@ def _factories(
         )
         candidates = functions.get(declaration, set())
         if len(candidates) != 1:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"factory declaration {declaration} is missing or ambiguous"
             )
         qualified = next(iter(candidates))
         if "__attribute__((stdcall))" not in qualified:
-            raise StageAInputError(f"factory {declaration} is not PE32 stdcall")
+            raise ToolkitInputError(f"factory {declaration} is not PE32 stdcall")
         parameters = _function_parameters(qualified)
         inferred = _infer_outputs(
             parameters, prefixes, pointer_aliases, output_aliases
@@ -656,11 +656,11 @@ def _factories(
             )
         ]
         if expected != inferred:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"factory {declaration} output specification differs from its AST"
             )
         if any(row["interface_id"] not in known_interfaces for row in expected):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"factory {declaration} returns an unprofiled interface"
             )
         imported = _object(
@@ -670,7 +670,7 @@ def _factories(
             imported, context=f"factory {declaration} import"
         )
         if identity in identities:
-            raise StageAInputError(f"duplicate factory import {identity}")
+            raise ToolkitInputError(f"duplicate factory import {identity}")
         identities.add(identity)
         result.append({
             "id": _nonempty(specification.get("id"), f"factory {declaration} ID"),
@@ -709,7 +709,7 @@ def _machine_call_contract(
 ) -> dict[str, Any]:
     abi = resolve_machine_call_abi("pe32-stdcall-v1")
     if abi is None:  # pragma: no cover - guarded by the static ABI registry
-        raise StageAInputError("PE32 stdcall machine ABI is unavailable")
+        raise ToolkitInputError("PE32 stdcall machine ABI is unavailable")
     effects = (
         same_library_call_through_effect_json()
         if callback is None
@@ -806,9 +806,9 @@ def _opaque_resource_types(
     ):
         name = _nonempty(raw, f"opaque resource type {index}")
         if name in result:
-            raise StageAInputError(f"duplicate opaque resource type {name}")
+            raise ToolkitInputError(f"duplicate opaque resource type {name}")
         if name not in declared_names:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"opaque resource type is absent from the pinned AST: {name}"
             )
         result.add(name)
@@ -914,14 +914,14 @@ def _function_pointer_parameters(qualified: str) -> tuple[str, ...]:
     marker = "(*)("
     start = qualified.find(marker)
     if start < 0:
-        raise StageAInputError(f"unsupported vtable field type: {qualified}")
+        raise ToolkitInputError(f"unsupported vtable field type: {qualified}")
     return _split_parameters(qualified, start + len(marker))
 
 
 def _function_parameters(qualified: str) -> tuple[str, ...]:
     start = qualified.find("(")
     if start < 0:
-        raise StageAInputError(f"unsupported function type: {qualified}")
+        raise ToolkitInputError(f"unsupported function type: {qualified}")
     return _split_parameters(qualified, start + 1)
 
 
@@ -938,7 +938,7 @@ def _split_parameters(qualified: str, start: int) -> tuple[str, ...]:
                 break
             depth -= 1
     if end is None:
-        raise StageAInputError(f"unterminated function type: {qualified}")
+        raise ToolkitInputError(f"unterminated function type: {qualified}")
     body = qualified[start:end].strip()
     if not body or body == "void":
         return ()
@@ -957,14 +957,14 @@ def _split_parameters(qualified: str, start: int) -> tuple[str, ...]:
             current.append(character)
     parts.append("".join(current).strip())
     if any(not part for part in parts):
-        raise StageAInputError(f"empty parameter in function type: {qualified}")
+        raise ToolkitInputError(f"empty parameter in function type: {qualified}")
     return tuple(parts)
 
 
 def _qualified_type(value: Mapping[str, Any], context: str) -> str:
     type_row = value.get("type")
     if not isinstance(type_row, Mapping):
-        raise StageAInputError(f"{context} has no type")
+        raise ToolkitInputError(f"{context} has no type")
     return _nonempty(type_row.get("qualType"), f"{context} qualified type")
 
 
@@ -972,31 +972,31 @@ def _read_object(path: Path, context: str) -> Mapping[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read {context}: {exc}") from exc
+        raise ToolkitInputError(f"cannot read {context}: {exc}") from exc
     return _object(value, context)
 
 
 def _object(value: Any, context: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     return value
 
 
 def _array(value: Any, context: str) -> list[Any]:
     if not isinstance(value, list):
-        raise StageAInputError(f"{context} must be a list")
+        raise ToolkitInputError(f"{context} must be a list")
     return value
 
 
 def _nonempty(value: Any, context: str) -> str:
     if not isinstance(value, str) or not value:
-        raise StageAInputError(f"{context} must be a nonempty string")
+        raise ToolkitInputError(f"{context} must be a nonempty string")
     return value
 
 
 def _word(value: Any, context: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 64:
-        raise StageAInputError(f"{context} must be between 0 and 64")
+        raise ToolkitInputError(f"{context} must be between 0 and 64")
     return value
 
 

@@ -24,7 +24,7 @@ from ..artifacts.formats import (
 )
 
 
-DEFINEDNESS_EVIDENCE_FORMAT = "stage-a-definedness-noninterference-v4"
+DEFINEDNESS_EVIDENCE_FORMAT = "spaghetti-extractor-definedness-noninterference-v4"
 _UNDEFINED_OPS = frozenset({"undefined_bv", "undefined_flag"})
 _TRANSFER_FORMAT = SEMANTIC_TRANSFER_CONTRACT_FORMAT
 _EXPRESSION_MODEL = SEMANTIC_IR_FORMAT
@@ -381,7 +381,7 @@ def _analyze_slot(
             choice_source
             if synchronized
             else {
-                "format": "stage-a-definedness-choice-source-v1",
+                "format": "spaghetti-extractor-definedness-choice-source-v1",
                 "kind": "noninterfering_zero",
                 "slot": occurrences[0].slot,
                 "undefined_id": undefined_id,
@@ -412,7 +412,7 @@ def _instruction_schedule_local_noninterference(
     This is independent of rooted reachability: if the transfer executes, its
     exact final summary still establishes that the temporary value cannot cross
     the transfer boundary. The result remains non-authoritative proposal
-    evidence until the schedule replay and summary are checked by Stage A.
+    evidence until the schedule replay and summary are checked by static analysis.
     """
 
     if not occurrences or any(
@@ -456,7 +456,7 @@ def _instruction_schedule_local_result(
         "classification": "unconstrained_noninterfering",
         "witness_policy": "zero",
         "choice_source": {
-            "format": "stage-a-definedness-choice-source-v1",
+            "format": "spaghetti-extractor-definedness-choice-source-v1",
             "kind": "noninterfering_zero",
             "slot": occurrences[0].slot,
             "undefined_id": undefined_id,
@@ -559,7 +559,7 @@ def _related_machine_input_choice(
     ):
         return None
     result = {
-        "format": "stage-a-definedness-choice-source-v3",
+        "format": "spaghetti-extractor-definedness-choice-source-v3",
         "kind": "related_machine_input",
         "slot": occurrences[0].slot,
         "undefined_id": undefined_id,
@@ -574,7 +574,7 @@ def _related_machine_input_choice(
     if instruction_kind == "exact_bytes":
         result["instruction_bytes"] = encoded
     else:
-        result["format"] = "stage-a-definedness-choice-source-v4"
+        result["format"] = "spaghetti-extractor-definedness-choice-source-v4"
         result["instruction_sha256"] = instruction_sha256
         result["instruction_model"] = "sanitized_typed_machine_ir_v2"
     return result

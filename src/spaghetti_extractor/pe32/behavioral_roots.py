@@ -9,10 +9,12 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from .stage_binary import StageABinary, StageAInputError, _parse_stage_a_pe
+from ..errors import ToolkitInputError
+from .image import parse_pe_image
+from .model import ParsedPEImage
 
 
-BEHAVIORAL_ROOTS_FORMAT = "stage-a-behavioral-roots-v1"
+BEHAVIORAL_ROOTS_FORMAT = "spaghetti-extractor-behavioral-roots-v1"
 
 _AUTHORITY = "independent_exact_pe_metadata"
 _ROOT_KINDS = ("pe_entrypoint", "pe_export", "pe_tls_callback")
@@ -50,14 +52,14 @@ _CONSTRAINTS = {
 }
 
 
-class BehavioralRootsError(StageAInputError):
+class BehavioralRootsError(ToolkitInputError):
     """The behavioral-root artifact or its exact PE binding is invalid."""
 
 
 def generate_behavioral_roots(original_pe: Path | str) -> dict[str, Any]:
     """Extract and self-hash the complete static root surface of an exact PE."""
 
-    binary = _parse_stage_a_pe(Path(original_pe))
+    binary = parse_pe_image(Path(original_pe))
     core = _behavioral_roots_core(binary)
     return {**core, "contract_sha256": behavioral_roots_sha256(core)}
 
@@ -141,7 +143,7 @@ def behavioral_roots_sha256(payload: Mapping[str, Any]) -> str:
     return sha256(canonical_behavioral_roots_payload(core)).hexdigest()
 
 
-def _behavioral_roots_core(binary: StageABinary) -> dict[str, Any]:
+def _behavioral_roots_core(binary: ParsedPEImage) -> dict[str, Any]:
     if binary.exports is None or binary.export_parse_error is not None:
         raise BehavioralRootsError(
             "strict PE export parsing failed: "
@@ -345,14 +347,14 @@ def _validate_roots(roots: Sequence[Any], *, size_of_image: int) -> None:
             )
 
 
-def _require_executable_root(binary: StageABinary, rva: int, label: str) -> None:
+def _require_executable_root(binary: ParsedPEImage, rva: int, label: str) -> None:
     matches = _executable_sections(binary, rva)
     if len(matches) != 1:
         reason = "ambiguous" if matches else "outside executable bounds"
         raise BehavioralRootsError(f"{label} is {reason}: RVA 0x{rva:x}")
 
 
-def _executable_sections(binary: StageABinary, rva: int) -> list[Any]:
+def _executable_sections(binary: ParsedPEImage, rva: int) -> list[Any]:
     if not 0 < rva < binary.size_of_image:
         return []
     return [

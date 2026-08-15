@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 from spaghetti_extractor.isa.conformance_nix import (
     _isa_conformance_nix_expression,
-    stage_a_check_isa_conformance_nix,
+    spx_check_isa_conformance_nix,
 )
-from spaghetti_extractor.pe32.stage_binary import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -63,9 +63,9 @@ class ISAConformanceNixTests(unittest.TestCase):
 
     def test_rejects_non_lean_forms_before_nix(self):
         with self.assertRaisesRegex(
-            StageAInputError, "--forms-out is valid only"
+            ToolkitInputError, "--forms-out is valid only"
         ):
-            stage_a_check_isa_conformance_nix(
+            spx_check_isa_conformance_nix(
                 corpus=Path("/missing"),
                 backend="unicorn",
                 out=Path("/unused"),
@@ -83,18 +83,17 @@ class ISAConformanceNixTests(unittest.TestCase):
             store = root / "store-output"
             store.mkdir()
             (store / "report.json").write_text(
-                '{"format":"stage-a-isa-conformance-report-v2"}\n',
+                '{"format":"spaghetti-extractor-isa-conformance-report-v2"}\n',
                 encoding="utf-8",
             )
             (store / "forms.json").write_text(
-                '{"format":"stage-a-lean-isa-semantic-forms-v1"}\n',
+                '{"format":"spaghetti-extractor-lean-isa-semantic-forms-v1"}\n',
                 encoding="utf-8",
             )
             result = {
-                "format": "stage-a-isa-conformance-check-v1",
+                "format": "spaghetti-extractor-isa-conformance-check-v1",
                 "status": "pass",
                 "proof_authority": False,
-                "closes_stage_a_proof": False,
                 "out": str(store / "report.json"),
                 "forms_out": str(store / "forms.json"),
             }
@@ -141,7 +140,7 @@ class ISAConformanceNixTests(unittest.TestCase):
                     return_value=process,
                 ),
             ):
-                actual = stage_a_check_isa_conformance_nix(
+                actual = spx_check_isa_conformance_nix(
                     corpus=corpus,
                     backend="lean",
                     out=out,

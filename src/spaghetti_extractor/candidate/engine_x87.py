@@ -10,7 +10,7 @@ from ..artifacts.formats import (
     INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
     NATIVE_X87_REPLAY_FORMAT,
 )
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes
 from .engine_model import (
     PE32_BASE_RELOCATION_EVIDENCE_FORMAT,
@@ -54,12 +54,12 @@ def _render_typed_x87_instruction(operation: NativeX87Operation) -> str:
         # operands, so normalize that complete form before rendering.
         if typed.mnemonic == "fxch" and len(registers) == 2:
             if registers[0] != 0:
-                raise StageAInputError("typed fxch first operand must be st(0)")
+                raise ToolkitInputError("typed fxch first operand must be st(0)")
             registers = registers[1:]
         rendered = ", ".join(f"st({index})" for index in registers)
         return f"{typed.mnemonic} {rendered}"
     if operand.kind != "memory":
-        raise StageAInputError(f"unsupported typed x87 operand kind {operand.kind!r}")
+        raise ToolkitInputError(f"unsupported typed x87 operand kind {operand.kind!r}")
     terms: list[str] = []
     if operand.image_rva is not None:
         if (
@@ -72,7 +72,7 @@ def _render_typed_x87_instruction(operation: NativeX87Operation) -> str:
                 or operation.fixed_image_base == operation.image_base
             )
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "absolute typed x87 operand lacks a checked image-address binding"
             )
         terms.append(f"___ImageBase + 0x{operand.image_rva:08x}")
@@ -85,7 +85,7 @@ def _render_typed_x87_instruction(operation: NativeX87Operation) -> str:
             else f"{operand.index} * {operand.scale}"
         )
     if not terms:
-        raise StageAInputError("typed x87 memory operand has no address source")
+        raise ToolkitInputError("typed x87 memory operand has no address source")
     address = " + ".join(terms)
     if operand.displacement > 0:
         address += f" + 0x{operand.displacement:x}"
@@ -97,7 +97,7 @@ def _render_typed_x87_instruction(operation: NativeX87Operation) -> str:
         else _X87_MEMORY_SIZE_KEYWORDS.get(operand.width)
     )
     if size is None:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"typed x87 memory width {operand.width} has no reviewed rendering"
         )
     prefix = f"{size} " if size else ""
@@ -209,7 +209,7 @@ def _qualified_machine_ir_x87_operations(
     fpu = row.get("fpu_state")
     micro_ops = row.get("_machine_ir_x87_micro_ops")
     if not isinstance(fpu, Mapping) or not isinstance(micro_ops, list) or not micro_ops:
-        raise StageAInputError("machine-IR x87 state lacks typed micro-operations")
+        raise ToolkitInputError("machine-IR x87 state lacks typed micro-operations")
     replay = fpu.get("typed_replay")
     original = row.get("original")
     instructions = row.get("instructions")
@@ -218,7 +218,7 @@ def _qualified_machine_ir_x87_operations(
         or not isinstance(original, Mapping)
         or not isinstance(instructions, list)
     ):
-        raise StageAInputError("machine-IR x87 typed replay binding is malformed")
+        raise ToolkitInputError("machine-IR x87 typed replay binding is malformed")
     rva_start = _required_u32(original.get("rva_start"), "machine-IR x87 start RVA")
     rva_end = _required_u32(original.get("rva_end"), "machine-IR x87 end RVA")
     image_base = _required_u32(replay.get("image_base"), "machine-IR x87 image base")
@@ -235,14 +235,14 @@ def _qualified_machine_ir_x87_operations(
         or replay.get("checked_decoder") != _X87_CHECKED_DECODER
         or replay.get("checked_executor") != _X87_CHECKED_EXECUTOR
     ):
-        raise StageAInputError("machine-IR x87 typed replay metadata is unqualified")
+        raise ToolkitInputError("machine-IR x87 typed replay metadata is unqualified")
     micro_ids = replay.get("micro_op_ids")
     if (
         not isinstance(micro_ids, list)
         or len(micro_ids) != len(micro_ops)
         or len(set(str(item) for item in micro_ids)) != len(micro_ids)
     ):
-        raise StageAInputError("machine-IR x87 micro-op inventory is malformed")
+        raise ToolkitInputError("machine-IR x87 micro-op inventory is malformed")
     instruction_by_rva = _instruction_inventory(transfer_id, instructions)
     contract_digest = _required_sha256(
         row.get("contract_sha256"), "machine-IR x87 contract SHA-256"
@@ -251,7 +251,7 @@ def _qualified_machine_ir_x87_operations(
     seen_spans: set[tuple[int, int]] = set()
     for index, raw in enumerate(micro_ops):
         if not isinstance(raw, Mapping):
-            raise StageAInputError(f"machine-IR x87 micro-op {index} is malformed")
+            raise ToolkitInputError(f"machine-IR x87 micro-op {index} is malformed")
         micro_id = _required_string(raw.get("id"), f"machine-IR x87 micro-op {index} id")
         start = _required_u32(
             raw.get("rva_start"), f"machine-IR x87 micro-op {index} start RVA"
@@ -285,7 +285,7 @@ def _qualified_machine_ir_x87_operations(
             or raw.get("physical_state_effect")
             != "defined_by_checked_typed_x87_executor"
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"machine-IR x87 micro-op {index} does not bind its typed instruction"
             )
         seen_spans.add((start, end))
@@ -372,13 +372,13 @@ def _qualified_x87_operations(
 ) -> tuple[NativeX87Operation, ...]:
     fpu = row.get("fpu_state")
     if not isinstance(fpu, Mapping) or fpu.get("model") != _X87_REPLAY_MODEL:
-        raise StageAInputError("x87 state is not an exact native replay obligation")
+        raise ToolkitInputError("x87 state is not an exact native replay obligation")
     if fpu.get("status") != "required":
-        raise StageAInputError("x87 replay obligation status must be required")
-    if fpu.get("authoritative_state_type") != "StageA.X87.PhysicalState":
-        raise StageAInputError("x87 replay does not bind StageA.X87.PhysicalState")
+        raise ToolkitInputError("x87 replay obligation status must be required")
+    if fpu.get("authoritative_state_type") != "SpaghettiExtractor.ISA.X87.PhysicalState":
+        raise ToolkitInputError("x87 replay does not bind SpaghettiExtractor.ISA.X87.PhysicalState")
     if fpu.get("required_fields") != list(_X87_PHYSICAL_FIELDS):
-        raise StageAInputError("x87 replay physical-field inventory changed")
+        raise ToolkitInputError("x87 replay physical-field inventory changed")
     missing = fpu.get("missing_or_invalid_fields")
     if (
         not isinstance(missing, list)
@@ -386,18 +386,18 @@ def _qualified_x87_operations(
         or any(item not in _X87_PHYSICAL_FIELDS for item in missing)
         or len(set(item for item in missing if isinstance(item, str))) != len(missing)
     ):
-        raise StageAInputError("x87 replay missing-field inventory is malformed")
+        raise ToolkitInputError("x87 replay missing-field inventory is malformed")
     unexpected = [
         field for field in _X87_PHYSICAL_FIELDS
         if field != "status" and field in fpu
     ]
     if unexpected:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "x87 replay contains unqualified physical fields: " + ", ".join(unexpected)
         )
     replay = fpu.get("replay")
     if not isinstance(replay, Mapping):
-        raise StageAInputError("x87 replay binding must be an object")
+        raise ToolkitInputError("x87 replay binding must be an object")
     expected_literals = {
         "format": _X87_REPLAY_FORMAT,
         "checked_decoder": _X87_CHECKED_DECODER,
@@ -407,22 +407,22 @@ def _qualified_x87_operations(
     }
     for field, expected in expected_literals.items():
         if replay.get(field) != expected:
-            raise StageAInputError(f"x87 replay {field} must be {expected!r}")
+            raise ToolkitInputError(f"x87 replay {field} must be {expected!r}")
     original = row.get("original")
     if not isinstance(original, Mapping):
-        raise StageAInputError("x87 replay has no original span")
+        raise ToolkitInputError("x87 replay has no original span")
     rva_start = _required_u32(original.get("rva_start"), "x87 original start")
     rva_end = _required_u32(original.get("rva_end"), "x87 original end")
     if rva_end <= rva_start:
-        raise StageAInputError("x87 replay span must be nonempty")
+        raise ToolkitInputError("x87 replay span must be nonempty")
     if replay.get("rva_start") != rva_start or replay.get("rva_end") != rva_end:
-        raise StageAInputError("x87 replay span differs from its transfer")
+        raise ToolkitInputError("x87 replay span differs from its transfer")
     raw_hex = replay.get("bytes")
     if not isinstance(raw_hex, str) or not _HEX_BYTES.fullmatch(raw_hex):
-        raise StageAInputError("x87 replay bytes must be canonical hexadecimal")
+        raise ToolkitInputError("x87 replay bytes must be canonical hexadecimal")
     raw = bytes.fromhex(raw_hex)
     if len(raw) != rva_end - rva_start:
-        raise StageAInputError("x87 replay bytes do not cover the transfer")
+        raise ToolkitInputError("x87 replay bytes do not cover the transfer")
     transfer_digest = _required_sha256(
         row.get("instruction_bytes_sha256"), "x87 transfer instruction digest"
     )
@@ -430,7 +430,7 @@ def _qualified_x87_operations(
         replay.get("bytes_sha256"), "x87 replay instruction digest"
     )
     if sha256_bytes(raw) != replay_digest or replay_digest != transfer_digest:
-        raise StageAInputError("x87 replay digest does not bind the transfer bytes")
+        raise ToolkitInputError("x87 replay digest does not bind the transfer bytes")
     contract_digest = _required_sha256(
         row.get("contract_sha256"), "x87 transfer contract digest"
     )
@@ -444,14 +444,14 @@ def _qualified_x87_operations(
         or not replay_instructions
         or len(outer_instructions) != len(replay_instructions)
     ):
-        raise StageAInputError("x87 replay instruction inventories differ")
+        raise ToolkitInputError("x87 replay instruction inventories differ")
     cursor = rva_start
     reconstructed = bytearray()
     result: list[NativeX87Operation] = []
     schedule_records: list[Any] | None = None
     if schedule is not None:
         if not isinstance(schedule, Mapping):
-            raise StageAInputError("x87 instruction effect schedule must be an object")
+            raise ToolkitInputError("x87 instruction effect schedule must be an object")
         if (
             schedule.get("format")
             != INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
@@ -461,17 +461,17 @@ def _qualified_x87_operations(
             or schedule.get("blockers") != []
             or row.get("instruction_effect_schedule") != schedule
         ):
-            raise StageAInputError("x87 instruction effect schedule is not qualified")
+            raise ToolkitInputError("x87 instruction effect schedule is not qualified")
         _verify_embedded_sha256(schedule, "schedule_sha256", "x87 effect schedule")
         raw_records = schedule.get("records")
         if not isinstance(raw_records, list) or len(raw_records) != len(replay_instructions):
-            raise StageAInputError("x87 instruction effect schedule coverage differs")
+            raise ToolkitInputError("x87 instruction effect schedule coverage differs")
         schedule_records = raw_records
     for index, (outer, bound) in enumerate(
         zip(outer_instructions, replay_instructions, strict=True)
     ):
         if not isinstance(outer, Mapping) or not isinstance(bound, Mapping):
-            raise StageAInputError(f"x87 replay instruction {index} is malformed")
+            raise ToolkitInputError(f"x87 replay instruction {index} is malformed")
         instruction_rva = _required_u32(bound.get("rva"), "x87 instruction RVA")
         size = bound.get("size")
         encoded_hex = bound.get("bytes")
@@ -482,10 +482,10 @@ def _qualified_x87_operations(
             or not isinstance(encoded_hex, str)
             or not _HEX_BYTES.fullmatch(encoded_hex)
         ):
-            raise StageAInputError(f"x87 replay instruction {index} is malformed")
+            raise ToolkitInputError(f"x87 replay instruction {index} is malformed")
         encoded = bytes.fromhex(encoded_hex)
         if len(encoded) != size or instruction_rva != cursor:
-            raise StageAInputError("x87 replay instructions are not exact and contiguous")
+            raise ToolkitInputError("x87 replay instructions are not exact and contiguous")
         if any(
             outer.get(field) != value
             for field, value in {
@@ -494,17 +494,17 @@ def _qualified_x87_operations(
                 "bytes": encoded_hex,
             }.items()
         ):
-            raise StageAInputError("x87 replay outer instruction binding differs")
+            raise ToolkitInputError("x87 replay outer instruction binding differs")
         is_x87 = _x87_singleton_candidate(encoded, outer)
         if schedule_records is None:
             if not is_x87:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     "mixed ordinary/x87 replay requires instruction-ordered lowering"
                 )
         else:
             record = schedule_records[index]
             if not isinstance(record, Mapping):
-                raise StageAInputError(f"x87 schedule record {index} is malformed")
+                raise ToolkitInputError(f"x87 schedule record {index} is malformed")
             _verify_embedded_sha256(
                 record, "record_sha256", f"x87 schedule record {index}"
             )
@@ -516,7 +516,7 @@ def _qualified_x87_operations(
                 or record.get("bytes_sha256") != sha256_bytes(encoded)
                 or record.get("transfer_bytes_sha256") != transfer_digest
             ):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"x87 schedule record {index} differs from exact instruction bytes"
                 )
             expected_class = (
@@ -524,7 +524,7 @@ def _qualified_x87_operations(
                 if is_x87 else "ordinary_symbolic_instruction"
             )
             if record.get("instruction_class") != expected_class:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"x87 schedule record {index} classification differs"
                 )
             classification = record.get("classification")
@@ -534,7 +534,7 @@ def _qualified_x87_operations(
                 != "proposal_requires_lean_exact_byte_replay"
                 or classification.get("proof_authority") is not False
             ):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"x87 schedule record {index} lacks checked classification"
                 )
         if is_x87:
@@ -643,7 +643,7 @@ def _qualified_x87_operations(
         reconstructed.extend(encoded)
         cursor += size
     if cursor != rva_end or bytes(reconstructed) != raw:
-        raise StageAInputError("x87 replay instructions do not reconstruct the span")
+        raise ToolkitInputError("x87 replay instructions do not reconstruct the span")
     if schedule_records is None:
         outcome = row.get("outcome")
         if (
@@ -651,7 +651,7 @@ def _qualified_x87_operations(
             or outcome.get("kind") != "fallthrough"
             or outcome.get("target_rva") != rva_end
         ):
-            raise StageAInputError("x87 replay transfer is not an exact fallthrough")
+            raise ToolkitInputError("x87 replay transfer is not an exact fallthrough")
     return tuple(result)
 
 
@@ -667,7 +667,7 @@ def _verify_embedded_sha256(
         ).encode("ascii")
     )
     if actual != expected:
-        raise StageAInputError(f"{context} SHA-256 mismatch")
+        raise ToolkitInputError(f"{context} SHA-256 mismatch")
 
 
 def _x87_singleton_candidate(
@@ -734,13 +734,13 @@ def _parse_pe_base_relocation_evidence(
         "image_base", "relocations"
     }
     if set(value) != expected_fields:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "PE base-relocation evidence fields do not match the v1 schema"
         )
     if value.get("format") != PE32_BASE_RELOCATION_EVIDENCE_FORMAT:
-        raise StageAInputError("unsupported PE base-relocation evidence format")
+        raise ToolkitInputError("unsupported PE base-relocation evidence format")
     if value.get("complete") is not True:
-        raise StageAInputError("PE base-relocation evidence must be complete")
+        raise ToolkitInputError("PE base-relocation evidence must be complete")
     pe_sha256 = _required_sha256(
         value.get("pe_sha256"), "PE base-relocation evidence PE SHA-256"
     )
@@ -753,14 +753,14 @@ def _parse_pe_base_relocation_evidence(
     )
     raw_rows = value.get("relocations")
     if not isinstance(raw_rows, list):
-        raise StageAInputError("PE base-relocation evidence relocations must be a list")
+        raise ToolkitInputError("PE base-relocation evidence relocations must be a list")
     rows: list[_PEBaseRelocation] = []
     seen_sources: set[int] = set()
     for index, raw in enumerate(raw_rows):
         if not isinstance(raw, Mapping) or set(raw) != {
             "source_rva", "type", "kind", "width", "preferred_value"
         }:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"PE base relocation {index} fields do not match the v1 schema"
             )
         source_rva = _required_u32(
@@ -773,7 +773,7 @@ def _parse_pe_base_relocation_evidence(
             raw.get("width"), f"PE base relocation {index} width"
         )
         if width == 0:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"PE base relocation {index} width must be nonzero"
             )
         preferred_value = _required_u32(
@@ -782,11 +782,11 @@ def _parse_pe_base_relocation_evidence(
         )
         kind = raw.get("kind")
         if (relocation_type == 3) != (kind == "highlow"):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"PE base relocation {index} type/kind disagree"
             )
         if source_rva in seen_sources:
-            raise StageAInputError("PE base-relocation evidence has duplicate sources")
+            raise ToolkitInputError("PE base-relocation evidence has duplicate sources")
         seen_sources.add(source_rva)
         rows.append(_PEBaseRelocation(
             source_rva=source_rva,
@@ -797,7 +797,7 @@ def _parse_pe_base_relocation_evidence(
     rows.sort(key=lambda item: item.source_rva)
     for previous, current in zip(rows, rows[1:]):
         if current.source_rva < previous.source_rva + previous.width:
-            raise StageAInputError("PE base-relocation evidence ranges overlap")
+            raise ToolkitInputError("PE base-relocation evidence ranges overlap")
     return _PEBaseRelocationEvidence(
         pe_sha256=pe_sha256,
         static_program_contract_sha256=static_program_contract_sha256,
@@ -810,12 +810,12 @@ def _callback_spec(
     value: int | Mapping[str, Any], index: int
 ) -> tuple[int, str, int]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"callback {index} is only an RVA and has no checked ABI kind"
         )
     expected_fields = {"rva", "kind", "stack_cleanup_bytes"}
     if set(value) != expected_fields:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"callback {index} must contain exactly {sorted(expected_fields)}"
         )
     rva = _required_u32(value.get("rva"), f"callback {index} RVA")
@@ -826,12 +826,12 @@ def _callback_spec(
         or not isinstance(cleanup, int)
         or not 0 <= cleanup <= 0xFFFF
     ):
-        raise StageAInputError(f"callback {index} cleanup must be a uint16")
+        raise ToolkitInputError(f"callback {index} cleanup must be a uint16")
     if kind == "tls_callback":
         if cleanup != 12:
-            raise StageAInputError("PE32 TLS callbacks require stdcall cleanup of 12 bytes")
+            raise ToolkitInputError("PE32 TLS callbacks require stdcall cleanup of 12 bytes")
     elif kind != "generic_callback":
-        raise StageAInputError(
+        raise ToolkitInputError(
             "callback kind must be tls_callback or generic_callback"
         )
     return rva, kind, cleanup
@@ -977,10 +977,10 @@ def _instruction_inventory(
     result: dict[int, dict[str, Any]] = {}
     for index, instruction in enumerate(instructions):
         if not isinstance(instruction, dict):
-            raise StageAInputError(f"{transfer_id} instruction {index} must be an object")
+            raise ToolkitInputError(f"{transfer_id} instruction {index} must be an object")
         rva = _required_u32(instruction.get("rva"), f"{transfer_id} instruction RVA")
         if rva in result:
-            raise StageAInputError(f"{transfer_id} has duplicate instruction RVA {rva:#x}")
+            raise ToolkitInputError(f"{transfer_id} has duplicate instruction RVA {rva:#x}")
         result[rva] = instruction
     return result
 
@@ -990,25 +990,25 @@ def _read_jsonl_objects(path: Path, label: str) -> list[dict[str, Any]]:
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError as exc:
-        raise StageAInputError(f"cannot read {label}: {path}") from exc
+        raise ToolkitInputError(f"cannot read {label}: {path}") from exc
     for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
             row = json.loads(line)
         except json.JSONDecodeError as exc:
-            raise StageAInputError(f"invalid {label} line {line_number}: {exc}") from exc
+            raise ToolkitInputError(f"invalid {label} line {line_number}: {exc}") from exc
         if not isinstance(row, dict):
-            raise StageAInputError(f"{label} line {line_number} must be an object")
+            raise ToolkitInputError(f"{label} line {line_number} must be an object")
         result.append(row)
     if not result:
-        raise StageAInputError(f"{label} is empty")
+        raise ToolkitInputError(f"{label} is empty")
     return result
 
 
 def _required_string(value: Any, field: str) -> str:
     if not isinstance(value, str) or not value:
-        raise StageAInputError(f"{field} must be a non-empty string")
+        raise ToolkitInputError(f"{field} must be a non-empty string")
     return value
 
 
@@ -1017,22 +1017,22 @@ def _required_portable_identity(value: Any, field: str) -> str:
     try:
         encoded = text.encode("ascii")
     except UnicodeEncodeError as exc:
-        raise StageAInputError(f"{field} must be printable ASCII") from exc
+        raise ToolkitInputError(f"{field} must be printable ASCII") from exc
     if any(byte < 0x20 or byte > 0x7E for byte in encoded):
-        raise StageAInputError(f"{field} must be printable ASCII")
+        raise ToolkitInputError(f"{field} must be printable ASCII")
     return text
 
 
 def _required_sha256(value: Any, field: str) -> str:
     text = _required_string(value, field)
     if _SHA256.fullmatch(text) is None:
-        raise StageAInputError(f"{field} must be a lowercase SHA-256")
+        raise ToolkitInputError(f"{field} must be a lowercase SHA-256")
     return text
 
 
 def _required_u32(value: Any, field: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value < 2**32:
-        raise StageAInputError(f"{field} must be a 32-bit unsigned integer")
+        raise ToolkitInputError(f"{field} must be a 32-bit unsigned integer")
     return value
 
 

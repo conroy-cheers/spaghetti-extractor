@@ -88,7 +88,7 @@ class ReconstructionIRMaterializationModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             original = Path(temporary) / "original.exe"
             original.write_bytes(pe32_image(bytes(image), virtual_size=len(image)))
-            binary = _parse_stage_a_pe(original)
+            binary = parse_pe_image(original)
             try:
                 retained, classification, issues, recoveries = (
                     _classify_executable_data_before_control(
@@ -174,7 +174,7 @@ class ReconstructionIRMaterializationModelTests(unittest.TestCase):
             outcome={"kind": "indirect_jump", "target": _expr_register("eax")},
         )
         profile = {
-            "format": "stage-a-indirect-target-profile-v1",
+            "format": "spaghetti-extractor-indirect-target-profile-v1",
             "id": "pe32-static-cutpoints-and-paired-callables-v1",
             "status": "accepted_assumption",
             "internal_target_domain": "all_checked_machine_ir_unit_starts",

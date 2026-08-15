@@ -17,7 +17,7 @@ from ..external.contracts import (
 from ..util import sha256_bytes
 from .runtime_model import (
     NativeImplementationDispatch,
-    StageBNativeRuntimeError,
+    CandidateRuntimeError,
     _InterpreterTransferBinding,
     _SHA256_RE,
 )
@@ -42,7 +42,7 @@ def _canonical_json_sha256(value: Any) -> str:
             value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         ).encode("ascii")
     except (TypeError, UnicodeEncodeError) as exc:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native receipt is not canonical JSON"
         ) from exc
     return sha256_bytes(encoded)
@@ -78,7 +78,7 @@ def _validate_implementation_dispatch_receipt(
         or raw.get("format") != _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT
         or raw.get("semantic_input_sha256") != state_machine_sha256
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine implementation dispatch receipt is not canonically bound"
         )
     body = {
@@ -92,11 +92,11 @@ def _validate_implementation_dispatch_receipt(
         )
         != _canonical_json_sha256(body)
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine implementation dispatch receipt hash is invalid"
         )
     if _required_list(raw.get("blockers"), "implementation dispatch blockers"):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "ready native-engine plan has incomplete implementation dispatch"
         )
     policy = _required_object(
@@ -112,7 +112,7 @@ def _validate_implementation_dispatch_receipt(
         "acceptance_authority": False,
     }
     if policy != expected_policy:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine implementation dispatch policy is unsupported"
         )
 
@@ -127,7 +127,7 @@ def _validate_implementation_dispatch_receipt(
         "confirmed_unreachable_unit_ids",
         "frontiers",
     }:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "implementation dispatch reachability fields are not canonical"
         )
     roots = _required_list(reachability.get("roots"), "implementation roots")
@@ -157,7 +157,7 @@ def _validate_implementation_dispatch_receipt(
         or set(potential) & set(unreachable)
         or any(not isinstance(frontier, Mapping) for frontier in frontiers)
     ):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "implementation dispatch rooted reachability is malformed"
         )
     reachability_status = reachability.get("status")
@@ -172,11 +172,11 @@ def _validate_implementation_dispatch_receipt(
             or frontiers
             or _SHA256_RE.fullmatch(str(manifest_sha256 or "")) is None
         ):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "complete implementation dispatch lacks rooted manifest evidence"
             )
     else:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "ready native-engine implementation reachability is incomplete"
         )
 
@@ -184,7 +184,7 @@ def _validate_implementation_dispatch_receipt(
     active_unit_ids = {binding.unit_id for binding in transfer_bindings}
     partition_unit_ids = set(reachable) | set(unreachable)
     if partition_unit_ids != active_unit_ids:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "implementation reachability does not partition the complete transfer inventory"
         )
     entry_fields = {
@@ -202,7 +202,7 @@ def _validate_implementation_dispatch_receipt(
         "entry_sha256",
     }
     if len(entries) != len(transfer_bindings):
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "implementation dispatch omits or adds interpreter transfers"
         )
     dispatches: list[NativeImplementationDispatch] = []
@@ -212,7 +212,7 @@ def _validate_implementation_dispatch_receipt(
     ):
         entry = _required_object(raw_entry, f"implementation dispatch entry {index}")
         if set(entry) != entry_fields:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "implementation dispatch entry fields are not canonical"
             )
         entry_body = {
@@ -225,7 +225,7 @@ def _validate_implementation_dispatch_receipt(
             )
             != _canonical_json_sha256(entry_body)
         ):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "implementation dispatch entry hash is invalid"
             )
         unit_id = _required_string(
@@ -239,7 +239,7 @@ def _validate_implementation_dispatch_receipt(
             f"implementation dispatch entry {index} transfer SHA-256",
         )
         if unit_id != binding.unit_id or rva != binding.rva or unit_id in entry_by_id:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "implementation dispatch is duplicate, reordered, or mismatched"
             )
         reachability_class = entry.get("reachability")
@@ -255,7 +255,7 @@ def _validate_implementation_dispatch_receipt(
             else "unbound"
         )
         if reachability_class != expected_reachability:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "implementation dispatch reachability class is inconsistent"
             )
         implementation_class = entry.get("implementation_class")
@@ -264,23 +264,23 @@ def _validate_implementation_dispatch_receipt(
         component_sha256 = entry.get("component_manifest_sha256")
         component_entry_rva = entry.get("component_entry_rva")
         if entry.get("fallback_on_unimplemented") is not False:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "implementation dispatch permits a second fallback class"
             )
         if implementation_class == "machine_ir_fallback":
             if (
-                entry.get("dispatch_lookup") != "stage_b_program_lookup"
+                entry.get("dispatch_lookup") != "spx_program_lookup"
                 or replacement_id is not None
                 or cluster_id is not None
                 or component_sha256 is not None
                 or component_entry_rva is not None
             ):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "machine-IR fallback dispatch carries portable metadata"
                 )
         elif implementation_class == "selected_portable_component":
-            if entry.get("dispatch_lookup") != "stage_b_region_override_lookup":
-                raise StageBNativeRuntimeError(
+            if entry.get("dispatch_lookup") != "spx_region_override_lookup":
+                raise CandidateRuntimeError(
                     "portable component dispatch uses the wrong lookup"
                 )
             replacement_id = _required_portable_identity(
@@ -293,12 +293,12 @@ def _validate_implementation_dispatch_receipt(
                 component_sha256, "portable component manifest SHA-256"
             )
             if component_entry_rva != rva:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "portable component entry does not bind its own RVA"
                 )
         elif implementation_class == "selected_portable_component_member":
             if entry.get("dispatch_lookup") != "component_entry_subsumed":
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "portable component member uses the wrong dispatch class"
                 )
             replacement_id = _required_portable_identity(
@@ -314,11 +314,11 @@ def _validate_implementation_dispatch_receipt(
                 component_entry_rva, "portable component member entry RVA"
             )
             if component_entry_rva == rva:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "portable component member aliases its boundary entry"
                 )
         else:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "implementation dispatch has an unsupported implementation class"
             )
         dispatch = NativeImplementationDispatch(
@@ -350,7 +350,7 @@ def _validate_implementation_dispatch_receipt(
             raw_target, f"implementation dispatch target {index}"
         )
         if set(target) != target_fields:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "implementation dispatch target fields are not canonical"
             )
         target_body = {
@@ -363,7 +363,7 @@ def _validate_implementation_dispatch_receipt(
             )
             != _canonical_json_sha256(target_body)
         ):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "implementation dispatch target hash is invalid"
             )
         kind = _required_string(
@@ -375,7 +375,7 @@ def _validate_implementation_dispatch_receipt(
             "call_continuation",
             "indirect_internal",
         }:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "implementation dispatch target kind is unsupported"
             )
         source_unit_id = _required_string(
@@ -408,12 +408,12 @@ def _validate_implementation_dispatch_receipt(
             != target_dispatch.rva
             or key in seen_targets
         ):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "implementation target has no unique rooted executable dispatch"
             )
         seen_targets.add(key)
     if reachability_status != "complete" and targets:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "non-closed implementation dispatch contains rooted target claims"
         )
 
@@ -438,7 +438,7 @@ def _validate_implementation_dispatch_receipt(
         "blockers": 0,
     }
     if counts != expected_counts:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "implementation dispatch counts differ from their inventories"
         )
     return dict(raw), tuple(dispatches)
@@ -456,7 +456,7 @@ def _validate_callback_adapter_receipts(
         callback = _required_object(raw, f"native-engine callback ABI {index}")
         rva = _required_u32(callback.get("rva"), "callback ABI RVA")
         if rva in callback_by_rva:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback ABI inventory contains duplicates"
             )
         callback_by_rva[rva] = callback
@@ -479,7 +479,7 @@ def _validate_callback_adapter_receipts(
     for index, raw in enumerate(adapters):
         adapter = _required_object(raw, f"native-engine callback adapter {index}")
         if set(adapter) != expected_adapter_fields:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback adapter fields are not canonical"
             )
         adapter_id = _required_count(adapter.get("id"), "callback adapter id")
@@ -502,10 +502,10 @@ def _validate_callback_adapter_receipts(
             or original_rva != callback_rva
             or adapter.get("matching") != "runtime-image-base-plus-rva"
             or adapter.get("symbol")
-            != f"stage_b_payload_callback_{callback_rva:08x}"
+            != f"spx_payload_callback_{callback_rva:08x}"
             or callback_rva not in callback_by_rva
         ):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback adapter is duplicate or mismatched"
             )
         adapter_keys.add(key)
@@ -532,12 +532,12 @@ def _validate_callback_adapter_receipts(
                 context=f"native-engine external site {site_index}",
             )
         except CheckedExternalSiteContractError as exc:
-            raise StageBNativeRuntimeError(str(exc)) from exc
+            raise CandidateRuntimeError(str(exc)) from exc
         if contract.callback_effect != "explicit":
             continue
         adapter_contract = contract.callback_adapter
         if adapter_contract is None:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "explicit callback contract has no normalized adapter"
             )
         site_id = _required_count(site.get("id"), "external site id")
@@ -552,7 +552,7 @@ def _validate_callback_adapter_receipts(
         )
         key = (site_id, transfer_id, event_index, instruction_rva)
         if key in explicit_sites:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine explicit callback sites are duplicated"
             )
         explicit_sites[key] = (site, contract)
@@ -587,7 +587,7 @@ def _validate_callback_adapter_receipts(
             set(receipt) != expected_receipt_fields
             or receipt.get("format") != _CALLBACK_ADAPTER_RECEIPT_FORMAT
         ):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback adapter receipt fields are not canonical"
             )
         site_key = (
@@ -605,7 +605,7 @@ def _validate_callback_adapter_receipts(
         )
         site_binding = explicit_sites.get(site_key)
         if site_binding is None or site_key in seen_sites:
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback adapter receipt has no unique checked site"
             )
         seen_sites.add(site_key)
@@ -629,13 +629,13 @@ def _validate_callback_adapter_receipts(
             or receipt.get("invocation") != adapter_contract.invocation
             or receipt.get("target_rvas") != list(adapter_contract.target_rvas)
         ):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback adapter receipt differs from its checked contract"
             )
         source = adapter_contract.source
         abi = adapter_contract.abi
         if not isinstance(source, Mapping) or not isinstance(abi, Mapping):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback receipt source or ABI is malformed"
             )
         source_kind = source.get("kind")
@@ -665,7 +665,7 @@ def _validate_callback_adapter_receipts(
                 "nullable": nullable,
             }
         ):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback registration differs from its receipt"
             )
         expected_entries = adapter_by_site.get(
@@ -677,7 +677,7 @@ def _validate_callback_adapter_receipts(
         if raw_entries != expected_entries or [
             entry.get("callback_rva") for entry in expected_entries
         ] != list(adapter_contract.target_rvas):
-            raise StageBNativeRuntimeError(
+            raise CandidateRuntimeError(
                 "native-engine callback receipt adapter inventory is incomplete or extra"
             )
         expected_kind = abi.get("kind")
@@ -688,12 +688,12 @@ def _validate_callback_adapter_receipts(
                 callback.get("kind") != expected_kind
                 or callback.get("stack_cleanup_bytes") != expected_cleanup
             ):
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "native-engine callback receipt ABI differs from its target"
                 )
             adapter_id = int(entry["id"])
             if adapter_id in consumed_adapter_ids:
-                raise StageBNativeRuntimeError(
+                raise CandidateRuntimeError(
                     "native-engine callback adapter is covered by multiple receipts"
                 )
             consumed_adapter_ids.add(adapter_id)
@@ -702,7 +702,7 @@ def _validate_callback_adapter_receipts(
     if seen_sites != set(explicit_sites) or consumed_adapter_ids != {
         int(adapter["id"]) for adapter in normalized_adapters
     }:
-        raise StageBNativeRuntimeError(
+        raise CandidateRuntimeError(
             "native-engine callback adapter receipt coverage is incomplete"
         )
     return tuple(normalized_receipts)

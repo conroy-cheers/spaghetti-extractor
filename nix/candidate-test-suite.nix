@@ -118,7 +118,7 @@ let
           original_binary_executed: false,
           final_authority_required_before_execution: true,
           headless_wine_required: true,
-          divergence_class: "stage-a-or-candidate-toolchain-red-flag"
+          divergence_class: "spaghetti-extractor-or-candidate-toolchain-red-flag"
         }
       }
     ' > "$out/candidate-test-receipt.json"

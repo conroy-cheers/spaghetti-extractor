@@ -24,20 +24,20 @@ from spaghetti_extractor.authority.external_site_records import (
     CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
 )
 from spaghetti_extractor.candidate.interpreter import (
-    write_stage_b_interpreter_package,
+    write_spx_interpreter_package,
 )
-from spaghetti_extractor.candidate.interpreter_model import StageBInterpreterError
+from spaghetti_extractor.candidate.interpreter_model import CandidateInterpreterError
 from spaghetti_extractor.candidate.engine import (
-    write_stage_b_native_engine_package,
+    write_spx_native_engine_package,
 )
 from spaghetti_extractor.candidate.runtime import (
     DEFINEDNESS_USE_FORMAT,
-    StageBNativeRuntimeError,
-    plan_stage_b_native_runtime,
-    write_stage_b_native_runtime_package,
+    CandidateRuntimeError,
+    plan_spx_native_runtime,
+    write_spx_native_runtime_package,
 )
 from spaghetti_extractor.util import sha256_bytes, sha256_file
-from spaghetti_extractor.errors import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 from tests.unit.candidate.native_engine._support import (
     _canonical_external_sites,
     _implementation_manifest,
@@ -65,7 +65,7 @@ def _transfer(rva: int = 0x1000) -> dict[str, object]:
 
 
 def _as_machine_ir(row: dict[str, object]) -> dict[str, object]:
-    if row.get("format") == "stage-a-machine-ir-v2":
+    if row.get("format") == "spaghetti-extractor-machine-ir-v2":
         unit = copy.deepcopy(row)
         original = unit["source"]["original"]
         outcome = unit["semantics"].get("outcome")
@@ -98,7 +98,7 @@ def _as_machine_ir(row: dict[str, object]) -> dict[str, object]:
                 ],
             })
         unit = {
-            "format": "stage-a-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v2",
             "record_kind": "unit",
             "id": row["id"],
             "status": "qualified",
@@ -256,7 +256,7 @@ def _packages(
     )
     interpreter = root / "interpreter"
     engine = root / "engine"
-    write_stage_b_interpreter_package(machine_ir=semantic_input, out=interpreter)
+    write_spx_interpreter_package(machine_ir=semantic_input, out=interpreter)
     canonical_external_sites = root / "canonical-external-sites"
     profiles: tuple[Path, ...] = ()
     if external_profile is not None:
@@ -342,7 +342,7 @@ def _packages(
             artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
             bindings=(),
         ).write(canonical_external_sites, [])
-    write_stage_b_native_engine_package(
+    write_spx_native_engine_package(
         machine_ir=semantic_input,
         machine_ir_manifest=manifest,
         entry_rva=0x1000,
@@ -558,7 +558,7 @@ def _machine_ir_indirect_external_result_rows() -> list[dict[str, object]]:
         "stack_inputs": [],
     }
     return [{
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": "semantic-transfer:typed-00001000",
         "status": "qualified",
@@ -612,7 +612,7 @@ def _write_external_profile(path: Path, *, size_kind: str = "fixed") -> None:
         else {"kind": size_kind, "bytes": 4}
     )
     path.write_text(json.dumps({
-        "format": "stage-a-external-environment-profile-v1",
+        "format": "spaghetti-extractor-external-environment-profile-v1",
         "id": "fixture-external-range-profile-v1",
         "machine_import_call_contracts": [{
             "id": "fixture-commode-range",
@@ -632,7 +632,7 @@ def _write_external_profile(path: Path, *, size_kind: str = "fixed") -> None:
 
 def _write_out_interface_profile(path: Path) -> None:
     path.write_text(json.dumps({
-        "format": "stage-a-external-environment-profile-v1",
+        "format": "spaghetti-extractor-external-environment-profile-v1",
         "id": "fixture-out-interface-profile-v1",
         "machine_import_call_contracts": [{
             "id": "fixture-interface-factory",
@@ -654,7 +654,7 @@ def _write_out_interface_profile(path: Path) -> None:
 
 def _write_sleep_profile(path: Path) -> None:
     path.write_text(json.dumps({
-        "format": "stage-a-external-environment-profile-v1",
+        "format": "spaghetti-extractor-external-environment-profile-v1",
         "id": "fixture-kernel32-sleep-profile-v1",
         "machine_import_call_contracts": [{
             "id": "fixture-kernel32-sleep",
@@ -706,7 +706,7 @@ def _attach_definedness_metadata(
     }:
         witness_policy = "zero"
         choice_source = {
-            "format": "stage-a-definedness-choice-source-v1",
+            "format": "spaghetti-extractor-definedness-choice-source-v1",
             "kind": "noninterfering_zero",
             "slot": slot,
             "undefined_id": undefined_id,
@@ -720,7 +720,7 @@ def _attach_definedness_metadata(
             "width": 32,
         }
         choice_source = {
-            "format": "stage-a-definedness-choice-source-v3",
+            "format": "spaghetti-extractor-definedness-choice-source-v3",
             "kind": "related_machine_input",
             "slot": slot,
             "undefined_id": undefined_id,

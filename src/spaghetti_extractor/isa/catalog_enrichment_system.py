@@ -19,7 +19,7 @@ from .catalog_enrichment_derivation import (
     _resolved,
     _signed32,
     _uint,
-    StageAInputError,
+    ToolkitInputError,
 )
 
 def _derive_system_enrichment(
@@ -44,7 +44,7 @@ def _derive_system_enrichment(
         )
         repeated = row.get("repeated")
         if not isinstance(repeated, bool):
-            raise StageAInputError(f"{context}.repeated must be a boolean")
+            raise ToolkitInputError(f"{context}.repeated must be a boolean")
         condition = (
             {
                 "kind": "register",
@@ -269,7 +269,7 @@ def _derive_system_enrichment(
                 "address": source["address"],
             }
         else:
-            raise StageAInputError(f"{context}.source cannot be immediate")
+            raise ToolkitInputError(f"{context}.source cannot be immediate")
         return _resolved(
             effects=[
                 {
@@ -303,7 +303,7 @@ def _derive_system_enrichment(
                 "address": target_operand["address"],
             }
         else:
-            raise StageAInputError(f"{context}.target cannot be immediate")
+            raise ToolkitInputError(f"{context}.target cannot be immediate")
         effects = [
             _branch_effect(
                 control=(

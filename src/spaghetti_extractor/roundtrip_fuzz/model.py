@@ -7,12 +7,12 @@ from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import json_dumps, sha256_file, write_json
 
 
-ROUNDTRIP_CORPUS_FORMAT = "stage-a-roundtrip-corpus-v2"
-ROUNDTRIP_CASE_FORMAT = "stage-a-roundtrip-case-v2"
+ROUNDTRIP_CORPUS_FORMAT = "spaghetti-extractor-roundtrip-corpus-v2"
+ROUNDTRIP_CASE_FORMAT = "spaghetti-extractor-roundtrip-case-v2"
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _ID_RE = re.compile(r"[a-z0-9](?:[a-z0-9._-]{0,126}[a-z0-9])?")
@@ -49,7 +49,7 @@ class ExpectedDisposition(str, Enum):
 
 def _object(value: Any, context: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     return value
 
 
@@ -64,44 +64,44 @@ def _exact_fields(
             details.append(f"missing fields {missing}")
         if extra:
             details.append(f"unexpected fields {extra}")
-        raise StageAInputError(f"{context} has " + " and ".join(details))
+        raise ToolkitInputError(f"{context} has " + " and ".join(details))
 
 
 def _identifier(value: Any, context: str) -> str:
     if not isinstance(value, str) or _ID_RE.fullmatch(value) is None:
-        raise StageAInputError(f"{context} must be a stable lowercase identifier")
+        raise ToolkitInputError(f"{context} must be a stable lowercase identifier")
     return value
 
 
 def _nonempty_string(value: Any, context: str) -> str:
     if not isinstance(value, str) or not value:
-        raise StageAInputError(f"{context} must be a nonempty string")
+        raise ToolkitInputError(f"{context} must be a nonempty string")
     if any(ord(character) < 0x20 for character in value):
-        raise StageAInputError(f"{context} must not contain control characters")
+        raise ToolkitInputError(f"{context} must not contain control characters")
     return value
 
 
 def _sha256(value: Any, context: str) -> str:
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
-        raise StageAInputError(f"{context} must be 64 lowercase hex characters")
+        raise ToolkitInputError(f"{context} must be 64 lowercase hex characters")
     return value
 
 
 def _integer(value: Any, context: str, *, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise StageAInputError(f"{context} must be an integer >= {minimum}")
+        raise ToolkitInputError(f"{context} must be an integer >= {minimum}")
     return value
 
 
 def _relative_path(value: Any, context: str) -> str:
     raw = _nonempty_string(value, context)
     if "\\" in raw:
-        raise StageAInputError(f"{context} must use canonical POSIX separators")
+        raise ToolkitInputError(f"{context} must use canonical POSIX separators")
     path = PurePosixPath(raw)
     if path.is_absolute() or raw != path.as_posix() or ".." in path.parts:
-        raise StageAInputError(f"{context} must be a canonical contained path")
+        raise ToolkitInputError(f"{context} must be a canonical contained path")
     if any(part in {"", "."} for part in path.parts):
-        raise StageAInputError(f"{context} must not contain empty or dot components")
+        raise ToolkitInputError(f"{context} must not contain empty or dot components")
     return raw
 
 
@@ -109,7 +109,7 @@ def _string_tuple(
     value: Any, context: str, *, identifiers: bool = False, unique: bool = True,
 ) -> tuple[str, ...]:
     if not isinstance(value, list):
-        raise StageAInputError(f"{context} must be a list")
+        raise ToolkitInputError(f"{context} must be a list")
     result = tuple(
         _identifier(item, f"{context}[{index}]")
         if identifiers
@@ -117,7 +117,7 @@ def _string_tuple(
         for index, item in enumerate(value)
     )
     if unique and len(result) != len(set(result)):
-        raise StageAInputError(f"{context} must not contain duplicates")
+        raise ToolkitInputError(f"{context} must not contain duplicates")
     return result
 
 
@@ -133,7 +133,7 @@ class ArtifactRef:
         _exact_fields(payload, {"role", "path", "sha256", "bytes"}, context)
         role = _identifier(payload["role"], f"{context}.role")
         if role not in _ARTIFACT_ROLES:
-            raise StageAInputError(f"{context}.role is not a supported artifact role")
+            raise ToolkitInputError(f"{context}.role is not a supported artifact role")
         return cls(
             role=role,
             path=_relative_path(payload["path"], f"{context}.path"),
@@ -148,11 +148,11 @@ class ArtifactRef:
         try:
             relative = path.relative_to(root)
         except ValueError as exc:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"round-trip artifact {path} is outside case root {root}"
             ) from exc
         if not path.is_file():
-            raise StageAInputError(f"round-trip artifact is not a file: {path}")
+            raise ToolkitInputError(f"round-trip artifact is not a file: {path}")
         return cls.parse({
             "role": role,
             "path": relative.as_posix(),
@@ -172,13 +172,13 @@ class ArtifactRef:
         root = Path(root).resolve()
         path = (root / self.path).resolve()
         if root != path and root not in path.parents:
-            raise StageAInputError(f"artifact {self.role} escapes its case root")
+            raise ToolkitInputError(f"artifact {self.role} escapes its case root")
         if not path.is_file():
-            raise StageAInputError(f"artifact {self.role} is missing: {path}")
+            raise ToolkitInputError(f"artifact {self.role} is missing: {path}")
         if path.stat().st_size != self.bytes:
-            raise StageAInputError(f"artifact {self.role} size does not match its binding")
+            raise ToolkitInputError(f"artifact {self.role} size does not match its binding")
         if sha256_file(path) != self.sha256:
-            raise StageAInputError(f"artifact {self.role} hash does not match its binding")
+            raise ToolkitInputError(f"artifact {self.role} hash does not match its binding")
         return path
 
 
@@ -225,7 +225,7 @@ class CaseExpectation:
         try:
             disposition = ExpectedDisposition(payload["disposition"])
         except (TypeError, ValueError) as exc:
-            raise StageAInputError(f"{context}.disposition is unsupported") from exc
+            raise ToolkitInputError(f"{context}.disposition is unsupported") from exc
         witness = payload["witness_family"]
         reason = payload["reason_family"]
         witness_family = (
@@ -236,16 +236,16 @@ class CaseExpectation:
         )
         if disposition is ExpectedDisposition.QUALIFIED:
             if witness_family is not None or reason_family is not None:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{context} qualified expectation cannot name a witness or reason family"
                 )
         elif disposition is ExpectedDisposition.VIOLATED:
             if witness_family is None or reason_family is not None:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{context} violated expectation requires only witness_family"
                 )
         elif witness_family is not None or reason_family is None:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context} incomplete expectation requires only reason_family"
             )
         return cls(
@@ -299,7 +299,7 @@ class CaseManifest:
             "shard",
         }, context)
         if payload["format"] != ROUNDTRIP_CASE_FORMAT:
-            raise StageAInputError("unsupported round-trip case format")
+            raise ToolkitInputError("unsupported round-trip case format")
         expectation_payload = _object(payload["expectation"], f"{context}.expectation")
         expectation = CaseExpectation.parse(
             expectation_payload, context=f"{context}.expectation"
@@ -314,12 +314,12 @@ class CaseManifest:
             )
         )
         if (expectation.disposition is ExpectedDisposition.QUALIFIED) != (mutation is None):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "positive cases must omit mutation and negative cases must declare one"
             )
         raw_artifacts = payload["artifacts"]
         if not isinstance(raw_artifacts, list):
-            raise StageAInputError(f"{context}.artifacts must be a list")
+            raise ToolkitInputError(f"{context}.artifacts must be a list")
         artifacts = tuple(
             ArtifactRef.parse(
                 _object(item, f"{context}.artifacts[{index}]"),
@@ -330,12 +330,12 @@ class CaseManifest:
         roles = [artifact.role for artifact in artifacts]
         paths = [artifact.path for artifact in artifacts]
         if len(roles) != len(set(roles)):
-            raise StageAInputError("round-trip case artifact roles must be unique")
+            raise ToolkitInputError("round-trip case artifact roles must be unique")
         if len(paths) != len(set(paths)):
-            raise StageAInputError("round-trip case artifact paths must be unique")
+            raise ToolkitInputError("round-trip case artifact paths must be unique")
         missing_roles = sorted(_REQUIRED_CASE_ARTIFACT_ROLES - set(roles))
         if missing_roles:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"round-trip case is missing required artifacts {missing_roles}"
             )
         declared_violation_roles = {"violation_witness"} & set(roles)
@@ -343,7 +343,7 @@ class CaseManifest:
             expectation.disposition is not ExpectedDisposition.VIOLATED
             and declared_violation_roles
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "only expected-violated cases may declare violation evidence"
             )
         semantic_program_sha256 = _sha256(
@@ -354,14 +354,14 @@ class CaseManifest:
             artifact for artifact in artifacts if artifact.role == "semantic_program"
         )
         if semantic_artifact.sha256 != semantic_program_sha256:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "semantic program hash does not match its artifact binding"
             )
         replay = _string_tuple(
             payload["replay"], f"{context}.replay", unique=False
         )
         if not replay:
-            raise StageAInputError("round-trip case replay command must not be empty")
+            raise ToolkitInputError("round-trip case replay command must not be empty")
         return cls(
             id=_identifier(payload["id"], f"{context}.id"),
             semantic_program_sha256=semantic_program_sha256,
@@ -409,7 +409,7 @@ class CaseManifest:
     def artifact(self, role: str) -> ArtifactRef:
         matches = [artifact for artifact in self.artifacts if artifact.role == role]
         if len(matches) != 1:
-            raise StageAInputError(f"round-trip case has no unique {role} artifact")
+            raise ToolkitInputError(f"round-trip case has no unique {role} artifact")
         return matches[0]
 
     def verify_artifacts(self, root: Path) -> dict[str, Path]:
@@ -537,10 +537,10 @@ class CorpusManifest:
             "shard_count",
         }, context)
         if payload["format"] != ROUNDTRIP_CORPUS_FORMAT:
-            raise StageAInputError("unsupported round-trip corpus format")
+            raise ToolkitInputError("unsupported round-trip corpus format")
         raw_cases = payload["cases"]
         if not isinstance(raw_cases, list) or not raw_cases:
-            raise StageAInputError("round-trip corpus cases must be a nonempty list")
+            raise ToolkitInputError("round-trip corpus cases must be a nonempty list")
         cases = tuple(
             CorpusCaseRef.parse(
                 _object(item, f"{context}.cases[{index}]"),
@@ -551,10 +551,10 @@ class CorpusManifest:
         ids = [case.id for case in cases]
         paths = [case.path for case in cases]
         if len(ids) != len(set(ids)) or len(paths) != len(set(paths)):
-            raise StageAInputError("round-trip corpus case ids and paths must be unique")
+            raise ToolkitInputError("round-trip corpus case ids and paths must be unique")
         shard_count = _integer(payload["shard_count"], f"{context}.shard_count", minimum=1)
         if any(case.shard >= shard_count for case in cases):
-            raise StageAInputError("round-trip corpus case shard is out of range")
+            raise ToolkitInputError("round-trip corpus case shard is out of range")
         return cls(
             generator_version=_nonempty_string(
                 payload["generator_version"], f"{context}.generator_version"
@@ -596,14 +596,14 @@ class CorpusManifest:
         for reference in self.cases:
             path = (root / reference.path).resolve()
             if root != path and root not in path.parents:
-                raise StageAInputError(f"round-trip case {reference.id} escapes corpus root")
+                raise ToolkitInputError(f"round-trip case {reference.id} escapes corpus root")
             if not path.is_file() or sha256_file(path) != reference.sha256:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"round-trip case {reference.id} manifest binding does not match"
                 )
             case = load_case_manifest(path)
             if case.id != reference.id or case.shard != reference.shard:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"round-trip case {reference.id} identity does not match its reference"
                 )
             case_root = path.parent
@@ -617,7 +617,7 @@ class CorpusManifest:
             ExpectedDisposition.INCOMPLETE: expected.incomplete_cases,
         }
         if dispositions != observed:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "round-trip corpus expected counts do not match case expectations"
             )
         return tuple(loaded)
@@ -653,7 +653,7 @@ def _load_json_object(path: Path, context: str) -> Mapping[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read {context} {path}: {exc}") from exc
+        raise ToolkitInputError(f"cannot read {context} {path}: {exc}") from exc
     return _object(payload, context)
 
 

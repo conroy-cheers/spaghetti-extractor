@@ -649,7 +649,7 @@ class SemanticComponentTests(unittest.TestCase):
 
     def _linked_islands(self) -> dict[str, object]:
         core: dict[str, object] = {
-            "format": "stage-b-linked-island-manifest-v1",
+            "format": "spaghetti-extractor-linked-island-manifest-v1",
             "status": "incomplete",
             "executes_original_binary": False,
             "bindings": {

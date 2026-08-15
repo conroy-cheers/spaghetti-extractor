@@ -12,12 +12,8 @@ from ...extraction.executable_classification import (
     _instruction_report,
     _resolved_branch_target,
 )
-from ...pe32.stage_binary import (
-    BlockSide,
-    StageABinary,
-    _executable_section_for_rva,
-    _section_for_rva,
-)
+from ...pe32.model import BlockSide, ParsedPEImage
+from ...pe32.queries import executable_section_for_rva, section_for_rva
 from ...util import sha256_bytes
 from .instruction import (
     _abi_mem_operand_report,
@@ -30,7 +26,7 @@ from .support import (
     _range_report,
 )
 
-def _abi_switch_contracts(binary: StageABinary, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
+def _abi_switch_contracts(binary: ParsedPEImage, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
     contracts: list[dict[str, Any]] = []
     for insn in instructions:
         mnemonic = str(insn.mnemonic)
@@ -57,7 +53,7 @@ def _abi_switch_contracts(binary: StageABinary, block: BlockSide, instructions: 
         )
     return contracts
 
-def _abi_direct_refptr_transfers(binary: StageABinary, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
+def _abi_direct_refptr_transfers(binary: ParsedPEImage, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
     transfers: list[dict[str, Any]] = []
     for insn in instructions:
         mnemonic = str(insn.mnemonic)
@@ -70,7 +66,7 @@ def _abi_direct_refptr_transfers(binary: StageABinary, block: BlockSide, instruc
     return transfers
 
 def _abi_refptr_direct_transfer(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     block: BlockSide,
     insn: Any,
     addressing: dict[str, Any],
@@ -89,13 +85,13 @@ def _abi_refptr_direct_transfer(
         "block": _range_report(block),
         "instruction": _instruction_report(binary, insn),
         "pointer_rva": pointer_rva,
-        "pointer_section": _abi_section_report(section) if (section := _section_for_rva(binary, pointer_rva)) is not None else None,
+        "pointer_section": _abi_section_report(section) if (section := section_for_rva(binary, pointer_rva)) is not None else None,
         "target_rva": target,
-        "target_section": _abi_section_report(section) if (section := _section_for_rva(binary, target)) is not None else None,
-        "normalization": "candidate may cover this with an equivalent direct branch when the refptr target is resolved by Stage A",
+        "target_section": _abi_section_report(section) if (section := section_for_rva(binary, target)) is not None else None,
+        "normalization": "the immutable reference pointer resolves to this direct target",
     }
 
-def _abi_direct_control_transfers(binary: StageABinary, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
+def _abi_direct_control_transfers(binary: ParsedPEImage, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:
     transfers: list[dict[str, Any]] = []
     for insn in instructions:
         mnemonic = str(insn.mnemonic)
@@ -111,13 +107,13 @@ def _abi_direct_control_transfers(binary: StageABinary, block: BlockSide, instru
                 "block": _range_report(block),
                 "instruction": _instruction_report(binary, insn),
                 "target_rva": target,
-                "target_section": _abi_section_report(section) if (section := _section_for_rva(binary, target)) is not None else None,
+                "target_section": _abi_section_report(section) if (section := section_for_rva(binary, target)) is not None else None,
             }
         )
     return transfers
 
 def _abi_indexed_jump_table_contract(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     block: BlockSide,
     instructions: list[Any],
     insn: Any,
@@ -142,7 +138,7 @@ def _abi_indexed_jump_table_contract(
             addressing,
             "jump-table displacement is not an in-image table address",
         )
-    table_section = _section_for_rva(binary, table_rva)
+    table_section = section_for_rva(binary, table_rva)
     if table_section is None or not table_section.readable:
         return _abi_incomplete_indexed_jump_table_contract(
             binary,
@@ -192,7 +188,7 @@ def _abi_indexed_jump_table_contract(
         table_bytes.extend(raw)
         target_va = int.from_bytes(raw, "little")
         target_rva = _abi_value_to_rva(binary, target_va)
-        target_section = _executable_section_for_rva(binary, target_rva) if target_rva is not None else None
+        target_section = executable_section_for_rva(binary, target_rva) if target_rva is not None else None
         if target_rva is None or target_section is None:
             return _abi_incomplete_indexed_jump_table_contract(
                 binary,
@@ -254,7 +250,7 @@ def _abi_indexed_jump_table_contract(
     }
 
 def _abi_incomplete_indexed_jump_table_contract(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     block: BlockSide,
     insn: Any,
     addressing: dict[str, Any],
@@ -284,7 +280,7 @@ def _abi_incomplete_indexed_jump_table_contract(
     return result
 
 def _abi_jump_table_index_bounds(
-    binary: StageABinary,
+    binary: ParsedPEImage,
     instructions: list[Any],
     insn: Any,
     index_register: str,

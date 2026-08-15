@@ -5,12 +5,12 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from ..isa.conformance_nix import stage_a_check_isa_conformance_nix
+from ..isa.conformance_nix import spx_check_isa_conformance_nix
 from .common import Handler, path_argument
 
 
 def _run_isa_conformance_nix(args: argparse.Namespace) -> dict[str, Any]:
-    return stage_a_check_isa_conformance_nix(
+    return spx_check_isa_conformance_nix(
         corpus=args.corpus,
         backend=args.backend,
         out=args.out,
@@ -23,7 +23,7 @@ def _run_isa_conformance_nix(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name == "stage-a-check-isa-conformance":
+    if name == "isa-check-conformance":
         path_argument(command, "corpus", required=True)
         command.add_argument(
             "--backend", choices=("lean", "unicorn", "bochs"), required=True

@@ -18,7 +18,7 @@ class ISAConformanceBochsIntegrationTests(unittest.TestCase):
         case["profile"]["cpu"] = "i686"
         corpus = parse_isa_conformance_corpus(
             {
-                "format": "stage-a-isa-conformance-corpus-v1",
+                "format": "spaghetti-extractor-isa-conformance-corpus-v1",
                 "id": "bochs-i686-profile-integration-v1",
                 "cases": [case],
             }
@@ -115,7 +115,7 @@ class ISAConformanceBochsIntegrationTests(unittest.TestCase):
             case["profile"]["cpu"] = "i686"
         corpus = parse_isa_conformance_corpus(
             {
-                "format": "stage-a-isa-conformance-corpus-v1",
+                "format": "spaghetti-extractor-isa-conformance-corpus-v1",
                 "id": "bochs-x87-state-integration-v1",
                 "cases": cases,
             }
@@ -148,7 +148,6 @@ class ISAConformanceBochsIntegrationTests(unittest.TestCase):
             bytes(one),
         )
         self.assertFalse(report.trust.proof_authority)
-        self.assertFalse(report.trust.closes_stage_a_proof)
 
     def test_divide_success_and_faults_recover_in_one_batch(self):
         divisor_memory = [
@@ -202,7 +201,7 @@ class ISAConformanceBochsIntegrationTests(unittest.TestCase):
         ]
         corpus = parse_isa_conformance_corpus(
             {
-                "format": "stage-a-isa-conformance-corpus-v1",
+                "format": "spaghetti-extractor-isa-conformance-corpus-v1",
                 "id": "bochs-divide-error-integration-v1",
                 "cases": cases,
             }
@@ -230,7 +229,6 @@ class ISAConformanceBochsIntegrationTests(unittest.TestCase):
             ["divide_error", "none", "divide_error", "none"],
         )
         self.assertFalse(report.trust.proof_authority)
-        self.assertFalse(report.trust.closes_stage_a_proof)
 
     def test_cpl3_fs_and_repeat_execution_are_observed_without_special_cases(self):
         fs = {"selector": 0x3B, "base": 0x00080000}
@@ -341,7 +339,7 @@ class ISAConformanceBochsIntegrationTests(unittest.TestCase):
         ]
         corpus = parse_isa_conformance_corpus(
             {
-                "format": "stage-a-isa-conformance-corpus-v1",
+                "format": "spaghetti-extractor-isa-conformance-corpus-v1",
                 "id": "bochs-cpl3-fs-repeat-integration-v1",
                 "cases": cases,
             }
@@ -362,7 +360,6 @@ class ISAConformanceBochsIntegrationTests(unittest.TestCase):
             },
         )
         self.assertFalse(report.trust.proof_authority)
-        self.assertFalse(report.trust.closes_stage_a_proof)
 
     def test_generic_register_memory_and_branch_cases_execute_fail_closed(self):
         memory_read = [
@@ -555,7 +552,7 @@ class ISAConformanceBochsIntegrationTests(unittest.TestCase):
         ]
         corpus = parse_isa_conformance_corpus(
             {
-                "format": "stage-a-isa-conformance-corpus-v1",
+                "format": "spaghetti-extractor-isa-conformance-corpus-v1",
                 "id": "bochs-reviewed-register-integration-v1",
                 "cases": cases,
             }
@@ -629,7 +626,6 @@ class ISAConformanceBochsIntegrationTests(unittest.TestCase):
             details["faulting-ud2"], "fault_not_implemented_vector_6"
         )
         self.assertFalse(report.trust.proof_authority)
-        self.assertFalse(report.trust.closes_stage_a_proof)
 
 
 if __name__ == "__main__":

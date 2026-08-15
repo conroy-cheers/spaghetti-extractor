@@ -4,28 +4,28 @@ from __future__ import annotations
 
 import argparse
 
-from ..candidate.interpreter import write_stage_b_interpreter_package
-from ..candidate.engine import write_stage_b_native_engine_package
-from ..candidate.runtime import write_stage_b_native_runtime_package
+from ..candidate.interpreter import write_spx_interpreter_package
+from ..candidate.engine import write_spx_native_engine_package
+from ..candidate.runtime import write_spx_native_runtime_package
 from .common import Handler, path_argument
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name == "stage-b-generate-interpreter":
+    if name == "candidate-generate-interpreter":
         path_argument(command, "machine_ir", required=True)
         path_argument(command, "out", required=True)
-        return lambda a: write_stage_b_interpreter_package(
+        return lambda a: write_spx_interpreter_package(
             machine_ir=a.machine_ir,
             out=a.out,
         )
 
-    if name == "stage-b-generate-native-engine":
+    if name == "candidate-generate-engine":
         path_argument(command, "machine_ir", required=True)
         path_argument(command, "machine_ir_manifest", required=True)
         command.add_argument("--entry-rva", type=lambda value: int(value, 0), required=True)
         path_argument(command, "canonical_external_sites", required=True)
         path_argument(command, "out", required=True)
-        return lambda a: write_stage_b_native_engine_package(
+        return lambda a: write_spx_native_engine_package(
             machine_ir=a.machine_ir,
             machine_ir_manifest=a.machine_ir_manifest,
             entry_rva=a.entry_rva,
@@ -33,12 +33,12 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             out=a.out,
         )
 
-    if name == "stage-b-generate-native-runtime":
+    if name == "candidate-generate-runtime":
         path_argument(command, "interpreter_package", required=True)
         path_argument(command, "native_engine_package", required=True)
         path_argument(command, "external_profile")
         path_argument(command, "out", required=True)
-        return lambda a: write_stage_b_native_runtime_package(
+        return lambda a: write_spx_native_runtime_package(
             interpreter_package=a.interpreter_package,
             native_engine_package=a.native_engine_package,
             external_profile=a.external_profile,

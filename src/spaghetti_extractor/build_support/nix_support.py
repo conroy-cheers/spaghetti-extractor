@@ -6,7 +6,8 @@ import os
 import shutil
 from pathlib import Path
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
+from .nix_invocation import BuilderPolicy
 
 
 def nix_executable() -> str:
@@ -15,7 +16,7 @@ def nix_executable() -> str:
     for candidate in candidates:
         if candidate and Path(candidate).is_file() and os.access(candidate, os.X_OK):
             return str(Path(candidate).resolve())
-    raise StageAInputError("cannot find an executable Nix client")
+    raise ToolkitInputError("cannot find an executable Nix client")
 
 
 def find_flake_root(explicit: Path | None = None) -> Path:
@@ -23,19 +24,18 @@ def find_flake_root(explicit: Path | None = None) -> Path:
         root = Path(explicit).resolve()
         if (root / "flake.nix").is_file():
             return root
-        raise StageAInputError(f"not a flake root: {root}")
+        raise ToolkitInputError(f"not a flake root: {root}")
     for start in (Path.cwd(), Path(__file__).resolve()):
         for candidate in (start, *start.parents):
             if (candidate / "flake.nix").is_file():
                 return candidate
-    raise StageAInputError("cannot locate the Spaghetti Extractor flake")
+    raise ToolkitInputError("cannot locate the Spaghetti Extractor flake")
 
 
 def nix_build_expression(
     expression: str,
     *,
-    builders_file: Path | None = None,
-    trusted_public_keys_file: Path | None = None,
+    builder_policy: BuilderPolicy,
 ) -> list[str]:
     command = [
         nix_executable(),
@@ -48,14 +48,5 @@ def nix_build_expression(
         "--expr",
         expression,
     ]
-    if builders_file is not None:
-        command.extend(["--builders", f"@{Path(builders_file).resolve()}"])
-    if trusted_public_keys_file is not None:
-        keys = " ".join(
-            line.strip()
-            for line in Path(trusted_public_keys_file).read_text(encoding="utf-8").splitlines()
-            if line.strip() and not line.lstrip().startswith("#")
-        )
-        if keys:
-            command.extend(["--option", "trusted-public-keys", keys])
+    command.extend(builder_policy.nix_arguments())
     return command

@@ -11,7 +11,7 @@ from hashlib import sha256
 from typing import Any
 
 
-FINITE_U32_DOMAIN_FORMAT = "stage-a-finite-u32-expression-domain-v1"
+FINITE_U32_DOMAIN_FORMAT = "spaghetti-extractor-finite-u32-expression-domain-v1"
 
 _REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 _REGISTER_INDEX = {name: index for index, name in enumerate(_REGISTERS)}

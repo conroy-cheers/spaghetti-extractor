@@ -10,7 +10,7 @@ from .common import Handler, path_argument
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name == "stage-a-inventory-isa":
+    if name == "isa-inventory":
         path_argument(command, "binary", required=True)
         path_argument(command, "inventory", required=True)
         command.add_argument("--scope", choices=("base", "superset"), default="superset")
@@ -19,7 +19,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             binary=a.binary, inventory=a.inventory, scope=a.scope, out=a.out
         )
 
-    if name == "stage-a-enrich-isa-catalog":
+    if name == "isa-enrich-catalog":
         path_argument(command, "proposal", required=True)
         command.add_argument("--timeout-seconds", type=float, default=300.0)
         path_argument(command, "out", required=True)

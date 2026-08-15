@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping, TypeAlias
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from .model import _exact_fields, _identifier, _integer, _nonempty_string, _object
 
 
-ROUNDTRIP_SEMANTIC_PROGRAM_FORMAT = "stage-a-roundtrip-semantic-program-v1"
+ROUNDTRIP_SEMANTIC_PROGRAM_FORMAT = "spaghetti-extractor-roundtrip-semantic-program-v1"
 
 
 class ValueKind(str, Enum):
@@ -30,14 +30,14 @@ class ScalarValue:
         try:
             kind = ValueKind(payload["kind"])
         except (TypeError, ValueError) as exc:
-            raise StageAInputError(f"{context}.kind is unsupported") from exc
+            raise ToolkitInputError(f"{context}.kind is unsupported") from exc
         width = _integer(payload["width"], f"{context}.width", minimum=1)
         if width not in {8, 16, 32}:
-            raise StageAInputError(f"{context}.width must be 8, 16, or 32")
+            raise ToolkitInputError(f"{context}.width must be 8, 16, or 32")
         if kind is ValueKind.CONSTANT:
             value: int | str = _integer(payload["value"], f"{context}.value")
             if value >= 2**width:
-                raise StageAInputError(f"{context}.value does not fit its width")
+                raise ToolkitInputError(f"{context}.value does not fit its width")
         else:
             value = _identifier(payload["value"], f"{context}.value")
             if kind is ValueKind.REGISTER:
@@ -64,7 +64,7 @@ class AdjustStack:
             or not -(2**31) < byte_count < 2**31
             or byte_count % 4 != 0
         ):
-            raise StageAInputError(f"{context}.bytes must be a nonzero aligned delta")
+            raise ToolkitInputError(f"{context}.bytes must be a nonzero aligned delta")
         return cls(bytes=byte_count)
 
     def to_payload(self) -> dict[str, Any]:
@@ -87,13 +87,13 @@ class StoreStack:
             or not -(2**31) < offset < 2**31
             or offset % 4 != 0
         ):
-            raise StageAInputError(f"{context}.offset must be a word-aligned signed value")
+            raise ToolkitInputError(f"{context}.offset must be a word-aligned signed value")
         value = ScalarValue.parse(
             _object(payload["value"], f"{context}.value"),
             context=f"{context}.value",
         )
         if value.width != 32:
-            raise StageAInputError(f"{context}.value must be a 32-bit word")
+            raise ToolkitInputError(f"{context}.value must be a 32-bit word")
         return cls(offset=offset, value=value)
 
     def to_payload(self) -> dict[str, Any]:
@@ -126,10 +126,10 @@ class StackArithmetic:
         offset = _stack_offset(payload["offset"], f"{context}.offset")
         operator = payload["operator"]
         if operator not in {"add", "sub", "xor"}:
-            raise StageAInputError(f"{context}.operator is unsupported")
+            raise ToolkitInputError(f"{context}.operator is unsupported")
         immediate = _integer(payload["immediate"], f"{context}.immediate")
         if immediate >= 2**32:
-            raise StageAInputError(f"{context}.immediate must be a 32-bit word")
+            raise ToolkitInputError(f"{context}.immediate must be a 32-bit word")
         return cls(offset=offset, operator=str(operator), immediate=immediate)
 
     def to_payload(self) -> dict[str, Any]:
@@ -152,7 +152,7 @@ class CompareStack:
         _exact_fields(payload, {"kind", "offset", "immediate"}, context)
         immediate = _integer(payload["immediate"], f"{context}.immediate")
         if immediate >= 2**32:
-            raise StageAInputError(f"{context}.immediate must be a 32-bit word")
+            raise ToolkitInputError(f"{context}.immediate must be a 32-bit word")
         return cls(
             offset=_stack_offset(payload["offset"], f"{context}.offset"),
             immediate=immediate,
@@ -176,7 +176,7 @@ class AssignRegister:
             context=f"{context}.value",
         )
         if value.width != 32:
-            raise StageAInputError(f"{context}.value must be a 32-bit word")
+            raise ToolkitInputError(f"{context}.value must be a 32-bit word")
         return cls(
             register=_register_name(payload["register"], f"{context}.register"),
             value=value,
@@ -204,10 +204,10 @@ class RegisterArithmetic:
         _exact_fields(payload, {"kind", "register", "operator", "immediate"}, context)
         operator = payload["operator"]
         if operator not in {"add", "sub", "xor"}:
-            raise StageAInputError(f"{context}.operator is unsupported")
+            raise ToolkitInputError(f"{context}.operator is unsupported")
         immediate = _integer(payload["immediate"], f"{context}.immediate")
         if immediate >= 2**32:
-            raise StageAInputError(f"{context}.immediate must be a 32-bit word")
+            raise ToolkitInputError(f"{context}.immediate must be a 32-bit word")
         return cls(
             register=_register_name(payload["register"], f"{context}.register"),
             operator=str(operator),
@@ -234,7 +234,7 @@ class CompareRegister:
         _exact_fields(payload, {"kind", "register", "immediate"}, context)
         immediate = _integer(payload["immediate"], f"{context}.immediate")
         if immediate >= 2**32:
-            raise StageAInputError(f"{context}.immediate must be a 32-bit word")
+            raise ToolkitInputError(f"{context}.immediate must be a 32-bit word")
         return cls(
             register=_register_name(payload["register"], f"{context}.register"),
             immediate=immediate,
@@ -272,7 +272,7 @@ def _operation(payload: Mapping[str, Any], *, context: str) -> Operation:
         return RegisterArithmetic.parse(payload, context=context)
     if kind == "compare_register":
         return CompareRegister.parse(payload, context=context)
-    raise StageAInputError(f"{context}.kind is unsupported")
+    raise ToolkitInputError(f"{context}.kind is unsupported")
 
 
 @dataclass(frozen=True)
@@ -307,7 +307,7 @@ class ExternalCall:
         }, context)
         disposition = payload["disposition"]
         if disposition not in {"returns", "terminates"}:
-            raise StageAInputError(f"{context}.disposition is unsupported")
+            raise ToolkitInputError(f"{context}.disposition is unsupported")
         continuation_value = payload["continuation"]
         continuation = (
             None
@@ -315,7 +315,7 @@ class ExternalCall:
             else _identifier(continuation_value, f"{context}.continuation")
         )
         if (disposition == "returns") != (continuation is not None):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context} returning calls require a continuation and terminating calls forbid one"
             )
         return cls(
@@ -357,11 +357,11 @@ class Branch:
         )
         condition = payload["condition"]
         if condition not in {"zero", "nonzero"}:
-            raise StageAInputError(f"{context}.condition is unsupported")
+            raise ToolkitInputError(f"{context}.condition is unsupported")
         true_target = _identifier(payload["true_target"], f"{context}.true_target")
         false_target = _identifier(payload["false_target"], f"{context}.false_target")
         if true_target == false_target:
-            raise StageAInputError(f"{context} branch targets must be distinct")
+            raise ToolkitInputError(f"{context} branch targets must be distinct")
         return cls(str(condition), true_target, false_target)
 
     def to_payload(self) -> dict[str, Any]:
@@ -423,7 +423,7 @@ def _terminator(payload: Mapping[str, Any], *, context: str) -> Terminator:
         return InternalCall.parse(payload, context=context)
     if kind == "return":
         return Return.parse(payload, context=context)
-    raise StageAInputError(f"{context}.kind is unsupported")
+    raise ToolkitInputError(f"{context}.kind is unsupported")
 
 
 @dataclass(frozen=True)
@@ -437,7 +437,7 @@ class SemanticBlock:
         _exact_fields(payload, {"id", "operations", "terminator"}, context)
         operations_payload = payload["operations"]
         if not isinstance(operations_payload, list):
-            raise StageAInputError(f"{context}.operations must be a list")
+            raise ToolkitInputError(f"{context}.operations must be a list")
         operations = tuple(
             _operation(
                 _object(item, f"{context}.operations[{index}]"),
@@ -474,17 +474,17 @@ class StaticObject:
         _exact_fields(payload, {"id", "section", "alignment", "data_base64"}, context)
         section = payload["section"]
         if section not in {"read_only", "writable"}:
-            raise StageAInputError(f"{context}.section is unsupported")
+            raise ToolkitInputError(f"{context}.section is unsupported")
         alignment = _integer(payload["alignment"], f"{context}.alignment", minimum=1)
         if alignment & (alignment - 1) or alignment > 4096:
-            raise StageAInputError(f"{context}.alignment must be a power of two <= 4096")
+            raise ToolkitInputError(f"{context}.alignment must be a power of two <= 4096")
         encoded = _nonempty_string(payload["data_base64"], f"{context}.data_base64")
         try:
             data = base64.b64decode(encoded, validate=True)
         except ValueError as exc:
-            raise StageAInputError(f"{context}.data_base64 is malformed") from exc
+            raise ToolkitInputError(f"{context}.data_base64 is malformed") from exc
         if base64.b64encode(data).decode("ascii") != encoded:
-            raise StageAInputError(f"{context}.data_base64 is not canonical")
+            raise ToolkitInputError(f"{context}.data_base64 is not canonical")
         return cls(
             id=_identifier(payload["id"], f"{context}.id"),
             section=str(section),
@@ -519,13 +519,13 @@ class SemanticProgram:
             "observations", "capabilities",
         }, context)
         if payload["format"] != ROUNDTRIP_SEMANTIC_PROGRAM_FORMAT:
-            raise StageAInputError("unsupported round-trip semantic program format")
+            raise ToolkitInputError("unsupported round-trip semantic program format")
         raw_blocks = payload["blocks"]
         raw_objects = payload["static_objects"]
         if not isinstance(raw_blocks, list) or not raw_blocks:
-            raise StageAInputError("round-trip semantic program blocks must be nonempty")
+            raise ToolkitInputError("round-trip semantic program blocks must be nonempty")
         if not isinstance(raw_objects, list):
-            raise StageAInputError("round-trip semantic program static_objects must be a list")
+            raise ToolkitInputError("round-trip semantic program static_objects must be a list")
         blocks = tuple(
             SemanticBlock.parse(
                 _object(item, f"{context}.blocks[{index}]"),
@@ -543,12 +543,12 @@ class SemanticProgram:
         block_ids = [block.id for block in blocks]
         object_ids = [item.id for item in objects]
         if len(block_ids) != len(set(block_ids)):
-            raise StageAInputError("round-trip semantic block ids must be unique")
+            raise ToolkitInputError("round-trip semantic block ids must be unique")
         if len(object_ids) != len(set(object_ids)):
-            raise StageAInputError("round-trip static object ids must be unique")
+            raise ToolkitInputError("round-trip static object ids must be unique")
         entry = _identifier(payload["entry"], f"{context}.entry")
         if entry not in set(block_ids):
-            raise StageAInputError("round-trip semantic entry does not name a block")
+            raise ToolkitInputError("round-trip semantic entry does not name a block")
         targets: list[str] = []
         static_references: list[str] = []
         for block in blocks:
@@ -575,9 +575,9 @@ class SemanticProgram:
         missing_targets = sorted(set(targets) - set(block_ids))
         missing_objects = sorted(set(static_references) - set(object_ids))
         if missing_targets:
-            raise StageAInputError(f"semantic terminators name missing blocks {missing_targets}")
+            raise ToolkitInputError(f"semantic terminators name missing blocks {missing_targets}")
         if missing_objects:
-            raise StageAInputError(f"semantic values name missing static objects {missing_objects}")
+            raise ToolkitInputError(f"semantic values name missing static objects {missing_objects}")
         observations = _unique_identifiers(payload["observations"], f"{context}.observations")
         capabilities = _unique_identifiers(payload["capabilities"], f"{context}.capabilities")
         return cls(
@@ -603,13 +603,13 @@ class SemanticProgram:
 
 def _unique_identifiers(value: Any, context: str) -> tuple[str, ...]:
     if not isinstance(value, list):
-        raise StageAInputError(f"{context} must be a list")
+        raise ToolkitInputError(f"{context} must be a list")
     result = tuple(
         _identifier(item, f"{context}[{index}]")
         for index, item in enumerate(value)
     )
     if len(result) != len(set(result)):
-        raise StageAInputError(f"{context} must not contain duplicates")
+        raise ToolkitInputError(f"{context} must not contain duplicates")
     return result
 
 
@@ -620,12 +620,12 @@ def _stack_offset(value: Any, context: str) -> int:
         or not -(2**31) < value < 2**31
         or value % 4 != 0
     ):
-        raise StageAInputError(f"{context} must be a word-aligned signed value")
+        raise ToolkitInputError(f"{context} must be a word-aligned signed value")
     return value
 
 
 def _register_name(value: Any, context: str) -> str:
     register = _identifier(value, context)
     if register not in {"eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp"}:
-        raise StageAInputError(f"{context} is not a supported IA-32 register")
+        raise ToolkitInputError(f"{context} is not a supported IA-32 register")
     return register

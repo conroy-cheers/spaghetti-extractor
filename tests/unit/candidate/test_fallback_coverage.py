@@ -9,8 +9,8 @@ from spaghetti_extractor.machine_ir.coverage import (
     FALLBACK_COVERAGE_RECEIPT_FORMAT,
     PORTABLE_SELECTION_V3_FORMAT,
     FallbackCoverageReceiptError,
-    validate_stage_b_fallback_coverage_receipt,
-    write_stage_b_fallback_coverage_receipt,
+    validate_spx_fallback_coverage_receipt,
+    write_spx_fallback_coverage_receipt,
 )
 from spaghetti_extractor.util import sha256_bytes, sha256_file
 
@@ -48,7 +48,7 @@ def _write_portable_selection(
 
 def _unit(identity: str, rva: int, marker: str) -> dict:
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": identity,
         "status": "qualified",
@@ -104,11 +104,11 @@ class _CoverageFixture:
 
     def _write_manifest(self) -> None:
         _write_json(self.manifest, {
-            "format": "stage-a-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v2",
             "counts": {"units": len(self.units)},
             "artifacts": {
                 "machine_ir": {
-                    "format": "stage-a-machine-ir-v2",
+                    "format": "spaghetti-extractor-machine-ir-v2",
                     "path": self.machine_ir.name,
                     "sha256": sha256_file(self.machine_ir),
                 }
@@ -153,7 +153,7 @@ class _CoverageFixture:
             "blocked_transfers": 0,
         }
         _write_json(self.program, {
-            "format": "stage-b-semantic-interpreter-program-v1",
+            "format": "spaghetti-extractor-semantic-interpreter-program-v1",
             "status": "ready",
             "state_machine_sha256": sha256_file(self.machine_ir),
             "counts": counts,
@@ -167,7 +167,7 @@ class _CoverageFixture:
         })
         source = self.interpreter / "state-machine-program.c"
         _write_json(self.package, {
-            "format": "stage-b-semantic-interpreter-package-v1",
+            "format": "spaghetti-extractor-semantic-interpreter-package-v1",
             "status": "ready",
             "machine_ir": {
                 "path": self.machine_ir.name,
@@ -198,7 +198,7 @@ class _CoverageFixture:
         })
 
     def write_coverage(self, replacements: Path | None = None) -> dict:
-        return write_stage_b_fallback_coverage_receipt(
+        return write_spx_fallback_coverage_receipt(
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.manifest,
             interpreter_package=self.interpreter,
@@ -207,7 +207,7 @@ class _CoverageFixture:
         )
 
     def validate_coverage(self, replacements: Path | None = None):
-        return validate_stage_b_fallback_coverage_receipt(
+        return validate_spx_fallback_coverage_receipt(
             receipt=self.coverage_receipt,
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.manifest,
@@ -386,11 +386,11 @@ class FallbackCoverageTests(unittest.TestCase):
                     fixture.validate_coverage()
 
     def test_generic_nix_dag_requires_final_authorization_before_generation(self) -> None:
-        module = (ROOT / "nix" / "stage-b-hybrid-candidate.nix").read_text(
+        module = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
             encoding="utf-8"
         )
         coverage_module = (
-            ROOT / "nix" / "stage-b-fallback-coverage-receipt.nix"
+            ROOT / "nix" / "fallback-coverage-receipt.nix"
         ).read_text(encoding="utf-8")
         self.assertNotIn("dxball", module.lower())
         for name in (
@@ -402,10 +402,10 @@ class FallbackCoverageTests(unittest.TestCase):
         ):
             self.assertIn(name, module)
         self.assertIn(
-            "import ./stage-b-fallback-coverage-receipt.nix", module
+            "import ./fallback-coverage-receipt.nix", module
         )
-        self.assertNotIn("write_stage_b_fallback_coverage_receipt", module)
-        self.assertIn("write_stage_b_fallback_coverage_receipt", coverage_module)
+        self.assertNotIn("write_spx_fallback_coverage_receipt", module)
+        self.assertIn("write_spx_fallback_coverage_receipt", coverage_module)
         authorization_reference = (
             "${candidateAuthorityGate}/candidate-authority.json"
         )
@@ -418,11 +418,11 @@ class FallbackCoverageTests(unittest.TestCase):
         self.assertIn(authorization_reference, module[candidate_start:])
         self.assertLess(
             module.index(authorization_reference, native_start),
-            module.index("write_stage_b_native_engine_package", native_start),
+            module.index("write_spx_native_engine_package", native_start),
         )
         self.assertLess(
             module.index(authorization_reference, candidate_start),
-            module.index("build_stage_b_interpreter_native_candidate", candidate_start),
+            module.index("build_spx_interpreter_native_candidate", candidate_start),
         )
 
 

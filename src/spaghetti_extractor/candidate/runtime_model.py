@@ -1,4 +1,4 @@
-"""Data model and constants for Stage B native runtime generation."""
+"""Data model and constants for candidate reconstruction native runtime generation."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..errors import StageAInputError
-from .interpreter_model import STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT
+from ..errors import ToolkitInputError
+from .interpreter_model import SPX_INTERPRETER_DEFINEDNESS_USE_FORMAT
 
 
 NATIVE_RUNTIME_HEADER_FILENAME = "native-runtime.h"
@@ -16,7 +16,7 @@ NATIVE_RUNTIME_SOURCE_FILENAME = "native-runtime.c"
 NATIVE_RUNTIME_BINDINGS_FILENAME = "native-runtime-bindings.c"
 NATIVE_RUNTIME_MANIFEST_FILENAME = "native-runtime-package.json"
 NATIVE_RUNTIME_EXTERNAL_PROFILE_FILENAME = "external-environment-profile.json"
-DEFINEDNESS_USE_FORMAT = STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT
+DEFINEDNESS_USE_FORMAT = SPX_INTERPRETER_DEFINEDNESS_USE_FORMAT
 
 _INTERPRETER_MANIFEST_FILENAME = "state-machine-interpreter-package.json"
 _NATIVE_ENGINE_MANIFEST_FILENAME = "native-engine-package.json"
@@ -24,7 +24,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v2"
 
 
-class StageBNativeRuntimeError(StageAInputError):
+class CandidateRuntimeError(ToolkitInputError):
     """A native-runtime package input failed closed validation."""
 
 
@@ -243,7 +243,7 @@ class NativeRuntimePlan:
                 "format": DEFINEDNESS_USE_FORMAT,
                 "metadata_sha256": self.definedness_metadata_sha256,
                 "candidate_witness_scope": (
-                    "candidate-only; Stage A must separately prove the original/candidate "
+                    "candidate-only; static analysis must separately prove the original/candidate "
                     "undefined-value relation"
                 ),
                 "slots": [policy.payload() for policy in self.undefined_policies],

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 from typing import Any
 
 from ...artifacts.artifact_set import (
@@ -14,12 +15,12 @@ from ...artifacts.artifact_set import (
 )
 
 
-STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT = (
-    "spaghetti-extractor-stage-b-candidate-authority-receipt-v3"
+SPX_CANDIDATE_AUTHORITY_V3_FORMAT = (
+    "spaghetti-extractor-candidate-authority-receipt-v3"
 )
-STAGE_B_CANDIDATE_AUTHORITY_V3_VERSION = 3
+SPX_CANDIDATE_AUTHORITY_V3_VERSION = 3
 
-AUTHORITY = "stage_b_candidate_generation_only"
+AUTHORITY = "spx_candidate_generation_only"
 POLICY = {
     "candidate_generation_fails_closed": True,
     "candidate_generation_only": True,
@@ -65,6 +66,82 @@ class CandidateAuthorityV3Status(str, Enum):
     VIOLATED = "violated"
 
 
+@dataclass(frozen=True)
+class CandidateAuthorityV3Inputs(Mapping[str, Any]):
+    """Exact artifact bindings required to authorize candidate generation."""
+
+    final_authority: Mapping[str, Any]
+    machine_ir: Mapping[str, Any]
+    machine_ir_manifest: Mapping[str, Any]
+    fallback_coverage_receipt: Mapping[str, Any]
+    component_runtime_package: Mapping[str, Any]
+
+    _NAMES = (
+        "final_authority",
+        "machine_ir",
+        "machine_ir_manifest",
+        "fallback_coverage_receipt",
+        "component_runtime_package",
+    )
+
+    def __post_init__(self) -> None:
+        for name in self._NAMES:
+            value = getattr(self, name)
+            if not isinstance(value, Mapping):
+                raise CandidateAuthorityV3Error(
+                    f"candidate input {name} must be an object"
+                )
+            object.__setattr__(self, name, MappingProxyType(json_value(value)))
+
+    def __getitem__(self, key: str) -> Any:
+        if key not in self._NAMES:
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._NAMES)
+
+    def __len__(self) -> int:
+        return len(self._NAMES)
+
+    @classmethod
+    def parse(cls, value: Mapping[str, Any]) -> CandidateAuthorityV3Inputs:
+        if set(value) != set(cls._NAMES):
+            raise CandidateAuthorityV3Error("candidate input inventory is incomplete")
+        return cls(**{name: value[name] for name in cls._NAMES})
+
+    def to_payload(self) -> dict[str, Any]:
+        return {name: json_value(getattr(self, name)) for name in self._NAMES}
+
+
+@dataclass(frozen=True)
+class CandidateAuthorityV3Checks(Mapping[str, bool]):
+    """Complete Boolean checker inventory for the executable-candidate gate."""
+
+    values: Mapping[str, bool]
+
+    def __post_init__(self) -> None:
+        if set(self.values) != set(CHECK_NAMES) or any(
+            not isinstance(value, bool) for value in self.values.values()
+        ):
+            raise CandidateAuthorityV3Error("candidate check inventory is malformed")
+        object.__setattr__(
+            self, "values", MappingProxyType(dict(sorted(self.values.items())))
+        )
+
+    def __getitem__(self, key: str) -> bool:
+        return self.values[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.values)
+
+    def __len__(self) -> int:
+        return len(self.values)
+
+    def to_payload(self) -> dict[str, bool]:
+        return dict(self.values)
+
+
 @dataclass(frozen=True, order=True)
 class CandidateAuthorityV3Issue:
     status: CandidateAuthorityV3Status
@@ -88,10 +165,18 @@ class CandidateAuthorityV3Issue:
 @dataclass(frozen=True)
 class CandidateAuthorityV3Receipt:
     status: CandidateAuthorityV3Status
-    inputs: Mapping[str, Any]
-    checks: Mapping[str, bool]
+    inputs: CandidateAuthorityV3Inputs
+    checks: CandidateAuthorityV3Checks
     issues: tuple[CandidateAuthorityV3Issue, ...]
     content_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.inputs, CandidateAuthorityV3Inputs):
+            object.__setattr__(
+                self, "inputs", CandidateAuthorityV3Inputs.parse(self.inputs)
+            )
+        if not isinstance(self.checks, CandidateAuthorityV3Checks):
+            object.__setattr__(self, "checks", CandidateAuthorityV3Checks(self.checks))
 
     @property
     def authorizing(self) -> bool:
@@ -103,14 +188,14 @@ class CandidateAuthorityV3Receipt:
 
     def _core_payload(self) -> dict[str, Any]:
         return {
-            "format": STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT,
-            "schema_version": STAGE_B_CANDIDATE_AUTHORITY_V3_VERSION,
+            "format": SPX_CANDIDATE_AUTHORITY_V3_FORMAT,
+            "schema_version": SPX_CANDIDATE_AUTHORITY_V3_VERSION,
             "status": self.status.value,
             "authorizing": self.authorizing,
             "authority": AUTHORITY,
             "policy": dict(POLICY),
-            "inputs": json_value(self.inputs),
-            "checks": json_value(self.checks),
+            "inputs": self.inputs.to_payload(),
+            "checks": self.checks.to_payload(),
             "issues": [issue.to_payload() for issue in self.issues],
         }
 
@@ -144,22 +229,22 @@ def make_candidate_authority_receipt(
 
     provisional = CandidateAuthorityV3Receipt(
         status=status,
-        inputs=inputs,
-        checks=checks,
+        inputs=CandidateAuthorityV3Inputs.parse(inputs),
+        checks=CandidateAuthorityV3Checks(checks),
         issues=issues,
-        content_id="stage-b-candidate-authority-v3:" + "0" * 64,
+        content_id="spaghetti-extractor-candidate-authority-v3:" + "0" * 64,
     )
     return CandidateAuthorityV3Receipt(
         status=status,
-        inputs=inputs,
-        checks=checks,
+        inputs=CandidateAuthorityV3Inputs.parse(inputs),
+        checks=CandidateAuthorityV3Checks(checks),
         issues=issues,
         content_id=content_id(provisional._core_payload()),
     )
 
 
 def content_id(core: Mapping[str, Any]) -> str:
-    return "stage-b-candidate-authority-v3:" + canonical_sha256_v3(core)
+    return "spaghetti-extractor-candidate-authority-v3:" + canonical_sha256_v3(core)
 
 
 def issue_key(issue: CandidateAuthorityV3Issue) -> tuple[str, str, str]:
@@ -181,11 +266,13 @@ def json_value(value: Any) -> Any:
 
 
 __all__ = [
-    "STAGE_B_CANDIDATE_AUTHORITY_V3_FORMAT",
-    "STAGE_B_CANDIDATE_AUTHORITY_V3_VERSION",
+    "SPX_CANDIDATE_AUTHORITY_V3_FORMAT",
+    "SPX_CANDIDATE_AUTHORITY_V3_VERSION",
     "CandidateAuthorityV3Error",
     "CandidateAuthorityV3GateError",
     "CandidateAuthorityV3Issue",
+    "CandidateAuthorityV3Inputs",
+    "CandidateAuthorityV3Checks",
     "CandidateAuthorityV3Receipt",
     "CandidateAuthorityV3Status",
 ]

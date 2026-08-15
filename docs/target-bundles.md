@@ -82,18 +82,24 @@ status` reports one independently selected leaf, group, or configuration.
 configuration and only that configuration's declared candidate-only suites.
 All three reports are diagnostic and cannot open an authority or runtime gate.
 
-Public realization commands discover the nearest `nix/stage-a-builders`
-inventory by default; `--local` disables remote builders and
-`--builders-file` selects an explicit inventory. If no inventory exists,
-commands select local execution explicitly instead of inheriting host-global
-builders.
+Public realization commands resolve builders in this order: explicit CLI
+arguments, `SPAGHETTI_EXTRACTOR_BUILDERS_FILE`, the nearest ignored
+`nix/builders.local`, XDG configuration, then explicit local execution.
+`--local` disables remote builders. Trusted keys follow the same policy via
+`SPAGHETTI_EXTRACTOR_TRUSTED_PUBLIC_KEYS_FILE` or the companion file. Templates
+are in `nix/builders.example` and `nix/trusted-public-keys.example`.
 
-Candidate behavior suites are optional, but when declared they may run only
-after their candidate's final-authority gate closes. Wine execution is
-candidate-only and must use the headless constructors. The original is never
-executed or traced during repair iteration.
+Every executable default candidate configuration requires at least one
+candidate-only behavior suite. Analysis-only targets may omit suites because
+they cannot produce an executable candidate. Tests run only after final
+authority closes, and Wine execution always uses the headless constructors.
+The original is never executed or traced during repair iteration.
 
 ## Adding A Target
+
+Start with `nix run .#dev -- scaffold target <id>`. The scaffold is deliberately
+not registered and its Nix module fails evaluation until an exact reproducible
+PE derivation and expected hash are supplied.
 
 1. Add `targets/<id>/target.json` and its target Nix module. Start with
    `paths.components` and `workflow.default_configuration` set to `null`.

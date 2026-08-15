@@ -17,6 +17,10 @@ from .discovery import build_impact_index
 from .fixtures import FIXTURE_ENV, FixtureCatalog
 from .evaluation_receipts import evaluation_receipt_inventory
 from ..build_support.python_module_index import production_unreachable_modules
+from ..build_support.nix_invocation import (
+    NixInvocationError,
+    select_builder_policy,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,7 +42,11 @@ def _run(command: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
 
 
-def _nix_checks(repository: Path, runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]]) -> list[Diagnostic]:
+def _nix_checks(
+    repository: Path,
+    runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]],
+    environment: Mapping[str, str],
+) -> list[Diagnostic]:
     nix = shutil.which("nix")
     if nix is None:
         return [
@@ -83,20 +91,42 @@ def _nix_checks(repository: Path, runner: Callable[[Sequence[str], Path], subpro
         )
     else:
         checks.append(Diagnostic("info", "nix_features", "nix-command and ca-derivations are enabled"))
-    project_builders = repository / "nix" / "stage-a-builders"
-    if not project_builders.is_file():
-        checks.append(Diagnostic("warning", "project_builders_missing", "the project CA builder inventory is absent", remediation="Restore nix/stage-a-builders; the supported runner selects it explicitly."))
+    try:
+        policy = select_builder_policy(
+            target_flake=str(repository),
+            cwd=repository,
+            environment=environment,
+        )
+    except NixInvocationError as exc:
+        checks.append(
+            Diagnostic(
+                "error",
+                "builder_policy_invalid",
+                str(exc),
+                remediation="Repair the selected builder or trusted-key file.",
+            )
+        )
+        return checks
+    if policy.local:
+        checks.append(
+            Diagnostic(
+                "info",
+                "builder_policy",
+                f"{policy.source}: local Nix execution",
+            )
+        )
     else:
+        assert policy.builders_file is not None
         rows = tuple(
             line.strip()
-            for line in project_builders.read_text(encoding="ascii").splitlines()
+            for line in policy.builders_file.read_text(encoding="ascii").splitlines()
             if line.strip() and not line.lstrip().startswith("#")
         )
         invalid = tuple(line for line in rows if "ca-derivations" not in line)
-        if len(rows) < 2 or invalid:
-            checks.append(Diagnostic("error", "project_builders_invalid", "project builders must declare at least two CA-capable machines", location=str(project_builders), remediation="Declare the Acacia/Banksia ssh-ng builders with the ca-derivations feature."))
+        if not rows or invalid:
+            checks.append(Diagnostic("error", "builder_policy_invalid", "every selected builder must declare ca-derivations", location=str(policy.builders_file), remediation="Declare at least one CA-capable Nix builder or select --local."))
         else:
-            checks.append(Diagnostic("info", "project_builders", f"{len(rows)} project CA builders are configured and selected by nix run .#test"))
+            checks.append(Diagnostic("info", "builder_policy", f"{policy.source}: {len(rows)} CA-capable builder(s) from {policy.builders_file}"))
     return checks
 
 
@@ -107,6 +137,7 @@ def run_doctor(
     runner: Callable[[Sequence[str], Path], subprocess.CompletedProcess[str]] = _run,
 ) -> DoctorReport:
     repository = repository.resolve()
+    environment = dict(os.environ if environment is None else environment)
     checks: list[Diagnostic] = []
     if sys.version_info < (3, 11):
         checks.append(Diagnostic("error", "python_too_old", f"Python 3.11 or newer is required; running {platform.python_version()}", remediation="Enter the Nix development shell."))
@@ -155,7 +186,7 @@ def run_doctor(
                 remediation="Repair Python imports, entrypoints, or Nix module roots.",
             )
         )
-    checks.extend(_nix_checks(repository, runner))
+    checks.extend(_nix_checks(repository, runner, environment))
     receipt_directory, receipt_count, receipt_bytes = evaluation_receipt_inventory()
     checks.append(
         Diagnostic(
@@ -171,7 +202,6 @@ def run_doctor(
             ),
         )
     )
-    environment = dict(os.environ if environment is None else environment)
     if FIXTURE_ENV in environment:
         try:
             catalog = FixtureCatalog.from_environment(environment, repository=repository)

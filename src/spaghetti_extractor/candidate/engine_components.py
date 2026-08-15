@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping
 
 from ..external.callbacks import parse_callback_abi, parse_callback_source
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from .engine_analysis import (
     _direct_outcome_targets,
     _exact_u32_expression,
@@ -45,7 +45,7 @@ def _build_implementation_dispatch_receipt(
             source.get("id"), f"implementation inventory unit {index} id"
         )
         if unit_id in inventory_ids:
-            raise StageAInputError("duplicate implementation inventory unit id")
+            raise ToolkitInputError("duplicate implementation inventory unit id")
         inventory_ids.add(unit_id)
     source_by_id: dict[str, Mapping[str, Any]] = {}
     transfer_by_id: dict[str, tuple[int, str]] = {}
@@ -54,7 +54,7 @@ def _build_implementation_dispatch_receipt(
         unit_id = _required_string(row.get("id"), f"implementation unit {index} id")
         original = row.get("original")
         if not isinstance(original, Mapping):
-            raise StageAInputError(f"{unit_id} has no implementation source span")
+            raise ToolkitInputError(f"{unit_id} has no implementation source span")
         rva = _required_u32(
             original.get("rva_start"), f"{unit_id} implementation RVA"
         )
@@ -62,9 +62,9 @@ def _build_implementation_dispatch_receipt(
             row.get("_source_record_sha256") or _canonical_sha256(source)
         )
         if unit_id in transfer_by_id:
-            raise StageAInputError("duplicate state-machine transfer id")
+            raise ToolkitInputError("duplicate state-machine transfer id")
         if rva in transfer_id_by_rva:
-            raise StageAInputError("duplicate state-machine transfer RVA")
+            raise ToolkitInputError("duplicate state-machine transfer RVA")
         source_by_id[unit_id] = source
         transfer_by_id[unit_id] = (rva, transfer_sha256)
         transfer_id_by_rva[rva] = unit_id
@@ -99,11 +99,11 @@ def _build_implementation_dispatch_receipt(
             if not isinstance(raw_values, list) or any(
                 not isinstance(value, str) or not value for value in raw_values
             ):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"machine-IR reachability {field} is malformed"
                 )
             if len(set(raw_values)) != len(raw_values):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"machine-IR reachability {field} contains duplicates"
                 )
             inventories[field] = tuple(sorted(raw_values))
@@ -125,7 +125,7 @@ def _build_implementation_dispatch_receipt(
             or potential & unreachable
             or reachable | potential | unreachable != known
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "machine-IR reachability does not exactly partition its unit inventory"
             )
         for unit_id in reachable:
@@ -138,9 +138,9 @@ def _build_implementation_dispatch_receipt(
             reachability_classes[unit_id] = "confirmed_unreachable"
         frontiers = reachability.get("frontiers")
         if not isinstance(frontiers, list):
-            raise StageAInputError("machine-IR reachability frontiers are malformed")
+            raise ToolkitInputError("machine-IR reachability frontiers are malformed")
         if any(not isinstance(frontier, Mapping) for frontier in frontiers):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "machine-IR reachability frontier inventory is malformed"
             )
         reachability_frontiers = tuple(
@@ -178,11 +178,11 @@ def _build_implementation_dispatch_receipt(
                 else "machine_ir_fallback"
             ),
             dispatch_lookup=(
-                "stage_b_region_override_lookup"
+                "spx_region_override_lookup"
                 if unit_id in selections and selections[unit_id]["dispatch_role"] == "entry"
                 else "component_entry_subsumed"
                 if unit_id in selections
-                else "stage_b_program_lookup"
+                else "spx_program_lookup"
             ),
             replacement_id=(
                 selections[unit_id]["replacement_id"]
@@ -281,16 +281,16 @@ def _build_implementation_dispatch_receipt(
         assert isinstance(control, Mapping)
         provenance = control.get("external_interface_provenance")
         if not isinstance(provenance, Mapping):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "machine-IR manifest has no external-interface provenance"
             )
         raw_resolutions = provenance.get("resolutions")
         if not isinstance(raw_resolutions, list):
-            raise StageAInputError("machine-IR indirect resolutions are malformed")
+            raise ToolkitInputError("machine-IR indirect resolutions are malformed")
         resolutions: dict[tuple[str, int | None], Mapping[str, Any]] = {}
         for index, raw in enumerate(raw_resolutions):
             if not isinstance(raw, Mapping):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"machine-IR indirect resolution {index} is malformed"
                 )
             source_unit_id = _required_string(
@@ -301,12 +301,12 @@ def _build_implementation_dispatch_receipt(
             if event_index is not None and (
                 isinstance(event_index, bool) or not isinstance(event_index, int)
             ):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     "machine-IR indirect resolution event index is malformed"
                 )
             key = (source_unit_id, event_index)
             if key in resolutions:
-                raise StageAInputError("duplicate machine-IR indirect resolution")
+                raise ToolkitInputError("duplicate machine-IR indirect resolution")
             resolutions[key] = raw
 
         site_by_event = {
@@ -316,35 +316,35 @@ def _build_implementation_dispatch_receipt(
         summaries = control.get("internal_call_preservation")
         summaries = summaries.get("summaries") if isinstance(summaries, Mapping) else None
         if not isinstance(summaries, list):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "machine-IR manifest has no internal-call summary inventory"
             )
         summary_by_target_rva: dict[int, Mapping[str, Any]] = {}
         for index, raw in enumerate(summaries):
             if not isinstance(raw, Mapping):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"internal-call summary {index} is malformed"
                 )
             target_rva = raw.get("target_rva")
             if isinstance(target_rva, int) and not isinstance(target_rva, bool):
                 if target_rva in summary_by_target_rva:
-                    raise StageAInputError("duplicate internal-call target summary")
+                    raise ToolkitInputError("duplicate internal-call target summary")
                 summary_by_target_rva[target_rva] = raw
 
         for source_unit_id in reachable_unit_ids:
             unit = source_by_id[source_unit_id]
             unit_control = unit.get("control")
             if not isinstance(unit_control, Mapping):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{source_unit_id} has no checked control inventory"
                 )
             direct_targets = unit_control.get("direct_targets")
             if not isinstance(direct_targets, list):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{source_unit_id} direct target inventory is malformed"
                 )
             if len(set(direct_targets)) != len(direct_targets):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{source_unit_id} direct target inventory contains duplicates"
                 )
             for target_rva in direct_targets:
@@ -358,15 +358,15 @@ def _build_implementation_dispatch_receipt(
                 )
             semantics = unit.get("semantics")
             if not isinstance(semantics, Mapping):
-                raise StageAInputError(f"{source_unit_id} semantics are malformed")
+                raise ToolkitInputError(f"{source_unit_id} semantics are malformed")
             events = semantics.get("external_events")
             if not isinstance(events, list):
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"{source_unit_id} external event inventory is malformed"
                 )
             for event_index, event in enumerate(events):
                 if not isinstance(event, Mapping):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         f"{source_unit_id} external event {event_index} is malformed"
                     )
                 kind = event.get("kind")
@@ -441,11 +441,11 @@ def _build_implementation_dispatch_receipt(
                 if not isinstance(target_unit_ids, list) or any(
                     not isinstance(value, str) for value in target_unit_ids
                 ):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         "machine-IR indirect internal targets are malformed"
                     )
                 if len(set(target_unit_ids)) != len(target_unit_ids):
-                    raise StageAInputError(
+                    raise ToolkitInputError(
                         "machine-IR indirect internal targets contain duplicates"
                     )
                 for target_unit_id in target_unit_ids:
@@ -473,11 +473,11 @@ def _build_implementation_dispatch_receipt(
                     if not isinstance(target_unit_ids, list) or any(
                         not isinstance(value, str) for value in target_unit_ids
                     ):
-                        raise StageAInputError(
+                        raise ToolkitInputError(
                             "machine-IR indirect jump targets are malformed"
                         )
                     if len(set(target_unit_ids)) != len(target_unit_ids):
-                        raise StageAInputError(
+                        raise ToolkitInputError(
                             "machine-IR indirect jump targets contain duplicates"
                         )
                     for target_unit_id in target_unit_ids:
@@ -603,16 +603,16 @@ def _machine_ir_internal_call_preservation(
         else None
     )
     if not isinstance(summaries, Mapping):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "machine-IR manifest has no internal-call preservation inventory"
         )
     rows = summaries.get("summaries")
     if not isinstance(rows, list):
-        raise StageAInputError("internal-call preservation summaries must be a list")
+        raise ToolkitInputError("internal-call preservation summaries must be a list")
     result: dict[int, frozenset[str]] = {}
     for index, raw in enumerate(rows):
         if not isinstance(raw, Mapping):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"internal-call preservation summary {index} is malformed"
             )
         if raw.get("status") != "complete":
@@ -627,12 +627,12 @@ def _machine_ir_internal_call_preservation(
             or register not in _PE32_CALLEE_PRESERVED_REGISTERS
             for register in registers
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"internal-call preservation summary {index} has invalid registers"
             )
         preserved = frozenset(registers)
         if target_rva in result and result[target_rva] != preserved:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"internal-call preservation target {target_rva:#x} is ambiguous"
             )
         result[target_rva] = preserved
@@ -658,24 +658,24 @@ def _machine_ir_callback_registrations(
     if rows is None:
         return {}
     if not isinstance(rows, list):
-        raise StageAInputError("callback-registration provenance must be a list")
+        raise ToolkitInputError("callback-registration provenance must be a list")
     result: dict[tuple[str, int], Mapping[str, Any]] = {}
     for index, row in enumerate(rows):
         if (
             not isinstance(row, Mapping)
             or row.get("format")
-            != "stage-a-callback-registration-provenance-v1"
+            != "spaghetti-extractor-callback-registration-provenance-v1"
             or row.get("record_kind") != "callback_registration"
             or not isinstance(row.get("unit_id"), str)
             or not isinstance(row.get("event_index"), int)
             or isinstance(row.get("event_index"), bool)
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"callback-registration provenance {index} is malformed"
             )
         key = (str(row["unit_id"]), int(row["event_index"]))
         if key in result and result[key] != row:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"callback-registration provenance for {key!r} is ambiguous"
             )
         result[key] = row
@@ -699,7 +699,7 @@ def _machine_ir_external_interface_methods(
     if rows is None:
         return {}
     if not isinstance(rows, list):
-        raise StageAInputError("external-interface resolutions must be a list")
+        raise ToolkitInputError("external-interface resolutions must be a list")
     result: dict[tuple[str, int], Mapping[str, Any]] = {}
     for index, raw in enumerate(rows):
         if not isinstance(raw, Mapping) or raw.get("status") != "recovered":
@@ -796,13 +796,13 @@ def _machine_ir_external_interface_methods(
                 )
             )
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"recovered external protocol resolution {index} is malformed"
             )
         key = (unit_id, event_index)
         value = dict(target)
         if key in result and result[key] != value:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"external-interface resolution for {key!r} is ambiguous"
             )
         result[key] = value
@@ -883,7 +883,7 @@ def _build_callback_adapter_receipts(
                 {"callback_abi": checked_adapter.abi},
                 context=f"{site.transfer_id} callback receipt",
             )
-        except StageAInputError as exc:
+        except ToolkitInputError as exc:
             blockers.append(_blocker(
                 "callback_adapter_receipt_incomplete",
                 transfer_id=site.transfer_id,
@@ -925,7 +925,7 @@ def _build_callback_adapter_receipts(
             and all(
                 entry.original_rva == entry.callback_rva
                 and entry.symbol
-                == f"stage_b_payload_callback_{entry.callback_rva:08x}"
+                == f"spx_payload_callback_{entry.callback_rva:08x}"
                 for entry in actual_entries
             )
         )

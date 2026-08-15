@@ -14,7 +14,7 @@ from ..pe32.recovered_executable_data import (
 )
 from ..artifacts.formats import STATIC_PROGRAM_CONTRACT_FORMAT
 from ..static_program.codec import load_static_program_contract_binding
-from ..pe32.stage_binary import _parse_stage_a_pe
+from ..pe32.image import parse_pe_image
 from ..util import sha256_bytes, sha256_file, write_json
 from .ir_evidence import (
     _binary_inventory,
@@ -74,7 +74,7 @@ def export_machine_ir_package(
     state_path = _regular_file(state_machine, "canonical state machine")
     state_sha256 = sha256_file(state_path)
     original_path = _regular_file(original_pe, "original PE")
-    binary = _parse_stage_a_pe(original_path)
+    binary = parse_pe_image(original_path)
     if binary.machine != "i386" or binary.bitness != 32:
         raise MachineIRExportError(
             "machine IR v2 supports x86 PE32 inputs only",

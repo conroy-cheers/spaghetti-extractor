@@ -47,12 +47,12 @@ def _validate(args: argparse.Namespace) -> dict[str, object]:
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name == "stage-b-build-candidate-authority":
+    if name == "candidate-authority-build":
         _add_inputs(command)
         path_argument(command, "out", required=True)
         return _build
 
-    if name == "stage-b-validate-candidate-authority":
+    if name == "candidate-authority-check":
         path_argument(command, "receipt", required=True)
         _add_inputs(command)
         path_argument(command, "out")

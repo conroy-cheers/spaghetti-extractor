@@ -30,7 +30,7 @@ def _unit(
     external_events: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "id": identity,
         "source": {"original": {"rva_start": rva, "rva_end": rva + 1}},
         "instructions": instructions or [],

@@ -11,7 +11,7 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             packages = _Packages(root / "inputs")
-            baseline = prepare_stage_b_interpreter_native_object_graph(
+            baseline = prepare_spx_interpreter_native_object_graph(
                 interpreter_package=packages.interpreter,
                 native_engine_package=packages.engine,
                 native_runtime_package=packages.runtime,
@@ -25,7 +25,7 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
             _refresh_source_binding(
                 packages.runtime / "native-runtime-package.json", runtime_source
             )
-            changed = prepare_stage_b_interpreter_native_object_graph(
+            changed = prepare_spx_interpreter_native_object_graph(
                 interpreter_package=packages.interpreter,
                 native_engine_package=packages.engine,
                 native_runtime_package=packages.runtime,
@@ -66,7 +66,7 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
             root = Path(temporary)
             packages = _Packages(root / "inputs")
             graph_root = root / "graph"
-            graph = prepare_stage_b_interpreter_native_object_graph(
+            graph = prepare_spx_interpreter_native_object_graph(
                 interpreter_package=packages.interpreter,
                 native_engine_package=packages.engine,
                 native_runtime_package=packages.runtime,
@@ -80,12 +80,12 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
             self.assertEqual(bundle_index["bundles"], graph["bundles"])
             self.assertNotIn("/nix/store/", json.dumps(bundle_index))
             binding = graph["bundles"][0]
-            direct = compile_stage_b_interpreter_native_object(
+            direct = compile_spx_interpreter_native_object(
                 graph=graph_root,
                 unit_id=binding["unit_id"],
                 out_dir=root / "direct",
             )
-            bundled = compile_stage_b_interpreter_native_source_bundle(
+            bundled = compile_spx_interpreter_native_source_bundle(
                 source_bundle=graph_root / binding["path"],
                 compiler="i686-w64-mingw32-gcc",
                 out_dir=root / "bundled",
@@ -103,7 +103,7 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
             root = Path(temporary)
             packages = _Packages(root / "inputs")
             graph_root = root / "graph"
-            graph = prepare_stage_b_interpreter_native_object_graph(
+            graph = prepare_spx_interpreter_native_object_graph(
                 interpreter_package=packages.interpreter,
                 native_engine_package=packages.engine,
                 native_runtime_package=packages.runtime,
@@ -117,9 +117,9 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
             source = bundle / payload["source"]["bundle_path"]
             source.write_text(source.read_text(encoding="ascii") + "\n", encoding="ascii")
             with self.assertRaisesRegex(
-                StageBInterpreterNativeBuildError, "source.*binding is stale"
+                CandidateNativeBuildError, "source.*binding is stale"
             ):
-                compile_stage_b_interpreter_native_source_bundle(
+                compile_spx_interpreter_native_source_bundle(
                     source_bundle=bundle,
                     compiler="i686-w64-mingw32-gcc",
                     out_dir=root / "object",
@@ -129,7 +129,7 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             packages = _Packages(root / "inputs")
-            graph = prepare_stage_b_interpreter_native_object_graph(
+            graph = prepare_spx_interpreter_native_object_graph(
                 interpreter_package=packages.interpreter,
                 native_engine_package=packages.engine,
                 native_runtime_package=packages.runtime,
@@ -167,14 +167,14 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             packages = _Packages(root / "inputs")
-            manifest = build_stage_b_interpreter_native_candidate(
+            manifest = build_spx_interpreter_native_candidate(
                 interpreter_package=packages.interpreter,
                 native_engine_package=packages.engine,
                 native_runtime_package=packages.runtime,
                 **packages.release_inputs(),
                 out_dir=root / "candidate",
             )
-            repeated = build_stage_b_interpreter_native_candidate(
+            repeated = build_spx_interpreter_native_candidate(
                 interpreter_package=packages.interpreter,
                 native_engine_package=packages.engine,
                 native_runtime_package=packages.runtime,
@@ -182,7 +182,7 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
                 out_dir=root / "candidate-repeated",
             )
             graph_dir = root / "object-graph"
-            graph = prepare_stage_b_interpreter_native_object_graph(
+            graph = prepare_spx_interpreter_native_object_graph(
                 interpreter_package=packages.interpreter,
                 native_engine_package=packages.engine,
                 native_runtime_package=packages.runtime,
@@ -191,17 +191,17 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
             object_packages = []
             for unit in graph["units"]:
                 object_dir = root / "cached-objects" / unit["id"]
-                compile_stage_b_interpreter_native_object(
+                compile_spx_interpreter_native_object(
                     graph=graph_dir, unit_id=unit["id"], out_dir=object_dir
                 )
                 object_packages.append(object_dir)
             object_package = root / "object-package"
-            assemble_stage_b_interpreter_native_objects(
+            assemble_spx_interpreter_native_objects(
                 graph=graph_dir,
                 object_packages=object_packages,
                 out_dir=object_package,
             )
-            cached = build_stage_b_interpreter_native_candidate(
+            cached = build_spx_interpreter_native_candidate(
                 interpreter_package=packages.interpreter,
                 native_engine_package=packages.engine,
                 native_runtime_package=packages.runtime,
@@ -234,7 +234,7 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
             self.assertEqual(manifest["acceptance_authority"], "none")
             self.assertEqual(
                 manifest["inputs"]["candidate_authority"]["format"],
-                "spaghetti-extractor-stage-b-candidate-authority-receipt-v3",
+                "spaghetti-extractor-candidate-authority-receipt-v3",
             )
             self.assertTrue(
                 manifest["inputs"]["candidate_authority"]["authorizes"]
@@ -308,10 +308,10 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
             cached_object = object_package / cached_manifest["objects"][0]["path"]
             cached_object.write_bytes(cached_object.read_bytes() + b"\x00")
             with self.assertRaisesRegex(
-                StageBInterpreterNativeBuildError,
+                CandidateNativeBuildError,
                 "native object package artifact is stale",
             ):
-                build_stage_b_interpreter_native_candidate(
+                build_spx_interpreter_native_candidate(
                     interpreter_package=packages.interpreter,
                     native_engine_package=packages.engine,
                     native_runtime_package=packages.runtime,

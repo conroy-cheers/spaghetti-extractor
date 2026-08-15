@@ -7,7 +7,7 @@ import json
 
 from ..external.operation_profiles import load_external_operation_profile
 from ..external.source_operations import render_source_operations
-from ..errors import StageAInputError
+from ..errors import ToolkitInputError
 from .common import Handler, path_argument
 
 
@@ -20,7 +20,7 @@ def _render_source_operations(args: argparse.Namespace) -> dict[str, object]:
         else None
     )
     if not isinstance(operations, list):
-        raise StageAInputError("operation evidence must contain an operations array")
+        raise ToolkitInputError("operation evidence must contain an operations array")
     result = render_source_operations(
         catalog=args.catalog,
         operation_profile_sha256=profile.sha256,
@@ -34,7 +34,7 @@ def _render_source_operations(args: argparse.Namespace) -> dict[str, object]:
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name == "stage-b-render-source-operations":
+    if name == "component-render-source-operations":
         path_argument(command, "catalog", required=True)
         path_argument(command, "operation_profile", required=True)
         path_argument(command, "operations", required=True)

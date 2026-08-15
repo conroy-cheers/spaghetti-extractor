@@ -12,6 +12,7 @@ from .scaffold import (
     ScaffoldPlan,
     plan_fixture_scaffold,
     plan_phase_scaffold,
+    plan_target_scaffold,
     plan_test_scaffold,
 )
 
@@ -34,6 +35,7 @@ __all__ = [
     "plan_fixture_scaffold",
     "apply_scaffold_plan",
     "plan_phase_scaffold",
+    "plan_target_scaffold",
     "plan_test_scaffold",
     "run_doctor",
 ]

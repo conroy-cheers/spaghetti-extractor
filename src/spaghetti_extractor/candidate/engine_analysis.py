@@ -18,7 +18,7 @@ from ..external.callbacks import (
 )
 from ..external.contracts import CheckedExternalSiteContract
 from ..machine_ir.schema import RAW_INSTRUCTION_FIELDS
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_file
 from .engine_model import (
     NativeTerminationImport,
@@ -50,7 +50,7 @@ def _parse_native_termination_import(
     symbol_value = value.get("symbol")
     ordinal_value = value.get("ordinal")
     if (symbol_value is None) == (ordinal_value is None):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "termination import must provide exactly one symbol or ordinal"
         )
     symbol = (
@@ -64,7 +64,7 @@ def _parse_native_termination_import(
         else None
     )
     if value.get("disposition") != "terminates":
-        raise StageAInputError(
+        raise ToolkitInputError(
             "termination import must be selected from a modeled terminates contract"
         )
     if symbol is not None:
@@ -74,7 +74,7 @@ def _parse_native_termination_import(
         identity = ordinal
     iat_va = import_iat_vas.get((dll, identity))
     if iat_va is None:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "termination import has no unique IAT cell in the load-image contract"
         )
     return NativeTerminationImport(
@@ -112,23 +112,23 @@ def _adapt_native_machine_ir_unit(
     unit: Mapping[str, Any], row_index: int
 ) -> dict[str, Any]:
     if unit.get("format") != _MACHINE_IR_FORMAT or unit.get("record_kind") != "unit":
-        raise StageAInputError(f"machine-IR record {row_index} is not a v2 unit")
+        raise ToolkitInputError(f"machine-IR record {row_index} is not a v2 unit")
     if _contains_raw_instruction_material(unit):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"machine-IR record {row_index} contains raw instruction material"
         )
     transfer_id = _required_string(
         unit.get("id"), f"machine-IR record {row_index} id"
     )
     if unit.get("status") != "qualified":
-        raise StageAInputError(f"{transfer_id} is not a qualified machine-IR unit")
+        raise ToolkitInputError(f"{transfer_id} is not a qualified machine-IR unit")
     source = unit.get("source")
     semantics = unit.get("semantics")
     if not isinstance(source, Mapping) or not isinstance(semantics, Mapping):
-        raise StageAInputError(f"{transfer_id} source or semantics is malformed")
+        raise ToolkitInputError(f"{transfer_id} source or semantics is malformed")
     original = source.get("original")
     if not isinstance(original, Mapping):
-        raise StageAInputError(f"{transfer_id} has no machine-IR source span")
+        raise ToolkitInputError(f"{transfer_id} has no machine-IR source span")
     rva_start = _required_u32(
         original.get("rva_start"), f"{transfer_id} original start RVA"
     )
@@ -142,7 +142,7 @@ def _adapt_native_machine_ir_unit(
         or not isinstance(size, int)
         or size != rva_end - rva_start
     ):
-        raise StageAInputError(f"{transfer_id} machine-IR source span is inconsistent")
+        raise ToolkitInputError(f"{transfer_id} machine-IR source span is inconsistent")
     instructions = _machine_ir_instruction_inventory(
         transfer_id=transfer_id,
         raw_instructions=unit.get("instructions"),
@@ -151,7 +151,7 @@ def _adapt_native_machine_ir_unit(
     )
     ordered_events = semantics.get("ordered_events")
     if not isinstance(ordered_events, list):
-        raise StageAInputError(f"{transfer_id} ordered_events must be a list")
+        raise ToolkitInputError(f"{transfer_id} ordered_events must be a list")
     semantic_export = source.get("semantic_export")
     return {
         "id": transfer_id,
@@ -186,12 +186,12 @@ def _machine_ir_instruction_inventory(
     rva_end: int,
 ) -> list[dict[str, Any]]:
     if not isinstance(raw_instructions, list) or not raw_instructions:
-        raise StageAInputError(f"{transfer_id} machine-IR instructions must be nonempty")
+        raise ToolkitInputError(f"{transfer_id} machine-IR instructions must be nonempty")
     result: list[dict[str, Any]] = []
     cursor = rva_start
     for index, raw in enumerate(raw_instructions):
         if not isinstance(raw, Mapping):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{transfer_id} machine-IR instruction {index} must be an object"
             )
         start = _required_u32(
@@ -222,7 +222,7 @@ def _machine_ir_instruction_inventory(
             or any(not isinstance(item, str) for item in registers_written)
             or any(not isinstance(item, str) for item in groups)
         ):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{transfer_id} machine-IR instruction {index} is malformed"
             )
         result.append({
@@ -241,7 +241,7 @@ def _machine_ir_instruction_inventory(
         })
         cursor = end
     if cursor != rva_end:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{transfer_id} machine-IR instructions do not cover the unit span"
         )
     return result
@@ -263,22 +263,22 @@ def _machine_ir_event_evidence(
         or not isinstance(arguments, list)
         or not isinstance(stack_inputs, list)
     ):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{transfer_id} external event {event_index} lacks complete machine ABI metadata"
         )
     for field, values in (("register", registers), ("flag", flags)):
         if any(not isinstance(value, Mapping) for value in values.values()):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{transfer_id} external event {event_index} has malformed {field} inputs"
             )
     if any(not isinstance(value, Mapping) for value in arguments):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{transfer_id} external event {event_index} has malformed arguments"
         )
     normalized_stack: list[dict[str, Any]] = []
     for stack_index, value in enumerate(stack_inputs):
         if not isinstance(value, Mapping):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{transfer_id} external event {event_index} stack input {stack_index} "
                 "is malformed"
             )
@@ -288,7 +288,7 @@ def _machine_ir_event_evidence(
         )
         width = value.get("width")
         if width not in {1, 2, 4} or not isinstance(value.get("value"), Mapping):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{transfer_id} external event {event_index} stack input {stack_index} "
                 "has an unsupported width or value"
             )
@@ -297,7 +297,7 @@ def _machine_ir_event_evidence(
         })
     target_expression = event.get("target") if kind == "indirect_call" else None
     if kind == "indirect_call" and not isinstance(target_expression, Mapping):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{transfer_id} indirect event {event_index} has no target expression"
         )
     identity = {
@@ -327,7 +327,7 @@ def _machine_ir_callback_registration(
     if raw_contract is None:
         return None
     if not isinstance(raw_contract, Mapping):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{transfer_id} external event {event_index} has malformed ABI contract"
         )
     if raw_contract.get("world_effect") != "callbackRegistration":
@@ -345,7 +345,7 @@ def _machine_ir_callback_registration(
         or argument_base_offset % 4 != 0
         or argument_base_offset > 0x10000
     ):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{transfer_id} callback-registration argument inventory is invalid"
         )
     context = f"{transfer_id} external event {event_index}"
@@ -401,7 +401,7 @@ def _static_iat_import_identity(
     if not matches:
         return None
     if len(matches) != 1:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"indirect target IAT cell {iat_va:#x} has ambiguous import identities"
         )
     dll, identity = matches[0]
@@ -409,7 +409,7 @@ def _static_iat_import_identity(
         return dll, identity, None, iat_va
     if isinstance(identity, int) and not isinstance(identity, bool) and identity >= 0:
         return dll, None, identity, iat_va
-    raise StageAInputError("import IAT identity must be one symbol or ordinal")
+    raise ToolkitInputError("import IAT identity must be one symbol or ordinal")
 
 
 def _stack_expression_at_offset(event: Mapping[str, Any], offset: int) -> Any:
@@ -566,12 +566,12 @@ def _machine_ir_register_import_sites(
     for row_index, row in enumerate(rows):
         original = row.get("original")
         if not isinstance(original, Mapping):
-            raise StageAInputError(f"machine-IR row {row_index} has no source span")
+            raise ToolkitInputError(f"machine-IR row {row_index} has no source span")
         source = _required_u32(
             original.get("rva_start"), f"machine-IR row {row_index} source RVA"
         )
         if source in row_by_rva:
-            raise StageAInputError(f"duplicate machine-IR source RVA {source:#x}")
+            raise ToolkitInputError(f"duplicate machine-IR source RVA {source:#x}")
         row_by_rva[source] = row
         for target in _direct_outcome_targets(row):
             predecessors.setdefault(target, set()).add(source)
@@ -680,7 +680,7 @@ def _machine_ir_register_import_sites(
                 ):
                     original = row.get("original")
                     if not isinstance(original, Mapping):
-                        raise StageAInputError(
+                        raise ToolkitInputError(
                             "machine-IR internal call has no source span"
                         )
                     source = _required_u32(
@@ -786,7 +786,7 @@ def _machine_ir_register_import_sites(
         updated, _ = transfer(row_by_rva[rva], inputs)
         steps += 1
         if steps > maximum_steps:
-            raise StageAInputError("register import-origin analysis did not converge")
+            raise ToolkitInputError("register import-origin analysis did not converge")
         if updated == outputs[rva]:
             continue
         outputs[rva] = updated
@@ -832,9 +832,9 @@ def _machine_ir_manifest_payload(
     try:
         payload = json.loads(Path(manifest).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(f"cannot read machine-IR manifest: {exc}") from exc
+        raise ToolkitInputError(f"cannot read machine-IR manifest: {exc}") from exc
     if not isinstance(payload, Mapping) or payload.get("format") != _MACHINE_IR_FORMAT:
-        raise StageAInputError("machine-IR manifest has an unsupported format")
+        raise ToolkitInputError("machine-IR manifest has an unsupported format")
     artifact = payload.get("artifacts")
     artifact = artifact.get("machine_ir") if isinstance(artifact, Mapping) else None
     if (
@@ -842,7 +842,7 @@ def _machine_ir_manifest_payload(
         or artifact.get("format") != _MACHINE_IR_FORMAT
         or artifact.get("sha256") != sha256_file(machine_ir)
     ):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "machine-IR manifest does not bind the exact machine-ir.jsonl artifact"
         )
     return payload
@@ -857,7 +857,7 @@ def _checked_contract_callback_registration(
     if contract.callback_effect != "explicit":
         return None
     if adapter is None:
-        raise StageAInputError(f"{context} has no checked callback adapter")
+        raise ToolkitInputError(f"{context} has no checked callback adapter")
     source = parse_callback_source(
         {"callback_source": adapter.source},
         argument_words=contract.argument_words,
@@ -901,7 +901,7 @@ def _portable_component_selections(
     for index, raw in enumerate(values):
         v2 = isinstance(raw, Mapping) and set(raw) == expected_fields_v2
         if not isinstance(raw, Mapping) or (not v2 and set(raw) != expected_fields):
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"portable component selection {index} fields are not canonical"
             )
         unit_id = _required_string(
@@ -912,13 +912,13 @@ def _portable_component_selections(
         )
         binding = transfer_by_id.get(unit_id)
         if binding is None or binding[0] != rva:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "portable component selection does not bind one exact machine-IR unit"
             )
         if unit_id in result or rva in seen_rvas:
-            raise StageAInputError("duplicate portable component dispatch selection")
+            raise ToolkitInputError("duplicate portable component dispatch selection")
         if raw.get("fallback_on_unimplemented") is not False:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 "selected portable components must disable machine-IR fallback"
             )
         result[unit_id] = {
@@ -953,9 +953,9 @@ def _portable_component_selections(
             ),
         }
         if result[unit_id]["dispatch_role"] not in {"entry", "subsumed_member"}:
-            raise StageAInputError("portable component dispatch role is unsupported")
+            raise ToolkitInputError("portable component dispatch role is unsupported")
         if result[unit_id]["dispatch_role"] == "entry" and result[unit_id]["entry_rva"] != rva:
-            raise StageAInputError("portable component entry must dispatch at its own RVA")
+            raise ToolkitInputError("portable component entry must dispatch at its own RVA")
         seen_rvas.add(rva)
     entry_keys = {
         (value["entry_rva"], value["cluster_id"], value["component_manifest_sha256"])
@@ -968,5 +968,5 @@ def _portable_component_selections(
         not in entry_keys
         for value in result.values()
     ):
-        raise StageAInputError("portable component member has no selected boundary entry")
+        raise ToolkitInputError("portable component member has no selected boundary entry")
     return result

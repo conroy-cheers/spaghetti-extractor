@@ -26,7 +26,7 @@ from spaghetti_extractor.external.source_operations import (
 )
 
 
-TESTKIT = {"commands": ("expert stage-b-render-source-operations",)}
+TESTKIT = {"commands": ("expert component-render-source-operations",)}
 
 
 _PROFILE_SHA256 = "a" * 64
@@ -114,7 +114,7 @@ class SourceOperationCatalogTests(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()):
                 status = main([
                     "expert",
-                    "stage-b-render-source-operations",
+                    "component-render-source-operations",
                     "--catalog", str(catalog_path),
                     "--operation-profile", str(profile_path),
                     "--operations", str(operations_path),

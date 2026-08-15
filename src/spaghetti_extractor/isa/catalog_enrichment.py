@@ -38,18 +38,18 @@ from .semantic_forms import (
 from .side_adapter import SIDE_ISA_EXECUTABLE_CATALOG_PROPOSAL_FORMAT
 from ..build_support.lean_runner import run_lean_module_graph
 from ..extraction.schema import STATIC_ANALYSIS_MODEL_ID
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes, sha256_file, write_json
 
 
 SIDE_ISA_CATALOG_ENRICHMENT_FORMAT = (
-    "stage-a-side-isa-executable-catalog-enrichment-v1"
+    "spaghetti-extractor-side-isa-executable-catalog-enrichment-v1"
 )
 SIDE_ISA_ENCODING_ENRICHMENT_FORMAT = (
-    "stage-a-side-isa-executable-encoding-enrichment-v1"
+    "spaghetti-extractor-side-isa-executable-encoding-enrichment-v1"
 )
 SIDE_ISA_CATALOG_ENRICHMENT_RESULT_FORMAT = (
-    "stage-a-side-isa-catalog-enrichment-result-v1"
+    "spaghetti-extractor-side-isa-catalog-enrichment-result-v1"
 )
 _ENRICHER_VERSION = "lean-exact-encoding-catalog-enrichment-v1"
 _GPRS = ("eax", "ebp", "ebx", "ecx", "edi", "edx", "esi", "esp")
@@ -85,7 +85,7 @@ def _exact_fields(
     context: str,
 ) -> Mapping[str, Any]:
     if not isinstance(value, Mapping):
-        raise StageAInputError(f"{context} must be an object")
+        raise ToolkitInputError(f"{context} must be an object")
     missing = expected - set(value)
     unknown = set(value) - expected
     if missing or unknown:
@@ -94,13 +94,13 @@ def _exact_fields(
             details.append(f"missing fields {sorted(missing)!r}")
         if unknown:
             details.append(f"unknown fields {sorted(unknown)!r}")
-        raise StageAInputError(f"{context} has " + " and ".join(details))
+        raise ToolkitInputError(f"{context} has " + " and ".join(details))
     return value
 
 
 def _string(value: Any, context: str) -> str:
     if not isinstance(value, str) or not value or value.strip() != value:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} must be a nonempty string without surrounding whitespace"
         )
     return value
@@ -109,7 +109,7 @@ def _string(value: Any, context: str) -> str:
 def _sha256(value: Any, context: str) -> str:
     digest = _string(value, context)
     if _SHA256_RE.fullmatch(digest) is None:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} must be 64 lowercase hexadecimal characters"
         )
     return digest
@@ -121,17 +121,17 @@ def _uint(value: Any, bits: int, context: str) -> int:
         or not isinstance(value, int)
         or not 0 <= value < 2**bits
     ):
-        raise StageAInputError(f"{context} must be an unsigned {bits}-bit integer")
+        raise ToolkitInputError(f"{context} must be an unsigned {bits}-bit integer")
     return value
 
 
 def _objects(value: Any, context: str) -> list[Mapping[str, Any]]:
     if not isinstance(value, list):
-        raise StageAInputError(f"{context} must be a list")
+        raise ToolkitInputError(f"{context} must be a list")
     result: list[Mapping[str, Any]] = []
     for index, row in enumerate(value):
         if not isinstance(row, Mapping):
-            raise StageAInputError(f"{context}[{index}] must be an object")
+            raise ToolkitInputError(f"{context}[{index}] must be an object")
         result.append(row)
     return result
 
@@ -143,12 +143,12 @@ def _strings(
     allow_empty: bool = False,
 ) -> list[str]:
     if not isinstance(value, list):
-        raise StageAInputError(f"{context} must be a list")
+        raise ToolkitInputError(f"{context} must be a list")
     result = [_string(row, f"{context}[{index}]") for index, row in enumerate(value)]
     if not allow_empty and not result:
-        raise StageAInputError(f"{context} must not be empty")
+        raise ToolkitInputError(f"{context} must not be empty")
     if result != sorted(set(result)):
-        raise StageAInputError(f"{context} must be unique and canonically ordered")
+        raise ToolkitInputError(f"{context} must be unique and canonically ordered")
     return result
 
 
@@ -176,7 +176,7 @@ def _qualified_representatives(
             continue
         representative = [row for row in rows if row["representative"]]
         if len(representative) != 1:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"side-ISA enrichment form {form_id} does not have one representative"
             )
         representatives.append(representative[0])
@@ -194,7 +194,7 @@ def enrich_side_isa_catalog(
     parsed = _parse_proposal(proposal)
     expected_ids = [row["encoding_id"] for row in parsed["encodings"]]
     if list(decoded_metadata) != expected_ids:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "decoded metadata must cover proposal encodings in canonical order"
         )
     binding = _exact_fields(
@@ -203,7 +203,7 @@ def enrich_side_isa_catalog(
         "Lean metadata binding",
     )
     if binding.get("classifier_sha256") != parsed["classifier_sha256"]:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "Lean metadata binding classifier does not match proposal"
         )
     _sha256(
@@ -270,7 +270,6 @@ def enrich_side_isa_catalog(
         "trust": {
             "role": "untrusted_lean_derived_isa_catalog_enrichment",
             "proof_authority": False,
-            "closes_stage_a_proof": False,
             "corpus_generation_rule": (
                 "one_representative_per_fully_resolved_form"
             ),
@@ -331,22 +330,22 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
         "side-ISA catalog enrichment",
     )
     if payload.get("format") != SIDE_ISA_CATALOG_ENRICHMENT_FORMAT:
-        raise StageAInputError("unsupported side-ISA catalog enrichment format")
+        raise ToolkitInputError("unsupported side-ISA catalog enrichment format")
     if payload.get("status") not in {
         "complete",
         "incomplete_unresolved_encodings",
     }:
-        raise StageAInputError("side-ISA catalog enrichment status is invalid")
+        raise ToolkitInputError("side-ISA catalog enrichment status is invalid")
     if payload.get("profile") != ISA_PROFILE_ID:
-        raise StageAInputError("side-ISA catalog enrichment profile is invalid")
+        raise ToolkitInputError("side-ISA catalog enrichment profile is invalid")
     if payload.get("model") != STATIC_ANALYSIS_MODEL_ID:
-        raise StageAInputError("side-ISA catalog enrichment model is invalid")
+        raise ToolkitInputError("side-ISA catalog enrichment model is invalid")
     classifier_sha256 = _sha256(
         payload.get("classifier_sha256"),
         "side-ISA catalog enrichment classifier_sha256",
     )
     if classifier_sha256 != lean_semantic_form_classifier_sha256():
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side-ISA catalog enrichment uses a stale Lean semantic classifier"
         )
     _sha256(
@@ -359,7 +358,7 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
         "side-ISA catalog enrichment source",
     )
     if source.get("enricher") != _ENRICHER_VERSION:
-        raise StageAInputError("side-ISA catalog enrichment enricher is invalid")
+        raise ToolkitInputError("side-ISA catalog enrichment enricher is invalid")
     _string(source.get("lean_version"), "side-ISA catalog enrichment lean_version")
     _sha256(
         source.get("metadata_exporter_sha256"),
@@ -392,7 +391,7 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
             semantic_form,
             classifier_sha256=classifier_sha256,
         ):
-            raise StageAInputError(f"{context}.form_id is not canonical")
+            raise ToolkitInputError(f"{context}.form_id is not canonical")
         _string(
             row.get("representative_encoding_id"),
             f"{context}.representative_encoding_id",
@@ -404,7 +403,7 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
         form_ids.append(form_id)
         forms_by_id[form_id] = row
     if form_ids != sorted(set(form_ids)):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side-ISA catalog enrichment forms are not canonically ordered"
         )
     encodings = _objects(
@@ -431,7 +430,7 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
             context,
         )
         if row.get("format") != SIDE_ISA_ENCODING_ENRICHMENT_FORMAT:
-            raise StageAInputError(f"{context}.format is invalid")
+            raise ToolkitInputError(f"{context}.format is invalid")
         encoding_id = _string(row.get("encoding_id"), f"{context}.encoding_id")
         encoding_ids.append(encoding_id)
         form_id = _string(row.get("form_id"), f"{context}.form_id")
@@ -439,33 +438,33 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
             row.get("semantic_form"), f"{context}.semantic_form"
         )
         if form_id not in forms_by_id:
-            raise StageAInputError(f"{context} names an unknown form")
+            raise ToolkitInputError(f"{context} names an unknown form")
         raw_bytes = row.get("instruction_bytes")
         if not isinstance(raw_bytes, list):
-            raise StageAInputError(f"{context}.instruction_bytes must be a list")
+            raise ToolkitInputError(f"{context}.instruction_bytes must be a list")
         instruction_bytes = [
             _uint(byte, 8, f"{context}.instruction_bytes[{offset}]")
             for offset, byte in enumerate(raw_bytes)
         ]
         if not 1 <= len(instruction_bytes) <= 15:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context}.instruction_bytes must contain 1 to 15 bytes"
             )
         instruction_hex = _string(
             row.get("instruction_hex"), f"{context}.instruction_hex"
         )
         if bytes(instruction_bytes).hex() != instruction_hex:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context} instruction bytes and hexadecimal encoding disagree"
             )
         if encoding_id != _encoding_id(form_id, instruction_hex):
-            raise StageAInputError(f"{context}.encoding_id is not canonical")
+            raise ToolkitInputError(f"{context}.encoding_id is not canonical")
         _strings(row.get("source_occurrence_ids"), f"{context}.source_occurrence_ids")
         if not isinstance(row.get("representative"), bool):
-            raise StageAInputError(f"{context}.representative must be a boolean")
+            raise ToolkitInputError(f"{context}.representative must be a boolean")
         enrichment = row.get("enrichment")
         if not isinstance(enrichment, Mapping):
-            raise StageAInputError(f"{context}.enrichment must be an object")
+            raise ToolkitInputError(f"{context}.enrichment must be an object")
         status = enrichment.get("status")
         if status == "resolved":
             enrichment = _exact_fields(
@@ -500,15 +499,15 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
             )
             actual_reasons[reason] += 1
         else:
-            raise StageAInputError(f"{context}.enrichment.status is invalid")
+            raise ToolkitInputError(f"{context}.enrichment.status is invalid")
         if semantic_form != forms_by_id[form_id]["semantic_form"]:
-            raise StageAInputError(f"{context} semantic form disagrees with its form")
+            raise ToolkitInputError(f"{context} semantic form disagrees with its form")
     if [
         (row["form_id"], row["instruction_hex"]) for row in encodings
     ] != sorted(
         (row["form_id"], row["instruction_hex"]) for row in encodings
     ) or len(encoding_ids) != len(set(encoding_ids)):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side-ISA catalog enrichment encodings are not canonically ordered"
         )
     for form_id, form in forms_by_id.items():
@@ -516,7 +515,7 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
             row["encoding_id"] for row in encodings if row["form_id"] == form_id
         )
         if list(form["encoding_ids"]) != actual_ids:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"side-ISA catalog enrichment form {form_id} encoding inventory "
                 "does not match the encoding rows"
             )
@@ -526,7 +525,7 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
             if row["form_id"] == form_id and row["representative"]
         ]
         if representatives != [form["representative_encoding_id"]]:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"side-ISA catalog enrichment form {form_id} has an invalid "
                 "representative encoding"
             )
@@ -534,7 +533,7 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
     if not isinstance(reasons, Mapping) or dict(reasons) != {
         reason: actual_reasons[reason] for reason in sorted(actual_reasons)
     }:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side-ISA catalog enrichment unresolved reason summary is inconsistent"
         )
     counts = _exact_fields(
@@ -562,7 +561,7 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
         "corpus_entries": qualified_forms,
     }
     if dict(counts) != expected_counts:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side-ISA catalog enrichment counts are inconsistent"
         )
     expected_status = (
@@ -571,7 +570,7 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
         else "incomplete_unresolved_encodings"
     )
     if payload.get("status") != expected_status:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side-ISA catalog enrichment aggregate status is inconsistent"
         )
     trust = _exact_fields(
@@ -579,7 +578,6 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
         {
             "role",
             "proof_authority",
-            "closes_stage_a_proof",
             "corpus_generation_rule",
         },
         "side-ISA catalog enrichment trust",
@@ -587,11 +585,10 @@ def _parse_enrichment(value: Any) -> Mapping[str, Any]:
     if (
         trust.get("role") != "untrusted_lean_derived_isa_catalog_enrichment"
         or trust.get("proof_authority") is not False
-        or trust.get("closes_stage_a_proof") is not False
         or trust.get("corpus_generation_rule")
         != "one_representative_per_fully_resolved_form"
     ):
-        raise StageAInputError("side-ISA catalog enrichment trust marker is invalid")
+        raise ToolkitInputError("side-ISA catalog enrichment trust marker is invalid")
     return payload
 
 
@@ -630,7 +627,7 @@ def resolved_isa_catalog(value: Any) -> ISAFormCatalog:
             }
         )
     if not entries:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "side-ISA catalog enrichment has no qualified representative "
             "corpus entries"
         )
@@ -647,7 +644,7 @@ def resolved_isa_catalog(value: Any) -> ISAFormCatalog:
     try:
         return parse_isa_form_catalog(catalog_payload)
     except ISAConformanceError as exc:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"resolved side-ISA enrichment is not corpus-compatible: {exc}"
         ) from exc
 
@@ -661,7 +658,7 @@ def write_enriched_side_isa_catalog(
     try:
         payload = json.loads(Path(proposal).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"cannot read side-ISA catalog proposal {proposal}: {exc}"
         ) from exc
     enriched = enrich_side_isa_catalog_with_lean(
@@ -678,7 +675,6 @@ def write_enriched_side_isa_catalog(
         "counts": enriched["counts"],
         "unresolved_reasons": enriched["unresolved_reasons"],
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }
 
 

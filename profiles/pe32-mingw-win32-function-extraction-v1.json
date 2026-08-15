@@ -1,5 +1,5 @@
 {
-  "format": "stage-a-external-function-extraction-spec-v1",
+  "format": "spaghetti-extractor-external-function-extraction-spec-v1",
   "id": "pe32-mingw-win32-function-signatures-v1",
   "model": "x86-pe32",
   "headers": [

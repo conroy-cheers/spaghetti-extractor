@@ -9,7 +9,7 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             interpreter, engine, profile = _callback_adapter_packages(root)
-            plan = plan_stage_b_native_runtime(
+            plan = plan_spx_native_runtime(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 external_profile=profile,
@@ -23,7 +23,7 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
                 receipt["invocation"],
                 "nested-machine-ir-callback-adapter-v1",
             )
-            package = write_stage_b_native_runtime_package(
+            package = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 external_profile=profile,
@@ -38,12 +38,12 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             interpreter, engine = _packages(root)
-            first = write_stage_b_native_runtime_package(
+            first = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=root / "first",
             )
-            second = write_stage_b_native_runtime_package(
+            second = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=root / "second",
@@ -89,9 +89,9 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
 
             _rewrite_implementation_engine_plan(engine, omit)
             with self.assertRaisesRegex(
-                StageBNativeRuntimeError, "omits or adds interpreter transfers"
+                CandidateRuntimeError, "omits or adds interpreter transfers"
             ):
-                plan_stage_b_native_runtime(
+                plan_spx_native_runtime(
                     interpreter_package=interpreter,
                     native_engine_package=engine,
                 )
@@ -112,9 +112,9 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
 
             _rewrite_implementation_engine_plan(engine, duplicate)
             with self.assertRaisesRegex(
-                StageBNativeRuntimeError, "omits or adds interpreter transfers"
+                CandidateRuntimeError, "omits or adds interpreter transfers"
             ):
-                plan_stage_b_native_runtime(
+                plan_spx_native_runtime(
                     interpreter_package=interpreter,
                     native_engine_package=engine,
                 )
@@ -129,7 +129,7 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
                 assert isinstance(entries, list)
                 entry = entries[0]
                 entry["implementation_class"] = "selected_portable_component"
-                entry["dispatch_lookup"] = "stage_b_region_override_lookup"
+                entry["dispatch_lookup"] = "spx_region_override_lookup"
                 _rehash_implementation_entry(entry)
                 counts = receipt["counts"]
                 assert isinstance(counts, dict)
@@ -138,9 +138,9 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
 
             _rewrite_implementation_engine_plan(engine, mismatch)
             with self.assertRaisesRegex(
-                StageBNativeRuntimeError, "portable component replacement id"
+                CandidateRuntimeError, "portable component replacement id"
             ):
-                plan_stage_b_native_runtime(
+                plan_spx_native_runtime(
                     interpreter_package=interpreter,
                     native_engine_package=engine,
                 )
@@ -158,9 +158,9 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                StageBNativeRuntimeError, "different implementation dispatch receipts"
+                CandidateRuntimeError, "different implementation dispatch receipts"
             ):
-                plan_stage_b_native_runtime(
+                plan_spx_native_runtime(
                     interpreter_package=interpreter,
                     native_engine_package=engine,
                 )
@@ -180,7 +180,7 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
                 root, selected_portable_components=[selection]
             )
             runtime = root / "runtime"
-            result = write_stage_b_native_runtime_package(
+            result = write_spx_native_runtime_package(
                 interpreter_package=interpreter,
                 native_engine_package=engine,
                 out=runtime,
@@ -189,13 +189,13 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
             self.assertEqual(result["counts"]["implementation_dispatches"], 1)
             self.assertIn('"portable-entry", "entry-cluster"', source)
             self.assertIn("override->fallback_on_unimplemented != 0U", source)
-            self.assertIn("stage_b_region_override_lookup == 0", source)
+            self.assertIn("spx_region_override_lookup == 0", source)
             self.assertIn(
-                "stage_b_program_transfer_count != stage_b_native_transfer_count",
+                "spx_program_transfer_count != spx_native_transfer_count",
                 source,
             )
             self.assertIn(
-                "stage_b_region_override_count != stage_b_native_portable_dispatch_count",
+                "spx_region_override_count != spx_native_portable_dispatch_count",
                 source,
             )
 

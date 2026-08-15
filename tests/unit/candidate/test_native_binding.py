@@ -7,11 +7,11 @@ import unittest
 from collections import Counter
 from pathlib import Path
 
-from spaghetti_extractor.errors import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 from spaghetti_extractor.candidate.binding import (
     NATIVE_RUNTIME_BINDING_FORMAT,
-    build_stage_b_native_runtime_binding,
-    write_stage_b_native_runtime_binding,
+    build_spx_native_runtime_binding,
+    write_spx_native_runtime_binding,
 )
 from spaghetti_extractor.util import sha256_file
 
@@ -64,7 +64,7 @@ def _plan() -> dict:
         ),
     ]
     return {
-        "format": "stage-b-native-engine-plan-v1",
+        "format": "spaghetti-extractor-native-engine-plan-v1",
         "status": "ready",
         "state_machine_sha256": STATE_MACHINE_SHA256,
         "entry_rva": 0x1000,
@@ -151,9 +151,9 @@ def _obligations() -> dict:
         ),
     ]
     return {
-        "format": "stage-b-runtime-call-obligations-v1",
+        "format": "spaghetti-extractor-runtime-call-obligations-v1",
         "status": "complete",
-        "authority": "stage-a-semantic-transfer-contracts",
+        "authority": "spaghetti-extractor-semantic-transfer-contracts",
         "state_machine": {
             "path": "state-machine.jsonl",
             "sha256": STATE_MACHINE_SHA256,
@@ -198,7 +198,7 @@ class NativeBindingTests(unittest.TestCase):
 
     def _build(self, root: Path, plan: dict, obligations: dict) -> dict:
         plan_path, obligations_path = self._write_inputs(root, plan, obligations)
-        return build_stage_b_native_runtime_binding(
+        return build_spx_native_runtime_binding(
             native_engine_plan=plan_path,
             runtime_call_obligations=obligations_path,
         )
@@ -257,7 +257,7 @@ class NativeBindingTests(unittest.TestCase):
                 root, first_plan, first_obligations
             )
             out = root / "native-runtime-binding.json"
-            written = write_stage_b_native_runtime_binding(
+            written = write_spx_native_runtime_binding(
                 native_engine_plan=plan_path,
                 runtime_call_obligations=obligations_path,
                 out=out,
@@ -311,7 +311,7 @@ class NativeBindingTests(unittest.TestCase):
 
         for index, (plan, obligations, message) in enumerate(mutations):
             with self.subTest(index=index), tempfile.TemporaryDirectory() as tmp:
-                with self.assertRaisesRegex(StageAInputError, message):
+                with self.assertRaisesRegex(ToolkitInputError, message):
                     self._build(Path(tmp), plan, obligations)
 
     def test_rejects_status_count_and_duplicate_mutations(self) -> None:
@@ -347,7 +347,7 @@ class NativeBindingTests(unittest.TestCase):
 
         for index, (plan, obligations, message) in enumerate(cases):
             with self.subTest(index=index), tempfile.TemporaryDirectory() as tmp:
-                with self.assertRaisesRegex(StageAInputError, message):
+                with self.assertRaisesRegex(ToolkitInputError, message):
                     self._build(Path(tmp), plan, obligations)
 
     def test_identity_and_site_kind_mutations_fail_closed_with_actions(self) -> None:

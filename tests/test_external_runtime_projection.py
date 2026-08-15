@@ -20,7 +20,7 @@ from spaghetti_extractor.authority.external_site_records import (
     ExternalContractV3,
     external_site_id_v3,
 )
-from spaghetti_extractor.errors import StageAInputError
+from spaghetti_extractor.errors import ToolkitInputError
 from spaghetti_extractor.external.runtime_projection import (
     load_authoritative_external_sites,
 )
@@ -114,7 +114,7 @@ class ExternalRuntimeProjectionTests(unittest.TestCase):
     def test_rejects_non_authorizing_artifact(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = _write_artifact(Path(directory), complete=False)
-            with self.assertRaisesRegex(StageAInputError, "not authorizing"):
+            with self.assertRaisesRegex(ToolkitInputError, "not authorizing"):
                 load_authoritative_external_sites(path)
 
 

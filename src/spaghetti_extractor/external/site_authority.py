@@ -16,13 +16,13 @@ from ..artifacts.formats import (
     CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA,
     CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
 )
-from ..errors import StageAInputError
+from ..errors import ToolkitInputError
 from .contracts import (
     CheckedExternalSiteContract,
     checked_external_site_contract_from_authority,
 )
 
-class CanonicalExternalSiteRecordError(StageAInputError):
+class CanonicalExternalSiteRecordError(ToolkitInputError):
     """A canonical external-site record violates its public wire schema."""
 
 
@@ -91,7 +91,11 @@ def parse_canonical_external_site_record(
         raise CanonicalExternalSiteRecordError(
             "canonical external sites must be sorted and unique"
         )
-    if authorizing != all(site.authorizing for site in sites):
+    # Site authority is necessary but not sufficient for record authority.  A
+    # record can remain blocked by an incomplete transition summary or
+    # structural inventory even when every currently enumerated site is
+    # complete (including when the site inventory is empty).
+    if authorizing and not all(site.authorizing for site in sites):
         raise CanonicalExternalSiteRecordError(
             "record authority disagrees with its external-site inventory"
         )

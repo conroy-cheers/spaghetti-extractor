@@ -1,4 +1,4 @@
-"""Small synthetic PE images shared by Stage A and Stage B tests."""
+"""Small synthetic PE images shared by static analysis and candidate reconstruction tests."""
 
 from __future__ import annotations
 

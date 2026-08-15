@@ -18,7 +18,7 @@ from spaghetti_extractor.pe32.behavioral_roots import (
 )
 
 from tests.pe_fixtures import pe32_image, pe32_tls_image
-from tests.test_stage_a_pe_entry_surface import _pe32_export_surface_image
+from tests.test_pe_entry_surface import _pe32_export_surface_image
 
 
 _PE_OFFSET = 0x80

@@ -30,7 +30,8 @@ from ..artifacts.formats import (
     LINKED_ISLAND_REVIEW_FORMAT,
     MACHINE_IR_FORMAT,
 )
-from ..pe32.stage_binary import StageAInputError, _parse_stage_a_pe
+from ..errors import ToolkitInputError
+from ..pe32.image import parse_pe_image
 from .contracts import (
     validate_linked_island_manifest as _validate_linked_island_contract,
 )
@@ -116,7 +117,7 @@ def match_linked_islands(
     """Partition machine units and propose content-bound library identities."""
 
     original_path = Path(original)
-    binary = _parse_stage_a_pe(original_path)
+    binary = parse_pe_image(original_path)
     machine = _load_machine_package(Path(machine_ir))
     machine_binary = _object(machine.manifest.get("binary"), "machine IR binary")
     if machine_binary.get("sha256") != binary.sha256:
@@ -309,7 +310,7 @@ def propose_library_match_evidence(
     """Emit every exact artifact match without selecting an identity."""
 
     original_path = Path(original)
-    binary = _parse_stage_a_pe(original_path)
+    binary = parse_pe_image(original_path)
     machine = _load_machine_package(Path(machine_ir))
     machine_binary = _object(machine.manifest.get("binary"), "machine IR binary")
     if machine_binary.get("sha256") != binary.sha256:

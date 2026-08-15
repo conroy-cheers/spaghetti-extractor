@@ -68,7 +68,7 @@ def _unit(unit_id: str, rva: int, target: int, value: int) -> dict[str, object]:
         "value": _const(value),
     }
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",

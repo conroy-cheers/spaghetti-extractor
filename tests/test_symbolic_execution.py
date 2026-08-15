@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 import unittest
 
-from spaghetti_extractor.pe32.stage_binary import BlockSide
+from spaghetti_extractor.pe32.model import BlockSide
 from spaghetti_extractor.static_program.model import StaticUnitContext
 from spaghetti_extractor.static_program.semantics.symbolic_execution import (
     _symbolic_execute,

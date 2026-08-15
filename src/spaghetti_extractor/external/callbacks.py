@@ -1,11 +1,11 @@
-"""Typed callback-registration contracts shared by Stage A and Stage B."""
+"""Typed callback-registration contracts shared by static analysis and candidate reconstruction."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 
 
 @dataclass(frozen=True)
@@ -109,17 +109,17 @@ def parse_callback_source(
 
     raw_source = contract.get("callback_source")
     if not isinstance(raw_source, Mapping):
-        raise StageAInputError(f"{context} has no exact callback_source")
+        raise ToolkitInputError(f"{context} has no exact callback_source")
     kind = raw_source.get("kind")
     if kind == "argument_word":
         if set(raw_source) != {"kind", "argument"}:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context} argument-word callback source has unknown fields"
             )
         pointee_offset = 0
     elif kind == "argument_pointee":
         if set(raw_source) != {"kind", "argument", "offset"}:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"{context} argument-pointee callback source has unknown fields"
             )
         pointee_offset = _bounded_u32(
@@ -128,11 +128,11 @@ def parse_callback_source(
             maximum=0xFFFF,
         )
     else:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} callback source kind must be argument_word or argument_pointee"
         )
     if argument_words == 0:
-        raise StageAInputError(f"{context} callback argument is out of range")
+        raise ToolkitInputError(f"{context} callback argument is out of range")
     argument_index = _bounded_u32(
         raw_source.get("argument"),
         f"{context} callback argument",
@@ -156,7 +156,7 @@ def parse_callback_abi(
         "stack_cleanup_bytes",
         "nullable",
     }:
-        raise StageAInputError(f"{context} has no exact callback ABI")
+        raise ToolkitInputError(f"{context} has no exact callback ABI")
     kind = raw.get("kind")
     argument_words = _bounded_u32(
         raw.get("argument_words"),
@@ -170,7 +170,7 @@ def parse_callback_abi(
     )
     nullable = raw.get("nullable")
     if kind != "generic_callback" or not isinstance(nullable, bool):
-        raise StageAInputError(f"{context} has an invalid callback ABI")
+        raise ToolkitInputError(f"{context} has an invalid callback ABI")
     return CallbackABI(
         kind=str(kind),
         argument_words=argument_words,
@@ -190,7 +190,7 @@ def parse_callback_result(
         "origin",
         "nullable",
     }:
-        raise StageAInputError(f"{context} has an invalid callback result")
+        raise ToolkitInputError(f"{context} has an invalid callback result")
     register = raw.get("register")
     origin = raw.get("origin")
     nullable = raw.get("nullable")
@@ -201,7 +201,7 @@ def parse_callback_result(
         or origin != "previous_registered_callback"
         or not isinstance(nullable, bool)
     ):
-        raise StageAInputError(f"{context} has an invalid callback result")
+        raise ToolkitInputError(f"{context} has an invalid callback result")
     return CallbackResult(register.lower(), str(origin), nullable)
 
 
@@ -228,7 +228,7 @@ def parse_nested_native_callback_behavior(
         "payload_arguments",
     }
     if not isinstance(raw, Mapping) or set(raw) != expected_keys:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} has an invalid nested native callback behavior"
         )
     if (
@@ -236,24 +236,24 @@ def parse_nested_native_callback_behavior(
         or raw.get("provider_relation") != "same_pinned_native_provider_v1"
         or raw.get("delivery") != "during_call_or_until_lifetime_end"
     ):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} has an unsupported nested native callback behavior"
         )
 
     callback_abi = contract.get("callback_abi")
     if not isinstance(callback_abi, Mapping):
-        raise StageAInputError(f"{context} has no exact callback ABI")
+        raise ToolkitInputError(f"{context} has no exact callback ABI")
     callback_argument_words = _bounded_u32(
         callback_abi.get("argument_words"),
         f"{context} callback argument count",
         maximum=64,
     )
     if callback_argument_words == 0:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} nested native callback must have arguments"
         )
     if registration_argument_words == 0:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} callback registration must have arguments"
         )
 
@@ -261,7 +261,7 @@ def parse_nested_native_callback_behavior(
     if not isinstance(activation, Mapping) or set(activation) != {
         "kind", "argument", "mask", "value",
     }:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} has an invalid callback activation guard"
         )
     activation_argument = _bounded_u32(
@@ -284,7 +284,7 @@ def parse_nested_native_callback_behavior(
         or mask == 0
         or value & ~mask
     ):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} has an invalid callback activation guard"
         )
 
@@ -300,7 +300,7 @@ def parse_nested_native_callback_behavior(
     )
     raw_messages = raw.get("message_values")
     if not isinstance(raw_messages, list) or not raw_messages:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} callback message values must be a nonempty list"
         )
     message_values = tuple(
@@ -312,7 +312,7 @@ def parse_nested_native_callback_behavior(
         for index, item in enumerate(raw_messages)
     )
     if len(set(message_values)) != len(message_values):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} callback message values must be unique"
         )
 
@@ -320,7 +320,7 @@ def parse_nested_native_callback_behavior(
     if not isinstance(instance, Mapping) or set(instance) != {
         "callback_argument", "registration_argument",
     }:
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} has an invalid callback instance binding"
         )
     instance_callback_argument = _bounded_u32(
@@ -336,7 +336,7 @@ def parse_nested_native_callback_behavior(
 
     raw_payloads = raw.get("payload_arguments")
     if not isinstance(raw_payloads, list):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} callback payload arguments must be a list"
         )
     payload_arguments = tuple(
@@ -358,7 +358,7 @@ def parse_nested_native_callback_behavior(
         or len(set(classified_arguments)) != len(classified_arguments)
         or set(classified_arguments) != set(range(callback_argument_words))
     ):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"{context} callback argument roles must classify every word exactly once"
         )
 
@@ -383,5 +383,5 @@ def _bounded_u32(value: Any, context: str, *, maximum: int) -> int:
         or isinstance(value, bool)
         or not 0 <= value <= maximum
     ):
-        raise StageAInputError(f"{context} must be between 0 and {maximum}")
+        raise ToolkitInputError(f"{context} must be between 0 and {maximum}")
     return value

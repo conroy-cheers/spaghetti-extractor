@@ -9,7 +9,7 @@ from .common import Handler, path_argument
 
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
-    if name != "stage-a-export-ghidra-proposal":
+    if name != "static-export-ghidra-proposal":
         raise ValueError(f"unsupported proposal command: {name}")
     path_argument(command, "binary", required=True)
     path_argument(command, "out", required=True)

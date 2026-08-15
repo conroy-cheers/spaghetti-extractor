@@ -10,14 +10,14 @@ from typing import Any, Mapping
 import capstone
 from capstone import x86_const
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes
 
 
-TYPED_NATIVE_X87_OPERATION_FORMAT = "stage-b-typed-native-x87-operation-v1"
-TYPED_NATIVE_X87_PROGRAM_FORMAT = "stage-b-typed-native-x87-program-v1"
-X87_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
-X87_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
+TYPED_NATIVE_X87_OPERATION_FORMAT = "spaghetti-extractor-typed-native-x87-operation-v1"
+TYPED_NATIVE_X87_PROGRAM_FORMAT = "spaghetti-extractor-typed-native-x87-program-v1"
+X87_CHECKED_DECODER = "SpaghettiExtractor.ISA.Formal.decodeInstructionExact"
+X87_CHECKED_EXECUTOR = "SpaghettiExtractor.ISA.Formal.executeInstruction"
 X87_REPLAY_MODEL = "native_exact_x87_command_replay_obligation_v1"
 X87_PHYSICAL_FIELDS = (
     "stack",
@@ -165,16 +165,16 @@ def _operation(
 def _register_operand(mnemonic: str, names: tuple[str, ...]) -> TypedX87Operand:
     if names == ("ax",):
         if mnemonic not in _X87_AX_MNEMONICS:
-            raise StageAInputError(f"unsupported x87 AX form {mnemonic!r}")
+            raise ToolkitInputError(f"unsupported x87 AX form {mnemonic!r}")
         return TypedX87Operand("ax", width=2)
     registers: list[int] = []
     for name in names:
         match = re.fullmatch(r"st\(([0-7])\)", name)
         if match is None:
-            raise StageAInputError(f"unsupported x87 register operand {name!r}")
+            raise ToolkitInputError(f"unsupported x87 register operand {name!r}")
         registers.append(int(match.group(1)))
     if mnemonic not in _X87_STACK_MNEMONICS or len(registers) not in {1, 2}:
-        raise StageAInputError(f"unsupported x87 stack-register form {mnemonic!r}")
+        raise ToolkitInputError(f"unsupported x87 stack-register form {mnemonic!r}")
     return TypedX87Operand("stack", width=10, registers=tuple(registers))
 
 
@@ -191,21 +191,21 @@ def _memory_operand(
 ) -> TypedX87Operand:
     width = _normalized_x87_memory_width(mnemonic, width)
     if width not in _X87_MEMORY_WIDTHS.get(mnemonic, frozenset()):
-        raise StageAInputError(
+        raise ToolkitInputError(
             f"unsupported x87 memory form {mnemonic!r} with width {width}"
         )
     if segment:
-        raise StageAInputError(f"unsupported x87 segment override {segment!r}")
+        raise ToolkitInputError(f"unsupported x87 segment override {segment!r}")
     if base not in _X87_GPRS | {None} or index not in _X87_GPRS | {None}:
-        raise StageAInputError("typed x87 memory operand has an unsupported register")
+        raise ToolkitInputError("typed x87 memory operand has an unsupported register")
     if scale not in {1, 2, 4, 8} or (index is None and scale != 1):
-        raise StageAInputError("typed x87 memory operand has an unsupported scale")
+        raise ToolkitInputError("typed x87 memory operand has an unsupported scale")
     image_rva: int | None = None
     if image_base <= displacement <= image_base + 0xFFFFFFFF:
         image_rva = displacement - image_base
         displacement = 0
     elif base is None and index is None:
-        raise StageAInputError("absolute typed x87 operand is outside its PE image")
+        raise ToolkitInputError("absolute typed x87 operand is outside its PE image")
     return TypedX87Operand(
         "memory",
         width=width,
@@ -226,7 +226,7 @@ def extract_typed_x87_operation(
     decoder.detail = True
     decoded = list(decoder.disasm(encoded, image_base, count=2))
     if len(decoded) != 1 or decoded[0].size != len(encoded):
-        raise StageAInputError("x87 typed operation is not one exact IA-32 instruction")
+        raise ToolkitInputError("x87 typed operation is not one exact IA-32 instruction")
     decoded_instruction = decoded[0]
     mnemonic = decoded_instruction.mnemonic.lower()
     guidance_mnemonic = instruction.get("mnemonic")
@@ -235,17 +235,17 @@ def extract_typed_x87_operation(
         not isinstance(guidance_mnemonic, str)
         or guidance_mnemonic.lower() != mnemonic
     ):
-        raise StageAInputError("x87 typed mnemonic differs from the exact decoded bytes")
+        raise ToolkitInputError("x87 typed mnemonic differs from the exact decoded bytes")
     if guidance_operand is not None and (
         not isinstance(guidance_operand, str)
         or guidance_operand.strip().lower()
         != decoded_instruction.op_str.strip().lower()
     ):
-        raise StageAInputError("x87 typed operands differ from the exact decoded bytes")
+        raise ToolkitInputError("x87 typed operands differ from the exact decoded bytes")
     operands = tuple(decoded_instruction.operands)
     if not operands:
         if mnemonic not in _X87_NO_OPERAND_MNEMONICS:
-            raise StageAInputError(f"unsupported operand-free x87 mnemonic {mnemonic!r}")
+            raise ToolkitInputError(f"unsupported operand-free x87 mnemonic {mnemonic!r}")
         operand = TypedX87Operand("none")
     elif all(item.type == x86_const.X86_OP_REG for item in operands):
         operand = _register_operand(
@@ -278,28 +278,28 @@ def extract_typed_x87_operation(
             image_base=image_base,
         )
     else:
-        raise StageAInputError(f"unsupported typed x87 operand form for {mnemonic!r}")
+        raise ToolkitInputError(f"unsupported typed x87 operand form for {mnemonic!r}")
     return _operation(mnemonic=mnemonic, operand=operand, source_size=len(encoded))
 
 
 def typed_x87_operation_from_micro_op(
     micro_op: Mapping[str, Any], *, image_base: int
 ) -> TypedX87Operation:
-    """Validate the byte-free machine-IR x87 projection used by Stage B."""
+    """Validate the byte-free machine-IR x87 projection used by candidate reconstruction."""
 
-    if micro_op.get("format") != "stage-a-x87-micro-op-v1":
-        raise StageAInputError("typed x87 micro-op has an unsupported format")
+    if micro_op.get("format") != "spaghetti-extractor-x87-micro-op-v1":
+        raise ToolkitInputError("typed x87 micro-op has an unsupported format")
     mnemonic = micro_op.get("mnemonic")
     operands = micro_op.get("operands")
     size = micro_op.get("size")
     if not isinstance(mnemonic, str) or not mnemonic or not isinstance(operands, list):
-        raise StageAInputError("typed x87 micro-op mnemonic or operands are malformed")
+        raise ToolkitInputError("typed x87 micro-op mnemonic or operands are malformed")
     if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
-        raise StageAInputError("typed x87 micro-op source size is malformed")
+        raise ToolkitInputError("typed x87 micro-op source size is malformed")
     mnemonic = mnemonic.lower()
     if not operands:
         if mnemonic not in _X87_NO_OPERAND_MNEMONICS:
-            raise StageAInputError(f"unsupported operand-free x87 mnemonic {mnemonic!r}")
+            raise ToolkitInputError(f"unsupported operand-free x87 mnemonic {mnemonic!r}")
         operand = TypedX87Operand("none")
     elif all(
         isinstance(item, Mapping) and item.get("kind") == "register"
@@ -322,11 +322,11 @@ def typed_x87_operation_from_micro_op(
             or not isinstance(width_bits, int)
             or width_bits % 8
         ):
-            raise StageAInputError("typed x87 memory width is malformed")
+            raise ToolkitInputError("typed x87 memory width is malformed")
         if not isinstance(scale, int) or isinstance(scale, bool):
-            raise StageAInputError("typed x87 memory scale is malformed")
+            raise ToolkitInputError("typed x87 memory scale is malformed")
         if isinstance(displacement, bool) or not isinstance(displacement, int):
-            raise StageAInputError("typed x87 memory displacement is malformed")
+            raise ToolkitInputError("typed x87 memory displacement is malformed")
         segment = _optional_string(raw, "segment", "typed x87 memory segment")
         base = _optional_string(raw, "base", "typed x87 memory base")
         index = _optional_string(raw, "index", "typed x87 memory index")
@@ -341,7 +341,7 @@ def typed_x87_operation_from_micro_op(
             image_base=image_base,
         )
     else:
-        raise StageAInputError(f"unsupported typed x87 operand form for {mnemonic!r}")
+        raise ToolkitInputError(f"unsupported typed x87 operand form for {mnemonic!r}")
     return _operation(mnemonic=mnemonic, operand=operand, source_size=size)
 
 
@@ -351,20 +351,20 @@ def typed_x87_operation_from_payload(
     """Validate and reconstruct one canonical byte-free x87 operation."""
 
     if payload.get("format") != TYPED_NATIVE_X87_OPERATION_FORMAT:
-        raise StageAInputError("typed x87 operation has an unsupported format")
+        raise ToolkitInputError("typed x87 operation has an unsupported format")
     mnemonic = payload.get("mnemonic")
     source_size = payload.get("source_size")
     operand_payload = payload.get("operand")
     if not isinstance(mnemonic, str) or not mnemonic or mnemonic != mnemonic.lower():
-        raise StageAInputError("typed x87 operation mnemonic is malformed")
+        raise ToolkitInputError("typed x87 operation mnemonic is malformed")
     if (
         isinstance(source_size, bool)
         or not isinstance(source_size, int)
         or source_size <= 0
     ):
-        raise StageAInputError("typed x87 operation source size is malformed")
+        raise ToolkitInputError("typed x87 operation source size is malformed")
     if not isinstance(operand_payload, Mapping):
-        raise StageAInputError("typed x87 operation operand is malformed")
+        raise ToolkitInputError("typed x87 operation operand is malformed")
 
     kind = operand_payload.get("kind")
     if kind == "none":
@@ -374,14 +374,14 @@ def typed_x87_operation_from_payload(
     elif kind == "stack":
         registers = operand_payload.get("stack_registers")
         if not isinstance(registers, list) or not registers:
-            raise StageAInputError("typed x87 stack-register inventory is malformed")
+            raise ToolkitInputError("typed x87 stack-register inventory is malformed")
         if any(
             isinstance(register, bool)
             or not isinstance(register, int)
             or not 0 <= register <= 7
             for register in registers
         ):
-            raise StageAInputError("typed x87 stack-register index is malformed")
+            raise ToolkitInputError("typed x87 stack-register index is malformed")
         operand = _register_operand(
             mnemonic, tuple(f"st({register})" for register in registers)
         )
@@ -389,27 +389,27 @@ def typed_x87_operation_from_payload(
         width = operand_payload.get("width")
         address = operand_payload.get("address")
         if isinstance(width, bool) or not isinstance(width, int) or width <= 0:
-            raise StageAInputError("typed x87 memory width is malformed")
+            raise ToolkitInputError("typed x87 memory width is malformed")
         if not isinstance(address, Mapping):
-            raise StageAInputError("typed x87 memory address is malformed")
+            raise ToolkitInputError("typed x87 memory address is malformed")
         base = _optional_string(address, "base", "typed x87 memory base")
         index = _optional_string(address, "index", "typed x87 memory index")
         scale = address.get("scale")
         displacement = address.get("displacement")
         image_rva = address.get("image_rva")
         if isinstance(scale, bool) or not isinstance(scale, int):
-            raise StageAInputError("typed x87 memory scale is malformed")
+            raise ToolkitInputError("typed x87 memory scale is malformed")
         if isinstance(displacement, bool) or not isinstance(displacement, int):
-            raise StageAInputError("typed x87 memory displacement is malformed")
+            raise ToolkitInputError("typed x87 memory displacement is malformed")
         if image_rva is not None and (
             isinstance(image_rva, bool)
             or not isinstance(image_rva, int)
             or not 0 <= image_rva <= 0xFFFFFFFF
         ):
-            raise StageAInputError("typed x87 image RVA is malformed")
+            raise ToolkitInputError("typed x87 image RVA is malformed")
         if image_rva is not None:
             if displacement != 0:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     "typed x87 image-relative address has a nonzero displacement"
                 )
             displacement = image_base + image_rva
@@ -424,13 +424,13 @@ def typed_x87_operation_from_payload(
             image_base=image_base,
         )
     else:
-        raise StageAInputError(f"unsupported typed x87 operand kind {kind!r}")
+        raise ToolkitInputError(f"unsupported typed x87 operand kind {kind!r}")
 
     operation = _operation(
         mnemonic=mnemonic, operand=operand, source_size=source_size
     )
     if dict(payload) != operation.payload():
-        raise StageAInputError(
+        raise ToolkitInputError(
             "typed x87 operation differs from its canonical representation"
         )
     return operation
@@ -443,7 +443,7 @@ def _optional_string(
     if value is None:
         return None
     if not isinstance(value, str):
-        raise StageAInputError(f"{label} is malformed")
+        raise ToolkitInputError(f"{label} is malformed")
     return value.lower()
 
 

@@ -62,8 +62,8 @@ class NativeRuntimeValidationTests(unittest.TestCase):
                 root = Path(temporary)
                 interpreter, engine, profile = _callback_adapter_packages(root)
                 _rewrite_callback_engine_plan(engine, mutate)
-                with self.assertRaises(StageBNativeRuntimeError):
-                    plan_stage_b_native_runtime(
+                with self.assertRaises(CandidateRuntimeError):
+                    plan_spx_native_runtime(
                         interpreter_package=interpreter,
                         native_engine_package=engine,
                         external_profile=profile,
@@ -78,9 +78,9 @@ class NativeRuntimeValidationTests(unittest.TestCase):
                 root, rows=_external_result_rows(), external_profile=profile
             )
             with self.assertRaisesRegex(
-                StageBNativeRuntimeError, "unsupported range size"
+                CandidateRuntimeError, "unsupported range size"
             ):
-                plan_stage_b_native_runtime(
+                plan_spx_native_runtime(
                     interpreter_package=interpreter,
                     native_engine_package=engine,
                     external_profile=profile,
@@ -105,10 +105,10 @@ class NativeRuntimeValidationTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(
-                StageBNativeRuntimeError,
+                CandidateRuntimeError,
                 "uses undefined_bv/undefined_flag but has no complete",
             ):
-                plan_stage_b_native_runtime(
+                plan_spx_native_runtime(
                     interpreter_package=interpreter,
                     native_engine_package=engine,
                 )
@@ -122,9 +122,9 @@ class NativeRuntimeValidationTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(
-                StageBNativeRuntimeError, "interpreter source .* SHA-256 mismatch"
+                CandidateRuntimeError, "interpreter source .* SHA-256 mismatch"
             ):
-                plan_stage_b_native_runtime(
+                plan_spx_native_runtime(
                     interpreter_package=interpreter,
                     native_engine_package=engine,
                 )
@@ -135,7 +135,7 @@ class NativeRuntimeValidationTests(unittest.TestCase):
             unit = _qualified_x87_transfer()
             unit["x87_micro_ops"][0]["bytes"] = "d9e8"
             with self.assertRaisesRegex(
-                StageBInterpreterError, "raw instruction material"
+                CandidateInterpreterError, "raw instruction material"
             ):
                 _packages(root, [unit])
 

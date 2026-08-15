@@ -70,7 +70,7 @@ from .operation_model import (
     _U32_MAX,
     _import_json,
 )
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 
 
 def load_external_operation_profile(
@@ -604,7 +604,7 @@ def _selector(value: Any, index: int) -> OperationSelector:
         )
         try:
             identity = MachineImportIdentity.from_mapping(imported, context=context)
-        except StageAInputError as exc:
+        except ToolkitInputError as exc:
             raise ExternalOperationProfileError(str(exc)) from exc
         return DirectImportSelector(operation_id, identity)
     if kind == "table_slot":

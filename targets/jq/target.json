@@ -4,7 +4,7 @@
   "display_name": "jq 1.8.1 PE32 frontend",
   "input": {
     "kind": "pe32",
-    "expected_sha256": "5020eab56380107673165fdd1a7ee0532d926d614fab06fd6134394e0030b685"
+    "expected_sha256": "1d4ccabec8ad11a04f7f45b105809847ca91d018d210746e5a7b4d35b3c84ac6"
   },
   "paths": {
     "nix": "default.nix",

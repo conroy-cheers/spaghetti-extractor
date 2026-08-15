@@ -107,7 +107,7 @@ def _unit(
     register_writes = [] if register_writes is None else register_writes
     flag_writes = [] if flag_writes is None else flag_writes
     return {
-        "format": "stage-a-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",
@@ -477,7 +477,7 @@ class _Fixture:
         self.manifest.write_text(
             json.dumps(
                 {
-                    "format": "stage-a-machine-ir-manifest-v2",
+                    "format": "spaghetti-extractor-machine-ir-manifest-v2",
                     "artifacts": {
                         "machine_ir": {
                             "path": self.machine_ir.name,

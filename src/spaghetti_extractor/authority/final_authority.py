@@ -76,7 +76,7 @@ FINAL_AUTHORITY_RECORD_V3_SCHEMA = (
     "spaghetti-extractor-final-candidate-authority-record-v3"
 )
 FINAL_AUTHORITY_ARTIFACT_KIND_V3 = "final-authority-v3"
-FINAL_AUTHORITY_SCOPE_V3 = "stage_b_candidate_generation"
+FINAL_AUTHORITY_SCOPE_V3 = "spx_candidate_generation"
 
 _UNIT_FAMILIES = (
     "callbacks",

@@ -18,7 +18,7 @@ from spaghetti_extractor.isa.conformance_lean import (
     mask_x87_outputs,
     run_lean_isa_conformance,
 )
-from tests.test_stage_a_isa_conformance_unicorn import _case, _corpus, _x87_mask
+from tests.test_isa_conformance_unicorn import _case, _corpus, _x87_mask
 
 
 class ISAConformanceLeanFixtureTests(unittest.TestCase):
@@ -141,7 +141,7 @@ class ISAConformanceLeanFixtureTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     ISAConformanceError,
-                    r"StageA/X87\.olean",
+                    r"SpaghettiExtractor/ISA/X87\.olean",
                 ):
                     run_lean_isa_conformance(_corpus())
 
@@ -154,7 +154,7 @@ class ISAConformanceLeanFixtureTests(unittest.TestCase):
             ):
                 with self.assertRaisesRegex(
                     ISAConformanceError,
-                    re.escape(str(Path(explicit))) + r".*StageA/X87\.olean",
+                    re.escape(str(Path(explicit))) + r".*SpaghettiExtractor/ISA/X87\.olean",
                 ):
                     run_lean_isa_conformance(
                         _corpus(), kernel_cache=Path(explicit)

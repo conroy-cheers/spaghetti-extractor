@@ -20,7 +20,7 @@ from .conformance import (
 from .semantic_forms import lean_semantic_form_classifier_sha256
 
 
-LEAN_SEMANTIC_FORMS_FORMAT = "stage-a-lean-isa-semantic-forms-v1"
+LEAN_SEMANTIC_FORMS_FORMAT = "spaghetti-extractor-lean-isa-semantic-forms-v1"
 
 
 def _shard_for_case(case_id: str, shard_count: int) -> int:
@@ -102,7 +102,6 @@ def lean_semantic_forms_payload(
         "trust": {
             "role": "isa_conformance_evidence_only",
             "proof_authority": False,
-            "closes_stage_a_proof": False,
         },
     }
 
@@ -129,7 +128,6 @@ def _parse_lean_semantic_forms(
     if not isinstance(trust, Mapping) or trust != {
         "role": "isa_conformance_evidence_only",
         "proof_authority": False,
-        "closes_stage_a_proof": False,
     }:
         raise ISAConformanceError("Lean semantic forms have invalid trust metadata")
     raw_rows = value.get("cases")

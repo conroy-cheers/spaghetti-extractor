@@ -2,18 +2,18 @@
 
 The active Lean footprint is a compact IA-32 semantic kernel:
 
-- `StageA/X87.lean`
-- `StageA/Bytes.lean`
-- `StageA/PE32.lean`
-- `StageA/Machine.lean`
-- `StageA/Decode.lean`
-- `StageA/Semantics.lean`
-- `StageA/ISAInventory.lean`
-- `StageA/ISAQualification.lean`
-- `StageA/ISAConformance.lean`
-- `StageA/ISAConformanceRunner.lean`
+- `SpaghettiExtractor/ISA/X87.lean`
+- `SpaghettiExtractor/ISA/Bytes.lean`
+- `SpaghettiExtractor/ISA/PE32.lean`
+- `SpaghettiExtractor/ISA/Machine.lean`
+- `SpaghettiExtractor/ISA/Decode.lean`
+- `SpaghettiExtractor/ISA/Semantics.lean`
+- `SpaghettiExtractor/ISA/ISAInventory.lean`
+- `SpaghettiExtractor/ISA/ISAQualification.lean`
+- `SpaghettiExtractor/ISA/ISAConformance.lean`
+- `SpaghettiExtractor/ISA/ISAConformanceRunner.lean`
 
-Stage A statically inventories instruction forms required by a PE. Unsupported
+static analysis statically inventories instruction forms required by a PE. Unsupported
 forms fail closed. The same strict corpus can be evaluated by Lean, Unicorn,
 Bochs, and hardware-derived expected vectors.
 
@@ -29,9 +29,9 @@ leaves that form unqualified. Content-addressed derivations allow expensive
 unchanged shards to be substituted from remote builders.
 
 ```console
-spaghetti-extractor expert stage-a-inventory-isa \
+spaghetti-extractor expert isa-inventory \
   --binary app.exe --inventory inventory.json --out isa.json
-spaghetti-extractor expert stage-a-check-isa-conformance \
+spaghetti-extractor expert isa-check-conformance \
   --corpus corpus.json --backend lean --out lean-report.json
 nix build .#isa-kernel --no-link
 ```

@@ -16,10 +16,10 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 
 
-_IMPORT = re.compile(r"^import StageA\.([A-Za-z0-9_]+)$", re.MULTILINE)
+_IMPORT = re.compile(r"^import SpaghettiExtractor\.ISA\.([A-Za-z0-9_]+)$", re.MULTILINE)
 _UNCHECKED = re.compile(r"\b(?:sorry|axiom|unsafe)\b")
 
 
@@ -41,10 +41,10 @@ def run_lean_module_graph(
     command_timeout_seconds: float = 300,
     emit_c: bool = False,
 ) -> dict[str, Any]:
-    """Compile one closed ``StageA`` import graph in dependency order."""
+    """Compile one closed ``SpaghettiExtractor.ISA`` import graph in dependency order."""
 
     if command_timeout_seconds <= 0:
-        raise StageAInputError("Lean command timeout must be positive")
+        raise ToolkitInputError("Lean command timeout must be positive")
     started = time.monotonic()
     lean = shutil.which("lean")
     if lean is None:
@@ -56,7 +56,7 @@ def run_lean_module_graph(
             "elapsed_seconds": 0.0,
         }
 
-    stage_a = Path(lean_dir) / "StageA"
+    isa_modules = Path(lean_dir) / "SpaghettiExtractor/ISA"
     imports: dict[str, list[str]] = {}
     order: list[str] = []
     active: set[str] = set()
@@ -66,13 +66,13 @@ def run_lean_module_graph(
         if module in visited:
             return
         if module in active:
-            raise StageAInputError(f"cyclic Lean import involving StageA.{module}")
-        source = stage_a / f"{module}.lean"
+            raise ToolkitInputError(f"cyclic Lean import involving SpaghettiExtractor.ISA.{module}")
+        source = isa_modules / f"{module}.lean"
         if not source.is_file():
-            raise StageAInputError(f"missing Lean module StageA.{module}")
+            raise ToolkitInputError(f"missing Lean module SpaghettiExtractor.ISA.{module}")
         text = source.read_text(encoding="utf-8")
         if _UNCHECKED.search(text):
-            raise StageAInputError(f"unchecked Lean marker in StageA.{module}")
+            raise ToolkitInputError(f"unchecked Lean marker in SpaghettiExtractor.ISA.{module}")
         active.add(module)
         dependencies = list(dict.fromkeys(_IMPORT.findall(text)))
         imports[module] = dependencies
@@ -84,7 +84,7 @@ def run_lean_module_graph(
 
     try:
         visit(bundle)
-    except StageAInputError as exc:
+    except ToolkitInputError as exc:
         return {
             "status": "failed",
             "returncode": 1,
@@ -106,10 +106,10 @@ def run_lean_module_graph(
                 "stderr": "".join(stderr),
                 "elapsed_seconds": round(time.monotonic() - started, 3),
             }
-        source = stage_a / f"{module}.lean"
-        output = stage_a / f"{module}.olean"
-        c_output = stage_a / f"{module}.c"
-        dependency_outputs = [stage_a / f"{name}.olean" for name in imports[module]]
+        source = isa_modules / f"{module}.lean"
+        output = isa_modules / f"{module}.olean"
+        c_output = isa_modules / f"{module}.c"
+        dependency_outputs = [isa_modules / f"{name}.olean" for name in imports[module]]
         if _output_current(source, output, dependency_outputs) and (
             not emit_c or _output_current(source, c_output, dependency_outputs)
         ):
@@ -118,11 +118,11 @@ def run_lean_module_graph(
             lean,
             "--trust=0",
             "-o",
-            f"StageA/{module}.olean",
+            f"SpaghettiExtractor/ISA/{module}.olean",
         ]
         if emit_c:
-            command.extend(["-c", f"StageA/{module}.c"])
-        command.append(f"StageA/{module}.lean")
+            command.extend(["-c", f"SpaghettiExtractor/ISA/{module}.c"])
+        command.append(f"SpaghettiExtractor/ISA/{module}.lean")
         commands.append(command)
         try:
             completed = subprocess.run(

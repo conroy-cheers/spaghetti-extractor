@@ -1,20 +1,20 @@
-"""Data model and shared constants for the Stage B interpreter."""
+"""Data model and shared constants for the candidate reconstruction interpreter."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from .x87 import (
     TYPED_NATIVE_X87_PROGRAM_FORMAT,
     TypedX87Operation,
 )
 
 
-STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT = (
-    "stage-b-interpreter-definedness-use-v2"
+SPX_INTERPRETER_DEFINEDNESS_USE_FORMAT = (
+    "spaghetti-extractor-interpreter-definedness-use-v2"
 )
-STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS = frozenset({
+SPX_INTERPRETER_DEFINEDNESS_USE_FIELDS = frozenset({
     "format",
     "status",
     "proof_authority",
@@ -36,11 +36,11 @@ _AF_FLAG_INDEX = len(_FLAGS)
 _REP_SCAS_OWNED_REGISTERS = ("edi", "ecx")
 _REP_SCAS_OWNED_FLAGS = ("cf", "pf", "af", "zf", "sf", "of")
 _X87_TYPED_PROGRAM_FORMAT = TYPED_NATIVE_X87_PROGRAM_FORMAT
-_ORDINARY_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
-_ORDINARY_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
+_ORDINARY_CHECKED_DECODER = "SpaghettiExtractor.ISA.Formal.decodeInstructionExact"
+_ORDINARY_CHECKED_EXECUTOR = "SpaghettiExtractor.ISA.Formal.executeInstruction"
 
 
-class StageBInterpreterError(StageAInputError):
+class CandidateInterpreterError(ToolkitInputError):
     """The semantic program cannot be lowered into the qualified interpreter."""
 
     def __init__(
@@ -49,7 +49,7 @@ class StageBInterpreterError(StageAInputError):
         *,
         code: str = "unsupported_transfer",
         next_action: str = (
-            "repair the Stage A transfer or add generic checked interpreter lowering"
+            "repair the static analysis transfer or add generic checked interpreter lowering"
         ),
     ) -> None:
         super().__init__(message)

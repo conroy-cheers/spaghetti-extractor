@@ -5,10 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..static_program.extraction import (
     STATIC_PROGRAM_EXPORT_FORMAT,
-    stage_a_export_static_program,
+    spx_export_static_program,
 )
 from ..util import write_json
 from .state_machine import write_state_machine_from_static_program
@@ -21,13 +21,13 @@ def export_static_reconstruction(
 
     original = Path(original).resolve()
     out = Path(out).resolve()
-    manifest = stage_a_export_static_program(
+    manifest = spx_export_static_program(
         original=original,
         inventory=Path(inventory),
         out=out,
     )
     if manifest.get("format") != STATIC_PROGRAM_EXPORT_FORMAT:
-        raise StageAInputError("static-program export returned an unexpected format")
+        raise ToolkitInputError("static-program export returned an unexpected format")
 
     contract_path = out / "static-program-contract.json"
     semantic_path = out / "semantic-transfer-contracts.jsonl"
@@ -41,7 +41,7 @@ def export_static_reconstruction(
 
     outputs = manifest.get("outputs")
     if not isinstance(outputs, dict):
-        raise StageAInputError("static-program export has malformed outputs")
+        raise ToolkitInputError("static-program export has malformed outputs")
     outputs["state_machine"] = {
         "path": state_machine_path.name,
         "sha256": binding.sha256,

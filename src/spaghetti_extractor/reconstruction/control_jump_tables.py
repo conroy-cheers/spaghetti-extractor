@@ -94,7 +94,7 @@ def recover_static_pe32_jump_table_inventory(
         raw_values = finite_index_domain.get("values")
         if (
             finite_index_domain.get("format")
-            != "stage-a-finite-u32-expression-domain-v1"
+            != "spaghetti-extractor-finite-u32-expression-domain-v1"
             or finite_index_domain.get("expression_sha256")
             != expected_expression_sha256
             or not isinstance(raw_values, list)

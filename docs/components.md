@@ -1,6 +1,6 @@
 # Composable Component Lifting
 
-Components are the supported unit of Stage B work. They let an operator replace
+Components are the supported unit of candidate reconstruction work. They let an operator replace
 one exact machine region, a procedure-sized group, or a larger subsystem while
 every other structural unit remains owned by the machine-IR fallback.
 
@@ -117,7 +117,7 @@ adapter-plan, verification, and source-entry bindings match.
 - Every unselected structural unit retains machine-IR fallback.
 - Overlapping ownership is rejected.
 - Enabled component members may not fall back individually.
-- Whole-program candidate generation still requires final Stage A authority.
+- Whole-program candidate generation still requires final static analysis authority.
 
 Reviewed interfaces may avoid copying long synthesized effect inventories by
 using `adapter_effects.inherit_synthesized_except`. Each exclusion names one

@@ -334,7 +334,7 @@ let
     if fallbackCapabilityAnalysis == null || finalAuthorityGate == null then
       null
     else
-      import ./stage-b-interpreter-package.nix {
+      import ./candidate-interpreter-package.nix {
         inherit pkgs pythonEnv pythonSource;
         machineIr = machineIrPackage;
         capabilityAnalysis = fallbackCapabilityAnalysis;
@@ -343,7 +343,7 @@ let
       };
   fallbackCoverageReceipt =
     if fallbackInterpreter == null then null else
-      import ./stage-b-fallback-coverage-receipt.nix {
+      import ./fallback-coverage-receipt.nix {
         inherit pkgs pythonEnv pythonSource;
         machineIr = machineIrPackage;
         interpreterPackage = fallbackInterpreter;

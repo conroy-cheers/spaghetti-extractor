@@ -10,7 +10,7 @@ from ..authority.external_site_records import (
     CANONICAL_EXTERNAL_SITE_CODEC_V3,
     CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
 )
-from ..errors import StageAInputError
+from ..errors import ToolkitInputError
 from .contracts import (
     CheckedExternalSiteContract,
     checked_external_site_contract_from_authority,
@@ -52,7 +52,7 @@ def load_authoritative_external_sites(
 
     reader = ArtifactSetReaderV3(path)
     if reader.manifest.artifact_kind != CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3:
-        raise StageAInputError(
+        raise ToolkitInputError(
             "external runtime projection requires canonical-external-sites-v3"
         )
     sites: list[AuthoritativeExternalSite] = []
@@ -61,12 +61,12 @@ def load_authoritative_external_sites(
             artifact_record.value.to_value()
         )
         if record.status != "complete" or not record.authorizing:
-            raise StageAInputError(
+            raise ToolkitInputError(
                 f"canonical external-site record {record.record_id!r} is not authorizing"
             )
         for site in record.sites:
             if site.status != "complete" or not site.authorizing or site.contract is None:
-                raise StageAInputError(
+                raise ToolkitInputError(
                     f"canonical external site {site.site_id!r} is not authorizing"
                 )
             sites.append(
@@ -88,7 +88,7 @@ def load_authoritative_external_sites(
         sorted(sites, key=lambda row: (row.unit_id, row.event_index, row.alternative_index))
     )
     if len({site.site_id for site in ordered}) != len(ordered):
-        raise StageAInputError("canonical external-site projection contains duplicate IDs")
+        raise ToolkitInputError("canonical external-site projection contains duplicate IDs")
     return AuthoritativeExternalSiteIndex(
         artifact_id=reader.manifest.artifact_id,
         manifest_sha256=reader.manifest_sha256,

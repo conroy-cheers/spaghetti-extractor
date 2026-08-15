@@ -11,7 +11,7 @@ let
   commonCflags = "-g0 -fno-asynchronous-unwind-tables -fno-ident -fno-inline -fno-inline-functions -fno-inline-small-functions -fno-ipa-cp -fno-ipa-sra -fno-ipa-icf";
   originalCflags = "-O2 -fno-align-functions -fno-align-labels -fno-align-loops -fno-align-jumps ${commonCflags}";
   unverifiedOriginal = (mingw.jq.override { inherit oniguruma; }).overrideAttrs (old: {
-    pname = "stage-a-jq-original";
+    pname = "spaghetti-extractor-jq-original";
     doCheck = false;
     doInstallCheck = false;
     dontStrip = true;
@@ -33,9 +33,9 @@ let
         echo "missing jq-original.map" >&2
         exit 1
       fi
-      mkdir -p "$out/share/spaghetti-extractor/stage-a-jq-fixtures/original"
-      cp "$map_path" "$out/share/spaghetti-extractor/stage-a-jq-fixtures/original/jq.map"
-      cp "$out/bin/jq.exe" "$out/share/spaghetti-extractor/stage-a-jq-fixtures/original/jq.exe"
+      mkdir -p "$out/share/spaghetti-extractor/spaghetti-extractor-jq-fixtures/original"
+      cp "$map_path" "$out/share/spaghetti-extractor/spaghetti-extractor-jq-fixtures/original/jq.map"
+      cp "$out/bin/jq.exe" "$out/share/spaghetti-extractor/spaghetti-extractor-jq-fixtures/original/jq.exe"
     '';
     meta = (old.meta or { }) // {
       platforms = (old.meta.platforms or [ ]) ++ [ "i686-windows" ];

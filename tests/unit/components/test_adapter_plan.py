@@ -58,7 +58,7 @@ class ComponentAdapterPlanTests(unittest.TestCase):
         source = self._source(
             "logical-object-c-v1",
             '#include "spaghetti-component-abi.h"\n'
-            "uint32_t f(const stage_b_ro_bytes_v1 *value, uint32_t maximum) "
+            "uint32_t f(const spx_ro_bytes_v1 *value, uint32_t maximum) "
             "{ (void)value; return maximum; }\n",
         )
 
@@ -81,7 +81,7 @@ class ComponentAdapterPlanTests(unittest.TestCase):
         source = self._source(
             "logical-object-c-v1",
             '#include "spaghetti-component-abi.h"\n'
-            "uint32_t f(const stage_b_ro_bytes_v1 *value, uint32_t maximum) "
+            "uint32_t f(const spx_ro_bytes_v1 *value, uint32_t maximum) "
             "{ (void)value; return maximum; }\n",
         )
 
@@ -231,8 +231,8 @@ class ComponentAdapterPlanTests(unittest.TestCase):
         source = self._source(
             "logical-object-c-v1",
             '#include "spaghetti-component-abi.h"\n'
-            "uint32_t f(const stage_b_ro_bytes_v1 *left, "
-            "const stage_b_ro_bytes_v1 *right, uint32_t count) "
+            "uint32_t f(const spx_ro_bytes_v1 *left, "
+            "const spx_ro_bytes_v1 *right, uint32_t count) "
             "{ (void)left; (void)right; return count == 0U; }\n",
         )
 
@@ -273,8 +273,8 @@ class ComponentAdapterPlanTests(unittest.TestCase):
         source = self._source(
             "logical-object-c-v1",
             '#include "spaghetti-component-abi.h"\n'
-            "uint32_t f(const stage_b_ro_bytes_v1 *left, "
-            "const stage_b_ro_bytes_v1 *right, uint32_t count) "
+            "uint32_t f(const spx_ro_bytes_v1 *left, "
+            "const spx_ro_bytes_v1 *right, uint32_t count) "
             "{ (void)left; (void)right; return count == 0U; }\n",
         )
 

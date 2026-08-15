@@ -36,7 +36,7 @@ class ComponentRuntimeAdapterTests(unittest.TestCase):
             symbols=symbols,
         )
 
-        self.assertNotIn("stage_b_interpreter_step", rendered)
+        self.assertNotIn("spx_interpreter_step", rendered)
         self.assertNotIn("machine_rva", rendered)
         self.assertIn("logical_result = portable_loop(&argument_0,", rendered)
         self.assertIn("index >= view->extent", rendered)
@@ -80,7 +80,7 @@ class ComponentRuntimeAdapterTests(unittest.TestCase):
         )
 
         self.assertIn("logical_result = portable_route(argument_0)", rendered)
-        self.assertIn("STAGE_B_BRANCH", rendered)
+        self.assertIn("SPX_BRANCH", rendered)
         self.assertIn("8192U : 12288U", rendered)
         self.assertNotIn("state->eax = (uint32_t)logical_result", rendered)
 
@@ -133,7 +133,7 @@ class ComponentRuntimeAdapterTests(unittest.TestCase):
             symbols=[],
         )
 
-        self.assertIn("stage_b_c_string_v1 argument_0", rendered)
+        self.assertIn("spx_c_string_v1 argument_0", rendered)
         self.assertIn("{ rt, argument_0_machine, 0U, 0U, 0U }", rendered)
         self.assertNotIn("UINT32_MAX, component_read_u8", rendered)
 
@@ -176,9 +176,9 @@ class ComponentRuntimeAdapterTests(unittest.TestCase):
             symbols=[],
         )
 
-        self.assertIn("STAGE_B_CALL_EXTERNAL_IMPORT", rendered)
+        self.assertIn("SPX_CALL_EXTERNAL_IMPORT", rendered)
         self.assertIn('"msvcrt.dll", "memcmp"', rendered)
-        self.assertIn("stage_b_invoke_call(", rendered)
+        self.assertIn("spx_invoke_call(", rendered)
         self.assertIn("external_call_0_arguments[3]", rendered)
         self.assertIn("external_call_0_output.eax", rendered)
         self.assertIn("external_replay_state.esp", rendered)

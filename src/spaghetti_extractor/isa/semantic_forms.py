@@ -14,11 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from ..extraction.schema import STATIC_ANALYSIS_MODEL_ID
-from ..pe32.stage_binary import StageAInputError
+from ..errors import ToolkitInputError
 from ..util import sha256_bytes
 
 
-LEAN_ISA_REQUIREMENT_FORM_FORMAT = "stage-a-lean-x86-semantic-form-v1"
+LEAN_ISA_REQUIREMENT_FORM_FORMAT = "spaghetti-extractor-lean-x86-semantic-form-v1"
 LEAN_SEMANTIC_FORM_CLASSIFIER_MODULES = (
     "X87",
     "Bytes",
@@ -31,12 +31,12 @@ _CLASSIFIER_SOURCES = tuple(
     f"{module}.lean" for module in LEAN_SEMANTIC_FORM_CLASSIFIER_MODULES
 )
 PYTHON_RESOURCES = (
-    "src/spaghetti_extractor/lean/StageA/X87.lean",
-    "src/spaghetti_extractor/lean/StageA/Bytes.lean",
-    "src/spaghetti_extractor/lean/StageA/PE32.lean",
-    "src/spaghetti_extractor/lean/StageA/Machine.lean",
-    "src/spaghetti_extractor/lean/StageA/Decode.lean",
-    "src/spaghetti_extractor/lean/StageA/ISAQualification.lean",
+    "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/X87.lean",
+    "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Bytes.lean",
+    "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/PE32.lean",
+    "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Machine.lean",
+    "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/Decode.lean",
+    "src/spaghetti_extractor/lean/SpaghettiExtractor/ISA/ISAQualification.lean",
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
@@ -58,7 +58,7 @@ def lean_semantic_form_classifier_sha256(
     """Return the shared identity of the Lean semantic-form classifier."""
 
     root = (
-        Path(__file__).parent.parent / "lean" / "StageA"
+        Path(__file__).parent.parent / "lean" / "SpaghettiExtractor/ISA"
         if source_root is None
         else Path(source_root)
     )
@@ -81,7 +81,7 @@ def lean_semantic_form_core(
         not isinstance(classifier_sha256, str)
         or _SHA256_RE.fullmatch(classifier_sha256) is None
     ):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "Lean semantic-form classifier SHA-256 must be 64 lowercase hex characters"
         )
     if (
@@ -89,11 +89,11 @@ def lean_semantic_form_core(
         or not semantic_form
         or semantic_form.strip() != semantic_form
     ):
-        raise StageAInputError(
+        raise ToolkitInputError(
             "Lean semantic form must be a nonempty canonical string"
         )
     if not isinstance(model, str) or not model:
-        raise StageAInputError("Lean semantic-form model must be nonempty")
+        raise ToolkitInputError("Lean semantic-form model must be nonempty")
     return {
         "format": LEAN_ISA_REQUIREMENT_FORM_FORMAT,
         "model": model,
