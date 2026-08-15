@@ -11,6 +11,10 @@ from ..artifacts.artifact_set import (
     RecordDependencyV3,
     canonical_sha256_v3,
 )
+from ..artifacts.formats import (
+    CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA,
+    CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+)
 from ..artifacts.phases import RecordCodecV3
 from ._schema import (
     canonical_strings,
@@ -41,12 +45,6 @@ EXTERNAL_PROFILE_RECORD_V3_SCHEMA = (
     "spaghetti-extractor-external-profile-record-v3"
 )
 EXTERNAL_PROFILE_ARTIFACT_KIND_V3 = "external-profile-authority-v3"
-CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA = (
-    "spaghetti-extractor-canonical-external-site-record-v3"
-)
-CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3 = "canonical-external-sites-v3"
-
-
 @dataclass(frozen=True)
 class ExternalProfileV3:
     record_id: str

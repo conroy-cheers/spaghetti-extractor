@@ -24,11 +24,12 @@ from ..artifacts.formats import (
     SEMANTIC_COMPONENT_CATALOG_FORMAT,
     SEMANTIC_COMPONENT_DECLARATIONS_FORMAT,
 )
-from ..libraries.contracts import (
-    LinkedLibraryContractError,
-    validate_linked_island_manifest,
-)
 from ..util import sha256_file, write_json
+from .semantic_linked import (
+    component_catalog_linked_coverage,
+    component_linked_island_membership,
+    load_linked_island_scope,
+)
 from .semantic_model import (
     ComponentDeclaration,
     LogicalInterface,
@@ -72,7 +73,7 @@ def build_semantic_component_catalog(
     plan_path, plan = _load_plan(Path(reconstruction_plan))
     declaration_payload, declaration_sha256 = _load_declarations(declarations)
     parsed = _parse_declarations(declaration_payload)
-    linked_scope = _load_linked_island_scope(linked_islands, machine=machine)
+    linked_scope = load_linked_island_scope(linked_islands, machine=machine)
 
     issues: list[dict[str, Any]] = []
     _check_bindings(
@@ -245,7 +246,7 @@ def build_semantic_component_catalog(
         }
         if linked_scope is not None:
             component_core["linked_island_membership"] = (
-                _component_linked_island_membership(linked_scope, members)
+                component_linked_island_membership(linked_scope, members)
             )
         component_payloads.append(
             {
@@ -257,7 +258,7 @@ def build_semantic_component_catalog(
     component_payloads.sort(key=lambda item: item["id"])
     coverage = _coverage_ledger(machine, parsed, direct_members, resolved_members)
     if linked_scope is not None:
-        coverage["linked_islands"] = _component_catalog_linked_coverage(
+        coverage["linked_islands"] = component_catalog_linked_coverage(
             linked_scope,
             declared_units=set().union(*resolved_members.values()),
         )
@@ -333,116 +334,6 @@ def write_semantic_component_catalog(
     )
     write_json(Path(out), payload)
     return payload
-
-
-def _load_linked_island_scope(
-    linked_islands: Path | str | Mapping[str, Any] | None,
-    *,
-    machine: _MachineInputs,
-) -> dict[str, Any] | None:
-    if linked_islands is None:
-        return None
-    manifest = (
-        copy.deepcopy(dict(linked_islands))
-        if isinstance(linked_islands, Mapping)
-        else _json_object(Path(linked_islands), "linked-island manifest")
-    )
-    try:
-        validate_linked_island_manifest(manifest)
-    except LinkedLibraryContractError as error:
-        raise SemanticComponentError(
-            f"invalid linked-island manifest: {error}"
-        ) from error
-    bindings = _object(manifest.get("bindings"), "linked-island bindings")
-    expected = {
-        "original_binary_sha256": machine.manifest["binary"]["sha256"],
-        "machine_ir_sha256": machine.manifest["artifacts"]["machine_ir"][
-            "sha256"
-        ],
-        "machine_ir_manifest_sha256": sha256_file(machine.manifest_path),
-    }
-    stale = {
-        key: {"expected": value, "observed": bindings.get(key)}
-        for key, value in expected.items()
-        if bindings.get(key) != value
-    }
-    if stale:
-        raise SemanticComponentError(
-            f"semantic components/linked-island binding is stale: {stale}"
-        )
-    owner_by_unit: dict[str, Mapping[str, Any]] = {}
-    for raw_island in _array(manifest.get("islands"), "linked islands"):
-        island = _object(raw_island, "linked island")
-        for unit_id in _array(island.get("unit_ids"), "linked island units"):
-            owner_by_unit[str(unit_id)] = island
-    if set(owner_by_unit) != set(machine.units_by_id):
-        raise SemanticComponentError(
-            "linked-island manifest does not classify the exact machine-IR unit set"
-        )
-    return {
-        "manifest_sha256": manifest["manifest_sha256"],
-        "status": manifest.get("status"),
-        "islands": manifest["islands"],
-        "owner_by_unit": owner_by_unit,
-    }
-
-
-def _component_linked_island_membership(
-    linked_scope: Mapping[str, Any],
-    members: set[str],
-) -> dict[str, Any]:
-    owner_by_unit = _object(
-        linked_scope.get("owner_by_unit"), "linked-island unit ownership"
-    )
-    grouped: dict[str, dict[str, Any]] = {}
-    for unit_id in sorted(members):
-        island = _object(owner_by_unit[unit_id], "linked island")
-        island_id = str(island["id"])
-        grouped.setdefault(
-            island_id,
-            {"island_id": island_id, "kind": island["kind"], "unit_ids": []},
-        )["unit_ids"].append(unit_id)
-    rows = []
-    for row in sorted(grouped.values(), key=lambda item: item["island_id"]):
-        rows.append({**row, "unit_count": len(row["unit_ids"])})
-    kinds = sorted({str(row["kind"]) for row in rows})
-    return {
-        "manifest_sha256": linked_scope["manifest_sha256"],
-        "islands": rows,
-        "kinds": kinds,
-        "crosses_island_boundaries": len(rows) > 1,
-        "crosses_ownership_kinds": len(kinds) > 1,
-        "identity_authorizes_replacement": False,
-    }
-
-
-def _component_catalog_linked_coverage(
-    linked_scope: Mapping[str, Any],
-    *,
-    declared_units: set[str],
-) -> dict[str, Any]:
-    owner_by_unit = _object(
-        linked_scope.get("owner_by_unit"), "linked-island unit ownership"
-    )
-    totals: dict[str, int] = defaultdict(int)
-    declared: dict[str, int] = defaultdict(int)
-    for unit_id, raw_island in owner_by_unit.items():
-        island = _object(raw_island, "linked island")
-        kind = str(island["kind"])
-        totals[kind] += 1
-        if unit_id in declared_units:
-            declared[kind] += 1
-    return {
-        "manifest_sha256": linked_scope["manifest_sha256"],
-        "classification_status": linked_scope["status"],
-        "machine_units_by_kind": dict(sorted(totals.items())),
-        "component_declared_units_by_kind": dict(sorted(declared.items())),
-        "remaining_units_by_kind": {
-            kind: count - declared.get(kind, 0)
-            for kind, count in sorted(totals.items())
-        },
-        "identity_authorizes_replacement": False,
-    }
 
 
 def _load_machine_inputs(path: Path) -> _MachineInputs:
@@ -991,6 +882,7 @@ def _machine_graph(machine: _MachineInputs) -> dict[str, Any]:
 
 def _derive_boundary(machine: _MachineInputs, graph: Mapping[str, Any], members: set[str]) -> dict[str, Any]:
     entries: list[dict[str, Any]] = []
+    potential_entries: list[dict[str, Any]] = []
     exits: list[dict[str, Any]] = []
     external_events: list[dict[str, Any]] = []
     faults: list[dict[str, Any]] = []
@@ -1004,7 +896,23 @@ def _derive_boundary(machine: _MachineInputs, graph: Mapping[str, Any], members:
     for unit_id in sorted(members, key=lambda value: (_unit_start(machine.units_by_id[value]), value)):
         unit = machine.units_by_id[unit_id]
         rva = _unit_start(unit)
-        incoming = [edge for edge in graph["incoming"].get(unit_id, []) if edge["source_unit_id"] not in members]
+        structural_incoming = [
+            edge
+            for edge in graph["incoming"].get(unit_id, [])
+            if edge["source_unit_id"] not in members
+        ]
+        incoming = [
+            edge
+            for edge in structural_incoming
+            if _unit_reachability(machine, str(edge["source_unit_id"]))
+            == "reachable"
+        ]
+        potential_incoming = [
+            edge
+            for edge in structural_incoming
+            if _unit_reachability(machine, str(edge["source_unit_id"]))
+            != "reachable"
+        ]
         root = graph["roots_by_rva"].get(rva)
         if incoming or root is not None:
             entries.append(
@@ -1013,6 +921,15 @@ def _derive_boundary(machine: _MachineInputs, graph: Mapping[str, Any], members:
                     "rva": rva,
                     "incoming": copy.deepcopy(incoming),
                     **({"root": copy.deepcopy(root)} if root is not None else {}),
+                }
+            )
+        if potential_incoming:
+            potential_entries.append(
+                {
+                    "unit_id": unit_id,
+                    "rva": rva,
+                    "incoming": copy.deepcopy(potential_incoming),
+                    "reason": "incoming_source_not_proved_reachable",
                 }
             )
         for edge in graph["outgoing"].get(unit_id, []):
@@ -1096,13 +1013,45 @@ def _derive_boundary(machine: _MachineInputs, graph: Mapping[str, Any], members:
                 flags_written.add(str(write["flag"]))
 
     if members and not entries:
-        first = min(members, key=lambda value: (_unit_start(machine.units_by_id[value]), value))
-        entries.append({"unit_id": first, "rva": _unit_start(machine.units_by_id[first]), "incoming": [], "reason": "no_checked_predecessor_in_static_inventory"})
+        exact_members = [
+            unit_id
+            for unit_id in members
+            if _unit_reachability(machine, unit_id) == "reachable"
+        ]
+        if exact_members:
+            first = min(
+                exact_members,
+                key=lambda value: (_unit_start(machine.units_by_id[value]), value),
+            )
+            entries.append(
+                {
+                    "unit_id": first,
+                    "rva": _unit_start(machine.units_by_id[first]),
+                    "incoming": [],
+                    "reason": "no_checked_predecessor_in_static_inventory",
+                }
+            )
+        else:
+            first = min(
+                members,
+                key=lambda value: (_unit_start(machine.units_by_id[value]), value),
+            )
+            entries.append(
+                {
+                    "unit_id": first,
+                    "rva": _unit_start(machine.units_by_id[first]),
+                    "incoming": [],
+                    "reachability": "potential",
+                    "reason": "structural_workbench_entry_not_proved_reachable",
+                    "activation_authority": "provisional_until_root_closure",
+                }
+            )
     exits.sort(key=lambda item: (str(item.get("source_unit_id", "")), str(item.get("kind", "")), int(item.get("target_rva", -1))))
     return {
         "state_relation": "canonical_full_machine_state_v1",
         "boundary_minimization_status": "not_attempted",
         "entries": entries,
+        "potential_entries": potential_entries,
         "exits": exits,
         "effects": {
             "registers_written": sorted(registers_written),
@@ -1121,6 +1070,7 @@ def _derive_boundary(machine: _MachineInputs, graph: Mapping[str, Any], members:
         },
         "counts": {
             "entries": len(entries),
+            "potential_entries": len(potential_entries),
             "exits": len(exits),
             "memory_events": len(memory_events),
             "external_events": len(external_events),
@@ -1131,6 +1081,11 @@ def _derive_boundary(machine: _MachineInputs, graph: Mapping[str, Any], members:
             "internal_indirect_controls": len(internal_indirect_controls),
         },
     }
+
+
+def _unit_reachability(machine: _MachineInputs, unit_id: str) -> str:
+    unit = machine.units_by_id.get(unit_id)
+    return str(unit.get("reachability")) if unit is not None else "unknown"
 
 
 def _derive_internal_call_closure(
@@ -1185,10 +1140,22 @@ def _derive_internal_call_closure(
         source_id = str(edge["source_unit_id"])
         target_id = str(edge["target_unit_id"])
         return_rva = edge.get("return_rva")
-        outside_incoming = [
+        structural_outside_incoming = [
             incoming
             for incoming in graph["incoming"].get(target_id, [])
             if incoming.get("source_unit_id") not in members
+        ]
+        outside_incoming = [
+            incoming
+            for incoming in structural_outside_incoming
+            if _unit_reachability(machine, str(incoming["source_unit_id"]))
+            == "reachable"
+        ]
+        potential_outside_incoming = [
+            incoming
+            for incoming in structural_outside_incoming
+            if _unit_reachability(machine, str(incoming["source_unit_id"]))
+            != "reachable"
         ]
         terminal_returns = _reachable_internal_returns(
             machine, graph, members, target_id
@@ -1221,6 +1188,7 @@ def _derive_internal_call_closure(
             "return_rva": return_rva,
             "return_unit_ids": terminal_returns,
             "outside_incoming": outside_incoming,
+            "potential_outside_incoming": potential_outside_incoming,
             "issues": call_issues,
             "frame": {
                 "model": "x86-pe32-direct-call-frame-v1",

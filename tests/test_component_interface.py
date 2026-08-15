@@ -7,15 +7,27 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.artifacts.formats import (
     COMPONENT_INTERFACE_REFINEMENT_FORMAT,
     COMPONENT_INTERFACE_SPEC_FORMAT,
     SEMANTIC_COMPONENT_CATALOG_FORMAT,
 )
+from spaghetti_extractor.authority.external_site_records import (
+    ExternalContractV3,
+    external_site_id_v3,
+)
+from spaghetti_extractor.components.external_sites import (
+    ComponentExternalSite,
+    ComponentExternalSiteSlice,
+)
 from spaghetti_extractor.components.interface import (
     check_component_interface,
     finalize_component_interface_spec,
     synthesize_component_interface_spec,
+)
+from spaghetti_extractor.external.contracts import (
+    checked_external_site_contract_from_authority,
 )
 from spaghetti_extractor.reconstruction.ir import MACHINE_IR_FORMAT
 
@@ -95,6 +107,111 @@ class ComponentInterfaceTests(unittest.TestCase):
             [item["id"] for item in spec["parameters"]],
             ["input_eax", "input_ebx"],
         )
+
+    def test_pointer_parameter_without_checked_memory_view_is_incomplete(self) -> None:
+        machine, catalog = self._package([_compare_unit()])
+        spec = synthesize_component_interface_spec(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+        )
+        spec["parameters"][0]["type"] = "const uint8_t *"
+        spec = finalize_component_interface_spec(spec)
+
+        result = check_component_interface(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            interface_spec=spec,
+        )
+
+        self.assertEqual(result["status"], "incomplete")
+        self.assertIn(
+            "unsupported_logical_parameter",
+            {issue["code"] for issue in result["issues"]},
+        )
+
+    def test_object_view_owns_exact_byte_read_event(self) -> None:
+        unit = _compare_unit()
+        unit["semantics"]["memory_events"] = [
+            {
+                "kind": "read",
+                "width": 1,
+                "address": {"op": "reg", "name": "eax", "width": 32},
+            }
+        ]
+        machine, catalog = self._package([unit])
+        spec = synthesize_component_interface_spec(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+        )
+        spec["source_abi"] = "logical-object-c-v1"
+        parameters = {row["id"]: row for row in spec["parameters"]}
+        pointer = parameters["input_eax"]
+        pointer["type"] = "read-only-bytes-v1"
+        pointer["memory_view"] = {
+            "kind": "indexed-read-view-v1",
+            "extent_parameter_id": "input_ebx",
+            "element_width": 1,
+            "event_refs": [
+                {"family": "memory_event", "unit_id": "unit:compare", "index": 0}
+            ],
+            "access_witness": {"kind": "finite-domain-machine-replay-v1"},
+        }
+        spec["objects"] = []
+        spec = finalize_component_interface_spec(spec)
+
+        result = check_component_interface(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            interface_spec=spec,
+        )
+
+        self.assertEqual(result["status"], "checked")
+        self.assertEqual(result["coverage"]["unrepresented"], 0)
+
+    def test_nul_terminated_view_needs_no_fake_extent(self) -> None:
+        unit = _compare_unit()
+        unit["semantics"]["memory_events"] = [
+            {
+                "kind": "read",
+                "width": 1,
+                "address": {"op": "reg", "name": "eax", "width": 32},
+            }
+        ]
+        machine, catalog = self._package([unit])
+        spec = synthesize_component_interface_spec(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+        )
+        spec["source_abi"] = "logical-object-c-v1"
+        pointer = next(
+            row for row in spec["parameters"] if row["id"] == "input_eax"
+        )
+        pointer["type"] = "nul-terminated-bytes-v1"
+        pointer["memory_view"] = {
+            "kind": "nul-terminated-read-view-v1",
+            "element_width": 1,
+            "event_refs": [
+                {"family": "memory_event", "unit_id": "unit:compare", "index": 0}
+            ],
+            "access_witness": {"kind": "finite-domain-machine-replay-v1"},
+        }
+        spec["objects"] = []
+        spec = finalize_component_interface_spec(spec)
+
+        result = check_component_interface(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            interface_spec=spec,
+        )
+
+        self.assertEqual(result["status"], "checked")
+        self.assertEqual(result["coverage"]["unrepresented"], 0)
 
     def test_eax_edx_declaration_precisely_violates_ebx_eax_machine_sources(self) -> None:
         machine, catalog = self._package([_compare_unit()])
@@ -221,6 +338,155 @@ class ComponentInterfaceTests(unittest.TestCase):
         )
         self.assertEqual(spec["services"][0]["events"][0]["arguments"], [_reg("eax")])
         self.assertEqual(result["coverage"]["represented_once"], 3)
+
+    def test_checked_external_site_supplies_exact_missing_machine_arguments(self) -> None:
+        unit = _io_unit()
+        unit["semantics"]["external_events"][0]["arguments"] = []
+        machine, catalog = self._package([unit])
+        external_sites = _external_site_slice("unit:io")
+
+        spec = synthesize_component_interface_spec(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            external_sites=external_sites,
+        )
+        result = check_component_interface(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            interface_spec=spec,
+            external_sites=external_sites,
+        )
+
+        service = spec["services"][0]
+        self.assertEqual(result["status"], "checked")
+        self.assertEqual(
+            service["events"][0]["arguments"],
+            [
+                {"kind": "stack", "offset": 0},
+                {"kind": "stack", "offset": 4},
+                {"kind": "stack", "offset": 8},
+            ],
+        )
+        self.assertEqual(
+            service["external_contract"]["identity"]["symbol"], "memcmp"
+        )
+
+    def test_stale_external_site_and_contract_bindings_are_violated(self) -> None:
+        unit = _io_unit()
+        unit["semantics"]["external_events"][0]["arguments"] = []
+        machine, catalog = self._package([unit])
+        external_sites = _external_site_slice("unit:io")
+        spec = synthesize_component_interface_spec(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            external_sites=external_sites,
+        )
+        spec["services"][0]["events"][0]["external_site_id"] = "stale-site"
+        spec["services"][0]["events"][0]["external_contract_id"] = "stale-contract"
+        spec = finalize_component_interface_spec(spec)
+
+        result = check_component_interface(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            interface_spec=spec,
+            external_sites=external_sites,
+        )
+
+        self.assertEqual(result["status"], "violated")
+        self.assertTrue(
+            {
+                "service_external_site_binding_mismatch",
+                "service_external_contract_binding_mismatch",
+            }.issubset({issue["code"] for issue in result["issues"]})
+        )
+
+    def test_indexed_views_bind_checked_external_read_footprints(self) -> None:
+        unit = _io_unit()
+        unit["semantics"]["memory_events"] = []
+        unit["semantics"]["external_events"][0]["arguments"] = []
+        arguments = [_reg("ebx"), _reg("edi"), _reg("esi")]
+        unit["semantics"]["register_writes"] = [
+            {"register": "eax", "value": copy.deepcopy(argument)}
+            for argument in arguments
+        ]
+        machine, catalog = self._package([unit])
+        external_sites = _external_site_slice(
+            "unit:io",
+            arguments=arguments,
+            memory_footprints=[
+                {
+                    "access": "read",
+                    "base_argument": index,
+                    "offset": 0,
+                    "size": {"kind": "argument", "argument": 2, "scale": 1},
+                    "nullable": False,
+                }
+                for index in (0, 1)
+            ],
+        )
+        spec = synthesize_component_interface_spec(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            external_sites=external_sites,
+        )
+        spec["source_abi"] = "logical-object-c-v1"
+        parameters = {row["id"]: row for row in spec["parameters"]}
+        site = external_sites.sites[0]
+        assert site.contract is not None
+        for parameter_id, footprint_index in (("input_ebx", 0), ("input_edi", 1)):
+            parameter = parameters[parameter_id]
+            parameter["type"] = "read-only-bytes-v1"
+            parameter["memory_view"] = {
+                "kind": "indexed-read-view-v1",
+                "extent_parameter_id": "input_esi",
+                "element_width": 1,
+                "event_refs": [
+                    {
+                        "family": "external_memory_footprint",
+                        "unit_id": "unit:io",
+                        "event_index": 0,
+                        "external_site_id": site.site_id,
+                        "external_contract_id": site.contract.contract_id,
+                        "footprint_index": footprint_index,
+                    }
+                ],
+                "access_witness": {"kind": "finite-domain-machine-replay-v1"},
+            }
+        spec["objects"] = []
+        spec = finalize_component_interface_spec(spec)
+
+        result = check_component_interface(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            interface_spec=spec,
+            external_sites=external_sites,
+        )
+
+        self.assertEqual(result["status"], "checked")
+        self.assertEqual(result["coverage"]["unrepresented"], 0)
+
+        spec["parameters"][0]["memory_view"]["event_refs"][0][
+            "external_contract_id"
+        ] = "stale-contract"
+        spec = finalize_component_interface_spec(spec)
+        stale = check_component_interface(
+            catalog=catalog,
+            machine_ir=machine,
+            component_id="compare-route",
+            interface_spec=spec,
+            external_sites=external_sites,
+        )
+        self.assertEqual(stale["status"], "violated")
+        self.assertIn(
+            "external_footprint_binding_mismatch",
+            {issue["code"] for issue in stale["issues"]},
+        )
 
     def test_restartable_string_operation_has_complete_intrinsic_contract(self) -> None:
         event = {
@@ -558,6 +824,71 @@ def _io_unit() -> dict[str, object]:
                 },
             },
         },
+    )
+
+
+def _external_site_slice(
+    unit_id: str,
+    *,
+    arguments: list[object] | None = None,
+    memory_footprints: list[object] | None = None,
+) -> ComponentExternalSiteSlice:
+    digest = hashlib.sha256(b"component-interface-external-site").hexdigest()
+    identity = {"kind": "import", "dll": "msvcrt.dll", "symbol": "memcmp"}
+    authority_contract = ExternalContractV3.create(
+        identity=identity,
+        transfer_kind="call",
+        disposition="returns",
+        profile_id="pe32-msvcrt-lockstep-v1",
+        profile_sha256=digest,
+        argument_words=3,
+        arguments=(
+            arguments
+            if arguments is not None
+            else [
+                {"kind": "stack", "offset": 0},
+                {"kind": "stack", "offset": 4},
+                {"kind": "stack", "offset": 8},
+            ]
+        ),
+        memory_effect="readOnly",
+        world_effect="none",
+        callback_effect="none",
+        machine_contract={
+            "abi_template": "pe32-cdecl-v1",
+            "result_register_relations": [
+                {"register": "eax", "relation": "exact"}
+            ],
+            "memory_footprints": (
+                memory_footprints if memory_footprints is not None else []
+            ),
+            "out_pointer_relations": [],
+            "out_interface_relations": [],
+        },
+    )
+    contract = checked_external_site_contract_from_authority(authority_contract)
+    target_sha256 = canonical_sha256_v3(identity)
+    return ComponentExternalSiteSlice(
+        lift_unit_id="compare-route",
+        status="checked",
+        projection_sha256=digest,
+        unit_ids=(unit_id,),
+        sites=(
+            ComponentExternalSite(
+                site_id=external_site_id_v3(unit_id, 0, 0, identity),
+                unit_id=unit_id,
+                event_index=0,
+                alternative_index=0,
+                event_sha256=target_sha256,
+                target_sha256=target_sha256,
+                status="complete",
+                authorizing=True,
+                identity=identity,
+                contract=contract,
+                primary_blocker=None,
+            ),
+        ),
+        issues=(),
     )
 
 

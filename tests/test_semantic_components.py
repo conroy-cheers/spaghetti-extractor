@@ -525,6 +525,92 @@ class SemanticComponentTests(unittest.TestCase):
             ["callee_has_external_entry"],
         )
 
+    def test_potential_predecessor_is_not_a_proved_activation_entry(self) -> None:
+        entry = _unit(
+            "unit:entry",
+            0x4000,
+            0x4004,
+            {"kind": "jump", "target_rva": 0x4010},
+            reachability="reachable",
+        )
+        body = _unit(
+            "unit:body",
+            0x4010,
+            0x4014,
+            {"kind": "return"},
+            reachability="reachable",
+        )
+        dead_jump = _unit(
+            "unit:dead-jump",
+            0x5000,
+            0x5002,
+            {"kind": "jump", "target_rva": 0x4010},
+            reachability="potential",
+        )
+        self._replace_machine([entry, body, dead_jump])
+
+        catalog = build_semantic_component_catalog(
+            machine_ir=self.machine,
+            reconstruction_plan=self.plan_path,
+            declarations=self._declarations(
+                [_component("worker", unit_ids=["unit:entry", "unit:body"])]
+            ),
+        )
+
+        boundary = catalog["components"][0]["machine_boundary"]
+        self.assertEqual(
+            [row["unit_id"] for row in boundary["entries"]], ["unit:entry"]
+        )
+        self.assertEqual(
+            [row["unit_id"] for row in boundary["potential_entries"]],
+            ["unit:body"],
+        )
+        self.assertEqual(boundary["counts"]["entries"], 1)
+        self.assertEqual(boundary["counts"]["potential_entries"], 1)
+
+    def test_potential_only_component_retains_a_provisional_workbench_entry(self) -> None:
+        entry = _unit(
+            "unit:entry",
+            0x4000,
+            0x4004,
+            {"kind": "jump", "target_rva": 0x4010},
+            reachability="potential",
+        )
+        body = _unit(
+            "unit:body",
+            0x4010,
+            0x4014,
+            {"kind": "return"},
+            reachability="potential",
+        )
+        self._replace_machine([entry, body])
+        self.manifest["control"]["roots"] = []
+        _write_json(self.manifest_path, self.manifest)
+        self.plan["inputs"]["machine_ir"]["manifest_sha256"] = _file_sha256(
+            self.manifest_path
+        )
+        self.plan.pop("plan_sha256", None)
+        self.plan["plan_sha256"] = _canonical_sha256(self.plan)
+        _write_json(self.plan_path, self.plan)
+
+        catalog = build_semantic_component_catalog(
+            machine_ir=self.machine,
+            reconstruction_plan=self.plan_path,
+            declarations=self._declarations(
+                [_component("worker", unit_ids=["unit:entry", "unit:body"])]
+            ),
+        )
+
+        boundary = catalog["components"][0]["machine_boundary"]
+        self.assertEqual(
+            [row["unit_id"] for row in boundary["entries"]], ["unit:entry"]
+        )
+        self.assertEqual(boundary["entries"][0]["reachability"], "potential")
+        self.assertEqual(
+            boundary["entries"][0]["activation_authority"],
+            "provisional_until_root_closure",
+        )
+
     def _replace_machine(self, units: list[dict[str, object]]) -> None:
         self.units = units
         ir_path = self.machine / "machine-ir.jsonl"

@@ -399,6 +399,60 @@ def _issue(
     )
 
 
+def _resolve_effect_reference(
+    reference: Any,
+    inventory: Mapping[str, Mapping[str, Any]],
+    expected_family: str | None,
+    issues: list[dict[str, Any]],
+    json_location: str,
+) -> tuple[str | None, Mapping[str, Any] | None]:
+    if not isinstance(reference, Mapping):
+        _issue(
+            issues,
+            "violated",
+            "malformed_effect_reference",
+            json_location,
+            expected="structured effect reference",
+            observed=reference,
+            remediation="use a reference emitted by interface synthesis",
+        )
+        return None, None
+    normalized = {
+        "family": reference.get("family"),
+        "unit_id": reference.get("unit_id"),
+        **({"index": reference.get("index")} if "index" in reference else {}),
+    }
+    key = _effect_key(normalized)
+    effect = inventory.get(key)
+    if effect is None:
+        unit_id = reference.get("unit_id")
+        _issue(
+            issues,
+            "violated",
+            "unknown_effect_reference",
+            json_location,
+            unit_id=unit_id if isinstance(unit_id, str) else None,
+            expected="an effect in the selected component",
+            observed=copy.deepcopy(normalized),
+            remediation="regenerate the interface against current component membership",
+        )
+        return None, None
+    if expected_family is not None and effect["family"] != expected_family:
+        _issue(
+            issues,
+            "violated",
+            "effect_owner_family_mismatch",
+            json_location,
+            unit_id=effect["unit_id"],
+            rva=effect["rva"],
+            expected=expected_family,
+            observed=effect["family"],
+            remediation="bind this declaration to the corresponding effect family",
+        )
+        return key, effect
+    return key, effect
+
+
 def _issue_sort_key(issue: Mapping[str, Any]) -> tuple[Any, ...]:
     return (
         0 if issue.get("status") == "violated" else 1,

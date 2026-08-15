@@ -42,6 +42,7 @@ pkgs.runCommand "${namePrefix}-component-runtime-package-v3" {
     ${lib.escapeShellArg (builtins.toJSON (paths componentConfiguration.contracts))} \
     ${lib.escapeShellArg (builtins.toJSON (paths componentConfiguration.implementations))} \
     ${lib.escapeShellArg (builtins.toJSON (paths componentConfiguration.qualifications))} \
+    ${lib.escapeShellArg (builtins.toJSON (paths componentConfiguration.adapterPlans))} \
     ${interpreterPackage} \
     "$out" <<'PY'
   import json
@@ -58,8 +59,9 @@ pkgs.runCommand "${namePrefix}-component-runtime-package-v3" {
       contracts={key: pathlib.Path(value) for key, value in json.loads(sys.argv[3]).items()},
       implementations={key: pathlib.Path(value) for key, value in json.loads(sys.argv[4]).items()},
       qualifications={key: pathlib.Path(value) for key, value in json.loads(sys.argv[5]).items()},
-      interpreter_package=pathlib.Path(sys.argv[6]),
-      out_dir=pathlib.Path(sys.argv[7]),
+      adapter_plans={key: pathlib.Path(value) for key, value in json.loads(sys.argv[6]).items()},
+      interpreter_package=pathlib.Path(sys.argv[7]),
+      out_dir=pathlib.Path(sys.argv[8]),
   )
   PY
   jq -e '

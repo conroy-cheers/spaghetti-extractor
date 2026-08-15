@@ -20,6 +20,7 @@ from .model import (
     ComponentIntent,
     ConfigurationSelection,
     SourceInput,
+    SOURCE_ENTRY_ABIS,
 )
 
 
@@ -346,7 +347,7 @@ def _source(
     entry = _object(row.get("entry"), f"{context} entry")
     _exact_keys(entry, {"abi", "symbol"}, f"{context} entry")
     abi = _string(entry.get("abi"), f"{context} entry ABI")
-    if abi != "logical-c-v1":
+    if abi not in SOURCE_ENTRY_ABIS:
         raise ComponentIntentError(f"{context} entry ABI is unsupported: {abi}")
     symbol = _string(entry.get("symbol"), f"{context} entry symbol")
     if _C_IDENTIFIER.fullmatch(symbol) is None:
@@ -377,36 +378,79 @@ def _verification(value: object, context: str) -> ComponentEvidencePlan | None:
         _array(row.get("parameter_domains", []), f"{context} parameter domains")
     ):
         domain = _object(raw, f"{context} parameter domain {index}")
-        _exact_keys(
-            domain,
-            {"parameter_id", "kind", "minimum", "maximum"},
-            f"{context} parameter domain {index}",
-        )
         parameter_id = _identifier(
             domain.get("parameter_id"),
             f"{context} parameter domain {index} parameter id",
         )
         kind = _string(domain.get("kind"), f"{context} parameter domain {index} kind")
-        minimum = domain.get("minimum")
-        maximum = domain.get("maximum")
-        if (
-            kind != "integer-range"
-            or not isinstance(minimum, int)
-            or isinstance(minimum, bool)
-            or not isinstance(maximum, int)
-            or isinstance(maximum, bool)
-            or minimum > maximum
-        ):
-            raise ComponentIntentError(
-                f"{context} parameter domain {index} must be a finite integer range"
+        if kind == "integer-range":
+            _exact_keys(
+                domain,
+                {"parameter_id", "kind", "minimum", "maximum"},
+                f"{context} parameter domain {index}",
             )
-        domains.append(
-            {
-                "parameter_id": parameter_id,
-                "kind": kind,
-                "minimum": minimum,
-                "maximum": maximum,
-            }
+            minimum = domain.get("minimum")
+            maximum = domain.get("maximum")
+            if (
+                not isinstance(minimum, int)
+                or isinstance(minimum, bool)
+                or not isinstance(maximum, int)
+                or isinstance(maximum, bool)
+                or minimum > maximum
+            ):
+                raise ComponentIntentError(
+                    f"{context} parameter domain {index} has a malformed integer range"
+                )
+            domains.append(
+                {
+                    "parameter_id": parameter_id,
+                    "kind": kind,
+                    "minimum": minimum,
+                    "maximum": maximum,
+                }
+            )
+            continue
+        if kind in {"byte-buffer-set", "nul-terminated-byte-buffer-set"}:
+            _exact_keys(
+                domain,
+                {"parameter_id", "kind", "values"},
+                f"{context} parameter domain {index}",
+            )
+            values = _array(
+                domain.get("values"), f"{context} parameter domain {index} values"
+            )
+            if not values:
+                raise ComponentIntentError(
+                    f"{context} parameter domain {index} has no byte buffers"
+                )
+            buffers = [
+                _byte_array(
+                    value,
+                    f"{context} parameter domain {index} value {value_index}",
+                )
+                for value_index, value in enumerate(values)
+            ]
+            if kind == "nul-terminated-byte-buffer-set":
+                unterminated = [
+                    value_index
+                    for value_index, buffer in enumerate(buffers)
+                    if 0 not in buffer
+                ]
+                if unterminated:
+                    raise ComponentIntentError(
+                        f"{context} parameter domain {index} value "
+                        f"{unterminated[0]} has no NUL terminator"
+                    )
+            domains.append(
+                {
+                    "parameter_id": parameter_id,
+                    "kind": kind,
+                    "values": buffers,
+                }
+            )
+            continue
+        raise ComponentIntentError(
+            f"{context} parameter domain {index} has unsupported kind {kind}"
         )
     if producer == "exhaustive-finite-domain-v1" and not domains:
         raise ComponentIntentError(f"{context} exhaustive producer has no domains")
@@ -418,13 +462,6 @@ def _verification(value: object, context: str) -> ComponentEvidencePlan | None:
         case = _object(raw, f"{context} case {index}")
         _exact_keys(case, {"id", "arguments", "expected"}, f"{context} case {index}")
         arguments = _object(case.get("arguments"), f"{context} case {index} arguments")
-        if any(
-            not isinstance(value, int) or isinstance(value, bool)
-            for value in arguments.values()
-        ):
-            raise ComponentIntentError(
-                f"{context} case {index} arguments must be integer values"
-            )
         expected = case.get("expected")
         if not isinstance(expected, int) or isinstance(expected, bool):
             raise ComponentIntentError(
@@ -433,7 +470,12 @@ def _verification(value: object, context: str) -> ComponentEvidencePlan | None:
         cases.append(
             {
                 "id": _identifier(case.get("id"), f"{context} case {index} id"),
-                "arguments": dict(sorted(arguments.items())),
+                "arguments": {
+                    str(name): _case_argument(
+                        value, f"{context} case {index} argument {name}"
+                    )
+                    for name, value in sorted(arguments.items())
+                },
                 "expected": expected,
             }
         )
@@ -447,6 +489,27 @@ def _verification(value: object, context: str) -> ComponentEvidencePlan | None:
         parameter_domains=tuple(domains),
         cases=tuple(cases),
     )
+
+
+def _case_argument(value: object, context: str) -> object:
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, list):
+        return _byte_array(value, context)
+    raise ComponentIntentError(f"{context} must be an integer or byte array")
+
+
+def _byte_array(value: object, context: str) -> list[int]:
+    values = _array(value, context)
+    if len(values) > 65536 or any(
+        not isinstance(byte, int)
+        or isinstance(byte, bool)
+        or byte < 0
+        or byte > 255
+        for byte in values
+    ):
+        raise ComponentIntentError(f"{context} must contain at most 65536 bytes")
+    return [int(byte) for byte in values]
 
 
 def _check_evidence_plan(

@@ -20,6 +20,7 @@ EVIDENCE_PROFILE_PRODUCERS = {
     "validation-backed-v1": "candidate-only-functional-suite-v1",
 }
 LIFT_UNIT_KINDS = frozenset({"component", "group"})
+SOURCE_ENTRY_ABIS = frozenset({"logical-c-v1", "logical-object-c-v1"})
 
 
 @dataclass(frozen=True)

@@ -21,6 +21,7 @@ from .formats import (
 from ..util import sha256_file, write_json
 from .intent import ComponentIntentError
 from .source import load_component_source_package
+from .adapter import load_component_adapter_plan
 
 
 def compose_component_configuration(
@@ -31,6 +32,7 @@ def compose_component_configuration(
     contracts: Mapping[str, Path | str | Mapping[str, object]],
     implementations: Mapping[str, Path | str] | None,
     qualifications: Mapping[str, Path | str | Mapping[str, object]] | None,
+    adapter_plans: Mapping[str, Path | str] | None,
     out: Path | str,
 ) -> dict[str, object]:
     """Produce the sole v3 implementation-ownership authority.
@@ -50,6 +52,7 @@ def compose_component_configuration(
     configuration = _configuration(resolution_payload, configuration_id)
     machine = _load_machine_ir(Path(machine_ir))
     qualification_inputs = qualifications or {}
+    adapter_plan_inputs = adapter_plans or {}
     implementation_inputs = implementations or {}
     issues: list[dict[str, object]] = []
     ownership_by_unit: dict[str, dict[str, object]] = {}
@@ -76,6 +79,7 @@ def compose_component_configuration(
             )
         ownership_state = "machine_ir_fallback"
         qualification_sha256 = None
+        adapter_plan_sha256 = None
         implementation_sha256 = None
         if requested == "enabled":
             ownership_state = "blocked"
@@ -95,6 +99,26 @@ def compose_component_configuration(
                         f"component source package targets another lift unit: {lift_unit_id}"
                     )
             qualification_value = qualification_inputs.get(lift_unit_id)
+            adapter_value = adapter_plan_inputs.get(lift_unit_id)
+            adapter = None
+            if adapter_value is None:
+                _issue(
+                    issues,
+                    "incomplete",
+                    "enabled_component_adapter_plan_missing",
+                    lift_unit_id=lift_unit_id,
+                )
+            else:
+                adapter = load_component_adapter_plan(adapter_value)
+                adapter_plan_sha256 = adapter["adapter_plan_sha256"]
+                if adapter.get("status") != "checked":
+                    _issue(
+                        issues,
+                        "violated" if adapter.get("status") == "violated" else "incomplete",
+                        "enabled_component_adapter_plan_not_checked",
+                        lift_unit_id=lift_unit_id,
+                        observed=adapter.get("status"),
+                    )
             if qualification_value is None:
                 _issue(
                     issues,
@@ -118,6 +142,10 @@ def compose_component_configuration(
                     and bindings.get("contract_sha256") == contract.get("contract_sha256")
                     and bindings.get("implementation_sha256")
                     == implementation_sha256
+                    and adapter is not None
+                    and adapter.get("status") == "checked"
+                    and bindings.get("adapter_plan_sha256")
+                    == adapter_plan_sha256
                     and _object(
                         qualification.get("activation"), "component qualification activation"
                     ).get("authorized")
@@ -137,6 +165,15 @@ def compose_component_configuration(
                         issues,
                         "violated",
                         "enabled_component_source_binding_stale",
+                        lift_unit_id=lift_unit_id,
+                    )
+                if adapter_plan_sha256 is not None and bindings.get(
+                    "adapter_plan_sha256"
+                ) != adapter_plan_sha256:
+                    _issue(
+                        issues,
+                        "violated",
+                        "enabled_component_adapter_binding_stale",
                         lift_unit_id=lift_unit_id,
                     )
                 if qualification.get("lift_unit_id") != lift_unit_id:
@@ -186,6 +223,7 @@ def compose_component_configuration(
                 "ownership_state": ownership_state,
                 "contract_sha256": contract["contract_sha256"],
                 "qualification_sha256": qualification_sha256,
+                "adapter_plan_sha256": adapter_plan_sha256,
                 "implementation_sha256": implementation_sha256,
             }
         selection_rows.append(
@@ -198,6 +236,7 @@ def compose_component_configuration(
                 "source": copy.deepcopy(selection.get("source")),
                 "contract_sha256": contract["contract_sha256"],
                 "qualification_sha256": qualification_sha256,
+                "adapter_plan_sha256": adapter_plan_sha256,
                 "implementation_sha256": implementation_sha256,
             }
         )
@@ -421,6 +460,7 @@ def _load_qualification(value: Path | str | Mapping[str, object]) -> dict[str, o
             "implementation_sha256",
             "machine_ir_sha256",
             "domain_sha256",
+            "adapter_plan_sha256",
             "source_entry",
             "tool_id",
             "tool_version",
@@ -433,6 +473,7 @@ def _load_qualification(value: Path | str | Mapping[str, object]) -> dict[str, o
         "implementation_sha256",
         "machine_ir_sha256",
         "domain_sha256",
+        "adapter_plan_sha256",
     ):
         value = bindings.get(field)
         if not isinstance(value, str) or len(value) != 64:

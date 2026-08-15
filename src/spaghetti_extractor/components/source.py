@@ -13,6 +13,7 @@ from typing import Mapping
 from ..util import sha256_file, write_json
 from .formats import COMPONENT_SOURCE_PACKAGE_V2_FORMAT
 from .intent import ComponentIntentError
+from .model import SOURCE_ENTRY_ABIS
 
 
 _IDENTIFIER = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\Z")
@@ -122,7 +123,7 @@ def _normalize_entry(value: Mapping[str, object]) -> dict[str, str]:
         raise ComponentIntentError("component source entry fields are not canonical")
     abi = value.get("abi")
     symbol = value.get("symbol")
-    if abi != "logical-c-v1":
+    if abi not in SOURCE_ENTRY_ABIS:
         raise ComponentIntentError("component source entry ABI is unsupported")
     if not isinstance(symbol, str) or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol) is None:
         raise ComponentIntentError("component source entry symbol is not a C identifier")

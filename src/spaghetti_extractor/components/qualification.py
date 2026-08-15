@@ -17,6 +17,7 @@ from ..util import sha256_file, write_json
 from .intent import ComponentIntentError
 from .model import EVIDENCE_PROFILE_PRODUCERS
 from .source import load_component_source_package
+from .adapter import load_component_adapter_plan
 
 
 def qualify_lift_unit(
@@ -24,6 +25,7 @@ def qualify_lift_unit(
     contract: Path | str | Mapping[str, object],
     implementation: Path | str,
     evidence: Path | str | Mapping[str, object],
+    adapter_plan: Path | str,
     machine_ir: Path | str,
     verification: Mapping[str, object],
     out: Path | str,
@@ -33,6 +35,7 @@ def qualify_lift_unit(
     contract_payload = _load(contract, "component contract")
     implementation_payload = load_component_source_package(implementation)
     evidence_payload = _load(evidence, "component evidence")
+    adapter_payload = load_component_adapter_plan(adapter_plan)
     _self_hash(
         contract_payload,
         format_name=COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
@@ -57,9 +60,30 @@ def qualify_lift_unit(
         "implementation_sha256": implementation_payload.get("implementation_sha256"),
         "machine_ir_sha256": sha256_file(machine_path),
         "domain_sha256": _canonical_sha256(verification),
+        "adapter_plan_sha256": adapter_payload.get("adapter_plan_sha256"),
     }
     if contract_payload.get("status") != "checked":
         _issue(issues, "incomplete", "component_contract_not_checked")
+    if adapter_payload.get("status") != "checked":
+        _issue(issues, "incomplete", "component_adapter_plan_not_checked")
+    adapter_bindings = _object(
+        adapter_payload.get("bindings"), "component adapter-plan bindings"
+    )
+    for field, value in {
+        "contract_sha256": contract_payload.get("contract_sha256"),
+        "implementation_sha256": implementation_payload.get("implementation_sha256"),
+        "machine_ir_sha256": sha256_file(machine_path),
+        "source_entry": implementation_payload.get("entry"),
+    }.items():
+        if adapter_bindings.get(field) != value:
+            _issue(
+                issues,
+                "violated",
+                "component_adapter_plan_binding_stale",
+                field=field,
+                expected=value,
+                observed=adapter_bindings.get(field),
+            )
     if evidence_payload.get("lift_unit_id") != lift_unit_id:
         _issue(issues, "violated", "component_evidence_identity_mismatch")
     if implementation_payload.get("lift_unit_id") != lift_unit_id:

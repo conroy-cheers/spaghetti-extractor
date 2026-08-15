@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Mapping
 
 from ..util import write_json
+from .adapter import load_component_adapter_plan
 from .formats import (
     COMPONENT_ACTIVATION_PLAN_V3_FORMAT,
+    COMPONENT_ADAPTER_PLAN_V1_FORMAT,
     COMPONENT_CONFIGURATION_STATUS_V1_FORMAT,
     COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
     COMPONENT_EVIDENCE_V3_FORMAT,
@@ -35,6 +37,7 @@ def build_lift_unit_status(
     *,
     contract: Path | str,
     source: Path | str | None,
+    adapter_plan: Path | str | None,
     evidence: Path | str | None,
     qualification: Path | str | None,
     out: Path | str,
@@ -55,6 +58,14 @@ def build_lift_unit_status(
         source_payload = load_component_source_package(source)
         if source_payload.get("lift_unit_id") != lift_unit_id:
             raise ComponentIntentError("component source package identity is stale")
+    adapter_payload = (
+        None if adapter_plan is None else load_component_adapter_plan(adapter_plan)
+    )
+    if (
+        adapter_payload is not None
+        and adapter_payload.get("lift_unit_id") != lift_unit_id
+    ):
+        raise ComponentIntentError("component adapter-plan identity is stale")
 
     evidence_payload = (
         None
@@ -81,6 +92,10 @@ def build_lift_unit_status(
     issues.extend(_issues(contract_payload, "blockers"))
     if source_payload is None:
         issues.append(_issue("incomplete", "portable_source_not_declared", lift_unit_id))
+    if adapter_payload is None:
+        issues.append(_issue("incomplete", "component_adapter_plan_not_available", lift_unit_id))
+    else:
+        issues.extend(_issues(adapter_payload, "issues"))
     if evidence_payload is None:
         issues.append(_issue("incomplete", "behavioral_evidence_not_available", lift_unit_id))
     else:
@@ -94,6 +109,7 @@ def build_lift_unit_status(
 
     observed = {
         str(contract_payload.get("status")),
+        str(adapter_payload.get("status")) if adapter_payload else "missing",
         str(evidence_payload.get("status")) if evidence_payload else "missing",
         str(qualification_payload.get("status")) if qualification_payload else "missing",
         *(str(row.get("status")) for row in issues),
@@ -106,6 +122,8 @@ def build_lift_unit_status(
         and qualification_payload.get("status") == "qualified"
         and contract_payload.get("status") == "checked"
         and source_payload is not None
+        and adapter_payload is not None
+        and adapter_payload.get("status") == "checked"
         and evidence_payload is not None
         and evidence_payload.get("status") == "satisfied"
         else "incomplete"
@@ -132,6 +150,10 @@ def build_lift_unit_status(
             "source": ArtifactStatus(
                 "present" if source_payload is not None else "missing",
                 None if source_payload is None else str(source_payload.get("implementation_sha256")),
+            ).to_payload(),
+            "adapter_plan": ArtifactStatus(
+                "missing" if adapter_payload is None else str(adapter_payload.get("status")),
+                None if adapter_payload is None else str(adapter_payload.get("adapter_plan_sha256")),
             ).to_payload(),
             "evidence": ArtifactStatus(
                 "missing" if evidence_payload is None else str(evidence_payload.get("status")),
@@ -213,6 +235,7 @@ def _load_checked(
     if path.is_dir():
         filenames = {
             COMPONENT_CONTRACT_PACKAGE_V2_FORMAT: "contract.json",
+            COMPONENT_ADAPTER_PLAN_V1_FORMAT: "adapter-plan.json",
             COMPONENT_EVIDENCE_V3_FORMAT: "evidence.json",
             COMPONENT_QUALIFICATION_V3_FORMAT: "qualification.json",
             COMPONENT_ACTIVATION_PLAN_V3_FORMAT: "activation-plan.json",
@@ -268,6 +291,8 @@ def _next_action(blockers: list[dict[str, object]], status: str) -> dict[str, ob
 
 
 def _remediation(code: str) -> str:
+    if "adapter" in code:
+        return "build and check the component adapter plan"
     if "review" in code or "contract" in code:
         return "review and check the generated component boundary contract"
     if "source" in code:

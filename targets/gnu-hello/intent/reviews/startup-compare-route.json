@@ -1,0 +1,92 @@
+{
+  "format": "spaghetti-extractor-component-boundary-review-v2",
+  "lift_unit_id": "startup-compare-route",
+  "accept_derived_machine_boundary": true,
+  "overrides": {
+    "source_abi": "logical-c-v1",
+    "parameters": [
+      {
+        "id": "left",
+        "type": "uint32_t",
+        "machine_source": {
+          "kind": "register",
+          "name": "ebx",
+          "width": 32,
+          "evidence": {
+            "unit_id": "semantic-transfer:original-cutpoint-00001038-00001040",
+            "json_pointer": "/semantics/edge_conditions/0/condition/args/0/args/0"
+          }
+        }
+      },
+      {
+        "id": "right",
+        "type": "uint32_t",
+        "machine_source": {
+          "kind": "register",
+          "name": "eax",
+          "width": 32,
+          "evidence": {
+            "unit_id": "semantic-transfer:original-cutpoint-00001038-00001040",
+            "json_pointer": "/semantics/edge_conditions/0/condition/args/0/args/1"
+          }
+        }
+      }
+    ],
+    "results": [
+      {
+        "id": "route",
+        "kind": "value",
+        "type": "uint32_t",
+        "machine_source": {
+          "kind": "expression",
+          "expression": {
+            "op": "eq",
+            "args": [
+              {
+                "op": "sub32",
+                "args": [
+                  {"op": "reg", "name": "ebx", "width": 32},
+                  {"op": "reg", "name": "eax", "width": 32}
+                ]
+              },
+              {"op": "const", "value": 0, "width": 32}
+            ]
+          },
+          "evidence": {
+            "unit_id": "semantic-transfer:original-cutpoint-00001038-00001040",
+            "json_pointer": "/semantics/outcome/condition"
+          }
+        },
+        "effect_refs": []
+      },
+      {
+        "id": "control",
+        "kind": "control",
+        "control": {
+          "unit_id": "semantic-transfer:original-cutpoint-00001038-00001040",
+          "outcome_kind": "branch",
+          "condition": {
+            "op": "eq",
+            "args": [
+              {
+                "op": "sub32",
+                "args": [
+                  {"op": "reg", "name": "ebx", "width": 32},
+                  {"op": "reg", "name": "eax", "width": 32}
+                ]
+              },
+              {"op": "const", "value": 0, "width": 32}
+            ]
+          },
+          "routes": [
+            {"target_rva": 4376, "when": true},
+            {"target_rva": 4160, "when": false}
+          ]
+        }
+      }
+    ],
+    "adapter_effects": {
+      "inherit_synthesized_except": []
+    }
+  }
+}

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from spaghetti_extractor.components.formats import (
     COMPONENT_ACTIVATION_PLAN_V3_FORMAT,
+    COMPONENT_ADAPTER_PLAN_V1_FORMAT,
     COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
     COMPONENT_EVIDENCE_V3_FORMAT,
     COMPONENT_QUALIFICATION_V3_FORMAT,
@@ -45,6 +46,8 @@ class ComponentStatusTests(unittest.TestCase):
         self.contract = self.root / "contract.json"
         self.evidence = self.root / "evidence.json"
         self.qualification = self.root / "qualification.json"
+        self.adapter = self.root / "adapter"
+        self.adapter.mkdir()
         self.source = self.root / "source"
         self.source_file = self.root / "component.c"
         self.source_file.write_text("unsigned component(unsigned x) { return x; }\n")
@@ -68,6 +71,25 @@ class ComponentStatusTests(unittest.TestCase):
             "blockers": [],
         }
         _write_hashed(self.contract, contract_core, "contract_sha256")
+        header = self.adapter / "spaghetti-component-abi.h"
+        header.write_text("/* fixture */\n", encoding="ascii")
+        adapter_core = {
+            "format": COMPONENT_ADAPTER_PLAN_V1_FORMAT,
+            "status": "checked",
+            "lift_unit_id": "fixture",
+            "artifacts": {
+                "logical_abi_header": {
+                    "path": header.name,
+                    "sha256": sha256(header.read_bytes()).hexdigest(),
+                }
+            },
+            "issues": [],
+        }
+        _write_hashed(
+            self.adapter / "adapter-plan.json",
+            adapter_core,
+            "adapter_plan_sha256",
+        )
         evidence_core = {
             "format": COMPONENT_EVIDENCE_V3_FORMAT,
             "status": "satisfied",
@@ -92,6 +114,7 @@ class ComponentStatusTests(unittest.TestCase):
         result = build_lift_unit_status(
             contract=self.contract,
             source=self.source,
+            adapter_plan=self.adapter,
             evidence=self.evidence,
             qualification=self.qualification,
             out=self.root / "status.json",
@@ -105,6 +128,7 @@ class ComponentStatusTests(unittest.TestCase):
         result = build_lift_unit_status(
             contract=self.contract,
             source=None,
+            adapter_plan=None,
             evidence=None,
             qualification=None,
             out=self.root / "status.json",
@@ -115,6 +139,7 @@ class ComponentStatusTests(unittest.TestCase):
             {row["code"] for row in result["blockers"]},
             {
                 "portable_source_not_declared",
+                "component_adapter_plan_not_available",
                 "behavioral_evidence_not_available",
                 "component_qualification_not_available",
             },
@@ -128,6 +153,7 @@ class ComponentStatusTests(unittest.TestCase):
             build_lift_unit_status(
                 contract=self.contract,
                 source=self.source,
+                adapter_plan=self.adapter,
                 evidence=self.evidence,
                 qualification=self.qualification,
                 out=self.root / "status.json",

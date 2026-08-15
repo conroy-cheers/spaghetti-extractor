@@ -11,6 +11,7 @@ from typing import Mapping
 from ..util import write_json
 from .formats import (
     COMPONENT_CONFIGURATION_RESOLUTION_V2_FORMAT,
+    COMPONENT_RESOLUTION_SLICE_V1_FORMAT,
     COMPONENT_RESOLUTION_V2_FORMAT,
 )
 from .intent import ComponentIntentError, load_component_catalog_intent
@@ -62,6 +63,44 @@ def resolve_component_catalog_from_selection(
         bindings=selected_input.bindings,
         out=out,
     )
+
+
+def slice_component_resolution(
+    *,
+    resolution: Path | str | Mapping[str, object],
+    lift_unit_id: str,
+    out: Path | str,
+) -> dict[str, object]:
+    """Emit the stable resolution dependency needed by one lift unit."""
+
+    payload = _load_resolution(resolution)
+    matches = [
+        (field, copy.deepcopy(dict(row)))
+        for field in ("components", "groups")
+        for row in _array(payload.get(field), f"resolved {field}")
+        if isinstance(row, Mapping) and row.get("id") == lift_unit_id
+    ]
+    if len(matches) != 1:
+        raise ComponentIntentError(
+            f"lift unit {lift_unit_id!r} resolved to {len(matches)} definitions"
+        )
+    field, lift_unit = matches[0]
+    core = {
+        "format": COMPONENT_RESOLUTION_SLICE_V1_FORMAT,
+        "status": "checked",
+        "program_id": payload["program_id"],
+        "executes_original_binary": False,
+        "permitted_activation_profiles": copy.deepcopy(
+            payload["permitted_activation_profiles"]
+        ),
+        "bindings": copy.deepcopy(payload["bindings"]),
+        "components": [lift_unit] if field == "components" else [],
+        "groups": [lift_unit] if field == "groups" else [],
+        "configurations": [],
+    }
+    result = {**core, "resolution_sha256": _canonical_sha256(core)}
+    write_json(Path(out), result)
+    return result
 
 
 def _resolve_component_catalog(
@@ -258,3 +297,32 @@ def _canonical_sha256(value: object) -> str:
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode("ascii")
     return sha256(encoded).hexdigest()
+
+
+def _load_resolution(
+    value: Path | str | Mapping[str, object],
+) -> dict[str, object]:
+    if isinstance(value, Mapping):
+        payload = copy.deepcopy(dict(value))
+    else:
+        try:
+            loaded = json.loads(Path(value).read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ComponentIntentError(f"cannot read component resolution: {exc}") from exc
+        if not isinstance(loaded, Mapping):
+            raise ComponentIntentError("component resolution must be an object")
+        payload = copy.deepcopy(dict(loaded))
+    if payload.get("format") != COMPONENT_RESOLUTION_V2_FORMAT:
+        raise ComponentIntentError("unsupported component resolution format")
+    expected = payload.get("resolution_sha256")
+    core = copy.deepcopy(payload)
+    core.pop("resolution_sha256", None)
+    if expected != _canonical_sha256(core):
+        raise ComponentIntentError("component resolution self-hash is stale")
+    return payload
+
+
+def _array(value: object, description: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ComponentIntentError(f"{description} must be an array")
+    return value

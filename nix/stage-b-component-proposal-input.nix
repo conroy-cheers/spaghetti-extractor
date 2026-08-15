@@ -62,11 +62,26 @@ let
     "${namePrefix}-selected-component-proposals-v1.json"
     (builtins.readFile "${preparation}/selected-proposals.json");
   payload = builtins.fromJSON (builtins.readFile selectedProposals);
+  selectionByComponent = builtins.listToAttrs (map (row:
+    let
+      core = (builtins.removeAttrs payload [ "selection_sha256" ]) // {
+        selections = [ row ];
+      };
+      selection = core // {
+        selection_sha256 = builtins.hashString "sha256" (builtins.toJSON core);
+      };
+    in {
+      name = row.component_id;
+      value = builtins.toFile
+        "${namePrefix}-${row.component_id}-selected-proposal-v1.json"
+        (builtins.toJSON selection + "\n");
+    }
+  ) payload.selections);
 in
 assert payload.format == "spaghetti-extractor-component-proposal-selection-v1";
 assert payload.status == "checked";
 assert payload.executes_original_binary == false;
 assert payload.authority.can_authorize_replacement == false;
 {
-  inherit preparation selectedProposals;
+  inherit preparation selectedProposals selectionByComponent;
 }

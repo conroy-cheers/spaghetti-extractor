@@ -1,0 +1,74 @@
+{
+  "format": "spaghetti-extractor-component-boundary-review-v2",
+  "lift_unit_id": "d",
+  "accept_derived_machine_boundary": true,
+  "overrides": {
+    "adapter_effects": [],
+    "parameters": [
+      {
+        "id": "value",
+        "type": "uint32_t",
+        "machine_source": {
+          "kind": "register",
+          "name": "ecx",
+          "width": 32,
+          "evidence": {
+            "unit_id": "unit:d",
+            "json_pointer": "/semantics/outcome/condition/args/0/args/0"
+          }
+        }
+      }
+    ],
+    "results": [
+      {
+        "id": "route",
+        "kind": "value",
+        "type": "uint32_t",
+        "machine_source": {
+          "kind": "expression",
+          "expression": {
+            "op": "not",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {"op": "reg", "name": "ecx", "width": 32},
+                  {"op": "const", "value": 7, "width": 32}
+                ]
+              }
+            ]
+          },
+          "evidence": {
+            "unit_id": "unit:d",
+            "json_pointer": "/semantics/outcome/condition"
+          }
+        },
+        "effect_refs": []
+      },
+      {
+        "id": "control",
+        "kind": "control",
+        "control": {
+          "unit_id": "unit:d",
+          "outcome_kind": "branch",
+          "condition": {
+            "op": "not",
+            "args": [
+              {
+                "op": "eq",
+                "args": [
+                  {"op": "reg", "name": "ecx", "width": 32},
+                  {"op": "const", "value": 7, "width": 32}
+                ]
+              }
+            ]
+          },
+          "routes": [
+            {"target_rva": 8192, "when": true},
+            {"target_rva": 12288, "when": false}
+          ]
+        }
+      }
+    ]
+  }
+}

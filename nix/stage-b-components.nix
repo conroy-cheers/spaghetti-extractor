@@ -6,6 +6,7 @@
   machineIr,
   reconstructionPlan,
   componentProposals,
+  canonicalExternalSites ? null,
   intent,
   reviewRoot ? null,
   sourceRoot ? null,
@@ -50,11 +51,17 @@ let
   contractSource = mkPhaseSource "contract" [
     "spaghetti_extractor.components.contracts"
   ];
+  externalSiteSource = mkPhaseSource "external-sites" [
+    "spaghetti_extractor.components.external_sites"
+  ];
   sourcePackageSource = mkPhaseSource "source-package" [
     "spaghetti_extractor.components.source"
   ];
   evidenceSource = mkPhaseSource "evidence" [
     "spaghetti_extractor.components.evidence"
+  ];
+  adapterSource = mkPhaseSource "adapter" [
+    "spaghetti_extractor.components.adapter"
   ];
   qualificationSource = mkPhaseSource "qualification" [
     "spaghetti_extractor.components.qualification"
@@ -111,6 +118,121 @@ let
       (.configurations | all(.status == "checked"))
     ' "$out/component-resolution.json" >/dev/null
   '';
+  leafIntentFiles = builtins.listToAttrs (map (component: {
+    name = component.id;
+    value = builtins.toFile
+      "${namePrefix}-${component.id}-component-intent-slice-v1.json"
+      (builtins.toJSON {
+        format = intentPayload.format;
+        program_id = intentPayload.program_id;
+        permitted_activation_profiles = intentPayload.permitted_activation_profiles;
+        components = [ component ];
+        groups = [ ];
+        configurations = [ ];
+      });
+  }) intentPayload.components);
+  mkLeafResolution = liftUnit:
+    pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-resolution-slice-v1" common ''
+      set -euo pipefail
+      ${environment resolutionSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${proposalInput.selectionByComponent.${liftUnit.id}} \
+        ${leafIntentFiles.${liftUnit.id}} \
+        "$out/component-resolution.json" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.components.resolution import (
+          resolve_component_catalog_from_selection,
+      )
+
+      resolve_component_catalog_from_selection(
+          selection=pathlib.Path(sys.argv[1]),
+          intent=pathlib.Path(sys.argv[2]),
+          out=pathlib.Path(sys.argv[3]),
+      )
+      PY
+      jq -e --arg id ${lib.escapeShellArg liftUnit.id} '
+        .format == "spaghetti-extractor-component-resolution-v2" and
+        .status == "checked" and
+        (.executes_original_binary | not) and
+        (.components | length) == 1 and
+        .components[0].id == $id and
+        (.groups | length) == 0 and
+        (.configurations | length) == 0
+      ' "$out/component-resolution.json" >/dev/null
+    '';
+  mkGroupResolutionSlice = liftUnit:
+    pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-resolution-slice-v1" common ''
+      set -euo pipefail
+      ${environment resolutionSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${resolution}/component-resolution.json \
+        ${lib.escapeShellArg liftUnit.id} \
+        "$out/component-resolution.json" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.components.resolution import slice_component_resolution
+
+      slice_component_resolution(
+          resolution=pathlib.Path(sys.argv[1]),
+          lift_unit_id=sys.argv[2],
+          out=pathlib.Path(sys.argv[3]),
+      )
+      PY
+      jq -e --arg id ${lib.escapeShellArg liftUnit.id} '
+        .format == "spaghetti-extractor-component-resolution-slice-v1" and
+        .status == "checked" and
+        (.executes_original_binary | not) and
+        ((.components + .groups) | length) == 1 and
+        ((.components + .groups)[0].id == $id) and
+        (.configurations | length) == 0
+      ' "$out/component-resolution.json" >/dev/null
+    '';
+  resolutionSlices = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = if liftUnit.kind == "component"
+      then mkLeafResolution liftUnit
+      else mkGroupResolutionSlice liftUnit;
+  }) liftUnits);
+  mkExternalSiteSlice = liftUnit:
+    pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-external-sites-v1" common ''
+      set -euo pipefail
+      ${environment externalSiteSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${canonicalExternalSites} \
+        ${resolutionSlices.${liftUnit.id}}/component-resolution.json \
+        ${lib.escapeShellArg liftUnit.id} \
+        "$out/external-sites.json" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.components.external_sites import (
+          project_component_external_sites,
+      )
+
+      project_component_external_sites(
+          canonical_external_sites=pathlib.Path(sys.argv[1]),
+          resolution=pathlib.Path(sys.argv[2]),
+          lift_unit_id=sys.argv[3],
+          out=pathlib.Path(sys.argv[4]),
+      )
+      PY
+      jq -e --arg id ${lib.escapeShellArg liftUnit.id} '
+        .format == "spaghetti-extractor-component-external-site-slice-v1" and
+        .lift_unit_id == $id and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
+        (.executes_original_binary | not) and
+        (.authority.can_authorize_candidate_runtime | not)
+      ' "$out/external-sites.json" >/dev/null
+    '';
+  externalSiteSlices =
+    if canonicalExternalSites == null then { }
+    else builtins.listToAttrs (map (liftUnit: {
+      name = liftUnit.id;
+      value = mkExternalSiteSlice liftUnit;
+    }) liftUnits);
   mkContract = liftUnit:
     let
       review = liftUnit.interface_review or null;
@@ -128,22 +250,27 @@ let
       ${python} - \
         ${machineIr} \
         ${reconstructionPlan}/reconstruction-plan.json \
-        ${resolution}/component-resolution.json \
+        ${resolutionSlices.${liftUnit.id}}/component-resolution.json \
         ${lib.escapeShellArg liftUnit.id} \
         ${lib.escapeShellArg (toString reviewPath)} \
+        ${lib.escapeShellArg (if builtins.hasAttr liftUnit.id externalSiteSlices
+          then toString externalSiteSlices.${liftUnit.id}
+          else "-")} \
         "$out" <<'PY'
       import pathlib
       import sys
       from spaghetti_extractor.components.contracts import build_lift_unit_contract
 
       review = None if sys.argv[5] == "-" else pathlib.Path(sys.argv[5])
+      external_sites = None if sys.argv[6] == "-" else pathlib.Path(sys.argv[6])
       build_lift_unit_contract(
           machine_ir=pathlib.Path(sys.argv[1]),
           reconstruction_plan=pathlib.Path(sys.argv[2]),
           resolution=pathlib.Path(sys.argv[3]),
           lift_unit_id=sys.argv[4],
           review=review,
-          out_dir=pathlib.Path(sys.argv[6]),
+          external_sites=external_sites,
+          out_dir=pathlib.Path(sys.argv[7]),
       )
       PY
       jq -e '
@@ -206,6 +333,45 @@ let
       value = mkSourcePackage liftUnit;
     }) (builtins.filter (liftUnit: (liftUnit.source or null) != null) liftUnits)
   );
+  mkAdapterPlan = liftUnit:
+    pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-adapter-plan-v1" common ''
+      set -euo pipefail
+      ${environment adapterSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${contracts.${liftUnit.id}} \
+        ${sourcePackages.${liftUnit.id}} \
+        ${machineIr} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.components.adapter import build_component_adapter_plan
+
+      build_component_adapter_plan(
+          contract=pathlib.Path(sys.argv[1]),
+          implementation=pathlib.Path(sys.argv[2]),
+          machine_ir=pathlib.Path(sys.argv[3]),
+          out_dir=pathlib.Path(sys.argv[4]),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-adapter-plan-v1" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
+        (.executes_original_binary | not) and
+        (.policy.machine_ir_fallback_used | not) and
+        (.policy.runtime_completion == "checked-machine-projection-v1" or
+         .policy.runtime_completion == "explicit-reviewed-completion-v1" or
+         .policy.runtime_completion == null) and
+        (.policy.raw_machine_addresses_exposed | not)
+      ' "$out/adapter-plan.json" >/dev/null
+      test -s "$out/spaghetti-component-abi.h"
+    '';
+  adapterPlans = builtins.listToAttrs (
+    map (liftUnit: {
+      name = liftUnit.id;
+      value = mkAdapterPlan liftUnit;
+    }) (builtins.filter (liftUnit: (liftUnit.source or null) != null) liftUnits)
+  );
   mkEvidence = liftUnit:
     pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-evidence-v3"
       (common // { nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.stdenv.cc ]; }) ''
@@ -215,6 +381,7 @@ let
       ${python} - \
         ${contracts.${liftUnit.id}} \
         ${sourcePackages.${liftUnit.id}} \
+        ${adapterPlans.${liftUnit.id}} \
         ${machineIr} \
         ${lib.escapeShellArg (builtins.toJSON liftUnit.verification)} \
         ${pkgs.stdenv.cc}/bin/cc \
@@ -227,10 +394,11 @@ let
       produce_component_evidence(
           contract=pathlib.Path(sys.argv[1]),
           implementation=pathlib.Path(sys.argv[2]),
-          machine_ir=pathlib.Path(sys.argv[3]),
-          verification=json.loads(sys.argv[4]),
-          compiler=pathlib.Path(sys.argv[5]),
-          out=pathlib.Path(sys.argv[6]),
+          adapter_plan=pathlib.Path(sys.argv[3]),
+          machine_ir=pathlib.Path(sys.argv[4]),
+          verification=json.loads(sys.argv[5]),
+          compiler=pathlib.Path(sys.argv[6]),
+          out=pathlib.Path(sys.argv[7]),
       )
       PY
       jq -e '
@@ -261,6 +429,7 @@ let
         ${contracts.${liftUnit.id}}/contract.json \
         ${sourcePackages.${liftUnit.id}} \
         ${evidences.${liftUnit.id}}/evidence.json \
+        ${adapterPlans.${liftUnit.id}} \
         ${machineIr} \
         ${lib.escapeShellArg (builtins.toJSON liftUnit.verification)} \
         "$out/qualification.json" <<'PY'
@@ -273,9 +442,10 @@ let
           contract=pathlib.Path(sys.argv[1]),
           implementation=pathlib.Path(sys.argv[2]),
           evidence=pathlib.Path(sys.argv[3]),
-          machine_ir=pathlib.Path(sys.argv[4]),
-          verification=json.loads(sys.argv[5]),
-          out=pathlib.Path(sys.argv[6]),
+          adapter_plan=pathlib.Path(sys.argv[4]),
+          machine_ir=pathlib.Path(sys.argv[5]),
+          verification=json.loads(sys.argv[6]),
+          out=pathlib.Path(sys.argv[7]),
       )
       PY
       jq -e '
@@ -305,6 +475,10 @@ let
         name = id;
         value = toString qualifications.${id};
       }) (builtins.filter (id: builtins.hasAttr id qualifications) selectedIds));
+      selectedAdapterPlanPaths = builtins.listToAttrs (map (id: {
+        name = id;
+        value = toString adapterPlans.${id};
+      }) (builtins.filter (id: builtins.hasAttr id adapterPlans) selectedIds));
     in pkgs.runCommand "${namePrefix}-${configuration.id}-component-activation-plan-v3" common ''
       set -euo pipefail
       ${environment configurationSource}
@@ -316,6 +490,7 @@ let
         ${lib.escapeShellArg (builtins.toJSON selectedContractPaths)} \
         ${lib.escapeShellArg (builtins.toJSON selectedImplementationPaths)} \
         ${lib.escapeShellArg (builtins.toJSON selectedQualificationPaths)} \
+        ${lib.escapeShellArg (builtins.toJSON selectedAdapterPlanPaths)} \
         "$out/activation-plan.json" <<'PY'
       import json
       import pathlib
@@ -329,7 +504,8 @@ let
           contracts={key: pathlib.Path(value) for key, value in json.loads(sys.argv[4]).items()},
           implementations={key: pathlib.Path(value) for key, value in json.loads(sys.argv[5]).items()},
           qualifications={key: pathlib.Path(value) for key, value in json.loads(sys.argv[6]).items()},
-          out=pathlib.Path(sys.argv[7]),
+          adapter_plans={key: pathlib.Path(value) for key, value in json.loads(sys.argv[7]).items()},
+          out=pathlib.Path(sys.argv[8]),
       )
       PY
       jq -e '
@@ -407,6 +583,7 @@ let
       contracts = selected selectedIds contracts;
       implementations = selected enabledIds sourcePackages;
       qualifications = selected enabledIds qualifications;
+      adapterPlans = selected enabledIds adapterPlans;
       inherit enabledIds;
     };
   runtimeConfigurations = builtins.listToAttrs (map (configuration: {
@@ -438,6 +615,8 @@ let
         then toString sourcePackages.${liftUnit.id} else "-";
       evidence = if builtins.hasAttr liftUnit.id evidences
         then toString evidences.${liftUnit.id} else "-";
+      adapter = if builtins.hasAttr liftUnit.id adapterPlans
+        then toString adapterPlans.${liftUnit.id} else "-";
       qualification = if builtins.hasAttr liftUnit.id qualifications
         then toString qualifications.${liftUnit.id} else "-";
     in pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-work-status-v1" common ''
@@ -447,6 +626,7 @@ let
       ${python} - \
         ${contracts.${liftUnit.id}} \
         ${lib.escapeShellArg source} \
+        ${lib.escapeShellArg adapter} \
         ${lib.escapeShellArg evidence} \
         ${lib.escapeShellArg qualification} \
         "$out/status.json" <<'PY'
@@ -458,9 +638,10 @@ let
       build_lift_unit_status(
           contract=pathlib.Path(sys.argv[1]),
           source=optional(sys.argv[2]),
-          evidence=optional(sys.argv[3]),
-          qualification=optional(sys.argv[4]),
-          out=pathlib.Path(sys.argv[5]),
+          adapter_plan=optional(sys.argv[3]),
+          evidence=optional(sys.argv[4]),
+          qualification=optional(sys.argv[5]),
+          out=pathlib.Path(sys.argv[6]),
       )
       PY
       jq -e --arg id ${lib.escapeShellArg liftUnit.id} '
@@ -489,9 +670,12 @@ let
           label = liftUnit.label;
           contents = {
             resolution = "resolution";
+            external_sites = if builtins.hasAttr liftUnit.id externalSiteSlices
+              then "external-sites" else null;
             contract = "contract";
             status = "status";
             source = if builtins.hasAttr liftUnit.id sourcePackages then "source" else null;
+            adapter_plan = if builtins.hasAttr liftUnit.id adapterPlans then "adapter-plan" else null;
             evidence = if builtins.hasAttr liftUnit.id evidences then "evidence" else null;
             qualification = if builtins.hasAttr liftUnit.id qualifications then "qualification" else null;
           };
@@ -506,9 +690,11 @@ let
         set -euo pipefail
         mkdir -p "$out"
         ln -s ${resolution} "$out/resolution"
+        ${optionalLink externalSiteSlices "external-sites"}
         ln -s ${contracts.${liftUnit.id}} "$out/contract"
         ln -s ${statusReports.${liftUnit.id}} "$out/status"
         ${optionalLink sourcePackages "source"}
+        ${optionalLink adapterPlans "adapter-plan"}
         ${optionalLink evidences "evidence"}
         ${optionalLink qualifications "qualification"}
         cp ${manifest} "$out/work-package.json"
@@ -572,6 +758,7 @@ let
       members = liftUnit.members or [ ];
       hasSource = builtins.hasAttr liftUnit.id sourcePackages;
       hasEvidence = builtins.hasAttr liftUnit.id evidences;
+      hasAdapterPlan = builtins.hasAttr liftUnit.id adapterPlans;
       hasQualification = builtins.hasAttr liftUnit.id qualifications;
     };
   }) liftUnits);
@@ -586,15 +773,17 @@ let
   }) intentPayload.configurations);
   bundle = pkgs.linkFarm "${namePrefix}-component-contracts-v3" (
     [ { name = "resolution"; path = resolution; } ]
+    ++ lib.mapAttrsToList (name: path: { name = "external-sites-${name}"; inherit path; }) externalSiteSlices
     ++ lib.mapAttrsToList (name: path: { inherit name path; }) contracts
     ++ lib.mapAttrsToList (name: path: { name = "source-${name}"; inherit path; }) sourcePackages
+    ++ lib.mapAttrsToList (name: path: { name = "adapter-${name}"; inherit path; }) adapterPlans
     ++ lib.mapAttrsToList (name: path: { name = "evidence-${name}"; inherit path; }) evidences
     ++ lib.mapAttrsToList (name: path: { name = "qualification-${name}"; inherit path; }) qualifications
     ++ lib.mapAttrsToList (name: path: { name = "configuration-${name}"; inherit path; }) activationPlans
   );
 in
 {
-  inherit proposalInput resolution contracts sourcePackages evidences qualifications
+  inherit proposalInput resolution resolutionSlices externalSiteSlices contracts sourcePackages adapterPlans evidences qualifications
     activationPlans sourceBundles runtimeConfigurations mkRuntime runtimeFor
     runtimePackages statusReports workPackages checkGates
     configurationStatusReports configurationCheckGates liftUnitIndex

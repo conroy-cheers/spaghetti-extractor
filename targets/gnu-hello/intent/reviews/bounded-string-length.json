@@ -1,0 +1,237 @@
+{
+  "format": "spaghetti-extractor-component-boundary-review-v2",
+  "lift_unit_id": "bounded-string-length",
+  "accept_derived_machine_boundary": true,
+  "overrides": {
+    "source_abi": "logical-object-c-v1",
+    "parameters": [
+      {
+        "id": "value",
+        "type": "read-only-bytes-v1",
+        "memory_view": {
+          "kind": "indexed-read-view-v1",
+          "extent_parameter_id": "maximum",
+          "element_width": 1,
+          "event_refs": [
+            {
+              "family": "memory_event",
+              "unit_id": "semantic-transfer:original-cutpoint-00013cfb-00013d00",
+              "index": 0
+            }
+          ],
+          "access_witness": {
+            "kind": "finite-domain-machine-replay-v1"
+          }
+        },
+        "machine_source": {
+          "kind": "expression",
+          "expression": {
+            "op": "load",
+            "width": 4,
+            "address": {
+              "op": "add32",
+              "args": [
+                {
+                  "op": "const",
+                  "value": 4,
+                  "width": 32
+                },
+                {
+                  "op": "reg",
+                  "name": "esp",
+                  "width": 32
+                }
+              ]
+            }
+          },
+          "evidence": {
+            "unit_id": "semantic-transfer:original-cutpoint-00013cd0-00013cdb",
+            "json_pointer": "/semantics/register_writes/0/value"
+          }
+        }
+      },
+      {
+        "id": "maximum",
+        "type": "uint32_t",
+        "machine_source": {
+          "kind": "expression",
+          "expression": {
+            "op": "load",
+            "width": 4,
+            "address": {
+              "op": "add32",
+              "args": [
+                {
+                  "op": "const",
+                  "value": 8,
+                  "width": 32
+                },
+                {
+                  "op": "reg",
+                  "name": "esp",
+                  "width": 32
+                }
+              ]
+            }
+          },
+          "evidence": {
+            "unit_id": "semantic-transfer:original-cutpoint-00013cd0-00013cdb",
+            "json_pointer": "/semantics/register_writes/1/value"
+          }
+        }
+      }
+    ],
+    "results": [
+      {
+        "id": "result",
+        "kind": "return",
+        "type": "uint32_t",
+        "machine_source": {
+          "kind": "expression",
+          "expression": {
+            "op": "reg",
+            "name": "edx",
+            "width": 32
+          },
+          "evidence": {
+            "unit_id": "semantic-transfer:original-cutpoint-00013d00-00013d07",
+            "json_pointer": "/semantics/register_writes/0/value"
+          }
+        },
+        "effect_refs": [
+          {
+            "family": "register_write",
+            "unit_id": "semantic-transfer:original-cutpoint-00013d00-00013d07",
+            "index": 0
+          }
+        ]
+      },
+      {
+        "id": "control",
+        "kind": "control",
+        "control": {
+          "unit_id": "semantic-transfer:original-cutpoint-00013d07-00013d08",
+          "outcome_kind": "return",
+          "return_target": {
+            "op": "load",
+            "width": 4,
+            "address": {
+              "op": "reg",
+              "name": "esp",
+              "width": 32
+            }
+          }
+        }
+      }
+    ],
+    "objects": [],
+    "adapter_effects": {
+      "inherit_synthesized_except": [
+        {
+          "family": "register_write",
+          "unit_id": "semantic-transfer:original-cutpoint-00013d00-00013d07",
+          "index": 0
+        }
+      ]
+    },
+    "completion": {
+      "kind": "explicit-machine-state-v1",
+      "state": {
+        "eax": {
+          "op": "logical_result",
+          "result_id": "result"
+        },
+        "ebx": {
+          "op": "entry",
+          "name": "ebx"
+        },
+        "ecx": {
+          "op": "const",
+          "value": 0,
+          "width": 32
+        },
+        "edx": {
+          "op": "const",
+          "value": 0,
+          "width": 32
+        },
+        "esi": {
+          "op": "entry",
+          "name": "esi"
+        },
+        "edi": {
+          "op": "entry",
+          "name": "edi"
+        },
+        "ebp": {
+          "op": "entry",
+          "name": "ebp"
+        },
+        "esp": {
+          "op": "add32",
+          "args": [
+            {
+              "op": "entry",
+              "name": "esp"
+            },
+            {
+              "op": "const",
+              "value": 4,
+              "width": 32
+            }
+          ]
+        },
+        "cf": {
+          "op": "false"
+        },
+        "zf": {
+          "op": "true"
+        },
+        "sf": {
+          "op": "false"
+        },
+        "of": {
+          "op": "false"
+        },
+        "pf": {
+          "op": "true"
+        },
+        "df": {
+          "op": "entry",
+          "name": "df"
+        }
+      },
+      "memory_writes": [
+        {
+          "address": {
+            "op": "sub32",
+            "args": [
+              {
+                "op": "entry",
+                "name": "esp"
+              },
+              {
+                "op": "const",
+                "value": 4,
+                "width": 32
+              }
+            ]
+          },
+          "width": 4,
+          "value": {
+            "op": "entry",
+            "name": "ebx"
+          }
+        }
+      ],
+      "return_target": {
+        "op": "load",
+        "width": 4,
+        "address": {
+          "op": "entry",
+          "name": "esp"
+        }
+      }
+    }
+  }
+}

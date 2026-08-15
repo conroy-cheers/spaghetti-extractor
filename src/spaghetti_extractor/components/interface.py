@@ -19,7 +19,7 @@ from collections import defaultdict
 from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from ..artifacts.formats import (
     COMPONENT_INTERFACE_REFINEMENT_FORMAT,
@@ -28,6 +28,25 @@ from ..artifacts.formats import (
     SEMANTIC_COMPONENT_CATALOG_FORMAT,
 )
 from ..util import sha256_file, write_json
+from .logical_abi import (
+    INDEXED_READ_VIEW_V1,
+    NUL_TERMINATED_READ_VIEW_V1,
+    logical_type_kind,
+    parameter_shape_error,
+    result_shape_error,
+)
+from .external_sites import ComponentExternalSite, ComponentExternalSiteSlice
+from .interface_external import (
+    check_external_read_footprint_reference as _check_external_read_footprint_reference,
+    check_service as _check_service,
+    component_external_site_index as _component_external_site_index,
+)
+from .interface_coordinates import (
+    component_entry_unit_id as _component_entry_unit_id,
+    evidence_memory_prefix_count as _evidence_memory_prefix_count,
+    external_event_memory_prefix_count as _external_event_memory_prefix_count,
+    normalize_component_entry_expression as _normalize_component_entry_expression,
+)
 from .interface_schema import (
     ComponentInterfaceError,
     _add_owner,
@@ -55,6 +74,7 @@ from .interface_schema import (
     _normalize_identity,
     _outcome_leaves_component,
     _pointer_escape,
+    _resolve_effect_reference,
     _unit_rva,
 )
 
@@ -101,6 +121,7 @@ def check_component_interface(
     machine_ir: Path | str,
     component_id: str,
     interface_spec: Path | str | Mapping[str, Any],
+    external_sites: ComponentExternalSiteSlice | None = None,
 ) -> dict[str, Any]:
     """Check one structured logical interface against exact machine effects."""
 
@@ -120,6 +141,15 @@ def check_component_interface(
     )
 
     member_ids = _member_ids(component, machine, issues)
+    entry_unit_id = _component_entry_unit_id(
+        component, member_ids, machine, issues
+    )
+    external_site_index = _component_external_site_index(
+        external_sites,
+        component_id=component_id,
+        member_ids=member_ids,
+        issues=issues,
+    )
     inventory = _effect_inventory(member_ids, machine, component)
     owners: dict[str, list[dict[str, str]]] = defaultdict(list)
 
@@ -128,14 +158,62 @@ def check_component_interface(
     objects = _named_entries(spec, "objects", issues)
     services = _named_entries(spec, "services", issues)
 
+    source_abi = spec.get("source_abi", "logical-c-v1")
     for index, parameter in enumerate(parameters):
+        shape_error = parameter_shape_error(
+            parameter, parameters, source_abi=source_abi
+        )
+        if shape_error is not None:
+            _issue(
+                issues,
+                "incomplete",
+                "unsupported_logical_parameter",
+                f"/parameters/{index}",
+                expected="a type supported by the declared source ABI",
+                observed=copy.deepcopy(parameter),
+                remediation=shape_error,
+            )
         _check_machine_source(
             parameter.get("machine_source"),
             machine,
             issues,
             json_location=f"/parameters/{index}/machine_source",
             label=f"parameter {parameter.get('id')!r}",
+            component_entry_unit_id=entry_unit_id,
+            component_member_ids=member_ids,
         )
+        if logical_type_kind(
+            parameter.get("type"), source_abi=source_abi
+        ) in {"read_only_bytes", "nul_terminated_bytes"}:
+            _check_read_only_view(
+                parameter,
+                index,
+                parameters,
+                inventory,
+                external_site_index,
+                owners,
+                issues,
+                normalize_external_argument=(
+                    None
+                    if entry_unit_id is None
+                    else lambda unit_id, event_index, expression, location: (
+                        _normalize_component_entry_expression(
+                            machine=machine,
+                            member_ids=member_ids,
+                            entry_unit_id=entry_unit_id,
+                            target_unit_id=unit_id,
+                            expression=expression,
+                            target_memory_event_count=(
+                                _external_event_memory_prefix_count(
+                                    machine["units_by_id"][unit_id], event_index
+                                )
+                            ),
+                            issues=issues,
+                            json_location=location,
+                        )
+                    )
+                ),
+            )
 
     for object_index, logical_object in enumerate(objects):
         _check_object(
@@ -155,9 +233,24 @@ def check_component_interface(
             inventory,
             owners,
             issues,
+            external_site_index,
         )
 
     for result_index, result in enumerate(results):
+        if result.get("kind") in {"return", "value"}:
+            shape_error = result_shape_error(
+                result, parameters, source_abi=source_abi
+            )
+            if shape_error is not None:
+                _issue(
+                    issues,
+                    "incomplete",
+                    "unsupported_logical_result",
+                    f"/results/{result_index}",
+                    expected="a supported scalar result and checked value relation",
+                    observed=copy.deepcopy(result),
+                    remediation=shape_error,
+                )
         _check_result(
             result,
             result_index,
@@ -230,13 +323,26 @@ def check_component_interface(
             "issues": len(issues),
         },
         "logical_interface": {
-            key: copy.deepcopy(spec.get(key, [] if key != "policy" else {}))
+            key: copy.deepcopy(
+                spec.get(
+                    key,
+                    (
+                        "logical-c-v1"
+                        if key == "source_abi"
+                        else {}
+                        if key in {"policy", "completion"}
+                        else []
+                    ),
+                )
+            )
             for key in (
+                "source_abi",
                 "parameters",
                 "results",
                 "objects",
                 "services",
                 "adapter_effects",
+                "completion",
                 "claims",
                 "policy",
             )
@@ -271,6 +377,7 @@ def synthesize_component_interface_spec(
     catalog: Path | str | Mapping[str, Any],
     machine_ir: Path | str,
     component_id: str,
+    external_sites: ComponentExternalSiteSlice | None = None,
 ) -> dict[str, Any]:
     """Create a conservative, machine-shaped interface specification.
 
@@ -294,6 +401,12 @@ def synthesize_component_interface_spec(
     if structural_issues:
         raise ComponentInterfaceError("cannot synthesize an interface for invalid membership")
     inventory = _effect_inventory(member_ids, machine, component)
+    external_site_index = _component_external_site_index(
+        external_sites,
+        component_id=component_id,
+        member_ids=member_ids,
+        issues=structural_issues,
+    )
 
     register_occurrences: dict[str, tuple[dict[str, Any], str, str]] = {}
     for unit_id in member_ids:
@@ -373,7 +486,27 @@ def synthesize_component_interface_spec(
                     {"effect": reference, "reason": "internal_call_frame"}
                 )
                 continue
-            identity = _event_identity(event)
+            checked_sites = external_site_index.get(
+                (effect["unit_id"], effect["index"]), ()
+            )
+            checked_site = (
+                checked_sites[0]
+                if len(checked_sites) == 1
+                and checked_sites[0].status == "complete"
+                and checked_sites[0].authorizing
+                and checked_sites[0].contract is not None
+                else None
+            )
+            identity = (
+                copy.deepcopy(dict(checked_site.identity))
+                if checked_site is not None
+                else _event_identity(event)
+            )
+            arguments = (
+                copy.deepcopy(list(checked_site.contract.arguments))
+                if checked_site is not None
+                else _event_arguments(event)
+            )
             services.append(
                 {
                     "id": f"machine_service_{len(services):04d}",
@@ -381,9 +514,24 @@ def synthesize_component_interface_spec(
                     "events": [
                         {
                             **reference,
-                            "arguments": _event_arguments(event),
+                            "arguments": arguments,
+                            **(
+                                {
+                                    "external_site_id": checked_site.site_id,
+                                    "external_contract_id": (
+                                        checked_site.contract.contract_id
+                                    ),
+                                }
+                                if checked_site is not None
+                                else {}
+                            ),
                         }
                     ],
+                    **(
+                        {"external_contract": checked_site.contract.payload()}
+                        if checked_site is not None
+                        else {}
+                    ),
                 }
             )
         elif family == "control_exit":
@@ -407,6 +555,7 @@ def synthesize_component_interface_spec(
     spec = {
         "format": COMPONENT_INTERFACE_SPEC_FORMAT,
         "component_id": component_id,
+        "source_abi": "logical-c-v1",
         "bindings": {
             "component_sha256": component.get("component_sha256"),
             "machine_ir_sha256": machine["ir_sha256"],
@@ -616,6 +765,8 @@ def _check_machine_source(
     *,
     json_location: str,
     label: str,
+    component_entry_unit_id: str | None = None,
+    component_member_ids: Sequence[str] = (),
 ) -> bool:
     if isinstance(source, str):
         _issue(
@@ -681,6 +832,36 @@ def _check_machine_source(
             remediation="regenerate the source evidence from the current machine IR",
         )
         return False
+    if component_member_ids:
+        if component_entry_unit_id is None:
+            _issue(
+                issues,
+                "incomplete",
+                "component_entry_coordinate_unavailable",
+                json_location,
+                unit_id=unit_id,
+                rva=_unit_rva(unit),
+                expected="one checked component entry",
+                observed=None,
+                remediation=(
+                    "split the component by entry or add an explicit checked "
+                    "entry-state relation"
+                ),
+            )
+            return False
+        normalized = _normalize_component_entry_expression(
+            machine=machine,
+            member_ids=component_member_ids,
+            entry_unit_id=component_entry_unit_id,
+            target_unit_id=unit_id,
+            expression=observed,
+            target_memory_event_count=_evidence_memory_prefix_count(unit, pointer),
+            issues=issues,
+            json_location=json_location,
+        )
+        if normalized is None:
+            return False
+        observed = normalized
     kind = source.get("kind")
     if kind == "register":
         name = str(source.get("name", "")).lower()
@@ -724,6 +905,179 @@ def _check_machine_source(
         )
         return False
     return True
+
+
+def _check_read_only_view(
+    parameter: Mapping[str, Any],
+    parameter_index: int,
+    parameters: Sequence[Mapping[str, Any]],
+    inventory: Mapping[str, Mapping[str, Any]],
+    external_site_index: Mapping[
+        tuple[str, int], tuple[ComponentExternalSite, ...]
+    ],
+    owners: dict[str, list[dict[str, str]]],
+    issues: list[dict[str, Any]],
+    normalize_external_argument: Callable[
+        [str, int, object, str], object | None
+    ]
+    | None = None,
+) -> None:
+    location = f"/parameters/{parameter_index}/memory_view"
+    view = parameter.get("memory_view")
+    if not isinstance(view, Mapping):
+        return
+    common_fields = {
+        "kind",
+        "element_width",
+        "event_refs",
+        "access_witness",
+    }
+    kind = view.get("kind")
+    expected_fields = (
+        common_fields | {"extent_parameter_id"}
+        if kind == INDEXED_READ_VIEW_V1
+        else common_fields
+    )
+    if set(view) != expected_fields:
+        _issue(
+            issues,
+            "violated",
+            "read_only_view_fields_not_canonical",
+            location,
+            expected=sorted(expected_fields),
+            observed=sorted(str(key) for key in view),
+            remediation="use the exact checked byte-view schema",
+        )
+        return
+    if kind not in {
+        INDEXED_READ_VIEW_V1,
+        NUL_TERMINATED_READ_VIEW_V1,
+    } or view.get("element_width") != 1:
+        _issue(
+            issues,
+            "incomplete",
+            "read_only_view_kind_not_supported",
+            location,
+            expected={
+                "kind": [
+                    INDEXED_READ_VIEW_V1,
+                    NUL_TERMINATED_READ_VIEW_V1,
+                ],
+                "element_width": 1,
+            },
+            observed={
+                "kind": view.get("kind"),
+                "element_width": view.get("element_width"),
+            },
+            remediation="use a byte-wide indexed read view",
+        )
+    witness = view.get("access_witness")
+    if witness != {"kind": "finite-domain-machine-replay-v1"}:
+        _issue(
+            issues,
+            "incomplete",
+            "read_only_view_access_witness_missing",
+            location + "/access_witness",
+            expected={"kind": "finite-domain-machine-replay-v1"},
+            observed=copy.deepcopy(witness),
+            remediation=(
+                "bind this view to candidate-only finite-domain machine replay "
+                "or add a stronger supported access proof"
+            ),
+        )
+    refs = view.get("event_refs")
+    if not isinstance(refs, list) or not refs:
+        _issue(
+            issues,
+            "incomplete",
+            "read_only_view_events_missing",
+            location + "/event_refs",
+            expected="one or more exact byte-read event references",
+            observed=refs,
+            remediation="bind every machine read represented by the logical view",
+        )
+        return
+    for ref_index, reference in enumerate(refs):
+        ref_location = f"{location}/event_refs/{ref_index}"
+        if (
+            isinstance(reference, Mapping)
+            and reference.get("family") == "external_memory_footprint"
+        ):
+            extent_id = view.get("extent_parameter_id")
+            extent_parameter = next(
+                (
+                    row
+                    for row in parameters
+                    if isinstance(extent_id, str) and row.get("id") == extent_id
+                ),
+                None,
+            )
+            _check_external_read_footprint_reference(
+                reference,
+                expected_base=_machine_source_expression(parameter),
+                expected_extent=(
+                    _machine_source_expression(extent_parameter)
+                    if extent_parameter is not None
+                    else None
+                ),
+                external_site_index=external_site_index,
+                issues=issues,
+                json_location=ref_location,
+                normalize_argument=normalize_external_argument,
+            )
+            continue
+        key, effect = _resolve_effect_reference(
+            reference,
+            inventory,
+            "memory_event",
+            issues,
+            ref_location,
+        )
+        if key is None or effect is None:
+            continue
+        event = effect["payload"]
+        if event.get("kind") != "read" or event.get("width") != 1:
+            _issue(
+                issues,
+                "violated",
+                "read_only_view_event_mismatch",
+                ref_location,
+                unit_id=effect["unit_id"],
+                rva=effect["rva"],
+                expected={"kind": "read", "width": 1},
+                observed={"kind": event.get("kind"), "width": event.get("width")},
+                remediation="bind the view only to byte-read machine events",
+            )
+        _add_owner(
+            owners,
+            key,
+            "parameter_view",
+            str(parameter.get("id")),
+            location,
+        )
+
+
+def _machine_source_expression(parameter: Mapping[str, Any]) -> Any:
+    source = parameter.get("machine_source")
+    if not isinstance(source, Mapping):
+        return None
+    kind = source.get("kind")
+    if kind == "register":
+        name = str(source.get("name", "")).lower()
+        return {
+            "op": "reg",
+            "name": name,
+            "width": source.get("width", _REGISTER_WIDTHS.get(name)),
+        }
+    if kind == "expression":
+        return copy.deepcopy(source.get("expression"))
+    if kind == "constant":
+        return {
+            "op": "const",
+            "value": source.get("value"),
+            "width": source.get("width"),
+        }
+    return None
 
 
 def _check_object(
@@ -867,106 +1221,6 @@ def _check_object(
                 observed=sorted(set(str(value) for value in permissions)),
                 remediation="declare exactly the read/write kinds referenced by this field",
             )
-
-
-def _check_service(
-    service: Mapping[str, Any],
-    service_index: int,
-    machine: Mapping[str, Any],
-    inventory: Mapping[str, Mapping[str, Any]],
-    owners: dict[str, list[dict[str, str]]],
-    issues: list[dict[str, Any]],
-) -> None:
-    location = f"/services/{service_index}"
-    identity = service.get("identity")
-    events = service.get("events")
-    if not isinstance(identity, Mapping):
-        _issue(
-            issues,
-            "incomplete",
-            "missing_service_identity",
-            location + "/identity",
-            expected="structured machine event identity",
-            observed=identity,
-            remediation=(
-                "declare the exact import, internal call, callback, or platform "
-                "event identity"
-            ),
-        )
-        return
-    if not isinstance(events, list) or not events:
-        _issue(
-            issues,
-            "incomplete",
-            "unbound_service",
-            location + "/events",
-            expected="one or more exact external-event references",
-            observed=events,
-            remediation="bind the service to its machine external events",
-        )
-        return
-    for event_index, reference in enumerate(events):
-        ref_location = f"{location}/events/{event_index}"
-        key, effect = _resolve_effect_reference(
-            reference,
-            inventory,
-            "external_event",
-            issues,
-            ref_location,
-        )
-        if key is None or effect is None:
-            continue
-        event = effect["payload"]
-        observed_identity = _event_identity(event)
-        if not _identity_complete(observed_identity):
-            _issue(
-                issues,
-                "incomplete",
-                "unsupported_service_identity",
-                location + "/identity",
-                unit_id=effect["unit_id"],
-                rva=effect["rva"],
-                expected="an event with a stable machine identity",
-                observed=observed_identity,
-                remediation="extend the structured event identity profile",
-            )
-        elif _normalize_identity(identity) != observed_identity:
-            _issue(
-                issues,
-                "violated",
-                "service_identity_mismatch",
-                location + "/identity",
-                unit_id=effect["unit_id"],
-                rva=effect["rva"],
-                expected=observed_identity,
-                observed=_normalize_identity(identity),
-                remediation="bind the service to the exact observed machine event",
-            )
-        if not isinstance(reference, Mapping) or "arguments" not in reference:
-            _issue(
-                issues,
-                "incomplete",
-                "unrepresented_service_arguments",
-                ref_location + "/arguments",
-                unit_id=effect["unit_id"],
-                rva=effect["rva"],
-                expected=_event_arguments(event),
-                observed=None,
-                remediation="represent the exact logical argument expressions",
-            )
-        elif reference.get("arguments") != _event_arguments(event):
-            _issue(
-                issues,
-                "violated",
-                "service_arguments_mismatch",
-                ref_location + "/arguments",
-                unit_id=effect["unit_id"],
-                rva=effect["rva"],
-                expected=_event_arguments(event),
-                observed=reference.get("arguments"),
-                remediation="correct the service argument projection",
-            )
-        _add_owner(owners, key, "service", str(service.get("id")), location)
 
 
 def _check_result(
@@ -1272,60 +1526,6 @@ def _effect_inventory(
                 "reference": reference,
             }
     return result
-
-
-def _resolve_effect_reference(
-    reference: Any,
-    inventory: Mapping[str, Mapping[str, Any]],
-    expected_family: str | None,
-    issues: list[dict[str, Any]],
-    json_location: str,
-) -> tuple[str | None, Mapping[str, Any] | None]:
-    if not isinstance(reference, Mapping):
-        _issue(
-            issues,
-            "violated",
-            "malformed_effect_reference",
-            json_location,
-            expected="structured effect reference",
-            observed=reference,
-            remediation="use a reference emitted by interface synthesis",
-        )
-        return None, None
-    normalized = {
-        "family": reference.get("family"),
-        "unit_id": reference.get("unit_id"),
-        **({"index": reference.get("index")} if "index" in reference else {}),
-    }
-    key = _effect_key(normalized)
-    effect = inventory.get(key)
-    if effect is None:
-        unit_id = reference.get("unit_id")
-        _issue(
-            issues,
-            "violated",
-            "unknown_effect_reference",
-            json_location,
-            unit_id=unit_id if isinstance(unit_id, str) else None,
-            expected="an effect in the selected component",
-            observed=copy.deepcopy(normalized),
-            remediation="regenerate the interface against current component membership",
-        )
-        return None, None
-    if expected_family is not None and effect["family"] != expected_family:
-        _issue(
-            issues,
-            "violated",
-            "effect_owner_family_mismatch",
-            json_location,
-            unit_id=effect["unit_id"],
-            rva=effect["rva"],
-            expected=expected_family,
-            observed=effect["family"],
-            remediation="bind this declaration to the corresponding effect family",
-        )
-        return key, effect
-    return key, effect
 
 
 __all__ = [

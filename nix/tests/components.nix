@@ -2,7 +2,7 @@
 { pkgs, pythonEnv, pythonSource }:
 
 let
-  intent = pkgs.writeText "component-v3-fixture-intent.json" (builtins.toJSON {
+  intentPayload = {
     format = "spaghetti-extractor-component-catalog-intent-v2";
     program_id = "component-v2-fixture";
     permitted_activation_profiles = [
@@ -68,6 +68,26 @@ let
           ];
         };
       }
+      {
+        id = "d";
+        label = "D";
+        selector = { entry_rva = 4144; };
+        evidence_profile = "bounded-equivalence-v1";
+        interface_review = "reviews/d.json";
+        source = {
+          files = [ "source/d.c" ];
+          entry = { abi = "logical-c-v1"; symbol = "component_d"; };
+        };
+        verification = {
+          producer = "exhaustive-finite-domain-v1";
+          parameter_domains = [ {
+            parameter_id = "value";
+            kind = "integer-range";
+            minimum = 0;
+            maximum = 15;
+          } ];
+        };
+      }
     ];
     groups = [ ];
     configurations = [
@@ -107,8 +127,26 @@ let
           activation = "enabled";
         } ];
       }
+      {
+        id = "d-enabled";
+        label = "D scalar control";
+        selections = [ {
+          kind = "component";
+          id = "d";
+          activation = "enabled";
+        } ];
+      }
     ];
-  });
+  };
+  intent = pkgs.writeText "component-v3-fixture-intent.json"
+    (builtins.toJSON intentPayload);
+  unrelatedIntent = pkgs.writeText
+    "component-v3-fixture-unrelated-intent.json"
+    (builtins.toJSON (intentPayload // {
+      components = map (row:
+        if row.id == "b" then row // { label = "B changed"; } else row
+      ) intentPayload.components;
+    }));
   fixture = pkgs.runCommand "spaghetti-extractor-components-fixture"
     { nativeBuildInputs = [ pythonEnv ]; __contentAddressed = true; } ''
       mkdir -p "$out"
@@ -160,11 +198,28 @@ let
                   "register_writes": register_writes, "flag_writes": [],
               },
           }
+      branch_condition = {
+          "op": "not",
+          "args": [{
+              "op": "eq",
+              "args": [
+                  {"op": "reg", "name": "ecx", "width": 32},
+                  {"op": "const", "value": 7, "width": 32},
+              ],
+          }],
+      }
+      branch_unit = unit("unit:d", 4144)
+      branch_unit["semantics"]["outcome"] = {
+          "kind": "branch",
+          "condition": branch_condition,
+          "true_target_rva": 8192,
+          "false_target_rva": 12288,
+      }
       units = [
           unit("unit:a", 4096),
           unit("unit:b", 4112),
           unit("unit:c", 4128),
-          unit("unit:d", 4144),
+          branch_unit,
       ]
       ir = root / "machine-ir.jsonl"
       ir.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in units))
@@ -309,8 +364,9 @@ let
       write_package("component-proposals-selected-changed", selected_changed)
       PY
     '';
-  mkDag = reviewRoot: sourceRoot: proposals: import ../stage-b-components.nix {
-    inherit pkgs pythonEnv pythonSource intent;
+  mkDag = componentIntent: reviewRoot: sourceRoot: proposals: import ../stage-b-components.nix {
+    inherit pkgs pythonEnv pythonSource;
+    intent = componentIntent;
     machineIr = fixture;
     reconstructionPlan = fixture;
     componentProposals = proposals;
@@ -318,24 +374,32 @@ let
     namePrefix = "spaghetti-extractor-components-fixture";
     interpreterPackage = interpreter;
   };
-  base = mkDag ./fixtures/components/base ./fixtures/components/source-base
+  base = mkDag intent ./fixtures/components/base ./fixtures/components/source-base
     "${fixture}/component-proposals";
-  changed = mkDag ./fixtures/components/changed ./fixtures/components/source-base
+  changed = mkDag intent ./fixtures/components/changed ./fixtures/components/source-base
     "${fixture}/component-proposals";
-  sourceChanged = mkDag ./fixtures/components/base ./fixtures/components/source-changed
+  sourceChanged = mkDag intent ./fixtures/components/base ./fixtures/components/source-changed
     "${fixture}/component-proposals";
   unrelatedProposalChanged = mkDag
+    intent
     ./fixtures/components/base
     ./fixtures/components/source-base
     "${fixture}/component-proposals-unrelated-changed";
   selectedDiagnosticChanged = mkDag
+    intent
     ./fixtures/components/base
     ./fixtures/components/source-base
     "${fixture}/component-proposals-selected-diagnostic-changed";
   selectedProposalChanged = mkDag
+    intent
     ./fixtures/components/base
     ./fixtures/components/source-base
     "${fixture}/component-proposals-selected-changed";
+  unrelatedIntentChanged = mkDag
+    unrelatedIntent
+    ./fixtures/components/base
+    ./fixtures/components/source-base
+    "${fixture}/component-proposals";
   interpreter = pkgs.runCommand "spaghetti-extractor-components-interpreter-fixture"
     { nativeBuildInputs = [ pkgs.coreutils ]; __contentAddressed = true; } ''
       mkdir -p "$out"
@@ -346,17 +410,22 @@ let
       typedef struct stage_b_runtime {
         void *context;
         uint32_t (*read)(void *, uint32_t, uint32_t, uint32_t *);
+        void (*write)(void *, uint32_t, uint32_t, uint32_t, uint32_t *);
       } stage_b_runtime;
       typedef struct stage_b_machine_state {
         uint32_t eax, ebx, ecx, edx, esi, edi, ebp, esp;
         uint32_t cf, zf, sf, of, pf, df;
       } stage_b_machine_state;
       typedef struct stage_b_step_result {
-        uint32_t kind, target, value;
+        uint32_t kind, target_rva, value;
       } stage_b_step_result;
       enum {
-        STAGE_B_RETURN = 1,
-        STAGE_B_MEMORY_FAULT = 2
+        STAGE_B_FALLTHROUGH = 0,
+        STAGE_B_JUMP = 1,
+        STAGE_B_BRANCH = 2,
+        STAGE_B_RETURN = 3,
+        STAGE_B_MEMORY_FAULT = 6,
+        STAGE_B_UNIMPLEMENTED = 7
       };
       #endif
       EOF
@@ -372,6 +441,7 @@ let
       EOF
     '';
   runtime = base.runtimeFor "a-only";
+  controlRuntime = base.runtimeFor "d-enabled";
   blocked = pkgs.runCommand "spaghetti-extractor-components-blocked-fixture"
     { nativeBuildInputs = [ pkgs.jq ]; __contentAddressed = true; } ''
       jq -e '
@@ -409,15 +479,22 @@ assert base.resolution.drvPath == selectedDiagnosticChanged.resolution.drvPath;
 assert base.proposalInput.selectedProposals !=
   selectedProposalChanged.proposalInput.selectedProposals;
 assert base.resolution.drvPath != selectedProposalChanged.resolution.drvPath;
+assert base.resolution.drvPath != unrelatedIntentChanged.resolution.drvPath;
+assert base.proposalInput.selectionByComponent.a ==
+  unrelatedIntentChanged.proposalInput.selectionByComponent.a;
+assert base.resolutionSlices.a.drvPath ==
+  unrelatedIntentChanged.resolutionSlices.a.drvPath;
+assert base.contracts.a.drvPath == unrelatedIntentChanged.contracts.a.drvPath;
+assert base.contracts.b.drvPath != unrelatedIntentChanged.contracts.b.drvPath;
 assert base.contracts.a.drvPath == sourceChanged.contracts.a.drvPath;
 assert base.sourcePackages.a.drvPath != sourceChanged.sourcePackages.a.drvPath;
 assert base.sourcePackages.b.drvPath == sourceChanged.sourcePackages.b.drvPath;
 assert base.qualifications.a.drvPath != sourceChanged.qualifications.a.drvPath;
 assert base.activationPlans."a-only".drvPath != sourceChanged.activationPlans."a-only".drvPath;
 assert runtime.drvPath == base.runtimePackages."a-only".drvPath;
-assert builtins.attrNames base.workPackages == [ "a" "b" "c" ];
-assert builtins.attrNames base.statusReports == [ "a" "b" "c" ];
-assert builtins.attrNames base.configurationStatusReports == [ "a-only" "b-enabled" "b-only" "c-enabled" ];
+assert builtins.attrNames base.workPackages == [ "a" "b" "c" "d" ];
+assert builtins.attrNames base.statusReports == [ "a" "b" "c" "d" ];
+assert builtins.attrNames base.configurationStatusReports == [ "a-only" "b-enabled" "b-only" "c-enabled" "d-enabled" ];
 pkgs.linkFarm "spaghetti-extractor-components-check" [
   { name = "resolution"; path = base.resolution; }
   { name = "contract-a"; path = base.contracts.a; }
@@ -430,6 +507,12 @@ pkgs.linkFarm "spaghetti-extractor-components-check" [
   { name = "qualification-c"; path = base.qualifications.c; }
   { name = "check-c"; path = base.checkGates.c; }
   { name = "activation-c"; path = base.activationPlans."c-enabled"; }
+  { name = "adapter-d"; path = base.adapterPlans.d; }
+  { name = "evidence-d"; path = base.evidences.d; }
+  { name = "qualification-d"; path = base.qualifications.d; }
+  { name = "check-d"; path = base.checkGates.d; }
+  { name = "activation-d"; path = base.activationPlans."d-enabled"; }
+  { name = "runtime-d"; path = controlRuntime; }
   { name = "status-a"; path = base.statusReports.a; }
   { name = "work-package-a"; path = base.workPackages.a; }
   { name = "check-a"; path = base.checkGates.a; }

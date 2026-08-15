@@ -11,10 +11,12 @@ from pathlib import Path
 from spaghetti_extractor.artifacts.formats import RECONSTRUCTION_PLAN_FORMAT
 from spaghetti_extractor.components.formats import (
     COMPONENT_BOUNDARY_REVIEW_V2_FORMAT,
+    COMPONENT_ADAPTER_PLAN_V1_FORMAT,
     COMPONENT_CATALOG_INTENT_V2_FORMAT,
     COMPONENT_ACTIVATION_PLAN_V3_FORMAT,
     COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
     COMPONENT_QUALIFICATION_V3_FORMAT,
+    COMPONENT_RESOLUTION_SLICE_V1_FORMAT,
     COMPONENT_RESOLUTION_V2_FORMAT,
 )
 from spaghetti_extractor.components.contracts import build_lift_unit_contract
@@ -23,7 +25,10 @@ from spaghetti_extractor.components.intent import (
     ComponentIntentError,
     load_component_catalog_intent,
 )
-from spaghetti_extractor.components.resolution import resolve_component_catalog
+from spaghetti_extractor.components.resolution import (
+    resolve_component_catalog,
+    slice_component_resolution,
+)
 from spaghetti_extractor.components.proposal_package import (
     write_component_proposal_package_v2,
 )
@@ -103,6 +108,58 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             {"unit:a": "all", "unit:b": "all"},
         )
 
+    def test_resolution_slices_ignore_unrelated_intent_changes(self) -> None:
+        original = resolve_component_catalog(
+            proposals=self.proposals,
+            intent=self.intent,
+            out=self.root / "resolution-original.json",
+        )
+        original_slice = slice_component_resolution(
+            resolution=original,
+            lift_unit_id="a",
+            out=self.root / "slice-original.json",
+        )
+
+        intent = json.loads(self.intent.read_text(encoding="utf-8"))
+        intent["components"][1]["label"] = "Unrelated B change"
+        self.intent.write_text(json.dumps(intent), encoding="utf-8")
+        changed = resolve_component_catalog(
+            proposals=self.proposals,
+            intent=self.intent,
+            out=self.root / "resolution-changed.json",
+        )
+        changed_slice = slice_component_resolution(
+            resolution=changed,
+            lift_unit_id="a",
+            out=self.root / "slice-changed.json",
+        )
+
+        self.assertNotEqual(
+            original["resolution_sha256"], changed["resolution_sha256"]
+        )
+        self.assertEqual(original_slice, changed_slice)
+        self.assertEqual(
+            original_slice["format"], COMPONENT_RESOLUTION_SLICE_V1_FORMAT
+        )
+        self.assertEqual([row["id"] for row in original_slice["components"]], ["a"])
+        self.assertEqual(original_slice["groups"], [])
+        self.assertEqual(original_slice["configurations"], [])
+
+    def test_resolution_slice_rejects_stale_upstream_hash(self) -> None:
+        resolution = resolve_component_catalog(
+            proposals=self.proposals,
+            intent=self.intent,
+            out=self.root / "resolution.json",
+        )
+        resolution["components"][0]["label"] = "corrupted"
+
+        with self.assertRaisesRegex(ComponentIntentError, "self-hash is stale"):
+            slice_component_resolution(
+                resolution=resolution,
+                lift_unit_id="a",
+                out=self.root / "slice.json",
+            )
+
     def test_generated_fields_are_rejected_from_authored_intent(self) -> None:
         payload = json.loads(self.intent.read_text(encoding="utf-8"))
         payload["components"][0]["status"] = "qualified"
@@ -142,6 +199,54 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
         self.intent.write_text(json.dumps(payload), encoding="utf-8")
         parsed = load_component_catalog_intent(self.intent)
         self.assertEqual(parsed.groups[0].verification.cases[0]["id"], "zero")
+
+    def test_exhaustive_profile_parses_byte_buffer_domains(self) -> None:
+        payload = json.loads(self.intent.read_text(encoding="utf-8"))
+        payload["components"][0]["verification"] = {
+            "producer": "exhaustive-finite-domain-v1",
+            "parameter_domains": [
+                {
+                    "parameter_id": "input_eax",
+                    "kind": "byte-buffer-set",
+                    "values": [[], [0], [65, 0]],
+                }
+            ],
+        }
+        self.intent.write_text(json.dumps(payload), encoding="utf-8")
+
+        parsed = load_component_catalog_intent(self.intent)
+
+        self.assertEqual(
+            parsed.components[0].verification.parameter_domains[0]["values"],
+            [[], [0], [65, 0]],
+        )
+
+    def test_nul_terminated_domain_is_checked_at_the_intent_boundary(self) -> None:
+        payload = json.loads(self.intent.read_text(encoding="utf-8"))
+        payload["components"][0]["verification"] = {
+            "producer": "exhaustive-finite-domain-v1",
+            "parameter_domains": [
+                {
+                    "parameter_id": "input_eax",
+                    "kind": "nul-terminated-byte-buffer-set",
+                    "values": [[0], [65, 0]],
+                }
+            ],
+        }
+        self.intent.write_text(json.dumps(payload), encoding="utf-8")
+
+        parsed = load_component_catalog_intent(self.intent)
+
+        self.assertEqual(
+            parsed.components[0].verification.parameter_domains[0]["kind"],
+            "nul-terminated-byte-buffer-set",
+        )
+        payload["components"][0]["verification"]["parameter_domains"][0][
+            "values"
+        ] = [[65]]
+        self.intent.write_text(json.dumps(payload), encoding="utf-8")
+        with self.assertRaisesRegex(ComponentIntentError, "no NUL terminator"):
+            load_component_catalog_intent(self.intent)
 
     def test_group_cycles_are_rejected(self) -> None:
         payload = json.loads(self.intent.read_text(encoding="utf-8"))
@@ -242,6 +347,84 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             {row["code"] for row in result["blockers"]},
         )
 
+    def test_review_can_inherit_adapter_effects_except_exact_new_owners(self) -> None:
+        resolution = resolve_component_catalog(
+            proposals=self.proposals,
+            intent=self.intent,
+            out=self.root / "resolution.json",
+        )
+        build_lift_unit_contract(
+            machine_ir=self.machine,
+            reconstruction_plan=self.plan,
+            resolution=resolution,
+            lift_unit_id="all",
+            out_dir=self.root / "draft-contract",
+        )
+        synthesized = json.loads(
+            (self.root / "draft-contract" / "synthesized-interface.json").read_text()
+        )
+        excluded = synthesized["adapter_effects"][0]["effect"]
+        result = build_lift_unit_contract(
+            machine_ir=self.machine,
+            reconstruction_plan=self.plan,
+            resolution=resolution,
+            lift_unit_id="all",
+            review={
+                "format": COMPONENT_BOUNDARY_REVIEW_V2_FORMAT,
+                "lift_unit_id": "all",
+                "accept_derived_machine_boundary": True,
+                "overrides": {
+                    "adapter_effects": {
+                        "inherit_synthesized_except": [excluded]
+                    }
+                },
+            },
+            out_dir=self.root / "inherited-contract",
+        )
+        self.assertEqual(result["status"], "incomplete")
+        reviewed = json.loads(
+            (self.root / "inherited-contract" / "reviewed-interface.json").read_text()
+        )
+        self.assertNotIn(
+            excluded,
+            [row["effect"] for row in reviewed["adapter_effects"]],
+        )
+        self.assertIn(
+            "unrepresented_machine_effect",
+            {row["code"] for row in result["blockers"]},
+        )
+
+    def test_review_rejects_stale_adapter_effect_exclusion(self) -> None:
+        resolution = resolve_component_catalog(
+            proposals=self.proposals,
+            intent=self.intent,
+            out=self.root / "resolution.json",
+        )
+        with self.assertRaisesRegex(ComponentIntentError, "exclusions are stale"):
+            build_lift_unit_contract(
+                machine_ir=self.machine,
+                reconstruction_plan=self.plan,
+                resolution=resolution,
+                lift_unit_id="all",
+                review={
+                    "format": COMPONENT_BOUNDARY_REVIEW_V2_FORMAT,
+                    "lift_unit_id": "all",
+                    "accept_derived_machine_boundary": True,
+                    "overrides": {
+                        "adapter_effects": {
+                            "inherit_synthesized_except": [
+                                {
+                                    "family": "register_write",
+                                    "unit_id": "unit:missing",
+                                    "index": 0,
+                                }
+                            ]
+                        }
+                    },
+                },
+                out_dir=self.root / "stale-inheritance-contract",
+            )
+
     def test_enabled_group_activates_only_after_exact_qualification(self) -> None:
         payload = json.loads(self.intent.read_text(encoding="utf-8"))
         payload["configurations"][1]["selections"][0]["activation"] = "enabled"
@@ -271,7 +454,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             entry={"abi": "logical-c-v1", "symbol": "a"},
             out_dir=self.root / "source-package",
         )
-        qualification = self._qualification(contract, implementation)
+        qualification, adapter = self._qualification(contract, implementation)
         plan = compose_component_configuration(
             machine_ir=self.machine,
             resolution=resolution,
@@ -279,6 +462,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             contracts={"all": contract},
             implementations={"all": self.root / "source-package"},
             qualifications={"all": qualification},
+            adapter_plans={"all": adapter},
             out=self.root / "activation-plan.json",
         )
         self.assertEqual(plan["format"], COMPONENT_ACTIVATION_PLAN_V3_FORMAT)
@@ -320,7 +504,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             entry={"abi": "logical-c-v1", "symbol": "a"},
             out_dir=self.root / "source-original",
         )
-        qualification = self._qualification(contract, original)
+        qualification, adapter = self._qualification(contract, original)
         (self.root / "a.c").write_text(
             "int a(void) { return 7; }\n", encoding="ascii"
         )
@@ -338,6 +522,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             contracts={"all": contract},
             implementations={"all": self.root / "source-changed"},
             qualifications={"all": qualification},
+            adapter_plans={"all": adapter},
             out=self.root / "activation-stale.json",
         )
         self.assertEqual(plan["status"], "violated")
@@ -405,6 +590,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             contracts={"all": contract},
             implementations={},
             qualifications={},
+            adapter_plans={},
             out=self.root / "activation-plan.json",
         )
         self.assertEqual(plan["status"], "incomplete")
@@ -439,6 +625,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             contracts=contracts,
             implementations={},
             qualifications={},
+            adapter_plans={},
             out=self.root / "draft-activation-plan.json",
         )
         self.assertEqual(plan["status"], "checked")
@@ -474,7 +661,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             entry={"abi": "logical-c-v1", "symbol": "a"},
             out_dir=self.root / "source-package",
         )
-        qualification = self._qualification(contract, implementation)
+        qualification, adapter = self._qualification(contract, implementation)
         qualification["format"] = "spaghetti-extractor-component-qualification-v2"
         qualification.pop("qualification_sha256")
         qualification["qualification_sha256"] = _canonical_sha256(qualification)
@@ -488,6 +675,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
                 contracts={"all": contract},
                 implementations={"all": self.root / "source-package"},
                 qualifications={"all": qualification},
+                adapter_plans={"all": adapter},
                 out=self.root / "v2-activation-plan.json",
             )
 
@@ -495,7 +683,38 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
         self,
         contract: dict[str, object],
         implementation: dict[str, object],
-    ) -> dict[str, object]:
+    ) -> tuple[dict[str, object], Path]:
+        adapter = self.root / (
+            "adapter-" + str(implementation["implementation_sha256"])[:8]
+        )
+        adapter.mkdir(exist_ok=True)
+        header = adapter / "spaghetti-component-abi.h"
+        header.write_text("/* fixture */\n", encoding="ascii")
+        adapter_core = {
+            "format": COMPONENT_ADAPTER_PLAN_V1_FORMAT,
+            "status": "checked",
+            "lift_unit_id": "all",
+            "bindings": {
+                "contract_sha256": contract["contract_sha256"],
+                "implementation_sha256": implementation["implementation_sha256"],
+                "machine_ir_sha256": "5" * 64,
+                "source_entry": implementation["entry"],
+            },
+            "artifacts": {
+                "logical_abi_header": {
+                    "path": header.name,
+                    "sha256": hashlib.sha256(header.read_bytes()).hexdigest(),
+                }
+            },
+            "issues": [],
+        }
+        adapter_payload = {
+            **adapter_core,
+            "adapter_plan_sha256": _canonical_sha256(adapter_core),
+        }
+        (adapter / "adapter-plan.json").write_text(
+            json.dumps(adapter_payload), encoding="ascii"
+        )
         core: dict[str, object] = {
             "format": COMPONENT_QUALIFICATION_V3_FORMAT,
             "status": "qualified",
@@ -507,6 +726,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
                 "implementation_sha256": implementation["implementation_sha256"],
                 "machine_ir_sha256": "5" * 64,
                 "domain_sha256": "6" * 64,
+                "adapter_plan_sha256": adapter_payload["adapter_plan_sha256"],
                 "source_entry": implementation["entry"],
                 "tool_id": "fixture",
                 "tool_version": 1,
@@ -519,7 +739,10 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             },
             "issues": [],
         }
-        return {**core, "qualification_sha256": _canonical_sha256(core)}
+        return (
+            {**core, "qualification_sha256": _canonical_sha256(core)},
+            adapter,
+        )
 
     def _write_intent(self) -> None:
         self.intent.write_text(
@@ -685,7 +908,12 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
                     "memory_events": [],
                     "external_events": [],
                     "faults": [],
-                    "register_writes": [],
+                    "register_writes": [
+                        {
+                            "register": "eax",
+                            "value": {"op": "const", "value": 7, "width": 32},
+                        }
+                    ],
                     "flag_writes": [],
                 },
             },

@@ -57,6 +57,26 @@ sdk.target.pe32Bundle {
     ascii-to-lower-contract = components.contracts.ascii-to-lower;
     ascii-to-lower-evidence = components.evidences.ascii-to-lower;
     ascii-to-lower-qualification = components.qualifications.ascii-to-lower;
-    ascii-to-lower-runtime = componentRuntime;
+    bounded-string-length-contract = components.contracts.bounded-string-length;
+    bounded-string-length-adapter = components.adapterPlans.bounded-string-length;
+    bounded-string-length-evidence = components.evidences.bounded-string-length;
+    bounded-string-length-qualification = components.qualifications.bounded-string-length;
+    last-path-component-contract = components.contracts.last-path-component;
+    last-path-component-adapter = components.adapterPlans.last-path-component;
+    last-path-component-evidence = components.evidences.last-path-component;
+    last-path-component-qualification = components.qualifications.last-path-component;
+    memory-regions-equal-contract = components.contracts.memory-regions-equal;
+    memory-regions-equal-adapter = components.adapterPlans.memory-regions-equal;
+    memory-regions-equal-evidence = components.evidences.memory-regions-equal;
+    memory-regions-equal-qualification = components.qualifications.memory-regions-equal;
+    short-option-classifier-contract = components.contracts.short-option-classifier;
+    short-option-classifier-adapter = components.adapterPlans.short-option-classifier;
+    short-option-classifier-evidence = components.evidences.short-option-classifier;
+    short-option-classifier-qualification = components.qualifications.short-option-classifier;
+    startup-compare-route-contract = components.contracts.startup-compare-route;
+    startup-compare-route-adapter = components.adapterPlans.startup-compare-route;
+    startup-compare-route-evidence = components.evidences.startup-compare-route;
+    startup-compare-route-qualification = components.qualifications.startup-compare-route;
+    lifted-component-runtime = componentRuntime;
   };
 }

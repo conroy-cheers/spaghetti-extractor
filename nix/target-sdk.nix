@@ -166,6 +166,8 @@ let
           machineIr = analysis.machineIr;
           reconstructionPlan = analysis.reconstructionPlan;
           componentProposals = analysis.componentProposals;
+          canonicalExternalSites =
+            authority.graph.outputs."canonical-external-sites-v3";
           intent = componentIntent;
           reviewRoot = componentReviewRoot;
           sourceRoot = componentSourceRoot;

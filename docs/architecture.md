@@ -166,9 +166,11 @@ an exact projection back to machine ranges and events.
 A source replacement must provide:
 
 - a reviewed logical interface with an exact projection to machine effects;
-- an exact content-bound source package and `logical-c-v1` entry;
-- candidate-only evidence bound to the contract, source, machine IR, producer,
-  and declared domain;
+- an exact content-bound source package with a supported logical C entry;
+- a checked adapter plan binding logical arguments, safe object views, and
+  explicit machine-state completion;
+- candidate-only evidence bound to the contract, source, adapter, machine IR,
+  producer, and declared domain;
 - qualification for the exact selected configuration;
 - complete, exclusive ownership of its selected machine units;
 - no loss of machine-IR fallback coverage outside the replacement.
@@ -203,6 +205,12 @@ qualification, runtime adapter, affected native object pack, and candidate. It
 must not regenerate original extraction,
 ISA oracle corpora, or unrelated authority packs. Diagnostic formatting must
 not invalidate authority evidence.
+
+Component resolution follows the same rule. The full checked catalog owns
+configuration overlap checks, but each component contract consumes a canonical
+single-unit resolution slice built from its authored intent row and selected
+proposal. An unrelated intent edit therefore leaves the component's contract,
+adapter, evidence, and qualification derivation identities unchanged.
 
 `python_module_index.py` derives the production module closure from installed
 entrypoints and Nix phase roots. Package modules reachable only from tests are a

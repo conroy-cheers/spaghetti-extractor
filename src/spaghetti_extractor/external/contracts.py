@@ -554,14 +554,62 @@ def checked_external_site_contract_from_authority(
 ) -> CheckedExternalSiteContract:
     """Project one checked v3 authority contract into the runtime ABI model."""
 
-    from ..authority.external_site_records import ExternalContractV3
+    if isinstance(contract, Mapping):
+        raw = _json(contract, context)
+        expected_fields = {
+            "id",
+            "identity",
+            "transfer_kind",
+            "disposition",
+            "profile_id",
+            "profile_sha256",
+            "argument_words",
+            "arguments",
+            "memory_effect",
+            "world_effect",
+            "callback_effect",
+            "machine_contract",
+            "callbacks",
+        }
+        if set(raw) != expected_fields:
+            raise CheckedExternalSiteContractError(
+                f"{context} has noncanonical authority fields"
+            )
+        machine = raw["machine_contract"]
+        identity = raw["identity"]
+        transfer_kind = raw["transfer_kind"]
+        disposition = raw["disposition"]
+        profile_id = raw["profile_id"]
+        profile_sha256 = raw["profile_sha256"]
+        argument_words = raw["argument_words"]
+        arguments = raw["arguments"]
+        authority_callback_effect = raw["callback_effect"]
+        callbacks = raw["callbacks"]
+        contract_id = raw["id"]
+        memory_effect = raw["memory_effect"]
+        world_effect = raw["world_effect"]
+    else:
+        # Compatibility for in-process authority producers.  The public wire
+        # payload above is the dependency-neutral consumer interface.
+        from ..authority.external_site_records import ExternalContractV3
 
-    if not isinstance(contract, ExternalContractV3):
-        raise CheckedExternalSiteContractError(
-            f"{context} is not an ExternalContractV3"
-        )
-    machine = contract.machine_contract.to_value()
-    identity = contract.identity.to_value()
+        if not isinstance(contract, ExternalContractV3):
+            raise CheckedExternalSiteContractError(
+                f"{context} is not an ExternalContractV3 or authority payload"
+            )
+        machine = contract.machine_contract.to_value()
+        identity = contract.identity.to_value()
+        transfer_kind = contract.transfer_kind
+        disposition = contract.disposition
+        profile_id = contract.profile_id
+        profile_sha256 = contract.profile_sha256
+        argument_words = contract.argument_words
+        arguments = [value.to_value() for value in contract.arguments]
+        authority_callback_effect = contract.callback_effect
+        callbacks = [row.to_payload() for row in contract.callbacks]
+        contract_id = contract.contract_id
+        memory_effect = contract.memory_effect
+        world_effect = contract.world_effect
     if not isinstance(machine, Mapping) or not isinstance(identity, Mapping):
         raise CheckedExternalSiteContractError(
             f"{context} has malformed identity or machine contract"
@@ -569,11 +617,14 @@ def checked_external_site_contract_from_authority(
     abi_template = machine.get("abi_template")
     if not isinstance(abi_template, str):
         raise CheckedExternalSiteContractError(f"{context} ABI template is missing")
-    argument_base = 0 if contract.transfer_kind == "call" else 4
-    arguments = [value.to_value() for value in contract.arguments]
+    if not isinstance(arguments, list) or not isinstance(callbacks, list):
+        raise CheckedExternalSiteContractError(
+            f"{context} has malformed argument or callback inventories"
+        )
+    argument_base = 0 if transfer_kind == "call" else 4
     callback_effect = "none"
     callback_adapter = None
-    if contract.callback_effect == "registers":
+    if authority_callback_effect == "registers":
         callback_effect = "explicit"
         callback_source = machine.get("callback_source")
         callback_abi = machine.get("callback_abi")
@@ -593,24 +644,30 @@ def checked_external_site_contract_from_authority(
             "activation": copy.deepcopy(machine.get("callback_activation")),
             "resource_binding": copy.deepcopy(machine.get("resource_binding")),
             "instance_binding": copy.deepcopy(machine.get("instance_binding")),
-            "target_rvas": [row.target_rva for row in contract.callbacks],
+            "target_rvas": [
+                _uint(
+                    row.get("target_rva") if isinstance(row, Mapping) else None,
+                    f"{context} callback target",
+                )
+                for row in callbacks
+            ],
             "invocation": "nested-machine-ir-callback-adapter-v1",
         }
     return parse_checked_external_site_contract(
         {
             "format": CHECKED_EXTERNAL_SITE_CONTRACT_FORMAT,
             "identity": dict(identity),
-            "transfer_kind": contract.transfer_kind,
+            "transfer_kind": transfer_kind,
             "disposition": (
                 "tail_jump"
-                if contract.disposition == "tail_jump"
+                if disposition == "tail_jump"
                 else "returns_here"
             ),
             "profile_disposition": (
-                "terminates" if contract.disposition == "noreturn" else "returns"
+                "terminates" if disposition == "noreturn" else "returns"
             ),
             "abi_template": abi_template,
-            "arity": {"kind": "fixed", "words": contract.argument_words},
+            "arity": {"kind": "fixed", "words": argument_words},
             "argument_base_offset": argument_base,
             "arguments": arguments,
             "stack_arguments": [
@@ -622,19 +679,19 @@ def checked_external_site_contract_from_authority(
                 }
                 for index, value in enumerate(arguments)
             ],
-            "contract_id": contract.contract_id,
+            "contract_id": contract_id,
             "profile_binding": {
-                "profile_id": contract.profile_id,
-                "profile_sha256": contract.profile_sha256,
+                "profile_id": profile_id,
+                "profile_sha256": profile_sha256,
             },
             "result_register_relations": copy.deepcopy(
                 machine.get("result_register_relations", [])
             ),
-            "memory_effect": contract.memory_effect,
+            "memory_effect": memory_effect,
             "memory_footprints": copy.deepcopy(
                 machine.get("memory_footprints", [])
             ),
-            "world_effect": contract.world_effect,
+            "world_effect": world_effect,
             "callback_effect": callback_effect,
             "callback_adapter": callback_adapter,
             "out_pointer_relations": copy.deepcopy(

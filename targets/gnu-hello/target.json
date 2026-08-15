@@ -11,6 +11,6 @@
     "components": "intent/components.json"
   },
   "workflow": {
-    "default_configuration": "ascii-to-lower-enabled"
+    "default_configuration": "string-pointer-enabled"
   }
 }

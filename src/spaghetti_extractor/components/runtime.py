@@ -11,6 +11,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..artifacts.formats import MACHINE_IR_FORMAT
+from ..external.contracts import (
+    CheckedExternalSiteContract,
+    CheckedExternalSiteContractError,
+    parse_checked_external_site_contract,
+)
 from .region_replacement import REGION_OVERRIDE_TABLE_FORMAT
 from ..util import sha256_file, write_json
 from .formats import (
@@ -21,7 +26,15 @@ from .formats import (
     COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
     PORTABLE_SELECTION_V3_FORMAT,
 )
+from .adapter import load_component_adapter_plan
 from .intent import ComponentIntentError
+from .logical_abi import (
+    LOGICAL_OBJECT_C_V1,
+    NUL_TERMINATED_BYTES_V1,
+    READ_ONLY_BYTES_V1,
+    logical_c_type,
+    parameter_shape_error,
+)
 from .source import load_component_source_package
 
 
@@ -32,6 +45,7 @@ def build_component_runtime_package(
     contracts: Mapping[str, Path | str],
     implementations: Mapping[str, Path | str],
     qualifications: Mapping[str, Path | str],
+    adapter_plans: Mapping[str, Path | str],
     interpreter_package: Path | str,
     out_dir: Path | str,
 ) -> dict[str, object]:
@@ -125,6 +139,9 @@ def build_component_runtime_package(
         qualification_path = _required_mapping_path(
             qualifications, identity, "qualification"
         )
+        adapter_plan_root = _required_mapping_path(
+            adapter_plans, identity, "adapter plan"
+        )
         contract = _read_object(contract_root / "contract.json", "component contract")
         _check_self_hash(
             contract,
@@ -145,7 +162,10 @@ def build_component_runtime_package(
             "component qualification",
         )
         source = load_component_source_package(implementation_root)
-        _validate_component_bindings(identity, contract, source, qualification)
+        adapter_plan = load_component_adapter_plan(adapter_plan_root)
+        _validate_component_bindings(
+            identity, contract, source, qualification, adapter_plan
+        )
         interface = _read_object(
             contract_root / "reviewed-interface.json", "reviewed component interface"
         )
@@ -174,6 +194,11 @@ def build_component_runtime_package(
         copied_sources = _copy_component_sources(
             implementation_root, source, output, identity
         )
+        shutil.copyfile(
+            (adapter_plan_root if adapter_plan_root.is_dir() else adapter_plan_root.parent)
+            / "spaghetti-component-abi.h",
+            output / "components" / identity / "spaghetti-component-abi.h",
+        )
         adapter_relative = Path("components") / identity / "generated-adapter.c"
         adapter_path = output / adapter_relative
         adapter_symbols: list[tuple[int, str, str]] = []
@@ -181,6 +206,7 @@ def build_component_runtime_package(
             identity=identity,
             interface=interface,
             source=source,
+            adapter_plan=adapter_plan,
             members=members,
             entry_ids=tuple(
                 _string(entry.get("unit_id"), "component entry unit")
@@ -196,6 +222,7 @@ def build_component_runtime_package(
             "contract_sha256": contract["contract_sha256"],
             "implementation_sha256": source["implementation_sha256"],
             "qualification_sha256": qualification["qualification_sha256"],
+            "adapter_plan_sha256": adapter_plan["adapter_plan_sha256"],
             "source_entry": copy.deepcopy(source["entry"]),
             "unit_ids": sorted(member_ids),
             "entries": [
@@ -333,6 +360,7 @@ def _render_component_adapter(
     identity: str,
     interface: Mapping[str, object],
     source: Mapping[str, object],
+    adapter_plan: Mapping[str, object],
     members: Mapping[str, Mapping[str, object]],
     entry_ids: tuple[str, ...],
     symbols: list[tuple[int, str, str]],
@@ -351,29 +379,43 @@ def _render_component_adapter(
             f"component {identity} requires exactly one logical value result"
         )
     result = value_results[0]
-    result_register = _result_register(result, members)
+    abi = _object(source.get("entry"), "component source entry").get("abi")
+    for parameter in parameters:
+        shape_error = parameter_shape_error(parameter, parameters, source_abi=abi)
+        if shape_error is not None:
+            raise ComponentIntentError(
+                f"component {identity} logical parameter is unsupported: {shape_error}"
+            )
     entry = _object(source.get("entry"), "component source entry")
     function_symbol = _string(entry.get("symbol"), "logical source symbol")
     prototype = "{result} {symbol}({parameters});".format(
-        result=_c_type(result.get("type")),
+        result=_c_type(result.get("type"), source_abi=abi),
         symbol=function_symbol,
         parameters=", ".join(
-            f"{_c_type(row.get('type'))} {_c_identifier(str(row.get('id')))}"
+            f"{_c_type(row.get('type'), source_abi=abi)} "
+            f"{_c_identifier(str(row.get('id')))}"
             for row in parameters
         )
         or "void",
     )
     functions: list[str] = []
+    lowering = _object(adapter_plan.get("lowering"), "component adapter lowering")
     for entry_id in entry_ids:
         if entry_id not in members:
             raise ComponentIntentError(f"component {identity} entry is not a member")
-        path = _straight_line_path(members, entry_id)
         symbol = "stage_b_component_{identity}_{rva:08x}".format(
             identity=_c_identifier(identity), rva=_unit_rva(members[entry_id])
         )
         symbols.append((_unit_rva(members[entry_id]), entry_id, symbol))
-        functions.append(
-            _render_entry_adapter(
+        if lowering.get("kind") == "scalar-machine-projection-v1":
+            result_register = _result_register(result, members)
+            path = [
+                members[_string(unit_id, "scalar adapter path unit")]
+                for unit_id in _array(
+                    lowering.get("path_unit_ids"), "scalar adapter path"
+                )
+            ]
+            function = _render_scalar_entry_adapter(
                 symbol=symbol,
                 logical_symbol=function_symbol,
                 parameters=parameters,
@@ -381,10 +423,53 @@ def _render_component_adapter(
                 result_register=result_register,
                 path=path,
             )
-        )
+        elif lowering.get("kind") == "scalar-control-projection-v1":
+            path = [
+                members[_string(unit_id, "scalar control adapter path unit")]
+                for unit_id in _array(
+                    lowering.get("path_unit_ids"), "scalar control adapter path"
+                )
+            ]
+            function = _render_scalar_entry_adapter(
+                symbol=symbol,
+                logical_symbol=function_symbol,
+                parameters=parameters,
+                result=result,
+                result_register=None,
+                path=path,
+            )
+        elif lowering.get("kind") == "checked-object-view-v1":
+            function = _render_object_entry_adapter(
+                symbol=symbol,
+                logical_symbol=function_symbol,
+                parameters=parameters,
+                result=result,
+                completion=_object(
+                    lowering.get("completion"), "component adapter completion"
+                ),
+                external_replay=(
+                    None
+                    if lowering.get("external_replay") is None
+                    else _object(
+                        lowering.get("external_replay"),
+                        "component external replay plan",
+                    )
+                ),
+                external_calls=_array(
+                    lowering.get("external_calls", []),
+                    "component external calls",
+                ),
+                members=members,
+            )
+        else:
+            raise ComponentIntentError(
+                f"component {identity} has no checked runtime lowering"
+            )
+        functions.append(function)
     return "\n".join(
         [
             '#include "state-machine-runtime.h"',
+            '#include "spaghetti-component-abi.h"',
             "#include <stdint.h>",
             "",
             prototype,
@@ -393,12 +478,33 @@ def _render_component_adapter(
             "  if (rt == 0 || rt->read == 0) { *fault = 1U; return 0U; }",
             "  return rt->read(rt->context, address, width, fault);",
             "}",
+            "static void component_write(stage_b_runtime *rt, uint32_t address, uint32_t width, uint32_t value, uint32_t *fault) {",
+            "  if (rt == 0 || rt->write == 0) { *fault = 1U; return; }",
+            "  rt->write(rt->context, address, width, value, fault);",
+            "}",
             "static uint32_t component_parity(uint32_t value) {",
             "  value &= 0xffU; value ^= value >> 4U; value &= 0xfU;",
             "  return (0x9669U >> value) & 1U;",
             "}",
             "static uint32_t component_sub_overflow(uint32_t left, uint32_t right, uint32_t result) {",
             "  return (((left ^ right) & (left ^ result)) >> 31U) & 1U;",
+            "}",
+            "static uint32_t component_add_overflow(uint32_t left, uint32_t right, uint32_t result) {",
+            "  return (((~(left ^ right)) & (left ^ result)) >> 31U) & 1U;",
+            "}",
+            "typedef struct component_ro_bytes_context {",
+            "  stage_b_runtime *runtime; uint32_t base; uint32_t extent; uint32_t bounded; uint32_t fault;",
+            "} component_ro_bytes_context;",
+            "static uint32_t component_read_u8(void *opaque, uint32_t index, uint8_t *out) {",
+            "  component_ro_bytes_context *view = (component_ro_bytes_context *)opaque;",
+            "  uint32_t fault = 0U, value;",
+            "  if (view == 0 || out == 0 || view->runtime == 0 || view->runtime->read == 0 || (view->bounded != 0U && index >= view->extent) || view->base > UINT32_MAX - index) {",
+            "    if (view != 0) { view->fault = 1U; }",
+            "    return 1U;",
+            "  }",
+            "  value = view->runtime->read(view->runtime->context, view->base + index, 1U, &fault);",
+            "  if (fault != 0U) { view->fault = 1U; return 1U; }",
+            "  *out = (uint8_t)value; return 0U;",
             "}",
             "",
             *functions,
@@ -407,17 +513,18 @@ def _render_component_adapter(
     )
 
 
-def _render_entry_adapter(
+def _render_scalar_entry_adapter(
     *,
     symbol: str,
     logical_symbol: str,
     parameters: Sequence[Mapping[str, object]],
     result: Mapping[str, object],
-    result_register: str,
+    result_register: str | None,
     path: Sequence[Mapping[str, object]],
 ) -> str:
     lines = [
         f"stage_b_step_result {symbol}(stage_b_runtime *rt, stage_b_machine_state *state) {{",
+        "  (void)rt;",
         "  uint32_t memory_fault = 0U;",
     ]
     input_names = {name: f"entry_{name}" for name in _STATE_FIELDS}
@@ -448,28 +555,27 @@ def _render_entry_adapter(
                 unit, _string(evidence.get("json_pointer"), "parameter evidence pointer")
             )
         lines.append(
-            f"  {_c_type(parameter.get('type'))} {name} = "
-            f"({_c_type(parameter.get('type'))})({renderer.render(expression)});"
+            f"  {_c_type(parameter.get('type'), source_abi='logical-c-v1')} {name} = "
+            f"({_c_type(parameter.get('type'), source_abi='logical-c-v1')})"
+            f"({renderer.render(expression)});"
         )
         argument_names.append(name)
     lines.append("  if (memory_fault != 0U) return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };")
     lines.append(
-        f"  {_c_type(result.get('type'))} logical_result = {logical_symbol}({', '.join(argument_names)});"
+        f"  {_c_type(result.get('type'), source_abi='logical-c-v1')} "
+        f"logical_result = {logical_symbol}({', '.join(argument_names)});"
     )
 
     terminal_kind: str | None = None
+    terminal_target = "0U"
     terminal_value = "0U"
     for block_index, unit in enumerate(path):
         semantics = _object(unit.get("semantics"), "machine semantics")
-        if _array(semantics.get("external_events", []), "external events"):
-            raise ComponentIntentError("logical-c-v1 adapter does not support external events")
-        if _array(semantics.get("faults", []), "fault inventory"):
-            raise ComponentIntentError("logical-c-v1 adapter does not support faulting paths")
-        for event in _array(semantics.get("memory_events", []), "memory events"):
-            if _object(event, "memory event").get("kind") != "read":
-                raise ComponentIntentError("logical-c-v1 adapter does not support memory writes")
         prefix = f"block_{block_index}"
-        lines.extend(f"  uint32_t {prefix}_{name} = state->{name};" for name in _STATE_FIELDS)
+        lines.extend(
+            f"  uint32_t {prefix}_{name} = state->{name};"
+            for name in _STATE_FIELDS
+        )
         lines.extend(f"  (void){prefix}_{name};" for name in _STATE_FIELDS)
         names = {name: f"{prefix}_{name}" for name in _STATE_FIELDS}
         block_renderer = _CExpression(names, memory_fault="memory_fault")
@@ -500,22 +606,415 @@ def _render_entry_adapter(
             terminal_kind = "STAGE_B_RETURN"
             terminal_value = f"{prefix}_return_value"
             lines.append(
-                f"  uint32_t {terminal_value} = {block_renderer.render(outcome.get('value'))};"
+                f"  uint32_t {terminal_value} = "
+                f"{block_renderer.render(outcome.get('value'))};"
             )
-        elif kind not in {"fallthrough", "jump"}:
-            raise ComponentIntentError(
-                f"logical-c-v1 adapter does not support {kind} paths yet"
+        elif kind == "branch":
+            terminal_kind = "STAGE_B_BRANCH"
+            terminal_target = (
+                "((uint32_t)logical_result != 0U) ? "
+                f"{int(outcome.get('true_target_rva') or 0)}U : "
+                f"{int(outcome.get('false_target_rva') or 0)}U"
             )
-        lines.append("  if (memory_fault != 0U) return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };")
+        lines.append(
+            "  if (memory_fault != 0U) return (stage_b_step_result)"
+            "{ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+        )
         lines.extend(f"  state->{name} = {value};" for name, value in assignments)
     if terminal_kind is None:
         raise ComponentIntentError("logical-c-v1 adapter path has no terminal outcome")
-    lines.append(f"  state->{result_register} = (uint32_t)logical_result;")
+    if result_register is not None:
+        lines.append(f"  state->{result_register} = (uint32_t)logical_result;")
     lines.append(
-        f"  return (stage_b_step_result){{ {terminal_kind}, 0U, {terminal_value} }};"
+        f"  return (stage_b_step_result){{ {terminal_kind}, {terminal_target}, {terminal_value} }};"
     )
     lines.append("}")
     return "\n".join(lines)
+
+
+def _render_object_entry_adapter(
+    *,
+    symbol: str,
+    logical_symbol: str,
+    parameters: Sequence[Mapping[str, object]],
+    result: Mapping[str, object],
+    completion: Mapping[str, object],
+    external_replay: Mapping[str, object] | None,
+    external_calls: Sequence[object],
+    members: Mapping[str, Mapping[str, object]],
+) -> str:
+    lines = [
+        f"stage_b_step_result {symbol}(stage_b_runtime *rt, "
+        "stage_b_machine_state *state) {",
+        "  uint32_t memory_fault = 0U;",
+    ]
+    lines.extend(f"  uint32_t entry_{name} = state->{name};" for name in _STATE_FIELDS)
+    lines.extend(f"  (void)entry_{name};" for name in _STATE_FIELDS)
+    renderer = _CExpression(
+        {name: f"entry_{name}" for name in _STATE_FIELDS},
+        memory_fault="memory_fault",
+    )
+    raw_names: dict[str, str] = {}
+    for index, parameter in enumerate(parameters):
+        identity = _string(parameter.get("id"), "logical parameter id")
+        source_expression = _machine_source_expression(parameter, members)
+        raw_name = f"argument_{index}_machine"
+        lines.append(
+            f"  uint32_t {raw_name} = {renderer.render(source_expression)};"
+        )
+        raw_names[identity] = raw_name
+    lines.append(
+        "  if (memory_fault != 0U) return (stage_b_step_result)"
+        "{ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+    )
+    external_result_names: dict[tuple[str, int, str], str] = {}
+    if external_replay is not None:
+        replay_lines, external_result_names = _render_linear_external_replay(
+            external_replay,
+            external_calls,
+            members,
+        )
+        lines.extend(replay_lines)
+    call_arguments: list[str] = []
+    view_contexts: list[str] = []
+    for index, parameter in enumerate(parameters):
+        identity = _string(parameter.get("id"), "logical parameter id")
+        if parameter.get("type") in {
+            READ_ONLY_BYTES_V1,
+            NUL_TERMINATED_BYTES_V1,
+        }:
+            view = _object(parameter.get("memory_view"), "logical memory view")
+            context = f"argument_{index}_context"
+            logical_view = f"argument_{index}"
+            if parameter.get("type") == READ_ONLY_BYTES_V1:
+                extent_id = _string(
+                    view.get("extent_parameter_id"), "logical memory-view extent"
+                )
+                lines.append(
+                    f"  component_ro_bytes_context {context} = "
+                    f"{{ rt, {raw_names[identity]}, {raw_names[extent_id]}, 1U, 0U }};"
+                )
+                lines.append(
+                    f"  stage_b_ro_bytes_v1 {logical_view} = "
+                    f"{{ &{context}, {raw_names[extent_id]}, component_read_u8 }};"
+                )
+            else:
+                lines.append(
+                    f"  component_ro_bytes_context {context} = "
+                    f"{{ rt, {raw_names[identity]}, 0U, 0U, 0U }};"
+                )
+                lines.append(
+                    f"  stage_b_c_string_v1 {logical_view} = "
+                    f"{{ &{context}, component_read_u8 }};"
+                )
+            call_arguments.append(f"&{logical_view}")
+            view_contexts.append(context)
+        else:
+            call_arguments.append(
+                f"({_c_type(parameter.get('type'), source_abi=LOGICAL_OBJECT_C_V1)})"
+                f"{raw_names[identity]}"
+            )
+    lines.append(
+        f"  {_c_type(result.get('type'), source_abi=LOGICAL_OBJECT_C_V1)} "
+        f"logical_result = {logical_symbol}({', '.join(call_arguments)});"
+    )
+    if view_contexts:
+        lines.append(
+            "  if ("
+            + " || ".join(f"{name}.fault != 0U" for name in view_contexts)
+            + ") return (stage_b_step_result){ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+        )
+    state_completion = _object(completion.get("state"), "adapter completion state")
+    completion_renderer = _CompletionExpression(
+        {name: f"entry_{name}" for name in _STATE_FIELDS},
+        memory_fault="memory_fault",
+        external_results=external_result_names,
+    )
+    for name in _STATE_FIELDS:
+        lines.append(
+            f"  uint32_t completed_{name} = "
+            f"{completion_renderer.render(state_completion.get(name))};"
+        )
+    lines.append(
+        "  uint32_t completed_return_target = "
+        f"{completion_renderer.render(completion.get('return_target'))};"
+    )
+    memory_writes = [
+        _object(row, "adapter completion memory write")
+        for row in _array(
+            completion.get("memory_writes"), "adapter completion memory writes"
+        )
+    ]
+    for index, write in enumerate(memory_writes):
+        lines.append(
+            f"  uint32_t completed_write_{index}_address = "
+            f"{completion_renderer.render(write.get('address'))};"
+        )
+        lines.append(
+            f"  uint32_t completed_write_{index}_value = "
+            f"{completion_renderer.render(write.get('value'))};"
+        )
+    lines.append(
+        "  if (memory_fault != 0U) return (stage_b_step_result)"
+        "{ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+    )
+    for index, write in enumerate(memory_writes):
+        lines.append(
+            "  component_write(rt, completed_write_{index}_address, {width}U, "
+            "completed_write_{index}_value, &memory_fault);".format(
+                index=index, width=int(write.get("width", 0))
+            )
+        )
+    if memory_writes:
+        lines.append(
+            "  if (memory_fault != 0U) return (stage_b_step_result)"
+            "{ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+        )
+    lines.extend(f"  state->{name} = completed_{name};" for name in _STATE_FIELDS)
+    lines.append(
+        "  return (stage_b_step_result){ STAGE_B_RETURN, 0U, "
+        "completed_return_target };"
+    )
+    lines.append("}")
+    return "\n".join(lines)
+
+
+def _render_linear_external_replay(
+    plan: Mapping[str, object],
+    raw_calls: Sequence[object],
+    members: Mapping[str, Mapping[str, object]],
+) -> tuple[list[str], dict[tuple[str, int, str], str]]:
+    if plan.get("kind") != "linear-read-only-call-v1":
+        raise ComponentIntentError("component external replay kind is unsupported")
+    call_ref = _object(plan.get("call"), "component external replay call")
+    unit_id = _string(call_ref.get("unit_id"), "component external replay unit")
+    event_index = call_ref.get("event_index")
+    if not isinstance(event_index, int) or isinstance(event_index, bool) or event_index < 0:
+        raise ComponentIntentError("component external replay event index is invalid")
+    matching = [
+        _object(row, "component external call")
+        for row in raw_calls
+        if isinstance(row, Mapping)
+        and row.get("unit_id") == unit_id
+        and row.get("event_index") == event_index
+    ]
+    if len(matching) != 1:
+        raise ComponentIntentError("component external replay call binding is stale")
+    try:
+        contract = parse_checked_external_site_contract(
+            _object(matching[0].get("contract"), "component external contract"),
+            context=f"component runtime external call {unit_id}:{event_index}",
+        )
+    except CheckedExternalSiteContractError as exc:
+        raise ComponentIntentError(str(exc)) from exc
+    if call_ref.get("contract_id") != contract.contract_id:
+        raise ComponentIntentError("component external replay contract binding is stale")
+
+    prefix_ids = [
+        _string(value, "component external replay prefix unit")
+        for value in _array(
+            plan.get("prefix_unit_ids"), "component external replay prefix"
+        )
+    ]
+    if not prefix_ids or prefix_ids[-1] != unit_id or any(
+        value not in members for value in prefix_ids
+    ):
+        raise ComponentIntentError("component external replay prefix is stale")
+
+    lines = ["  stage_b_machine_state external_replay_state = *state;"]
+    read_index = 0
+    for block_index, prefix_id in enumerate(prefix_ids):
+        unit = members[prefix_id]
+        semantics = _object(unit.get("semantics"), "machine semantics")
+        prefix = f"external_block_{block_index}"
+        renderer = _CExpression(
+            {name: f"external_replay_state.{name}" for name in _STATE_FIELDS},
+            memory_fault="memory_fault",
+        )
+        ordered = _array(semantics.get("ordered_events", []), "ordered events")
+        if not ordered:
+            ordered = [
+                {"family": "memory", **dict(_object(row, "memory event"))}
+                for row in _array(
+                    semantics.get("memory_events", []), "memory events"
+                )
+            ] + [
+                {"family": "external", **dict(_object(row, "external event"))}
+                for row in _array(
+                    semantics.get("external_events", []), "external events"
+                )
+            ]
+        for raw_event in ordered:
+            event = _object(raw_event, "ordered machine event")
+            family = event.get("family")
+            if family == "memory":
+                address = renderer.render(event.get("address"))
+                width = int(event.get("width", 4))
+                if event.get("kind") == "read":
+                    lines.extend(
+                        [
+                            f"  uint32_t external_read_{read_index} = component_read(rt, {address}, {width}U, &memory_fault);",
+                            f"  (void)external_read_{read_index};",
+                        ]
+                    )
+                    read_index += 1
+                elif event.get("kind") == "write":
+                    value = renderer.render(event.get("value"))
+                    lines.append(
+                        f"  component_write(rt, {address}, {width}U, {value}, &memory_fault);"
+                    )
+                else:
+                    raise ComponentIntentError(
+                        "component external replay memory event is unsupported"
+                    )
+                lines.append(
+                    "  if (memory_fault != 0U) return (stage_b_step_result)"
+                    "{ STAGE_B_MEMORY_FAULT, 0U, 0U };"
+                )
+                continue
+            if family != "external":
+                raise ComponentIntentError(
+                    "component external replay event family is unsupported"
+                )
+            if prefix_id != unit_id or event_index != 0:
+                raise ComponentIntentError(
+                    "component external replay encountered an unplanned event"
+                )
+            result_names = _render_external_call(
+                lines=lines,
+                contract=contract,
+                event=event,
+                renderer=renderer,
+                unit_id=unit_id,
+                event_index=event_index,
+            )
+            return lines, result_names
+
+        if prefix_id == unit_id:
+            raise ComponentIntentError("component external replay call was not found")
+        assignments: list[tuple[str, str]] = []
+        for index, raw in enumerate(
+            _array(semantics.get("register_writes", []), "register writes")
+        ):
+            write = _object(raw, "register write")
+            register = _string(write.get("register"), "register write name")
+            temporary = f"{prefix}_register_{index}"
+            lines.append(
+                f"  uint32_t {temporary} = {renderer.render(write.get('value'))};"
+            )
+            assignments.append((register, temporary))
+        for index, raw in enumerate(
+            _array(semantics.get("flag_writes", []), "flag writes")
+        ):
+            write = _object(raw, "flag write")
+            flag = _string(write.get("flag"), "flag write name")
+            temporary = f"{prefix}_flag_{index}"
+            lines.append(
+                f"  uint32_t {temporary} = {renderer.render(write.get('value'))};"
+            )
+            assignments.append((flag, temporary))
+        lines.extend(
+            f"  external_replay_state.{name} = {value};"
+            for name, value in assignments
+        )
+    raise ComponentIntentError("component external replay prefix has no call")
+
+
+def _render_external_call(
+    *,
+    lines: list[str],
+    contract: CheckedExternalSiteContract,
+    event: Mapping[str, object],
+    renderer: "_CExpression",
+    unit_id: str,
+    event_index: int,
+) -> dict[tuple[str, int, str], str]:
+    identity = contract.identity
+    call_name = "external_call_0"
+    lines.append(f"  stage_b_machine_state {call_name}_input = external_replay_state;")
+    for field, expression in _object(
+        event.get("register_inputs"), "external register inputs"
+    ).items():
+        if field not in _STATE_FIELDS:
+            raise ComponentIntentError("component external call register input is invalid")
+        lines.append(
+            f"  {call_name}_input.{field} = {renderer.render(expression)};"
+        )
+    for field, expression in _object(
+        event.get("flag_inputs"), "external flag inputs"
+    ).items():
+        if field not in _STATE_FIELDS:
+            raise ComponentIntentError("component external call flag input is invalid")
+        lines.append(
+            f"  {call_name}_input.{field} = {renderer.render(expression)};"
+        )
+    call_renderer = _CExpression(
+        {name: f"{call_name}_input.{name}" for name in _STATE_FIELDS},
+        memory_fault="memory_fault",
+    )
+    arguments = [call_renderer.render(value) for value in contract.arguments]
+    if arguments:
+        lines.append(
+            f"  uint32_t {call_name}_arguments[{len(arguments)}] = "
+            "{ " + ", ".join(arguments) + " };"
+        )
+    argument_pointer = f"{call_name}_arguments" if arguments else "0"
+    instruction_rva = int(event.get("instruction_rva", 0))
+    return_rva = int(event.get("return_rva", 0))
+    symbol = "0" if identity.symbol is None else _c_string(identity.symbol)
+    ordinal = 0 if identity.ordinal is None else identity.ordinal
+    lines.extend(
+        [
+            f"  stage_b_call_event {call_name}_event = {{",
+            "    STAGE_B_CALL_EXTERNAL_IMPORT,",
+            f"    {instruction_rva}U, {event_index}U, 0U, {return_rva}U,",
+            f"    {_c_string(identity.dll or '')}, {symbol}, {ordinal}U, "
+            f"{1 if identity.ordinal is not None else 0}U,",
+            f"    {argument_pointer}, {len(arguments)}U, 0, 0U",
+            "  };",
+            f"  stage_b_machine_state {call_name}_output;",
+            f"  stage_b_call_status {call_name}_status = stage_b_invoke_call(",
+            f"      rt, &{call_name}_event, &{call_name}_input, &{call_name}_output);",
+            f"  if ({call_name}_status != STAGE_B_CALL_OK) return (stage_b_step_result){{",
+            f"    {call_name}_status == STAGE_B_CALL_DIVIDE_ERROR ? STAGE_B_DIVIDE_ERROR :",
+            f"    {call_name}_status == STAGE_B_CALL_MEMORY_FAULT ? STAGE_B_MEMORY_FAULT :",
+            f"    {call_name}_status == STAGE_B_CALL_EXTERNAL_FAULT ? STAGE_B_EXTERNAL_FAULT :",
+            "    STAGE_B_UNIMPLEMENTED, 0U, 0U };",
+        ]
+    )
+    results: dict[tuple[str, int, str], str] = {}
+    for relation in contract.result_register_relations:
+        if not isinstance(relation, Mapping) or relation.get("relation") != "exact":
+            continue
+        register = relation.get("register")
+        if isinstance(register, str):
+            results[(unit_id, event_index, register)] = (
+                f"{call_name}_output.{register}"
+            )
+    return results
+
+
+def _machine_source_expression(
+    parameter: Mapping[str, object],
+    members: Mapping[str, Mapping[str, object]],
+) -> object:
+    source = _object(parameter.get("machine_source"), "logical parameter source")
+    if source.get("kind") == "register":
+        return {
+            "op": "reg",
+            "name": source.get("name"),
+            "width": source.get("width", 32),
+        }
+    if source.get("kind") == "expression" and source.get("expression") is not None:
+        return source["expression"]
+    evidence = _object(source.get("evidence"), "logical parameter evidence")
+    unit = members.get(_string(evidence.get("unit_id"), "parameter evidence unit"))
+    if unit is None:
+        raise ComponentIntentError("parameter evidence is outside the component")
+    return _json_pointer(
+        unit,
+        _string(evidence.get("json_pointer"), "parameter evidence pointer"),
+    )
 
 
 class _CExpression:
@@ -561,43 +1060,62 @@ class _CExpression:
             return f"((uint32_t)({args[0]}) < (uint32_t)({args[1]}))"
         if op == "ite":
             return f"(({args[0]}) ? ({args[1]}) : ({args[2]}))"
+        if op == "not":
+            return f"(!({args[0]}))"
         if op == "msb":
             return f"((({args[-1]}) >> ({args[0]} - 1U)) & 1U)"
         if op == "parity":
             return f"component_parity({args[-1]})"
         if op == "sub_overflow":
             return f"component_sub_overflow({args[1]}, {args[2]}, {args[3]})"
+        if op == "add_overflow":
+            return f"component_add_overflow({args[1]}, {args[2]}, {args[3]})"
         raise ComponentIntentError(f"adapter expression operation is unsupported: {op}")
 
 
-def _straight_line_path(
-    members: Mapping[str, Mapping[str, object]], entry_id: str
-) -> list[Mapping[str, object]]:
-    by_rva = {_unit_rva(row): row for row in members.values()}
-    path: list[Mapping[str, object]] = []
-    seen: set[str] = set()
-    current = members[entry_id]
-    while True:
-        identity = _string(current.get("id"), "machine unit id")
-        if identity in seen:
-            raise ComponentIntentError("logical-c-v1 adapter path contains a cycle")
-        seen.add(identity)
-        path.append(current)
-        outcome = _object(
-            _object(current.get("semantics"), "machine semantics").get("outcome"),
-            "machine outcome",
-        )
-        kind = outcome.get("kind")
-        if kind == "return":
-            return path
-        if kind not in {"fallthrough", "jump"}:
-            raise ComponentIntentError(
-                f"logical-c-v1 adapter requires a straight-line path, observed {kind}"
+class _CompletionExpression(_CExpression):
+    def __init__(
+        self,
+        names: Mapping[str, str],
+        *,
+        memory_fault: str,
+        external_results: Mapping[tuple[str, int, str], str],
+    ) -> None:
+        super().__init__(names, memory_fault=memory_fault)
+        self.external_results = external_results
+
+    def render(self, value: object) -> str:
+        expression = _object(value, "component completion expression")
+        if expression.get("op") == "entry":
+            name = _string(expression.get("name"), "completion entry field")
+            if name not in self.names:
+                raise ComponentIntentError(
+                    f"completion expression uses unsupported state {name}"
+                )
+            return self.names[name]
+        if expression.get("op") == "logical_result":
+            return "((uint32_t)logical_result)"
+        if expression.get("op") == "external_result":
+            event_index = expression.get("event_index")
+            key = (
+                _string(expression.get("unit_id"), "completion external-result unit"),
+                event_index,
+                _string(
+                    expression.get("register"),
+                    "completion external-result register",
+                ),
             )
-        target = outcome.get("target_rva")
-        if not isinstance(target, int) or target not in by_rva:
-            raise ComponentIntentError("component path exits before a supported terminal")
-        current = by_rva[target]
+            if (
+                not isinstance(event_index, int)
+                or isinstance(event_index, bool)
+                or event_index < 0
+                or key not in self.external_results
+            ):
+                raise ComponentIntentError(
+                    "completion external-result reference is not available"
+                )
+            return self.external_results[key]
+        return super().render(expression)
 
 
 def _result_register(
@@ -751,16 +1269,34 @@ def _validate_component_bindings(
     contract: Mapping[str, object],
     source: Mapping[str, object],
     qualification: Mapping[str, object],
+    adapter_plan: Mapping[str, object],
 ) -> None:
-    if contract.get("status") != "checked" or qualification.get("status") != "qualified":
+    if (
+        contract.get("status") != "checked"
+        or qualification.get("status") != "qualified"
+        or adapter_plan.get("status") != "checked"
+    ):
         raise ComponentIntentError(f"component {identity} is not checked and qualified")
-    if source.get("lift_unit_id") != identity or qualification.get("lift_unit_id") != identity:
+    if (
+        source.get("lift_unit_id") != identity
+        or qualification.get("lift_unit_id") != identity
+        or adapter_plan.get("lift_unit_id") != identity
+    ):
         raise ComponentIntentError(f"component {identity} identity binding is stale")
     bindings = _object(qualification.get("bindings"), "component qualification bindings")
+    adapter_bindings = _object(
+        adapter_plan.get("bindings"), "component adapter-plan bindings"
+    )
     if (
         bindings.get("contract_sha256") != contract.get("contract_sha256")
         or bindings.get("implementation_sha256") != source.get("implementation_sha256")
         or bindings.get("source_entry") != source.get("entry")
+        or bindings.get("adapter_plan_sha256")
+        != adapter_plan.get("adapter_plan_sha256")
+        or adapter_bindings.get("contract_sha256") != contract.get("contract_sha256")
+        or adapter_bindings.get("implementation_sha256")
+        != source.get("implementation_sha256")
+        or adapter_bindings.get("source_entry") != source.get("entry")
         or _object(qualification.get("activation"), "qualification activation").get("authorized")
         is not True
     ):
@@ -866,15 +1402,12 @@ _STATE_FIELDS = (
     "pf",
     "df",
 )
-_C_TYPES = frozenset(
-    {"uint8_t", "uint16_t", "uint32_t", "uint64_t", "int8_t", "int16_t", "int32_t", "int64_t"}
-)
 
 
-def _c_type(value: object) -> str:
-    result = _string(value, "logical C type")
-    if result not in _C_TYPES:
-        raise ComponentIntentError(f"unsupported logical C type: {result}")
+def _c_type(value: object, *, source_abi: object) -> str:
+    result = logical_c_type(value, source_abi=source_abi)
+    if result is None:
+        raise ComponentIntentError(f"unsupported logical C type: {value}")
     return result
 
 
@@ -883,6 +1416,10 @@ def _c_identifier(value: str) -> str:
     if not result or result[0].isdigit():
         result = "component_" + result
     return result
+
+
+def _c_string(value: str) -> str:
+    return json.dumps(value, ensure_ascii=True)
 
 
 def _check_self_hash(

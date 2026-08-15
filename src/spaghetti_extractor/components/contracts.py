@@ -12,6 +12,7 @@ from ..artifacts.formats import SEMANTIC_COMPONENT_DECLARATIONS_FORMAT
 from .formats import (
     COMPONENT_BOUNDARY_REVIEW_V2_FORMAT,
     COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
+    COMPONENT_RESOLUTION_SLICE_V1_FORMAT,
     COMPONENT_RESOLUTION_V2_FORMAT,
 )
 from .interface import (
@@ -19,6 +20,7 @@ from .interface import (
     finalize_component_interface_spec,
     synthesize_component_interface_spec,
 )
+from .external_sites import load_component_external_site_slice
 from .semantic import build_semantic_component_catalog
 from ..util import write_json
 from .intent import ComponentIntentError
@@ -32,8 +34,10 @@ _INTERFACE_OVERRIDE_FIELDS = frozenset(
         "objects",
         "services",
         "adapter_effects",
+        "completion",
         "claims",
         "policy",
+        "source_abi",
     }
 )
 
@@ -46,6 +50,7 @@ def build_lift_unit_contract(
     lift_unit_id: str,
     out_dir: Path | str,
     review: Path | str | Mapping[str, object] | None = None,
+    external_sites: Path | str | Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Derive and check one leaf or aggregate contract from exact machine units.
 
@@ -63,10 +68,25 @@ def build_lift_unit_contract(
         reconstruction_plan=reconstruction_plan,
         declarations=declarations,
     )
+    external_site_slice = (
+        None
+        if external_sites is None
+        else load_component_external_site_slice(external_sites)
+    )
+    if external_site_slice is not None:
+        expected_units = tuple(sorted(str(value) for value in lift_unit["unit_ids"]))
+        if (
+            external_site_slice.lift_unit_id != lift_unit_id
+            or external_site_slice.unit_ids != expected_units
+        ):
+            raise ComponentIntentError(
+                "component external-site slice is bound to a different lift unit"
+            )
     synthesized = synthesize_component_interface_spec(
         catalog=catalog,
         machine_ir=machine_ir,
         component_id=lift_unit_id,
+        external_sites=external_site_slice,
     )
     review_payload = None if review is None else _load_review(review, lift_unit_id)
     reviewed = _apply_review(synthesized, review_payload)
@@ -75,13 +95,28 @@ def build_lift_unit_contract(
         machine_ir=machine_ir,
         component_id=lift_unit_id,
         interface_spec=reviewed,
+        external_sites=external_site_slice,
     )
 
     catalog_invalid = catalog.get("definition_status") != "valid"
     refinement_status = refinement.get("status")
-    if catalog_invalid or refinement_status == "violated":
+    if (
+        catalog_invalid
+        or refinement_status == "violated"
+        or (
+            external_site_slice is not None
+            and external_site_slice.status == "violated"
+        )
+    ):
         status = "violated"
-    elif review_payload is None or refinement_status != "checked":
+    elif (
+        review_payload is None
+        or refinement_status != "checked"
+        or (
+            external_site_slice is not None
+            and external_site_slice.status != "checked"
+        )
+    ):
         status = "incomplete"
     else:
         status = "checked"
@@ -99,6 +134,8 @@ def build_lift_unit_contract(
         )
     blockers.extend(copy.deepcopy(refinement.get("issues", [])))
     blockers.extend(copy.deepcopy(catalog.get("issues", [])))
+    if external_site_slice is not None:
+        blockers.extend(copy.deepcopy(list(external_site_slice.issues)))
     core = {
         "format": COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
         "status": status,
@@ -117,6 +154,11 @@ def build_lift_unit_contract(
             "component_sha256": catalog["components"][0]["component_sha256"],
             "interface_spec_sha256": reviewed["interface_spec_sha256"],
             "interface_refinement_sha256": refinement["refinement_sha256"],
+            "external_site_projection_sha256": (
+                None
+                if external_site_slice is None
+                else external_site_slice.projection_sha256
+            ),
         },
         "authority": {
             "membership": "exact_machine_unit_membership_v2",
@@ -143,6 +185,9 @@ def build_lift_unit_contract(
             "synthesized_interface": "synthesized-interface.json",
             "reviewed_interface": "reviewed-interface.json",
             "interface_refinement": "interface-refinement.json",
+            "external_sites": (
+                "external-sites.json" if external_site_slice is not None else None
+            ),
         },
         "blockers": sorted(blockers, key=_blocker_key),
     }
@@ -154,6 +199,16 @@ def build_lift_unit_contract(
     write_json(output / "synthesized-interface.json", synthesized)
     write_json(output / "reviewed-interface.json", reviewed)
     write_json(output / "interface-refinement.json", refinement)
+    if external_site_slice is not None:
+        if isinstance(external_sites, Mapping):
+            write_json(
+                output / "external-sites.json",
+                copy.deepcopy(dict(external_sites)),
+            )
+        else:
+            source = Path(external_sites)  # type: ignore[arg-type]
+            source = source / "external-sites.json" if source.is_dir() else source
+            (output / "external-sites.json").write_bytes(source.read_bytes())
     write_json(output / "contract.json", result)
     return result
 
@@ -224,8 +279,96 @@ def _apply_review(
     result = copy.deepcopy(dict(synthesized))
     if review is not None:
         for key, value in review.overrides.items():
-            result[key] = copy.deepcopy(value)
+            if key == "adapter_effects" and isinstance(value, Mapping):
+                result[key] = _inherit_adapter_effects(synthesized, value)
+            else:
+                result[key] = copy.deepcopy(value)
     return finalize_component_interface_spec(result)
+
+
+def _inherit_adapter_effects(
+    synthesized: Mapping[str, object], value: Mapping[str, object]
+) -> list[dict[str, object]]:
+    _exact_keys(
+        value,
+        {"inherit_synthesized_except"},
+        "component adapter-effect inheritance",
+    )
+    exclusions = [
+        _object(raw, "component adapter-effect exclusion")
+        for raw in _array(
+            value.get("inherit_synthesized_except"),
+            "component adapter-effect exclusions",
+        )
+    ]
+    exclusion_keys: set[tuple[str, str, int]] = set()
+    for exclusion in exclusions:
+        _exact_keys(
+            exclusion,
+            {"family", "unit_id", "index"},
+            "component adapter-effect exclusion",
+        )
+        family = exclusion.get("family")
+        unit_id = exclusion.get("unit_id")
+        index = exclusion.get("index")
+        if (
+            not isinstance(family, str)
+            or not family
+            or not isinstance(unit_id, str)
+            or not unit_id
+            or not isinstance(index, int)
+            or isinstance(index, bool)
+            or index < 0
+        ):
+            raise ComponentIntentError(
+                "component adapter-effect exclusion is malformed"
+            )
+        key = (family, unit_id, index)
+        if key in exclusion_keys:
+            raise ComponentIntentError(
+                "component adapter-effect exclusions are duplicated"
+            )
+        exclusion_keys.add(key)
+
+    inherited = [
+        copy.deepcopy(dict(_object(raw, "synthesized adapter effect")))
+        for raw in _array(
+            synthesized.get("adapter_effects"), "synthesized adapter effects"
+        )
+    ]
+    available = {
+        _effect_key(
+            _object(row.get("effect"), "synthesized adapter-effect reference")
+        )
+        for row in inherited
+    }
+    missing = sorted(exclusion_keys - available)
+    if missing:
+        raise ComponentIntentError(
+            f"component adapter-effect exclusions are stale: {missing}"
+        )
+    return [
+        row
+        for row in inherited
+        if _effect_key(
+            _object(row.get("effect"), "synthesized adapter-effect reference")
+        )
+        not in exclusion_keys
+    ]
+
+
+def _effect_key(value: Mapping[str, object]) -> tuple[str, str, int]:
+    family = value.get("family")
+    unit_id = value.get("unit_id")
+    index = value.get("index")
+    if (
+        not isinstance(family, str)
+        or not isinstance(unit_id, str)
+        or not isinstance(index, int)
+        or isinstance(index, bool)
+    ):
+        raise ComponentIntentError("synthesized adapter-effect reference is malformed")
+    return family, unit_id, index
 
 
 def _load_review(
@@ -265,7 +408,10 @@ def _load_review(
 
 
 def _check_resolution(payload: Mapping[str, object]) -> None:
-    if payload.get("format") != COMPONENT_RESOLUTION_V2_FORMAT:
+    if payload.get("format") not in {
+        COMPONENT_RESOLUTION_V2_FORMAT,
+        COMPONENT_RESOLUTION_SLICE_V1_FORMAT,
+    }:
         raise ComponentIntentError("unsupported component resolution format")
     expected = payload.get("resolution_sha256")
     core = copy.deepcopy(dict(payload))

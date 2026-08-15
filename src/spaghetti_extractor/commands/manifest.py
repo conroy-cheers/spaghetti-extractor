@@ -186,6 +186,11 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "content-bind the exact portable source inputs for one lift unit",
     },
     {
+        "name": "expert stage-b-build-component-adapter-plan",
+        "group": "spaghetti_extractor.commands.expert_components",
+        "help": "check and bind the exact source-to-machine adapter before evidence",
+    },
+    {
         "name": "expert stage-b-produce-component-evidence",
         "group": "spaghetti_extractor.commands.expert_components",
         "help": "produce candidate-only behavioral evidence for one portable component",
@@ -255,6 +260,7 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "expert stage-b-resolve-components": "expert",
     "expert stage-b-build-component-contract": "expert",
     "expert stage-b-package-component-source": "expert",
+    "expert stage-b-build-component-adapter-plan": "expert",
     "expert stage-b-produce-component-evidence": "expert",
     "expert stage-b-qualify-component": "expert",
     "expert stage-b-compose-components": "expert",
