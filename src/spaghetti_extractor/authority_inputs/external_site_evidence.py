@@ -25,10 +25,14 @@ from ..authority.authority_common import (
 from ..authority.external_site_records import (
     EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
     EXTERNAL_PROFILE_CODEC_V3,
+    EXTERNAL_PROFILE_ISSUE_CODEC_V3,
+    EXTERNAL_PROFILE_ISSUE_RECORD_V3_SCHEMA,
+    EXTERNAL_PROFILE_RECORD_V3_SCHEMA,
     EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3,
     EXTERNAL_SITE_EVIDENCE_CODEC_V3,
     CallbackRequirementV3,
     ExternalContractV3,
+    ExternalProfileIssueV3,
     ExternalProfileV3,
     ExternalSiteEvidenceV3,
     external_site_id_v3,
@@ -86,6 +90,8 @@ class StandardExternalSiteEvidenceV3Error(ValueError):
 class _ProfileIndex:
     exact: Mapping[tuple[str, str, bytes], ExternalProfileV3]
     by_identity: Mapping[bytes, tuple[ExternalProfileV3, ...]]
+    issues_exact: Mapping[tuple[str, str, bytes], ExternalProfileIssueV3]
+    issues_by_identity: Mapping[bytes, tuple[ExternalProfileIssueV3, ...]]
 
 
 def _require_kind(reader: ArtifactInputReaderV3, expected: str, label: str) -> None:
@@ -300,20 +306,41 @@ def _load_profiles(
 ) -> _ProfileIndex:
     result: dict[tuple[str, str, bytes], ExternalProfileV3] = {}
     by_identity: dict[bytes, list[ExternalProfileV3]] = {}
+    issues: dict[tuple[str, str, bytes], ExternalProfileIssueV3] = {}
+    issues_by_identity: dict[bytes, list[ExternalProfileIssueV3]] = {}
     for source in reader.iter_records():
-        profile = EXTERNAL_PROFILE_CODEC_V3.read(source).value
-        if source.record_id != profile.record_id:
-            raise StandardExternalSiteEvidenceV3Error(
-                f"external profile envelope {source.record_id!r} disagrees with "
-                f"record identity {profile.record_id!r}"
+        value = source.value.to_value()
+        schema = value.get("schema") if isinstance(value, Mapping) else None
+        if schema == EXTERNAL_PROFILE_RECORD_V3_SCHEMA:
+            profile = EXTERNAL_PROFILE_CODEC_V3.read(source).value
+            key = (
+                profile.profile_id,
+                profile.profile_sha256,
+                profile.identity.data,
             )
-        key = (profile.profile_id, profile.profile_sha256, profile.identity.data)
-        if key in result:
-            raise StandardExternalSiteEvidenceV3Error(
-                "external profile artifact repeats an exact profile binding"
+            if key in result or key in issues:
+                raise StandardExternalSiteEvidenceV3Error(
+                    "external profile artifact repeats an exact profile binding"
+                )
+            result[key] = profile
+            by_identity.setdefault(profile.identity.data, []).append(profile)
+        elif schema == EXTERNAL_PROFILE_ISSUE_RECORD_V3_SCHEMA:
+            issue = EXTERNAL_PROFILE_ISSUE_CODEC_V3.read(source).value
+            key = (
+                issue.profile_id,
+                issue.profile_sha256,
+                issue.identity.data,
             )
-        result[key] = profile
-        by_identity.setdefault(profile.identity.data, []).append(profile)
+            if key in result or key in issues:
+                raise StandardExternalSiteEvidenceV3Error(
+                    "external profile artifact repeats an exact profile binding"
+                )
+            issues[key] = issue
+            issues_by_identity.setdefault(issue.identity.data, []).append(issue)
+        else:
+            raise StandardExternalSiteEvidenceV3Error(
+                f"external profile artifact contains unsupported schema {schema!r}"
+            )
     return _ProfileIndex(
         exact=result,
         by_identity={
@@ -329,6 +356,20 @@ def _load_profiles(
             )
             for key, values in by_identity.items()
         },
+        issues_exact=issues,
+        issues_by_identity={
+            key: tuple(
+                sorted(
+                    values,
+                    key=lambda row: (
+                        row.profile_id,
+                        row.profile_sha256,
+                        row.record_id,
+                    ),
+                )
+            )
+            for key, values in issues_by_identity.items()
+        },
     )
 
 
@@ -337,22 +378,70 @@ def _select_profile(
     identity: CanonicalValueV3,
     binding: tuple[str, str] | None,
     profiles: _ProfileIndex,
-) -> tuple[ExternalProfileV3 | None, PrimaryBlockerV3 | None]:
+) -> tuple[
+    ExternalProfileV3 | None,
+    PrimaryBlockerV3 | None,
+    RecordDependencyV3 | None,
+]:
     candidates = profiles.by_identity.get(identity.data, ())
+    issue_candidates = profiles.issues_by_identity.get(identity.data, ())
     if binding is not None and binding[0] != CONTROL_DISPOSITION_PROFILE_ID:
-        exact = profiles.exact.get((binding[0], binding[1], identity.data))
-        if exact is None:
-            return None, PrimaryBlockerV3(
-                "violated", "external_profile_binding_contradiction"
+        key = (binding[0], binding[1], identity.data)
+        exact = profiles.exact.get(key)
+        issue = profiles.issues_exact.get(key)
+        if issue is not None:
+            dependency = RecordDependencyV3("external_profiles", issue.record_id)
+            return (
+                None,
+                PrimaryBlockerV3(
+                    issue.status,
+                    issue.code,
+                    dependency.input_name,
+                    dependency.record_id,
+                ),
+                dependency,
             )
-        return exact, None
-    if not candidates:
-        return None, PrimaryBlockerV3("incomplete", "external_profile_missing")
-    if len(candidates) != 1:
-        return None, PrimaryBlockerV3(
-            "incomplete", "external_profile_identity_ambiguous"
+        if exact is None:
+            return (
+                None,
+                PrimaryBlockerV3(
+                    "violated", "external_profile_binding_contradiction"
+                ),
+                None,
+            )
+        dependency = RecordDependencyV3("external_profiles", exact.record_id)
+        return exact, None, dependency
+    combined_count = len(candidates) + len(issue_candidates)
+    if combined_count == 0:
+        return (
+            None,
+            PrimaryBlockerV3("incomplete", "external_profile_missing"),
+            None,
         )
-    return candidates[0], None
+    if combined_count != 1:
+        return (
+            None,
+            PrimaryBlockerV3(
+                "incomplete", "external_profile_identity_ambiguous"
+            ),
+            None,
+        )
+    if issue_candidates:
+        issue = issue_candidates[0]
+        dependency = RecordDependencyV3("external_profiles", issue.record_id)
+        return (
+            None,
+            PrimaryBlockerV3(
+                issue.status,
+                issue.code,
+                dependency.input_name,
+                dependency.record_id,
+            ),
+            dependency,
+        )
+    profile = candidates[0]
+    dependency = RecordDependencyV3("external_profiles", profile.record_id)
+    return profile, None, dependency
 
 
 def _contract(
@@ -370,6 +459,19 @@ def _contract(
     RecordDependencyV3 | None,
 ]:
     blockers: list[PrimaryBlockerV3] = []
+    if profile_reader.manifest.status != "complete":
+        return (
+            None,
+            PrimaryBlockerV3(
+                (
+                    "violated"
+                    if profile_reader.manifest.status == "violated"
+                    else "incomplete"
+                ),
+                "external_profile_artifact_not_complete",
+            ),
+            None,
+        )
     abi_raw = event.get("abi_contract", {})
     if not isinstance(abi_raw, Mapping):
         return None, PrimaryBlockerV3("violated", "external_abi_contract_malformed"), None
@@ -379,37 +481,19 @@ def _contract(
     if blocker is not None:
         blockers.append(blocker)
 
-    profile, profile_blocker = _select_profile(
+    profile, profile_blocker, profile_dependency = _select_profile(
         identity=identity,
         binding=binding,
         profiles=profiles,
     )
     if profile_blocker is not None:
-        blockers.append(profile_blocker)
-    profile_dependency = (
-        None
-        if profile is None
-        else RecordDependencyV3("external_profiles", profile.record_id)
-    )
-    if profile_reader.manifest.status != "complete":
-        blockers.append(
-            PrimaryBlockerV3(
-                (
-                    "violated"
-                    if profile_reader.manifest.status == "violated"
-                    else "incomplete"
-                ),
-                "external_profile_artifact_not_complete",
-                "external_profiles",
-                None if profile is None else profile.record_id,
-            )
-        )
+        return None, profile_blocker, profile_dependency
+    assert profile is not None
+    assert profile_dependency is not None
 
-    profile_machine: Mapping[str, Any] = {}
-    if profile is not None:
-        profile_machine = mapping(
-            profile.machine_contract.to_value(), "external profile machine contract"
-        )
+    profile_machine = mapping(
+        profile.machine_contract.to_value(), "external profile machine contract"
+    )
 
     supplied_template: str | None = None
     if "template" in abi or "abi_template" in abi:

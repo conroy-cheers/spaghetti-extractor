@@ -39,11 +39,17 @@ let
   structuralDiagnostics = callWith ./structural-diagnostics.nix candidateCommon;
   candidateTestSuite = callWith ./candidate-test-suite.nix candidateCommon;
   targetBundleLint = callWith ./target-bundle-lint.nix analysisCommon;
-  progressPythonSource = import ./python-module-closure.nix {
+  projectStatusPythonSource = import ./python-module-closure.nix {
     phaseRole = "operator";
     inherit pkgs;
-    modules = [ "spaghetti_extractor.target_bundles.progress" ];
-    name = "spaghetti-extractor-target-progress-python-closure";
+    modules = [ "spaghetti_extractor.target_bundles.project_status" ];
+    name = "spaghetti-extractor-project-status-python-closure";
+  };
+  candidateStatusPythonSource = import ./python-module-closure.nix {
+    phaseRole = "operator";
+    inherit pkgs;
+    modules = [ "spaghetti_extractor.target_bundles.candidate_status" ];
+    name = "spaghetti-extractor-candidate-status-python-closure";
   };
   exactAttrs = value: names:
     builtins.isAttrs value
@@ -434,15 +440,58 @@ let
         configurationId = test.configurationId;
         caseIds = test.caseIds;
       }) candidateTests;
-      mkProgress = configurationId:
+      projectStatus = pkgs.runCommand
+        "spaghetti-extractor-${metadata.id}-project-status-v2"
+        {
+          nativeBuildInputs = [ context.pythonEnv pkgs.jq ];
+          preferLocalBuild = false;
+          allowSubstitutes = true;
+          __contentAddressed = true;
+        }
+        ''
+          set -euo pipefail
+          test -s ${targetInputIdentity}/target-input-identity.json
+          export PYTHONHASHSEED=0
+          export PYTHONDONTWRITEBYTECODE=1
+          export PYTHONPATH=${projectStatusPythonSource}/src
+          mkdir -p "$out"
+          ${context.pythonEnv}/bin/python3 - \
+            ${workflow.authority.diagnostics}/authority-diagnostics-v3.json \
+            ${lib.escapeShellArg metadata.id} \
+            "$out/project-status.json" <<'PY'
+          import pathlib
+          import sys
+          from spaghetti_extractor.target_bundles.project_status import build_project_status
+
+          build_project_status(
+              authority_diagnostics=pathlib.Path(sys.argv[1]),
+              target_id=sys.argv[2],
+              out=pathlib.Path(sys.argv[3]),
+          )
+          PY
+          jq -e '
+            .format == "spaghetti-extractor-project-status-v2" and
+            (.status == "ready" or .status == "incomplete" or .status == "violated") and
+            (.authorizing | not) and
+            .policy.diagnostic_only and
+            (.policy.candidate_gate_bypassed | not) and
+            (.policy.original_binary_executed | not) and
+            (.configuration_id == null) and
+            (.component_configuration == null) and
+            (.candidate == null)
+          ' "$out/project-status.json" >/dev/null
+        '';
+      candidateTestIndexFor = configurationId:
+        lib.filterAttrs (_: test: test.configurationId == configurationId)
+          candidateTestIndex;
+      mkCandidateStatus = configurationId:
         let
-          configurationStatus = if configurationId == null then "-" else
+          configurationStatus =
             toString workflow.components.configurationStatusReports.${configurationId};
-          progressName = if configurationId == null then "analysis" else configurationId;
-          configurationArgument = if configurationId == null then "-" else configurationId;
+          configurationTestIndex = candidateTestIndexFor configurationId;
         in
         pkgs.runCommand
-          "spaghetti-extractor-${metadata.id}-${progressName}-project-progress-v1"
+          "spaghetti-extractor-${metadata.id}-${configurationId}-candidate-status-v1"
           {
             nativeBuildInputs = [ context.pythonEnv pkgs.jq ];
             preferLocalBuild = false;
@@ -454,46 +503,42 @@ let
             test -s ${targetInputIdentity}/target-input-identity.json
             export PYTHONHASHSEED=0
             export PYTHONDONTWRITEBYTECODE=1
-            export PYTHONPATH=${progressPythonSource}/src
+            export PYTHONPATH=${candidateStatusPythonSource}/src
             mkdir -p "$out"
             ${context.pythonEnv}/bin/python3 - \
-              ${workflow.authority.diagnostics}/authority-diagnostics-v3.json \
-              ${lib.escapeShellArg configurationStatus} \
+              ${projectStatus}/project-status.json \
+              ${configurationStatus}/status.json \
               ${lib.escapeShellArg metadata.id} \
-              ${lib.escapeShellArg configurationArgument} \
-              ${lib.escapeShellArg (builtins.toJSON candidateTestIndex)} \
-              "$out/project-progress.json" <<'PY'
+              ${lib.escapeShellArg configurationId} \
+              ${lib.escapeShellArg (builtins.toJSON configurationTestIndex)} \
+              "$out/candidate-status.json" <<'PY'
             import json
             import pathlib
             import sys
-            from spaghetti_extractor.target_bundles.progress import build_project_progress
+            from spaghetti_extractor.target_bundles.candidate_status import build_candidate_status
 
-            optional = lambda value: None if value == "-" else value
-            build_project_progress(
-                authority_diagnostics=pathlib.Path(sys.argv[1]),
-                configuration_status=(
-                    None if sys.argv[2] == "-" else pathlib.Path(sys.argv[2]) / "status.json"
-                ),
+            build_candidate_status(
+                project_status=pathlib.Path(sys.argv[1]),
+                configuration_status=pathlib.Path(sys.argv[2]),
                 target_id=sys.argv[3],
-                configuration_id=optional(sys.argv[4]),
+                configuration_id=sys.argv[4],
                 candidate_test_suites=json.loads(sys.argv[5]),
                 out=pathlib.Path(sys.argv[6]),
             )
             PY
             jq -e '
-              .format == "spaghetti-extractor-project-progress-v1" and
+              .format == "spaghetti-extractor-candidate-status-v1" and
               (.status == "ready" or .status == "incomplete" or .status == "violated") and
               (.authorizing | not) and
               .policy.diagnostic_only and
               (.policy.candidate_gate_bypassed | not) and
               (.policy.original_binary_executed | not)
-            ' "$out/project-progress.json" >/dev/null
+            ' "$out/candidate-status.json" >/dev/null
           '';
-      progressReports = builtins.listToAttrs (map (configurationId: {
+      candidateStatusReports = builtins.listToAttrs (map (configurationId: {
         name = configurationId;
-        value = mkProgress configurationId;
+        value = mkCandidateStatus configurationId;
       }) configurationIds);
-      projectProgress = mkProgress defaultConfiguration;
       checkedCandidateBuilds = lib.mapAttrs (configurationId: candidate:
         pkgs.runCommand
           "spaghetti-extractor-${metadata.id}-${configurationId}-checked-candidate"
@@ -528,8 +573,8 @@ let
         index = operatorIndex;
         project = {
           analysis = projectAnalysis;
-          status = projectProgress;
-          authorityStatus = workflow.authority.diagnostics;
+          status = projectStatus;
+          authorityDiagnostics = workflow.authority.diagnostics;
           regressionCheck = bundle.defaultCheck;
           acceptanceCheck = bundle.acceptanceCheck;
           structuralDiagnostics = workflow.structuralDiagnostic;
@@ -541,7 +586,7 @@ let
         };
         candidate = {
           builds = checkedCandidateBuilds;
-          statuses = progressReports;
+          statuses = candidateStatusReports;
           tests = checkedCandidateTests;
           allTests = candidateTestAggregate;
         };

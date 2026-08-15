@@ -513,6 +513,7 @@ def _checked_site(
             (dependency,),
         )
     evidence = EXTERNAL_SITE_EVIDENCE_CODEC_V3.read(source).value
+    forwarded_dependency: RecordDependencyV3 | None = None
     binding_matches = (
         evidence.record_id == expected.site_id
         and evidence.unit_id == expected.unit_id
@@ -531,16 +532,37 @@ def _checked_site(
             dependency.record_id,
         )
     elif evidence.status != "complete":
-        blocker = PrimaryBlockerV3(
-            "violated" if evidence.status == "violated" else "incomplete",
-            (
-                evidence.primary_blocker.code
-                if evidence.primary_blocker is not None
-                else "external_site_evidence_incomplete"
-            ),
-            dependency.input_name,
-            dependency.record_id,
+        evidence_blocker = evidence.primary_blocker
+        claimed_dependency = (
+            None if evidence_blocker is None else evidence_blocker.dependency
         )
+        if claimed_dependency is not None and claimed_dependency not in source.dependencies:
+            blocker = PrimaryBlockerV3(
+                "violated",
+                "external_site_evidence_dependency_contradiction",
+                dependency.input_name,
+                dependency.record_id,
+            )
+        else:
+            forwarded_dependency = claimed_dependency
+            blocker = PrimaryBlockerV3(
+                "violated" if evidence.status == "violated" else "incomplete",
+                (
+                    evidence_blocker.code
+                    if evidence_blocker is not None
+                    else "external_site_evidence_incomplete"
+                ),
+                (
+                    forwarded_dependency.input_name
+                    if forwarded_dependency is not None
+                    else dependency.input_name
+                ),
+                (
+                    forwarded_dependency.record_id
+                    if forwarded_dependency is not None
+                    else dependency.record_id
+                ),
+            )
     else:
         assert evidence.contract is not None
         proposed = _contract_blocker(expected, evidence.contract)
@@ -589,6 +611,8 @@ def _checked_site(
                 )
     complete = blocker is None
     exact_dependencies = [dependency]
+    if forwarded_dependency is not None:
+        exact_dependencies.append(forwarded_dependency)
     if evidence.contract is not None and binding_matches and evidence.status == "complete":
         exact_dependencies.append(_profile_dependency(evidence.contract))
     return (

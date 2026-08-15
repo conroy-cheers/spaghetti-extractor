@@ -49,6 +49,8 @@ from ..authority.exact_units import ExactUnitV3
 from ..authority.external_site_records import (
     EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
     EXTERNAL_PROFILE_CODEC_V3,
+    EXTERNAL_PROFILE_ISSUE_CODEC_V3,
+    ExternalProfileIssueV3,
     ExternalProfileV3,
 )
 from ..authority.root_closure import (
@@ -331,6 +333,20 @@ def _adapt_profile_contract(
     )
 
 
+def _profile_issue_record(
+    selected: SelectedMachineImportContract,
+    issue: AdapterIssueV3,
+) -> ExternalProfileIssueV3:
+    return ExternalProfileIssueV3.create(
+        profile_id=selected.profile_id,
+        profile_sha256=selected.profile_sha256,
+        identity=_import_identity(selected),
+        status=issue.status,
+        code=issue.code,
+        detail=issue.detail,
+    )
+
+
 def _fallback_profile_bindings(
     paths: Sequence[Path],
 ) -> tuple[ArtifactBindingV3, ...]:
@@ -380,6 +396,12 @@ def _adapt_external_profiles(
             adapted = _adapt_profile_contract(selected)
             if isinstance(adapted, AdapterIssueV3):
                 issues.append(adapted)
+                issue_record = _profile_issue_record(selected, adapted)
+                records.append(
+                    EXTERNAL_PROFILE_ISSUE_CODEC_V3.write(
+                        issue_record.record_id, issue_record
+                    )
+                )
             else:
                 records.append(
                     EXTERNAL_PROFILE_CODEC_V3.write(adapted.record_id, adapted)

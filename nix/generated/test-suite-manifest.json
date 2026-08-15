@@ -1,6 +1,6 @@
 {
   "format": "spaghetti-extractor-static-test-manifest-v1",
-  "identity": "6d628c9f088e4f90708f68fddd393641d72cf557d841452187c68a0d2f4e1518",
+  "identity": "8186125602d04015682bcc5fba56df5e49400bae7e396a43ed07827afc4edda3",
   "modes": {
     "benchmark": {
       "identity": "1f88a0a7488610c2826696dfe7dba388aff03050ab8aa1459085154e2e40855b",
@@ -11,7 +11,7 @@
       ]
     },
     "catalog": {
-      "identity": "032c3ee6066d82dd476c494399b7a2deab7f1158304705e0c6461fc57e1154f2",
+      "identity": "8d9a318bd019adf5f6995d1dee492143b154982f92691b489e66ab904a0f2d8b",
       "selected_test_count": 161,
       "shard_ids": [
         "benchmark-05786cef6afb",
@@ -53,6 +53,7 @@
         "pure-16ffe686fa02",
         "pure-17daaff995ca",
         "pure-1bc560750515",
+        "pure-1beed47d1da6",
         "pure-1c72e3f76b62",
         "pure-1d989d892a6a",
         "pure-1e4c74963498",
@@ -81,7 +82,6 @@
         "pure-44b1013221c3",
         "pure-457f7bcd09e9",
         "pure-48806db9520e",
-        "pure-48f46fcd492a",
         "pure-4ab8026e98ea",
         "pure-4f4205ad6917",
         "pure-50942d06d37b",
@@ -178,7 +178,7 @@
       ]
     },
     "full": {
-      "identity": "4487a4935c6f34b0b014da424989435808b80ff8d361f47a6d07662a1e12690e",
+      "identity": "7ea6a2f1c785753de7d4f130509bf5d6a2cff08563297a59179c9205a50a3bbf",
       "selected_test_count": 159,
       "shard_ids": [
         "bochs-d906802c54f2",
@@ -218,6 +218,7 @@
         "pure-16ffe686fa02",
         "pure-17daaff995ca",
         "pure-1bc560750515",
+        "pure-1beed47d1da6",
         "pure-1c72e3f76b62",
         "pure-1d989d892a6a",
         "pure-1e4c74963498",
@@ -246,7 +247,6 @@
         "pure-44b1013221c3",
         "pure-457f7bcd09e9",
         "pure-48806db9520e",
-        "pure-48f46fcd492a",
         "pure-4ab8026e98ea",
         "pure-4f4205ad6917",
         "pure-50942d06d37b",
@@ -343,7 +343,7 @@
       ]
     },
     "smoke": {
-      "identity": "449f11bbce72ee02afc71037911d65b2aaad469779fa504c47d1f995461008ab",
+      "identity": "ed352f7fc8a22ec98e3834be5ca7ef30236119523dada6cd93a80daac8b5fe54",
       "selected_test_count": 1,
       "shard_ids": [
         "smoke"
@@ -1760,9 +1760,11 @@
         "src/spaghetti_extractor/roundtrip_fuzz/runner.py",
         "src/spaghetti_extractor/roundtrip_fuzz/semantic.py",
         "src/spaghetti_extractor/target_bundles/__init__.py",
+        "src/spaghetti_extractor/target_bundles/candidate_status.py",
         "src/spaghetti_extractor/target_bundles/lint.py",
         "src/spaghetti_extractor/target_bundles/metadata.py",
-        "src/spaghetti_extractor/target_bundles/progress.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py",
+        "src/spaghetti_extractor/target_bundles/status_common.py",
         "src/spaghetti_extractor/testkit/__init__.py",
         "src/spaghetti_extractor/testkit/__main__.py",
         "src/spaghetti_extractor/testkit/cli.py",
@@ -1788,7 +1790,7 @@
         "pe32-minimal-import-call"
       ],
       "id": "native-2efaa480edbd",
-      "input_sha256": "290f67b0550c0525f2fae4fde07fae84ed5357978d638cdeeab537ed8a92c40f",
+      "input_sha256": "402b3427fd30a4b712238731dc4b0aa23ceac1e0b4a3c47d989fdd8ccf5954e1",
       "resource_class": "medium",
       "test_paths": [
         "tests/integration/native/test_minimal_pe_fixture.py"
@@ -2739,6 +2741,34 @@
       ],
       "tests": [
         "tests/unit/components/test_evidence_completion"
+      ]
+    },
+    {
+      "files": [
+        "src/spaghetti_extractor/__init__.py",
+        "src/spaghetti_extractor/artifacts/__init__.py",
+        "src/spaghetti_extractor/artifacts/formats.py",
+        "src/spaghetti_extractor/components/__init__.py",
+        "src/spaghetti_extractor/components/formats.py",
+        "src/spaghetti_extractor/target_bundles/__init__.py",
+        "src/spaghetti_extractor/target_bundles/candidate_status.py",
+        "src/spaghetti_extractor/target_bundles/lint.py",
+        "src/spaghetti_extractor/target_bundles/metadata.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py",
+        "src/spaghetti_extractor/target_bundles/status_common.py",
+        "src/spaghetti_extractor/util.py",
+        "tests/unit/target_bundles/__init__.py",
+        "tests/unit/target_bundles/test_metadata_and_status.py"
+      ],
+      "fixtures": [],
+      "id": "pure-1beed47d1da6",
+      "input_sha256": "f36d36b46516e85bfd079b430456a4ca5a88a946e0f3b6978f87d1c088b364e6",
+      "resource_class": "small",
+      "test_paths": [
+        "tests/unit/target_bundles/test_metadata_and_status.py"
+      ],
+      "tests": [
+        "tests/unit/target_bundles/test_metadata_and_status"
       ]
     },
     {
@@ -3902,28 +3932,6 @@
     {
       "files": [
         "src/spaghetti_extractor/__init__.py",
-        "src/spaghetti_extractor/target_bundles/__init__.py",
-        "src/spaghetti_extractor/target_bundles/lint.py",
-        "src/spaghetti_extractor/target_bundles/metadata.py",
-        "src/spaghetti_extractor/target_bundles/progress.py",
-        "src/spaghetti_extractor/util.py",
-        "tests/unit/target_bundles/__init__.py",
-        "tests/unit/target_bundles/test_metadata_and_progress.py"
-      ],
-      "fixtures": [],
-      "id": "pure-48f46fcd492a",
-      "input_sha256": "07b8b9f084f8ef6e76a6b2c136a84093fb3595031ea560feff9ccb31d74e46fa",
-      "resource_class": "small",
-      "test_paths": [
-        "tests/unit/target_bundles/test_metadata_and_progress.py"
-      ],
-      "tests": [
-        "tests/unit/target_bundles/test_metadata_and_progress"
-      ]
-    },
-    {
-      "files": [
-        "src/spaghetti_extractor/__init__.py",
         "src/spaghetti_extractor/artifacts/__init__.py",
         "src/spaghetti_extractor/artifacts/artifact_set.py",
         "src/spaghetti_extractor/artifacts/formats.py",
@@ -4561,9 +4569,11 @@
         "src/spaghetti_extractor/roundtrip_fuzz/runner.py",
         "src/spaghetti_extractor/roundtrip_fuzz/semantic.py",
         "src/spaghetti_extractor/target_bundles/__init__.py",
+        "src/spaghetti_extractor/target_bundles/candidate_status.py",
         "src/spaghetti_extractor/target_bundles/lint.py",
         "src/spaghetti_extractor/target_bundles/metadata.py",
-        "src/spaghetti_extractor/target_bundles/progress.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py",
+        "src/spaghetti_extractor/target_bundles/status_common.py",
         "src/spaghetti_extractor/testkit/__init__.py",
         "src/spaghetti_extractor/testkit/__main__.py",
         "src/spaghetti_extractor/testkit/cli.py",
@@ -4585,7 +4595,7 @@
       ],
       "fixtures": [],
       "id": "pure-589f18479ad3",
-      "input_sha256": "2d9d27216e0b2727217c8ca71758923991a76408d579c2c08175d1ff5b411d93",
+      "input_sha256": "5b038062d08cb39fc988094ef7f0dccdebd19d017b05ba06f6996db861d86f6d",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_planning.py"
@@ -5668,9 +5678,11 @@
         "src/spaghetti_extractor/roundtrip_fuzz/runner.py",
         "src/spaghetti_extractor/roundtrip_fuzz/semantic.py",
         "src/spaghetti_extractor/target_bundles/__init__.py",
+        "src/spaghetti_extractor/target_bundles/candidate_status.py",
         "src/spaghetti_extractor/target_bundles/lint.py",
         "src/spaghetti_extractor/target_bundles/metadata.py",
-        "src/spaghetti_extractor/target_bundles/progress.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py",
+        "src/spaghetti_extractor/target_bundles/status_common.py",
         "src/spaghetti_extractor/testkit/__init__.py",
         "src/spaghetti_extractor/testkit/__main__.py",
         "src/spaghetti_extractor/testkit/cli.py",
@@ -5693,7 +5705,7 @@
       ],
       "fixtures": [],
       "id": "pure-856944171a2c",
-      "input_sha256": "eaeb924b2c765ace0cdfeeb67c569e20ecf93529921277919451256df5e03dd9",
+      "input_sha256": "4e93bd24052b86d32f74f39a63b5a528cb58f45b716d4d0ac7fbe511e6b3128b",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/components/test_analysis_nix.py"
@@ -6457,9 +6469,11 @@
         "src/spaghetti_extractor/roundtrip_fuzz/runner.py",
         "src/spaghetti_extractor/roundtrip_fuzz/semantic.py",
         "src/spaghetti_extractor/target_bundles/__init__.py",
+        "src/spaghetti_extractor/target_bundles/candidate_status.py",
         "src/spaghetti_extractor/target_bundles/lint.py",
         "src/spaghetti_extractor/target_bundles/metadata.py",
-        "src/spaghetti_extractor/target_bundles/progress.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py",
+        "src/spaghetti_extractor/target_bundles/status_common.py",
         "src/spaghetti_extractor/testkit/__init__.py",
         "src/spaghetti_extractor/testkit/__main__.py",
         "src/spaghetti_extractor/testkit/cli.py",
@@ -6481,7 +6495,7 @@
       ],
       "fixtures": [],
       "id": "pure-a3511737d3e8",
-      "input_sha256": "9b084a7e1f1fde8e33a396dc07810290fcbe544ffee65a3d6847a57ab765559b",
+      "input_sha256": "27794850591ae03da72a0d9b968cb845cb3c855f6823e994e98b50d3f7f95a64",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_services.py"
@@ -6626,6 +6640,7 @@
         "src/spaghetti_extractor/__init__.py",
         "src/spaghetti_extractor/artifacts/__init__.py",
         "src/spaghetti_extractor/artifacts/artifact_set.py",
+        "src/spaghetti_extractor/artifacts/formats.py",
         "src/spaghetti_extractor/artifacts/io.py",
         "src/spaghetti_extractor/authority/__init__.py",
         "src/spaghetti_extractor/authority/diagnostics.py",
@@ -6633,7 +6648,7 @@
       ],
       "fixtures": [],
       "id": "pure-b6ee97b95659",
-      "input_sha256": "78b51b3458af6edc0d072db744f676764e5740351037acadc534aa5f2379a892",
+      "input_sha256": "48000c5eb22d8db0955910bc481f6e8bf00603de2700e058dc1d181714945b59",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/authority/test_diagnostics.py"
@@ -7214,9 +7229,11 @@
         "src/spaghetti_extractor/roundtrip_fuzz/runner.py",
         "src/spaghetti_extractor/roundtrip_fuzz/semantic.py",
         "src/spaghetti_extractor/target_bundles/__init__.py",
+        "src/spaghetti_extractor/target_bundles/candidate_status.py",
         "src/spaghetti_extractor/target_bundles/lint.py",
         "src/spaghetti_extractor/target_bundles/metadata.py",
-        "src/spaghetti_extractor/target_bundles/progress.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py",
+        "src/spaghetti_extractor/target_bundles/status_common.py",
         "src/spaghetti_extractor/testkit/__init__.py",
         "src/spaghetti_extractor/testkit/__main__.py",
         "src/spaghetti_extractor/testkit/cli.py",
@@ -7238,7 +7255,7 @@
       ],
       "fixtures": [],
       "id": "pure-c1ce06948e75",
-      "input_sha256": "8b99dc3fa77d0c25d9ff3770bc607d51208c59e962b3e4ebe4bcf818629159a0",
+      "input_sha256": "05de9f95a278c9d52ea7e2aec79adadb044a50c344f5e5cbff33e32f29e0bab9",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_static_manifest.py"
@@ -7755,9 +7772,11 @@
         "src/spaghetti_extractor/roundtrip_fuzz/runner.py",
         "src/spaghetti_extractor/roundtrip_fuzz/semantic.py",
         "src/spaghetti_extractor/target_bundles/__init__.py",
+        "src/spaghetti_extractor/target_bundles/candidate_status.py",
         "src/spaghetti_extractor/target_bundles/lint.py",
         "src/spaghetti_extractor/target_bundles/metadata.py",
-        "src/spaghetti_extractor/target_bundles/progress.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py",
+        "src/spaghetti_extractor/target_bundles/status_common.py",
         "src/spaghetti_extractor/testkit/__init__.py",
         "src/spaghetti_extractor/testkit/__main__.py",
         "src/spaghetti_extractor/testkit/cli.py",
@@ -7779,7 +7798,7 @@
       ],
       "fixtures": [],
       "id": "pure-ce0386c25d6c",
-      "input_sha256": "f2f403e8b9c54aa57b6108ba43e79f426913bc41914e99414c93a64287034ebb",
+      "input_sha256": "5ee87faac0beba67399596946eef97467e3319b95d8726892aece8ba42fdec72",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_runner.py"
@@ -8662,9 +8681,11 @@
         "src/spaghetti_extractor/roundtrip_fuzz/runner.py",
         "src/spaghetti_extractor/roundtrip_fuzz/semantic.py",
         "src/spaghetti_extractor/target_bundles/__init__.py",
+        "src/spaghetti_extractor/target_bundles/candidate_status.py",
         "src/spaghetti_extractor/target_bundles/lint.py",
         "src/spaghetti_extractor/target_bundles/metadata.py",
-        "src/spaghetti_extractor/target_bundles/progress.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py",
+        "src/spaghetti_extractor/target_bundles/status_common.py",
         "src/spaghetti_extractor/testkit/__init__.py",
         "src/spaghetti_extractor/testkit/__main__.py",
         "src/spaghetti_extractor/testkit/cli.py",
@@ -8686,7 +8707,7 @@
       ],
       "fixtures": [],
       "id": "pure-e4d48e365c2b",
-      "input_sha256": "3bb1805309b0f7064d9b35fb2d32aac69a27da9158da3953f72e56a17e1087af",
+      "input_sha256": "0be1e3854d0e6a6dab56fb87835e010e449a96b290c0ccabaf8228b665234b5d",
       "resource_class": "small",
       "test_paths": [
         "tests/unit/testkit/test_discovery.py"
@@ -9884,9 +9905,11 @@
         "src/spaghetti_extractor/roundtrip_fuzz/runner.py",
         "src/spaghetti_extractor/roundtrip_fuzz/semantic.py",
         "src/spaghetti_extractor/target_bundles/__init__.py",
+        "src/spaghetti_extractor/target_bundles/candidate_status.py",
         "src/spaghetti_extractor/target_bundles/lint.py",
         "src/spaghetti_extractor/target_bundles/metadata.py",
-        "src/spaghetti_extractor/target_bundles/progress.py",
+        "src/spaghetti_extractor/target_bundles/project_status.py",
+        "src/spaghetti_extractor/target_bundles/status_common.py",
         "src/spaghetti_extractor/testkit/__init__.py",
         "src/spaghetti_extractor/testkit/__main__.py",
         "src/spaghetti_extractor/testkit/cli.py",
@@ -9908,7 +9931,7 @@
       ],
       "fixtures": [],
       "id": "smoke",
-      "input_sha256": "6e3b91dfec8b2e930a1385ea9a652253f8db3322beb7a8653022def3094215cc",
+      "input_sha256": "21c0ec9ad155a2ba902fbfbc115dc8929f2b0fb3e5c53ac6cd297e115dfadf6f",
       "resource_class": "small",
       "test_paths": [
         "tests/smoke/test_testkit_cli.py"

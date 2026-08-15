@@ -13,6 +13,7 @@ from spaghetti_extractor.authority_inputs.external_inputs import (
 )
 from spaghetti_extractor.authority.external_site_records import (
     EXTERNAL_PROFILE_CODEC_V3,
+    EXTERNAL_PROFILE_ISSUE_CODEC_V3,
 )
 from spaghetti_extractor.authority.root_closure import (
     LAUNCH_ROOT_EVIDENCE_CODEC_V3,
@@ -220,14 +221,28 @@ class ExternalInputsV3Tests(unittest.TestCase):
                 any(binding.kind == "machine-import-profile" for binding in profiles.manifest.bindings)
             )
 
-    def test_unsupported_variadic_entry_is_absent_and_reported(self) -> None:
+    def test_unsupported_variadic_entry_is_preserved_as_checked_issue(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             metadata, output = self._adapt(
                 Path(temporary), profile=_profile(variadic=True)
             )
             profiles = ArtifactSetReaderV3(output / "external-profiles")
             self.assertEqual(profiles.manifest.status, "complete")
-            self.assertEqual(tuple(profiles.iter_records()), ())
+            records = tuple(profiles.iter_records())
+            self.assertEqual(len(records), 1)
+            issue = EXTERNAL_PROFILE_ISSUE_CODEC_V3.read(records[0]).value
+            self.assertEqual(issue.profile_id, "fixture-profile")
+            self.assertEqual(
+                issue.identity.to_value(),
+                {
+                    "kind": "import",
+                    "dll": "fixture.dll",
+                    "symbol": "Exact",
+                    "ordinal": None,
+                },
+            )
+            self.assertEqual(issue.status, "incomplete")
+            self.assertEqual(issue.code, "external_profile_arity_not_exact")
             family = metadata["external_profiles"]  # type: ignore[index]
             self.assertEqual(family["coverage_status"], "incomplete")
             self.assertEqual(

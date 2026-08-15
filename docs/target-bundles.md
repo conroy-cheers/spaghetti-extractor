@@ -74,12 +74,18 @@ spaghetti-extractor candidate status gnu-hello \
   --configuration ascii-to-lower-enabled
 ```
 
-They combine final-authority frontiers, component-configuration blockers, and
-declared candidate-only suites. Public realization commands discover the
-nearest `nix/stage-a-builders` inventory by default; `--local` disables remote
-builders and `--builders-file` selects an explicit inventory. If no inventory
-exists, commands select local execution explicitly instead of inheriting
-host-global builders.
+`project status` consumes only final-authority diagnostics and remains usable
+when component intent is absent, broken, or expensive to realize. `component
+status` reports one independently selected leaf, group, or configuration.
+`candidate status` combines project authority with one exact component
+configuration and only that configuration's declared candidate-only suites.
+All three reports are diagnostic and cannot open an authority or runtime gate.
+
+Public realization commands discover the nearest `nix/stage-a-builders`
+inventory by default; `--local` disables remote builders and
+`--builders-file` selects an explicit inventory. If no inventory exists,
+commands select local execution explicitly instead of inheriting host-global
+builders.
 
 Candidate behavior suites are optional, but when declared they may run only
 after their candidate's final-authority gate closes. Wine execution is

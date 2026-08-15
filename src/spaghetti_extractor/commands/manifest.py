@@ -18,7 +18,7 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
     {
         "name": "project status",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "show ranked checked-authority repair frontiers",
+        "help": "show ranked static-authority repair frontiers",
     },
     {
         "name": "project check",
@@ -53,7 +53,7 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
     {
         "name": "candidate status",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "show static readiness for one candidate configuration",
+        "help": "show combined authority and component readiness",
     },
     {
         "name": "candidate build",

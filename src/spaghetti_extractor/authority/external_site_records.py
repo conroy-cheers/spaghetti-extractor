@@ -44,7 +44,132 @@ EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3 = "external-site-evidence-v3"
 EXTERNAL_PROFILE_RECORD_V3_SCHEMA = (
     "spaghetti-extractor-external-profile-record-v3"
 )
+EXTERNAL_PROFILE_ISSUE_RECORD_V3_SCHEMA = (
+    "spaghetti-extractor-external-profile-issue-record-v3"
+)
 EXTERNAL_PROFILE_ARTIFACT_KIND_V3 = "external-profile-authority-v3"
+
+
+@dataclass(frozen=True)
+class ExternalProfileIssueV3:
+    """One exact source profile entry that cannot yet grant authority."""
+
+    record_id: str
+    profile_id: str
+    profile_sha256: str
+    identity: CanonicalValueV3
+    status: str
+    code: str
+    detail: str
+
+    def __post_init__(self) -> None:
+        text(self.profile_id, "external profile issue profile ID")
+        digest(self.profile_sha256, "external profile issue SHA-256")
+        mapping(self.identity.to_value(), "external profile issue identity")
+        if self.status not in {"incomplete", "violated"}:
+            fail(
+                "record_schema_mismatch",
+                f"external profile issue status is {self.status!r}",
+                "use incomplete or violated",
+            )
+        text(self.code, "external profile issue code", maximum=128)
+        text(self.detail, "external profile issue detail", maximum=4096)
+        require_stable_id(
+            self.record_id,
+            "external-profile-issue-v3",
+            self.binding_payload,
+            "external profile issue",
+        )
+
+    @property
+    def binding_payload(self) -> dict[str, Any]:
+        return {
+            "profile_id": self.profile_id,
+            "profile_sha256": self.profile_sha256,
+            "identity": self.identity.to_value(),
+        }
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        profile_id: str,
+        profile_sha256: str,
+        identity: Mapping[str, Any],
+        status: str,
+        code: str,
+        detail: str,
+    ) -> "ExternalProfileIssueV3":
+        canonical_identity = CanonicalValueV3.of(identity)
+        payload = {
+            "profile_id": profile_id,
+            "profile_sha256": profile_sha256,
+            "identity": canonical_identity.to_value(),
+        }
+        return cls(
+            stable_id("external-profile-issue-v3", payload),
+            profile_id,
+            profile_sha256,
+            canonical_identity,
+            status,
+            code,
+            detail,
+        )
+
+
+def _encode_external_profile_issue(
+    value: ExternalProfileIssueV3,
+) -> dict[str, Any]:
+    return {
+        "schema": EXTERNAL_PROFILE_ISSUE_RECORD_V3_SCHEMA,
+        "id": value.record_id,
+        **value.binding_payload,
+        "status": value.status,
+        "code": value.code,
+        "detail": value.detail,
+    }
+
+
+def _decode_external_profile_issue(value: Any) -> ExternalProfileIssueV3:
+    row = strict_object(
+        value,
+        {
+            "schema",
+            "id",
+            "profile_id",
+            "profile_sha256",
+            "identity",
+            "status",
+            "code",
+            "detail",
+        },
+        "external profile issue",
+    )
+    if row["schema"] != EXTERNAL_PROFILE_ISSUE_RECORD_V3_SCHEMA:
+        fail(
+            "wrong_record_schema",
+            "record is not external-profile-issue-record-v3",
+            "use EXTERNAL_PROFILE_ISSUE_CODEC_V3 with external-profile-authority-v3",
+        )
+    return ExternalProfileIssueV3(
+        record_id=text(row["id"], "external profile issue record ID"),
+        profile_id=text(row["profile_id"], "external profile issue profile ID"),
+        profile_sha256=digest(
+            row["profile_sha256"], "external profile issue SHA-256"
+        ),
+        identity=CanonicalValueV3.of(row["identity"]),
+        status=text(row["status"], "external profile issue status"),
+        code=text(row["code"], "external profile issue code", maximum=128),
+        detail=text(row["detail"], "external profile issue detail", maximum=4096),
+    )
+
+
+EXTERNAL_PROFILE_ISSUE_CODEC_V3 = RecordCodecV3[ExternalProfileIssueV3](
+    decode=_decode_external_profile_issue,
+    encode=_encode_external_profile_issue,
+)
+
+
 @dataclass(frozen=True)
 class ExternalProfileV3:
     record_id: str
@@ -925,8 +1050,11 @@ __all__ = [
     "EXTERNAL_SITE_EVIDENCE_RECORD_V3_SCHEMA",
     "EXTERNAL_PROFILE_ARTIFACT_KIND_V3",
     "EXTERNAL_PROFILE_CODEC_V3",
+    "EXTERNAL_PROFILE_ISSUE_CODEC_V3",
+    "EXTERNAL_PROFILE_ISSUE_RECORD_V3_SCHEMA",
     "EXTERNAL_PROFILE_RECORD_V3_SCHEMA",
     "ExternalContractV3",
+    "ExternalProfileIssueV3",
     "ExternalProfileV3",
     "ExternalSiteEvidenceV3",
     "external_site_id_v3",

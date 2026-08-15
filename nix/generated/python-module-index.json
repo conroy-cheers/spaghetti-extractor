@@ -119,6 +119,7 @@
     "spaghetti_extractor.authority.diagnostics": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.artifacts.io",
         "spaghetti_extractor.authority"
       ],
@@ -3632,6 +3633,18 @@
       "path": "src/spaghetti_extractor/target_bundles/__init__.py",
       "resources": []
     },
+    "spaghetti_extractor.target_bundles.candidate_status": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.target_bundles",
+        "spaghetti_extractor.target_bundles.project_status",
+        "spaghetti_extractor.target_bundles.status_common",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/target_bundles/candidate_status.py",
+      "resources": []
+    },
     "spaghetti_extractor.target_bundles.lint": {
       "dependencies": [
         "spaghetti_extractor",
@@ -3650,13 +3663,23 @@
       "path": "src/spaghetti_extractor/target_bundles/metadata.py",
       "resources": []
     },
-    "spaghetti_extractor.target_bundles.progress": {
+    "spaghetti_extractor.target_bundles.project_status": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.target_bundles",
+        "spaghetti_extractor.target_bundles.status_common",
         "spaghetti_extractor.util"
       ],
-      "path": "src/spaghetti_extractor/target_bundles/progress.py",
+      "path": "src/spaghetti_extractor/target_bundles/project_status.py",
+      "resources": []
+    },
+    "spaghetti_extractor.target_bundles.status_common": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.target_bundles"
+      ],
+      "path": "src/spaghetti_extractor/target_bundles/status_common.py",
       "resources": []
     },
     "spaghetti_extractor.testkit": {
@@ -4529,12 +4552,17 @@
       "role": "developer"
     },
     {
+      "module": "spaghetti_extractor.target_bundles.candidate_status",
+      "owner": "nix/target-sdk.nix",
+      "role": "operator"
+    },
+    {
       "module": "spaghetti_extractor.target_bundles.lint",
       "owner": "nix/target-bundle-lint.nix",
       "role": "operator"
     },
     {
-      "module": "spaghetti_extractor.target_bundles.progress",
+      "module": "spaghetti_extractor.target_bundles.project_status",
       "owner": "nix/target-sdk.nix",
       "role": "operator"
     },
@@ -5124,6 +5152,8 @@
     "operator": [
       "spaghetti_extractor",
       "spaghetti_extractor.__main__",
+      "spaghetti_extractor.artifacts",
+      "spaghetti_extractor.artifacts.formats",
       "spaghetti_extractor.build_support",
       "spaghetti_extractor.build_support.nix_invocation",
       "spaghetti_extractor.cli",
@@ -5131,10 +5161,14 @@
       "spaghetti_extractor.commands.common",
       "spaghetti_extractor.commands.manifest",
       "spaghetti_extractor.commands.workflows",
+      "spaghetti_extractor.components",
+      "spaghetti_extractor.components.formats",
       "spaghetti_extractor.target_bundles",
+      "spaghetti_extractor.target_bundles.candidate_status",
       "spaghetti_extractor.target_bundles.lint",
       "spaghetti_extractor.target_bundles.metadata",
-      "spaghetti_extractor.target_bundles.progress",
+      "spaghetti_extractor.target_bundles.project_status",
+      "spaghetti_extractor.target_bundles.status_common",
       "spaghetti_extractor.util"
     ],
     "proposal": [

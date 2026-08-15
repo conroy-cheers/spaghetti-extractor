@@ -33,6 +33,9 @@ ISA_ENCODING_PROPOSAL_FORMAT = (
     "stage-a-side-isa-executable-encoding-proposal-v1"
 )
 STATIC_MACHINE_IMPORT_PROFILE_FORMAT = "stage-a-static-machine-import-profile-v1"
+AUTHORITY_DIAGNOSTICS_V3_FORMAT = (
+    "spaghetti-extractor-authority-diagnostics-v3"
+)
 CALLBACK_ADAPTER_RECEIPT_FORMAT = "stage-b-native-callback-adapter-receipt-v1"
 IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
     "stage-b-native-implementation-dispatch-receipt-v3"
@@ -84,6 +87,7 @@ CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA = (
 )
 CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3 = "canonical-external-sites-v3"
 __all__ = [
+    "AUTHORITY_DIAGNOSTICS_V3_FORMAT",
     "CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA",
     "CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3",
     "COMPONENT_INTERFACE_REFINEMENT_FORMAT",

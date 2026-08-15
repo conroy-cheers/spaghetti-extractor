@@ -170,11 +170,27 @@ def _project_analyze(args: argparse.Namespace) -> int:
 
 
 def _project_status(args: argparse.Namespace) -> int:
-    payload = _realize_json(args, "project.status", "project-progress.json")
-    return _show_progress(args, payload)
+    payload = _realize_json(args, "project.status", "project-status.json")
+    frontiers = _filtered_frontiers(args, payload)
+    if args.json:
+        _print_filtered_json(payload, frontiers)
+        return 0
+    counts = payload.get("counts", {})
+    authority = payload.get("authority", {})
+    print(
+        f"{args.target}: status={payload.get('status')} "
+        f"authority-ready={str(payload.get('authority_ready')).lower()} "
+        f"authority={authority.get('status')} "
+        f"frontiers={counts.get('primary_frontiers', 0)} "
+        f"dependent={counts.get('dependent_occurrences', 0)}"
+    )
+    _print_frontiers(payload, frontiers)
+    return 0
 
 
-def _show_progress(args: argparse.Namespace, payload: dict[str, Any]) -> int:
+def _filtered_frontiers(
+    args: argparse.Namespace, payload: Mapping[str, Any]
+) -> list[Mapping[str, Any]]:
     frontiers = list(payload.get("primary_frontiers", []))
     if args.family:
         frontiers = [row for row in frontiers if row.get("family") == args.family]
@@ -182,35 +198,34 @@ def _show_progress(args: argparse.Namespace, payload: dict[str, Any]) -> int:
         frontiers = [row for row in frontiers if row.get("status") == args.status]
     if not args.all:
         frontiers = frontiers[: args.limit]
-    result = {**payload, "primary_frontiers": frontiers}
-    if args.json:
-        print(json.dumps(result, indent=2, sort_keys=True))
-    else:
-        counts = payload.get("counts", {})
-        authority = payload.get("authority", {})
-        configuration = payload.get("configuration_id")
-        configuration_label = configuration or "not-configured"
-        print(
-            f"{args.target}: status={payload.get('status')} "
-            f"static-ready={str(payload.get('static_ready')).lower()} "
-            f"authority={authority.get('status')} "
-            f"configuration={configuration_label} "
-            f"frontiers={counts.get('primary_frontiers', 0)} "
-            f"dependent={counts.get('dependent_occurrences', 0)}"
+    return frontiers
+
+
+def _print_filtered_json(
+    payload: Mapping[str, Any], frontiers: list[Mapping[str, Any]]
+) -> None:
+    print(
+        json.dumps(
+            {**payload, "primary_frontiers": frontiers}, indent=2, sort_keys=True
         )
-        for row in frontiers:
-            location = row.get("source_location") or {}
-            rva = location.get("rva_start")
-            where = f" rva=0x{rva:x}" if isinstance(rva, int) else ""
-            print(
-                f"{row.get('status')}: {row.get('family')}:"
-                f"{row.get('code')} [{row.get('record_id')}]"
-                f" dependents={row.get('dependent_occurrences', 0)}{where}"
-            )
-            print(f"  next: {row.get('next_action')}")
-        if not frontiers and payload.get("next_action"):
-            print(f"next: {payload.get('next_action')}")
-    return 0
+    )
+
+
+def _print_frontiers(
+    payload: Mapping[str, Any], frontiers: list[Mapping[str, Any]]
+) -> None:
+    for row in frontiers:
+        location = row.get("source_location") or {}
+        rva = location.get("rva_start")
+        where = f" rva=0x{rva:x}" if isinstance(rva, int) else ""
+        print(
+            f"{row.get('status')}: {row.get('family')}:"
+            f"{row.get('code')} [{row.get('record_id')}]"
+            f" dependents={row.get('dependent_occurrences', 0)}{where}"
+        )
+        print(f"  next: {row.get('next_action')}")
+    if not frontiers and payload.get("next_action"):
+        print(f"next: {payload.get('next_action')}")
 
 
 def _project_check(args: argparse.Namespace) -> int:
@@ -410,9 +425,24 @@ def _candidate_status(args: argparse.Namespace) -> int:
     payload = _realize_json(
         args,
         f"candidate.statuses.{_attr_segment(configuration)}",
-        "project-progress.json",
+        "candidate-status.json",
     )
-    return _show_progress(args, payload)
+    frontiers = _filtered_frontiers(args, payload)
+    if args.json:
+        _print_filtered_json(payload, frontiers)
+        return 0
+    counts = payload.get("counts", {})
+    print(
+        f"{args.target}: status={payload.get('status')} "
+        f"configuration={payload.get('configuration_id')} "
+        f"authority-ready={str(payload.get('authority_ready')).lower()} "
+        f"configuration-ready={str(payload.get('configuration_ready')).lower()} "
+        f"build-ready={str(payload.get('build_ready')).lower()} "
+        f"frontiers={counts.get('primary_frontiers', 0)} "
+        f"dependent={counts.get('dependent_occurrences', 0)}"
+    )
+    _print_frontiers(payload, frontiers)
+    return 0
 
 
 def _candidate_test(args: argparse.Namespace) -> int:

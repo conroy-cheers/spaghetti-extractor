@@ -39,7 +39,7 @@ let
     hasComponents = true;
     originalBinary = artifact;
     binaryIdentity = "fixture.exe";
-    configurationIds = [ "default" ];
+    configurationIds = [ "default" "minimal" ];
     analysis = {
       originalInventory = artifact;
       staticExport = artifact;
@@ -71,7 +71,9 @@ let
       evidences.example = artifact;
       qualifications.example = artifact;
       activationPlans.default = artifact;
+      activationPlans.minimal = artifact;
       sourceBundles.default = artifact;
+      sourceBundles.minimal = artifact;
       statusReports.example = artifact;
       workPackages.example = artifact;
       checkGates.example = artifact;
@@ -80,7 +82,14 @@ let
           mkdir -p "$out"
           cp ${configurationStatus} "$out/status.json"
         '';
+      configurationStatusReports.minimal = pkgs.runCommand
+        "minimal-sdk-configuration-status-minimal" { } ''
+          mkdir -p "$out"
+          ${pkgs.jq}/bin/jq '.configuration_id = "minimal"' \
+            ${configurationStatus} > "$out/status.json"
+        '';
       configurationCheckGates.default = artifact;
+      configurationCheckGates.minimal = artifact;
       liftUnitIndex.example = {
         kind = "component";
         label = "Example";
@@ -95,15 +104,55 @@ let
         selections = [ ];
         hasRuntime = true;
       };
+      configurationIndex.minimal = {
+        kind = "configuration";
+        label = "Minimal";
+        selections = [ ];
+        hasRuntime = true;
+      };
       bundle = artifact;
     };
     componentRuntimes.default = artifact;
+    componentRuntimes.minimal = artifact;
     staticCandidates.default = candidate;
+    staticCandidates.minimal = candidate;
     structuralDiagnostic = artifact;
+  };
+  changedConfigurationStatus = pkgs.runCommand
+    "minimal-sdk-configuration-status-changed" { } ''
+      mkdir -p "$out"
+      ${pkgs.jq}/bin/jq '.counts.revision = 2' \
+        ${configurationStatus} > "$out/status.json"
+    '';
+  failingConfigurationStatus = pkgs.runCommand
+    "minimal-sdk-configuration-status-must-not-build" { } ''
+      echo "project status incorrectly realized component status" >&2
+      exit 1
+    '';
+  candidateTests = {
+    public = {
+      _type = "spaghetti-extractor-candidate-test-suite-v1";
+      configurationId = "default";
+      caseIds = [ "help" ];
+      suite = ../../tests/fixtures/minimal-target-bundle/tests/default-status-suite.json;
+      aggregate = artifact;
+    };
+    minimal = {
+      _type = "spaghetti-extractor-candidate-test-suite-v1";
+      configurationId = "minimal";
+      caseIds = [ "version" ];
+      suite = ../../tests/fixtures/minimal-target-bundle/tests/minimal-status-suite.json;
+      aggregate = artifact;
+    };
+  };
+  changedCandidateTests = candidateTests // {
+    minimal = candidateTests.minimal // {
+      caseIds = [ "version" "license" ];
+    };
   };
   target = sdk.target.pe32Bundle {
     targetRoot = ../../tests/fixtures/minimal-target-bundle;
-    inherit workflow;
+    inherit workflow candidateTests;
     inputs.baseline = artifact;
     checks.artifact = pkgs.runCommand "minimal-sdk-consumer-check" { } ''
       grep -Fx checked ${artifact}
@@ -114,6 +163,40 @@ let
         grep -Fx accepted ${acceptance}
         touch "$out"
       '';
+  };
+  changedWorkflow = workflow // {
+    components = workflow.components // {
+      configurationStatusReports =
+        workflow.components.configurationStatusReports // {
+          default = changedConfigurationStatus;
+        };
+    };
+  };
+  changedTarget = sdk.target.pe32Bundle {
+    targetRoot = ../../tests/fixtures/minimal-target-bundle;
+    workflow = changedWorkflow;
+    inherit candidateTests;
+    inputs.baseline = artifact;
+  };
+  testChangedTarget = sdk.target.pe32Bundle {
+    targetRoot = ../../tests/fixtures/minimal-target-bundle;
+    inherit workflow;
+    candidateTests = changedCandidateTests;
+    inputs.baseline = artifact;
+  };
+  failingWorkflow = workflow // {
+    components = workflow.components // {
+      configurationStatusReports =
+        workflow.components.configurationStatusReports // {
+          default = failingConfigurationStatus;
+        };
+    };
+  };
+  failingTarget = sdk.target.pe32Bundle {
+    targetRoot = ../../tests/fixtures/minimal-target-bundle;
+    workflow = failingWorkflow;
+    inherit candidateTests;
+    inputs.baseline = artifact;
   };
   analysisWorkflow = workflow // {
     hasComponents = false;
@@ -141,8 +224,17 @@ assert registry.minimal-sdk-consumer.artifacts.components.runtimes.default == ar
 assert registry.minimal-sdk-consumer.artifacts.candidate.static.default.candidate == artifact;
 assert registry.minimal-sdk-consumer.operator.components.units.example.workPackage == artifact;
 assert registry.minimal-sdk-consumer.operator.components.configurations.default.runtime == artifact;
-assert registry.minimal-sdk-consumer.operator.project.authorityStatus == workflow.authority.diagnostics;
+assert registry.minimal-sdk-consumer.operator.project.authorityDiagnostics == workflow.authority.diagnostics;
 assert registry.minimal-sdk-consumer.operator.candidate.statuses.default != null;
+assert target.operator.project.status.drvPath == changedTarget.operator.project.status.drvPath;
+assert target.operator.project.status.drvPath == failingTarget.operator.project.status.drvPath;
+assert target.operator.project.status.drvPath == testChangedTarget.operator.project.status.drvPath;
+assert target.operator.candidate.statuses.default.drvPath !=
+  changedTarget.operator.candidate.statuses.default.drvPath;
+assert target.operator.candidate.statuses.default.drvPath ==
+  testChangedTarget.operator.candidate.statuses.default.drvPath;
+assert target.operator.candidate.statuses.minimal.drvPath !=
+  testChangedTarget.operator.candidate.statuses.minimal.drvPath;
 assert registry.minimal-sdk-consumer.acceptanceChecks.acceptance != null;
 assert registry.minimal-analysis-consumer.defaultConfiguration == null;
 assert registry.minimal-analysis-consumer.operatorIndex.hasComponents == false;
@@ -158,5 +250,21 @@ pkgs.linkFarm "spaghetti-extractor-target-sdk-check" [
   {
     name = "analysis-only-progress";
     path = registry.minimal-analysis-consumer.operator.project.status;
+  }
+  {
+    name = "component-mutation-project-status";
+    path = changedTarget.operator.project.status;
+  }
+  {
+    name = "failing-component-project-status";
+    path = failingTarget.operator.project.status;
+  }
+  {
+    name = "changed-candidate-status";
+    path = changedTarget.operator.candidate.statuses.default;
+  }
+  {
+    name = "test-metadata-changed-candidate-status";
+    path = testChangedTarget.operator.candidate.statuses.minimal;
   }
 ]

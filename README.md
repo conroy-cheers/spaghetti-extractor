@@ -144,8 +144,9 @@ building a configuration produces its runtime package. Acceptance and every
 executable candidate stay behind the explicit final-authority gate. Candidate
 tests exist only when a target declares curated expected-output cases, run only
 the generated candidate, and execute Wine through an isolated headless X
-session. `project status` and `candidate status` combine checked authority and
-component-configuration diagnostics without opening either gate.
+session. `project status` is deliberately authority-only. `candidate status`
+adds one selected component configuration and its declared candidate-only
+suites. Neither diagnostic report opens a gate.
 
 ## Public Surfaces
 

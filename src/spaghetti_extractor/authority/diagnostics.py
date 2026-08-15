@@ -7,13 +7,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from ..artifacts.formats import AUTHORITY_DIAGNOSTICS_V3_FORMAT
 from ..artifacts.io import open_artifact_reader_v3
-
-
-AUTHORITY_DIAGNOSTICS_V3_FORMAT = (
-    "spaghetti-extractor-authority-diagnostics-v3"
-)
-
 
 _NEXT_ACTIONS = {
     "implementation_capability_missing": (

@@ -206,6 +206,13 @@ must not regenerate original extraction,
 ISA oracle corpora, or unrelated authority packs. Diagnostic formatting must
 not invalidate authority evidence.
 
+Operator status follows the same dependency discipline. Project status is an
+authority-only leaf and has no dependency on component configurations,
+candidate source, or candidate tests. Candidate status composes that checked
+project status with exactly one configuration status and only its declared
+tests. A broken component may block its candidate status, but cannot prevent an
+operator from inspecting static authority progress.
+
 Component resolution follows the same rule. The full checked catalog owns
 configuration overlap checks, but each component contract consumes a canonical
 single-unit resolution slice built from its authored intent row and selected

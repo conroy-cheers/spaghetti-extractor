@@ -9,6 +9,7 @@ from spaghetti_extractor.authority.exact_units import (
     EXACT_UNIT_CODEC_V3,
     ExactUnitV3,
 )
+from spaghetti_extractor.authority.authority_common import PrimaryBlockerV3
 from spaghetti_extractor.authority.external_site_checker import (
     CANONICAL_EXTERNAL_SITES_PHASE_V3,
 )
@@ -16,8 +17,10 @@ from spaghetti_extractor.authority.external_site_records import (
     CANONICAL_EXTERNAL_SITE_CODEC_V3,
     EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
     EXTERNAL_PROFILE_CODEC_V3,
+    EXTERNAL_PROFILE_ISSUE_CODEC_V3,
     EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3,
     EXTERNAL_SITE_EVIDENCE_CODEC_V3,
+    ExternalProfileIssueV3,
     ExternalProfileV3,
     external_site_id_v3,
 )
@@ -40,6 +43,7 @@ from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactSetWriterV3,
     ArtifactV3Error,
     CanonicalValueV3,
+    RecordDependencyV3,
     canonical_sha256_v3,
 )
 from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
@@ -158,6 +162,8 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
         *,
         event: dict[str, object] | None = None,
         profile: ExternalProfileV3 | None = None,
+        profile_issue: ExternalProfileIssueV3 | None = None,
+        include_profile: bool = True,
         external_target: dict[str, object] | None = None,
     ) -> tuple[Path, Path, Path, Path, ExactUnitV3, dict[str, object]]:
         exact_event = _event() if event is None else event
@@ -242,14 +248,26 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
                 "out_interface_relations": [],
             },
         )
-        profiles = _write(
-            root / "profiles",
-            EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
-            (
+        if profile is not None and profile_issue is not None:
+            raise ValueError("fixture cannot contain both a profile and its issue")
+        if not include_profile:
+            profile_records: tuple[ArtifactRecordV3, ...] = ()
+        elif profile_issue is not None:
+            profile_records = (
+                EXTERNAL_PROFILE_ISSUE_CODEC_V3.write(
+                    profile_issue.record_id, profile_issue
+                ),
+            )
+        else:
+            profile_records = (
                 EXTERNAL_PROFILE_CODEC_V3.write(
                     selected_profile.record_id, selected_profile
                 ),
-            ),
+            )
+        profiles = _write(
+            root / "profiles",
+            EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
+            profile_records,
         )
         return semantic, transitions, targets, profiles, exact_unit, exact_event
 
@@ -259,12 +277,16 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
         *,
         event: dict[str, object] | None = None,
         profile: ExternalProfileV3 | None = None,
+        profile_issue: ExternalProfileIssueV3 | None = None,
+        include_profile: bool = True,
         external_target: dict[str, object] | None = None,
     ):
         semantic, transitions, targets, profiles, exact, exact_event = self._inputs(
             root,
             event=event,
             profile=profile,
+            profile_issue=profile_issue,
+            include_profile=include_profile,
             external_target=external_target,
         )
         output = root / "evidence"
@@ -404,6 +426,95 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
             self.assertEqual(checked.status, "complete")
             self.assertTrue(checked.authorizing)
             self.assertTrue(checked.sites[0].authorizing)
+
+    def test_profile_issue_remains_the_exact_canonical_blocker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            issue = ExternalProfileIssueV3.create(
+                profile_id="fixture-profile",
+                profile_sha256=PROFILE_SHA256,
+                identity={
+                    "kind": "import",
+                    "dll": "fixture.dll",
+                    "symbol": "Update",
+                    "ordinal": None,
+                },
+                status="incomplete",
+                code="external_profile_arity_not_exact",
+                detail="fixture variadic arity requires a site certificate",
+            )
+            (
+                _manifest,
+                evidence,
+                output,
+                semantic,
+                transitions,
+                targets,
+                profiles,
+                exact,
+                _event_value,
+            ) = self._generate(root, profile_issue=issue)
+            self.assertEqual(evidence.status, "incomplete")
+            self.assertIsNone(evidence.contract)
+            self.assertEqual(
+                evidence.primary_blocker,
+                PrimaryBlockerV3(
+                    "incomplete",
+                    "external_profile_arity_not_exact",
+                    "external_profiles",
+                    issue.record_id,
+                ),
+            )
+            evidence_dependencies = ArtifactSetReaderV3(output).get_record(
+                evidence.record_id
+            ).dependencies
+            self.assertIn(
+                RecordDependencyV3("external_profiles", issue.record_id),
+                evidence_dependencies,
+            )
+
+            canonical = CANONICAL_EXTERNAL_SITES_PHASE_V3.run(
+                output_directory=root / "canonical",
+                inputs={
+                    "external_profiles": profiles,
+                    "external_site_evidence": output,
+                    "semantic_index": semantic,
+                    "target_certificates": targets,
+                    "transition_summaries": transitions,
+                },
+                bindings=(BINDING,),
+            ).output_directory
+            checked = CANONICAL_EXTERNAL_SITE_CODEC_V3.read(
+                ArtifactSetReaderV3(canonical).get_record(exact.unit_id)
+            ).value
+            self.assertEqual(checked.status, "incomplete")
+            self.assertFalse(checked.authorizing)
+            self.assertEqual(
+                checked.primary_blocker,
+                PrimaryBlockerV3(
+                    "incomplete",
+                    "external_profile_arity_not_exact",
+                    "external_profiles",
+                    issue.record_id,
+                ),
+            )
+
+    def test_unbound_identity_without_profile_reports_profile_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            event = copy.deepcopy(_event())
+            abi = event["abi_contract"]
+            assert isinstance(abi, dict)
+            abi.pop("profile_binding")
+            evidence = self._generate(
+                Path(temporary), event=event, include_profile=False
+            )[1]
+            self.assertEqual(evidence.status, "incomplete")
+            self.assertIsNone(evidence.contract)
+            self.assertIsNotNone(evidence.primary_blocker)
+            assert evidence.primary_blocker is not None
+            self.assertEqual(
+                evidence.primary_blocker.code, "external_profile_missing"
+            )
 
     def test_argument_recovery_requires_an_exact_call_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -79,6 +79,12 @@ attributes. `commands/common.py` owns the expert handler protocol. A low-level
 leaf outside `expert` is a repository-boundary failure; retired commands are
 not retained as aliases.
 
+The status namespaces also define dependency ownership: `project status` is
+authority-only, `component status` is scoped to a selected lifting unit or
+configuration, and `candidate status` combines authority with one exact
+configuration and its test declarations. Component failures are therefore not
+in the Nix closure of project status.
+
 Core support modules are deliberately small:
 
 | Module | Purpose |
