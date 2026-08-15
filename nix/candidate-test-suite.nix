@@ -8,6 +8,7 @@
   suite,
   candidateBinary,
   authorityGate,
+  runtimeData ? null,
   timeoutSeconds ? 30,
   stripStderrLineRegexes ? [ ],
 }:
@@ -18,6 +19,23 @@ let
   suiteId = suitePayload.suite_id or null;
   caseIds = map (row: row.id) suitePayload.cases;
   wine = pkgs.wineWow64Packages.stableFull;
+  checkedRuntimeData = pkgs.runCommand "${namePrefix}-${id}-runtime-data-v1" {
+    nativeBuildInputs = [ pkgs.coreutils pkgs.findutils ];
+    __contentAddressed = true;
+  } ''
+    set -euo pipefail
+    mkdir -p "$out"
+    ${lib.optionalString (runtimeData != null) ''
+      cp -a ${runtimeData}/. "$out/"
+    ''}
+    while IFS= read -r -d $'\0' path; do
+      magic="$(head -c 2 "$path" | od -An -tx1 | tr -d ' \n')"
+      if [ "$magic" = 4d5a ]; then
+        echo "candidate runtime data contains a forbidden PE binary: $path" >&2
+        exit 1
+      fi
+    done < <(find "$out" -type f -print0)
+  '';
   runner = pkgs.writeShellApplication {
     name = "spaghetti-extractor-headless-wine-candidate";
     runtimeInputs = [ wine pkgs.xvfb-run pkgs.coreutils pkgs.bash ];
@@ -27,7 +45,11 @@ let
       export WINEPREFIX="$TMPDIR/wine"
       export WINEDEBUG=-all
       export WINEDLLOVERRIDES="mscoree,mshtml="
-      mkdir -p "$HOME"
+      work="$TMPDIR/candidate-work"
+      mkdir -p "$HOME" "$work"
+      cp -a ${checkedRuntimeData}/. "$work/"
+      chmod -R u+w "$work"
+      cd "$work"
       # shellcheck disable=SC2016
       exec xvfb-run -a -s '-screen 0 1280x720x24' ${pkgs.bash}/bin/bash -eu -c '
         wineboot -u >/dev/null 2>&1
@@ -40,7 +62,7 @@ let
       ' sh ${lib.escapeShellArg (toString candidateBinary)} "$@"
     '';
   };
-  suiteResult = import ./stage-b-functional-suite.nix {
+  suiteResult = import ./candidate-test-aggregate.nix {
     inherit pkgs pythonEnv pythonSource suite caseIds timeoutSeconds
       stripStderrLineRegexes;
     namePrefix = "${namePrefix}-${id}";
@@ -60,13 +82,13 @@ let
       .format == "spaghetti-extractor-final-authority-gate-v3" and
       .status == "complete" and .authorizing
     ' ${authorityGate}/authority-gate.json >/dev/null
-    test -f ${suiteResult.aggregate}/functional-report.json
+    test -f ${suiteResult.aggregate}/candidate-test-report.json
     test -s ${candidateBinary}
     mkdir -p "$out"
-    ln -s ${suiteResult.aggregate} "$out/functional-suite"
+    ln -s ${suiteResult.aggregate} "$out/test-results"
     candidate_sha256="$(sha256sum ${candidateBinary} | cut -d ' ' -f 1)"
     authority_sha256="$(sha256sum ${authorityGate}/authority-gate.json | cut -d ' ' -f 1)"
-    report_sha256="$(sha256sum ${suiteResult.aggregate}/functional-report.json | cut -d ' ' -f 1)"
+    report_sha256="$(sha256sum ${suiteResult.aggregate}/candidate-test-report.json | cut -d ' ' -f 1)"
     suite_sha256="$(sha256sum ${suite} | cut -d ' ' -f 1)"
     jq -n \
       --arg format spaghetti-extractor-candidate-test-receipt-v1 \
@@ -89,7 +111,7 @@ let
           candidate_sha256: $candidate_sha256,
           authority_gate_sha256: $authority_gate_sha256,
           suite_sha256: $suite_sha256,
-          functional_report_sha256: $report_sha256
+          candidate_test_report_sha256: $report_sha256
         },
         policy: {
           candidate_only: true,
@@ -110,9 +132,12 @@ assert lib.assertMsg (builtins.isList caseIds && caseIds != [ ])
   "candidate test suite must contain cases";
 assert lib.assertMsg (builtins.length caseIds == builtins.length (lib.unique caseIds))
   "candidate test case ids must be unique";
+assert lib.assertMsg
+  (suitePayload.format or null == "spaghetti-extractor-candidate-test-suite-v1")
+  "candidate test suite format is unsupported";
 {
   _type = "spaghetti-extractor-candidate-test-suite-v1";
-  inherit id suiteId configurationId caseIds aggregate runner suite;
+  inherit id suiteId configurationId caseIds aggregate runner suite checkedRuntimeData;
   cases = suiteResult.byName;
   functionalAggregate = suiteResult.aggregate;
 }

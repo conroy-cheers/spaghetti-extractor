@@ -100,7 +100,7 @@ def _unit(event: dict[str, object]) -> dict[str, object]:
             "original": {"rva_start": 0x1000, "rva_end": 0x1008},
             "instruction_bytes_sha256": "c" * 64,
         },
-        "expression_model": "stage-a-semantic-ir-v1",
+        "expression_model": "spaghetti-extractor-static-semantic-ir-v1",
         "instructions": [],
         "semantics": {
             "pre_state": {

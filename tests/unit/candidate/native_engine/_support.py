@@ -32,7 +32,6 @@ from spaghetti_extractor.authority.external_site_records import (
 )
 from spaghetti_extractor.pe32.stage_binary import StageAInputError
 from spaghetti_extractor.candidate.engine import (
-    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
     plan_stage_b_native_engine,
     write_stage_b_native_engine_package,
 )
@@ -113,6 +112,11 @@ def _machine_ir_transfer(
             "groups": ["call"] if mnemonic == "call" else [],
         }],
         "x87_micro_ops": [],
+        "control": {
+            "kind": "return" if mnemonic == "ret" else "fallthrough",
+            "direct_targets": [] if mnemonic == "ret" else [end],
+            "has_indirect_target": False,
+        },
         "semantics": {
             "pre_state": {},
             "register_writes": [],
@@ -555,6 +559,41 @@ class NativeEngineTestCase(unittest.TestCase):
             encoding="utf-8",
         )
         return path
+
+    def _strict_inputs(
+        self,
+        root: Path,
+        units: list[dict],
+        *,
+        roots: list[str] | None = None,
+        reachable: list[str] | None = None,
+        potential: list[str] | None = None,
+    ) -> tuple[Path, Path, Path]:
+        machine_ir = root / "machine-ir.jsonl"
+        machine_ir.write_text(
+            "".join(json.dumps(row, sort_keys=True) + "\n" for row in units),
+            encoding="utf-8",
+        )
+        unit_ids = [str(row["id"]) for row in units]
+        manifest = root / "machine-ir-manifest.json"
+        manifest.write_text(
+            json.dumps(
+                _implementation_manifest(
+                    machine_ir,
+                    roots=unit_ids[:1] if roots is None else roots,
+                    reachable=unit_ids if reachable is None else reachable,
+                    potential=potential,
+                ),
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+        sites = root / "canonical-external-sites"
+        ArtifactSetWriterV3(
+            artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+            bindings=(),
+        ).write(sites, [])
+        return machine_ir, manifest, sites
 
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

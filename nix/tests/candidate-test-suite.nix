@@ -25,7 +25,7 @@ let
     id = "minimal-import-call";
     configurationId = "fixture";
     namePrefix = "spaghetti-extractor-candidate-test-constructor";
-    suite = ./fixtures/candidate-test-suite/functional-suite.json;
+    suite = ./fixtures/candidate-test-suite/candidate-suite.json;
   };
 in
 pkgs.runCommand "spaghetti-extractor-candidate-test-suite-check" {
@@ -34,7 +34,7 @@ pkgs.runCommand "spaghetti-extractor-candidate-test-suite-check" {
 } ''
   set -euo pipefail
   receipt=${candidateTest.aggregate}/candidate-test-receipt.json
-  report=${candidateTest.aggregate}/functional-suite/functional-report.json
+  report=${candidateTest.aggregate}/test-results/candidate-test-report.json
   jq -e '
     .format == "spaghetti-extractor-candidate-test-receipt-v1" and
     .status == "pass" and
@@ -45,7 +45,7 @@ pkgs.runCommand "spaghetti-extractor-candidate-test-suite-check" {
     .case_ids == ["writes-expected-output"]
   ' "$receipt" >/dev/null
   jq -e '
-    .format == "stage-b-functional-report-v1" and
+    .format == "spaghetti-extractor-candidate-test-report-v1" and
     .status == "pass" and
     .counts == {"cases": 1, "failed": 0, "passed": 1} and
     (.oracle.original_runtime_observations | not)

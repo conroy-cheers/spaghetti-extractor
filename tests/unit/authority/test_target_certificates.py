@@ -95,7 +95,7 @@ def _unit(unit_id: str, rva: int, *, indirect: bool, target_rva: int) -> dict[st
             "original": {"rva_start": rva, "rva_end": rva + 4},
             "instruction_bytes_sha256": f"{rva:064x}",
         },
-        "expression_model": "stage-a-semantic-ir-v1",
+        "expression_model": "spaghetti-extractor-static-semantic-ir-v1",
         "instructions": [
             {"mnemonic": "fixture", "rva_start": rva, "rva_end": rva + 4, "size": 4}
         ],

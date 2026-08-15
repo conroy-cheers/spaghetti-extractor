@@ -31,6 +31,7 @@ def build_candidate_status(
     project_status: Path | str,
     configuration_status: Path | str,
     candidate_test_suites: Mapping[str, object],
+    require_candidate_test_suite: bool = False,
     out: Path | str,
 ) -> dict[str, object]:
     """Combine checked authority and one exact component configuration."""
@@ -78,11 +79,36 @@ def build_candidate_status(
     )
     if configuration_ready and blocked_count != 0:
         raise StatusArtifactError("ready component configuration has blockers")
-    frontiers = authority_frontiers + component_frontiers
+    suites = _suite_rows(candidate_test_suites, configuration_id)
+    test_frontiers = []
+    if require_candidate_test_suite and not suites:
+        test_frontiers.append(
+            {
+                "status": "incomplete",
+                "family": "candidate-testing",
+                "code": "candidate_test_suite_missing",
+                "record_id": f"candidate-tests:{configuration_id}:missing",
+                "dependent_occurrences": 0,
+                "source_location": None,
+                "next_action": (
+                    "declare a candidate-only test suite for the default "
+                    f"configuration {configuration_id}"
+                ),
+                "details": {"configuration_id": configuration_id},
+            }
+        )
+    frontiers = authority_frontiers + component_frontiers + test_frontiers
     frontiers.sort(key=frontier_key)
 
     violated = project_state == "violated" or configuration_state == "violated"
-    status = "violated" if violated else "ready" if build_ready else "incomplete"
+    acceptance_preconditions_ready = build_ready and not test_frontiers
+    status = (
+        "violated"
+        if violated
+        else "ready"
+        if acceptance_preconditions_ready
+        else "incomplete"
+    )
     candidate_state = (
         "ready_to_build"
         if build_ready
@@ -92,7 +118,6 @@ def build_candidate_status(
         if not authority_ready
         else "blocked_by_component_configuration"
     )
-    suites = _suite_rows(candidate_test_suites, configuration_id)
     dependent_occurrences = checked_count(
         project.get("counts"), "dependent_occurrences", "project"
     ) + sum(
@@ -114,6 +139,7 @@ def build_candidate_status(
         },
         "candidate": {
             "status": candidate_state,
+            "acceptance_preconditions_ready": acceptance_preconditions_ready,
             "declared_test_suites": suites,
             "candidate_authority_checked": False,
             "runtime_executed": False,

@@ -61,7 +61,7 @@ def _unit(
             "original": {"rva_start": rva, "rva_end": rva + 8},
             "instruction_bytes_sha256": f"{rva + salt:064x}",
         },
-        "expression_model": "stage-a-semantic-ir-v1",
+        "expression_model": "spaghetti-extractor-static-semantic-ir-v1",
         "instructions": [
             {
                 "mnemonic": "fixture",

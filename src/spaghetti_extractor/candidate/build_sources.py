@@ -15,7 +15,6 @@ from .build_model import (
     StageBInterpreterNativeBuildError,
     _Artifact,
     _C_IDENTIFIER,
-    _DIAGNOSTIC_MACRO,
     _INCLUDE_DIRECTIVE,
     _Package,
     _QUOTED_INCLUDE,
@@ -189,7 +188,6 @@ def _write_native_source_bundle(
             key: value for key, value in row["compiler"].items() if key != "path"
         },
         "root_mappings": [dict(item) for item in row["root_mappings"]],
-        "diagnostic_active": bool(row["diagnostic_active"]),
     }
     payload = {**core, "bundle_sha256": native_build._canonical_sha256(core)}
     manifest = bundle_root / "native-source-bundle.json"
@@ -321,18 +319,6 @@ def _native_source_dependency_closure(
     return tuple(dependencies)
 
 
-def _uses_diagnostic_macro(artifacts: Sequence[_Artifact]) -> bool:
-    for artifact in artifacts:
-        try:
-            if _DIAGNOSTIC_MACRO in artifact.path.read_text(encoding="ascii"):
-                return True
-        except (OSError, UnicodeError) as exc:
-            raise StageBInterpreterNativeBuildError(
-                f"native source is not readable ASCII: {artifact.relative_path}"
-            ) from exc
-    return False
-
-
 def _native_object_graph_row(
     *,
     index: int,
@@ -341,7 +327,6 @@ def _native_object_graph_row(
     package_roots: Sequence[Path],
     compiler: Path,
     compiler_binding: Mapping[str, Any],
-    diagnostic_failure_trap: bool,
     region_overrides: bool,
 ) -> dict[str, Any]:
     language = "assembler-with-cpp" if artifact.path.suffix.lower() == ".s" else "c"
@@ -351,11 +336,7 @@ def _native_object_graph_row(
         artifact.relative_path if graph_relative else str(artifact.path)
     )
     dependencies = _native_source_dependency_closure(artifact, packages)
-    diagnostic_sensitive = _uses_diagnostic_macro((artifact, *dependencies))
-    diagnostic_active = diagnostic_failure_trap and diagnostic_sensitive
     compile_flags = _proof_profile_compile_flags(artifact.sha256)
-    if diagnostic_active:
-        compile_flags.append(f"-D{_DIAGNOSTIC_MACRO}=1")
     root_mappings = [
         {
             "owner": package.owner,
@@ -369,11 +350,7 @@ def _native_object_graph_row(
         "-c",
         source_argument,
         *sum((["-I", str(root)] for root in package_roots), []),
-        *_compile_flags(
-            artifact.sha256,
-            package_roots,
-            diagnostic_failure_trap=diagnostic_active,
-        ),
+        *_compile_flags(artifact.sha256, package_roots),
     ]
     source_payload = {
         **artifact.payload(),
@@ -413,12 +390,9 @@ def _native_object_graph_row(
         "arguments": arguments,
         "compile_flags": compile_flags,
         "root_mappings": root_mappings,
-        "diagnostic_sensitive": diagnostic_sensitive,
-        "diagnostic_active": diagnostic_active,
         "compile_key_sha256": native_build._canonical_sha256(compile_key_core),
         "canonical_flags": _canonical_compile_flags(
             artifact.sha256,
-            diagnostic_failure_trap=diagnostic_active,
             region_overrides=region_overrides,
         ),
     }
@@ -444,12 +418,8 @@ def _native_compiler_binding(compiler: Path | str) -> dict[str, Any]:
 def _compile_flags(
     source_sha256: str,
     roots: Sequence[Path],
-    *,
-    diagnostic_failure_trap: bool = False,
 ) -> list[str]:
     flags = _proof_profile_compile_flags(source_sha256)
-    if diagnostic_failure_trap:
-        flags.append("-DSTAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP=1")
     labels = (
         "interpreter", "engine", "runtime", "region-overrides"
     )[:len(roots)]
@@ -466,12 +436,9 @@ def _compile_flags(
 def _canonical_compile_flags(
     source_sha256: str,
     *,
-    diagnostic_failure_trap: bool = False,
     region_overrides: bool = False,
 ) -> list[str]:
     flags = _proof_profile_compile_flags(source_sha256)
-    if diagnostic_failure_trap:
-        flags.append("-DSTAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP=1")
     labels = ["interpreter", "engine", "runtime"]
     if region_overrides:
         labels.append("region-overrides")

@@ -7,68 +7,32 @@ steps before the candidate can be accepted.
 
 from __future__ import annotations
 
-import copy
 import json
 import re
-from collections import deque
-from dataclasses import dataclass, replace
-from pathlib import Path
-from typing import Any, Iterable, Mapping
+from dataclasses import dataclass
+from typing import Any, Mapping
 
 from ..artifacts.formats import (
     CALLBACK_ADAPTER_RECEIPT_FORMAT as _CALLBACK_ADAPTER_RECEIPT_FORMAT,
     IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT as _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT,
-    INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
-    MACHINE_IR_FORMAT as _MACHINE_IR_FORMAT,
-    NATIVE_ENGINE_PACKAGE_FORMAT,
     NATIVE_ENGINE_PLAN_FORMAT,
-    NATIVE_X87_REPLAY_FORMAT as _X87_REPLAY_FORMAT,
-    NATIVE_X87_REPLAY_PROGRAM_FORMAT as _X87_REPLAY_PROGRAM_FORMAT,
-)
-from ..external.callbacks import (
-    CallbackABI,
-    CallbackSource,
-    parse_callback_abi,
-    parse_callback_source,
 )
 from ..external.contracts import (
     CheckedExternalSiteContract,
-    CheckedExternalSiteContractError,
-    ExternalSiteIdentity,
-    checked_external_site_contract_from_event,
-    parse_checked_external_site_contract,
-)
-from ..external.runtime_projection import load_authoritative_external_sites
-from ..external.machine_import_profiles import (
-    MachineImportIdentity,
-    load_machine_import_profile_set,
 )
 from ..pe32.stage_binary import StageAInputError
-from .engine_layout import (
-    render_stage_b_engine_layout_c,
-)
 from .x87 import (
     TYPED_NATIVE_X87_OPERATION_FORMAT,
     TypedX87Operation,
-    X87_MEMORY_NO_SIZE_MNEMONICS as _X87_MEMORY_NO_SIZE_MNEMONICS,
-    X87_MEMORY_SIZE_KEYWORDS as _X87_MEMORY_SIZE_KEYWORDS,
-    extract_typed_x87_operation,
-    typed_x87_operation_from_micro_op,
-)
-from .machine_ir_scope import partition_candidate_machine_ir_units
-from .modes import (
-    STATIC_CLOSED_CANDIDATE_MODE,
-    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-    require_candidate_mode,
+    X87_CHECKED_DECODER,
+    X87_CHECKED_EXECUTOR,
 )
 from ..pe32.recovered_executable_data import (
     RecoveredExecutableDataRange,
-    load_recovered_executable_data_contract,
 )
-from ..util import sha256_bytes, sha256_file, write_json
+from ..util import sha256_bytes
 
 
-_STRICT_INPUT_MODE = "strict_exact_state_machine_v1"
 _MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v2"
 _CALL_KINDS = frozenset({"external_call", "indirect_call"})
 _SEMANTIC_RUNTIME_EVENT_KINDS = frozenset(
@@ -76,23 +40,14 @@ _SEMANTIC_RUNTIME_EVENT_KINDS = frozenset(
 )
 _HEX_BYTES = re.compile(r"(?:[0-9a-fA-F]{2})+")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
-_X87_REPLAY_MODEL = "native_exact_x87_command_replay_obligation_v1"
-_X87_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
-_X87_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
+_X87_CHECKED_DECODER = X87_CHECKED_DECODER
+_X87_CHECKED_EXECUTOR = X87_CHECKED_EXECUTOR
 PE32_BASE_RELOCATION_EVIDENCE_FORMAT = "stage-b-pe32-base-relocation-evidence-v1"
-_X87_PHYSICAL_FIELDS = (
-    "stack", "tags", "control", "status", "pending_exception", "last_opcode",
-    "instruction_pointer", "code_selector", "data_pointer", "data_selector",
-)
 _FNSAVE_IMAGE_SIZE = 108
 _MACHINE_STATE_SIZE = 252
 _MACHINE_REGISTERS = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
 _MACHINE_FLAGS = ("cf", "zf", "sf", "of", "pf", "df")
 _PE32_CALLEE_PRESERVED_REGISTERS = frozenset({"ebx", "esi", "edi", "ebp"})
-_RAW_INSTRUCTION_FIELDS = frozenset({
-    "bytes", "instruction_bytes", "opcode_bytes", "raw_bytes",
-    "encoded_instruction",
-})
 
 
 def _canonical_sha256(value: Any) -> str:
@@ -474,7 +429,6 @@ class NativeImplementationTarget:
 
 @dataclass(frozen=True)
 class NativeImplementationDispatchReceipt:
-    candidate_mode: str
     semantic_input_sha256: str
     machine_ir_manifest_sha256: str | None
     reachability_status: str
@@ -493,11 +447,6 @@ class NativeImplementationDispatchReceipt:
             return "incomplete"
         if self.reachability_status == "complete":
             return "complete"
-        if (
-            self.candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
-            and self.reachability_status == "incomplete"
-        ):
-            return "diagnostic"
         return "unbound"
 
     def _body(self) -> dict[str, Any]:
@@ -516,17 +465,12 @@ class NativeImplementationDispatchReceipt:
                 "frontiers": list(self.reachability_frontiers),
             },
             "policy": {
-                "candidate_mode": self.candidate_mode,
                 "one_implementation_class_per_transfer": True,
-                "rooted_targets_require_implementation": (
-                    self.candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
-                ),
+                "rooted_targets_require_implementation": True,
                 "runtime_code_target_lookup": "exact-active-transfer-rva",
                 "unresolved_dispatch": "fail-closed-as-unimplemented",
                 "portable_component_fallback_on_unimplemented": False,
-                "static_hybrid_closure_receipt_required_for_candidate": (
-                    self.candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
-                ),
+                "static_hybrid_closure_receipt_required_for_candidate": True,
                 "acceptance_authority": False,
             },
             "counts": {
@@ -662,7 +606,6 @@ class _PEBaseRelocationEvidence:
 
 @dataclass(frozen=True)
 class NativeEnginePlan:
-    candidate_mode: str
     input_mode: str
     entry_rva: int
     transfer_count: int
@@ -676,10 +619,8 @@ class NativeEnginePlan:
     callback_passthroughs: tuple[NativeCallbackPassthrough, ...]
     x87_operations: tuple[NativeX87Operation, ...]
     termination_import: NativeTerminationImport | None
-    deferred_transfers: tuple[dict[str, Any], ...]
     recovered_executable_data_ranges: tuple[RecoveredExecutableDataRange, ...]
     fixed_image_base: int | None
-    diagnostic_frontiers: tuple[dict[str, Any], ...]
     blockers: tuple[dict[str, Any], ...]
 
     @property
@@ -691,13 +632,11 @@ class NativeEnginePlan:
             "format": NATIVE_ENGINE_PLAN_FORMAT,
             "status": self.status,
             "state_machine_sha256": state_machine_sha256,
-            "candidate_mode": self.candidate_mode,
             "input_mode": self.input_mode,
             "entry_rva": self.entry_rva,
             "counts": {
-                "input_transfers": self.transfer_count + len(self.deferred_transfers),
+                "input_transfers": self.transfer_count,
                 "transfers": self.transfer_count,
-                "deferred_transfers": len(self.deferred_transfers),
                 "recovered_executable_data_ranges": len(
                     self.recovered_executable_data_ranges
                 ),
@@ -714,7 +653,6 @@ class NativeEnginePlan:
                 ),
                 "callback_passthroughs": len(self.callback_passthroughs),
                 "x87_operations": len(self.x87_operations),
-                "diagnostic_frontiers": len(self.diagnostic_frontiers),
                 "blockers": len(self.blockers),
             },
             "external_sites": [site.payload() for site in self.external_sites],
@@ -741,16 +679,10 @@ class NativeEnginePlan:
                 else None
             ),
             "semantic_coverage": {
-                "status": "complete" if not self.deferred_transfers else "incomplete",
-                "deferred_transfers": len(self.deferred_transfers),
+                "status": "complete",
                 "acceptance_authority": False,
             },
-            "execution_policy": (
-                "complete_transfer_inventory_v1"
-                if not self.deferred_transfers
-                else "fail_closed_on_deferred_potential_transfer_v1"
-            ),
-            "deferred_transfers": list(self.deferred_transfers),
+            "execution_policy": "complete_transfer_inventory_v1",
             "recovered_executable_data": {
                 "dispatch_policy": "fail_closed_as_noncode",
                 "ranges": [
@@ -783,7 +715,6 @@ class NativeEnginePlan:
                 "raw_absolute_operands": "forbidden",
                 "x87_instruction_payloads": "forbidden-after-typed-extraction",
             },
-            "diagnostic_frontiers": list(self.diagnostic_frontiers),
             "blockers": list(self.blockers),
             "authority": "candidate generation only; candidate assurance remains required",
         }

@@ -6,8 +6,7 @@ import copy
 from typing import Any, Callable, Mapping, Sequence
 
 from ..authority_inputs.bindings import indirect_exit_id_v2
-from ..artifacts.formats import STATIC_PROGRAM_CONTRACT_FORMAT
-from ..reference_contract.reference_semantics import _semantic_transfer_contract
+from ..static_program.semantics.transfer import semantic_transfer
 from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
 from ..pe32.recovered_executable_data import recover_executable_data_ranges
 from .state_machine import normalize_stage_a_semantic_transfer
@@ -113,11 +112,6 @@ def _materialize_recovered_target_cutpoints(
     iteration_rows: list[dict[str, Any]] = []
     final_plan: dict[str, Any] | None = None
     converged_cutpoints = False
-    static_program_ref = {
-        "format": STATIC_PROGRAM_CONTRACT_FORMAT,
-        "path": "static-program-contract.json",
-        "sha256": static_program_sha256,
-    }
     max_cutpoint_rounds = 16
     recovery_ids = {str(row.get("id")) for row in recoveries}
     for iteration in range(1, max_cutpoint_rounds + 1):
@@ -222,7 +216,6 @@ def _materialize_recovered_target_cutpoints(
             binary=binary,
             augmented=augmented,
             plan=plan,
-            static_program_ref=static_program_ref,
             static_program_sha256=static_program_sha256,
             iteration=iteration,
             materialized_rows=materialized_rows,
@@ -369,7 +362,6 @@ def _materialize_target_cutpoint_plan(
     binary: StageABinary,
     augmented: list[dict[str, Any]],
     plan: Mapping[str, Any],
-    static_program_ref: Mapping[str, Any],
     static_program_sha256: str | None,
     iteration: int,
     materialized_rows: list[dict[str, Any]],
@@ -441,16 +433,15 @@ def _materialize_target_cutpoint_plan(
                 side = BlockSide(start, end)
                 mapping = StaticUnitContext(
                     id=identity,
-                    original=side,
+                    span=side,
                     kind="code",
                     invariant_checked=False,
                     source={"source": {"function": identity}},
                 )
-                raw = _semantic_transfer_contract(
+                raw = semantic_transfer(
                     binary,
                     mapping,
                     identity,
-                    static_program_ref,
                 )
                 semantic_sha256 = sha256_bytes(_canonical_json(raw))
                 normalized = normalize_stage_a_semantic_transfer(

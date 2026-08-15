@@ -5,20 +5,19 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
+from ..artifacts.formats import (
+    CALLBACK_ADAPTER_RECEIPT_FORMAT,
+    IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT,
+)
 from ..external.contracts import (
+    CheckedExternalSiteContract,
     CheckedExternalSiteContractError,
     parse_checked_external_site_contract,
 )
 from ..util import sha256_bytes
-from .modes import (
-    STATIC_CLOSED_CANDIDATE_MODE,
-    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-)
 from .runtime_model import (
     NativeImplementationDispatch,
     StageBNativeRuntimeError,
-    _CALLBACK_ADAPTER_RECEIPT_FORMAT,
-    _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT,
     _InterpreterTransferBinding,
     _SHA256_RE,
 )
@@ -31,6 +30,10 @@ from .runtime_values import (
     _required_string,
     _required_u32,
 )
+
+
+_CALLBACK_ADAPTER_RECEIPT_FORMAT = CALLBACK_ADAPTER_RECEIPT_FORMAT
+_IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT
 
 
 def _canonical_json_sha256(value: Any) -> str:
@@ -48,8 +51,6 @@ def _canonical_json_sha256(value: Any) -> str:
 def _validate_implementation_dispatch_receipt(
     payload: dict[str, Any],
     *,
-    candidate_mode: str,
-    deferred_transfer_ids: frozenset[str],
     state_machine_sha256: str,
     transfer_bindings: tuple[_InterpreterTransferBinding, ...],
 ) -> tuple[dict[str, Any], tuple[NativeImplementationDispatch, ...]]:
@@ -102,17 +103,12 @@ def _validate_implementation_dispatch_receipt(
         raw.get("policy"), "implementation dispatch policy"
     )
     expected_policy = {
-        "candidate_mode": candidate_mode,
         "one_implementation_class_per_transfer": True,
-        "rooted_targets_require_implementation": (
-            candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
-        ),
+        "rooted_targets_require_implementation": True,
         "runtime_code_target_lookup": "exact-active-transfer-rva",
         "unresolved_dispatch": "fail-closed-as-unimplemented",
         "portable_component_fallback_on_unimplemented": False,
-        "static_hybrid_closure_receipt_required_for_candidate": (
-            candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
-        ),
+        "static_hybrid_closure_receipt_required_for_candidate": True,
         "acceptance_authority": False,
     }
     if policy != expected_policy:
@@ -179,28 +175,6 @@ def _validate_implementation_dispatch_receipt(
             raise StageBNativeRuntimeError(
                 "complete implementation dispatch lacks rooted manifest evidence"
             )
-    elif (
-        reachability_status == "incomplete"
-        and candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
-    ):
-        if (
-            receipt_status != "diagnostic"
-            or not roots
-            or not reachable
-            or _SHA256_RE.fullmatch(str(manifest_sha256 or "")) is None
-        ):
-            raise StageBNativeRuntimeError(
-                "structural diagnostic dispatch lacks bound reachability evidence"
-            )
-    elif reachability_status == "not_bound":
-        if receipt_status != "unbound" or roots or reachable:
-            raise StageBNativeRuntimeError(
-                "unbound implementation dispatch claims rooted coverage"
-            )
-        if manifest_sha256 is not None:
-            _required_sha256(
-                manifest_sha256, "implementation dispatch manifest SHA-256"
-            )
     else:
         raise StageBNativeRuntimeError(
             "ready native-engine implementation reachability is incomplete"
@@ -208,20 +182,10 @@ def _validate_implementation_dispatch_receipt(
 
     entries = _required_list(raw.get("entries"), "implementation dispatch entries")
     active_unit_ids = {binding.unit_id for binding in transfer_bindings}
-    partition_unit_ids = set(reachable) | set(potential) | set(unreachable)
-    if (
-        reachability_status != "not_bound"
-        and partition_unit_ids != active_unit_ids | set(deferred_transfer_ids)
-    ):
+    partition_unit_ids = set(reachable) | set(unreachable)
+    if partition_unit_ids != active_unit_ids:
         raise StageBNativeRuntimeError(
-            "implementation reachability does not partition active and deferred transfers"
-        )
-    if (
-        reachability_status != "not_bound"
-        and not deferred_transfer_ids <= set(potential)
-    ):
-        raise StageBNativeRuntimeError(
-            "implementation dispatch defers a non-potential transfer"
+            "implementation reachability does not partition the complete transfer inventory"
         )
     entry_fields = {
         "unit_id",

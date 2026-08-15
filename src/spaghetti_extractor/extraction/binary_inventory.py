@@ -6,7 +6,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..reference_contract.map_analysis import (
+from ..artifacts.formats import STATIC_ANALYSIS_PROFILE_ID
+from .executable_classification import (
     _linker_function_import_thunk_evidence,
     _linker_function_issues,
     _recover_basic_blocks,
@@ -25,7 +26,7 @@ from .cutpoints import (
     semantic_cutpoint_spans_for_side,
 )
 from .region_inventory import parse_request
-from .schema import STATIC_ANALYSIS_MODEL_ID, STATIC_ANALYSIS_PROFILE_ID
+from .schema import STATIC_ANALYSIS_MODEL_ID
 
 
 BINARY_CUTPOINT_INVENTORY_FORMAT = "stage-a-binary-cutpoint-inventory-v1"

@@ -53,7 +53,6 @@ from .build_sources import (
     _native_object_graph_row,
     _native_row_artifacts,
     _native_source_dependency_closure,
-    _uses_diagnostic_macro,
     _write_native_source_bundle,
 )
 from .build_validation import (
@@ -63,7 +62,7 @@ from .build_validation import (
     _load_region_override_package,
     _validate_candidate_authority_package_bindings,
     _validate_candidate_authority_v3,
-    _validate_candidate_mode_package_bindings,
+    _validate_static_candidate_package_bindings,
     _validate_package_closure,
     _validate_region_override_closure,
 )
@@ -73,10 +72,6 @@ from .build_values import (
     _read_json_object,
     _revalidate_package,
     _u32,
-)
-from .modes import (
-    STATIC_CLOSED_CANDIDATE_MODE,
-    require_candidate_mode,
 )
 from .pe import (
     CANDIDATE_FILENAME,
@@ -96,14 +91,9 @@ def prepare_stage_b_interpreter_native_object_graph(
     region_override_package: Path | str | None = None,
     compiler: Path | str = "i686-w64-mingw32-gcc",
     entry_symbol: str = "stage_b_payload_entry",
-    diagnostic_failure_trap: bool = False,
 ) -> dict[str, Any]:
     """Emit a deterministic per-source compile graph for Nix CA derivations."""
 
-    if diagnostic_failure_trap:
-        raise StageBInterpreterNativeBuildError(
-            "structural diagnostics cannot prepare native object graphs"
-        )
     if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
         raise StageBInterpreterNativeBuildError(
             "payload entry symbol is not a C identifier"
@@ -161,7 +151,6 @@ def prepare_stage_b_interpreter_native_object_graph(
                 package_roots=package_roots,
                 compiler=toolchain.compiler,
                 compiler_binding=compiler_binding,
-                diagnostic_failure_trap=diagnostic_failure_trap,
                 region_overrides=region_overrides is not None,
             )
         )
@@ -184,7 +173,6 @@ def prepare_stage_b_interpreter_native_object_graph(
             package_roots=package_roots,
             compiler=toolchain.compiler,
             compiler_binding=compiler_binding,
-            diagnostic_failure_trap=diagnostic_failure_trap,
             region_overrides=region_overrides is not None,
         )
     )
@@ -208,7 +196,6 @@ def prepare_stage_b_interpreter_native_object_graph(
         "status": "ready",
         "executes_original_binary": False,
         "entry_symbol": entry_symbol,
-        "diagnostic_failure_trap": diagnostic_failure_trap,
         "compiler": compiler_binding,
         "packages": {
             "interpreter": interpreter.binding(),
@@ -331,18 +318,13 @@ def compile_stage_b_interpreter_native_source_bundle(
         bundle_root / "roots" / mapping["owner"]
         for mapping in payload["root_mappings"]
     ]
-    diagnostic_active = bool(payload["diagnostic_active"])
     arguments = [
         "-x",
         payload["language"],
         "-c",
         str(source),
         *sum((["-I", str(root)] for root in roots), []),
-        *_compile_flags(
-            payload["source"]["sha256"],
-            roots,
-            diagnostic_failure_trap=diagnostic_active,
-        ),
+        *_compile_flags(payload["source"]["sha256"], roots),
     ]
     output = Path(out_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -448,7 +430,6 @@ def assemble_stage_b_interpreter_native_objects(
         "compiler": graph_payload["compiler"],
         "packages": graph_payload["packages"],
         "entry_symbol": graph_payload["entry_symbol"],
-        "diagnostic_failure_trap": graph_payload["diagnostic_failure_trap"],
         "units": graph_payload["units"],
         "objects": rows,
         "counts": {"objects": len(rows)},
@@ -477,29 +458,10 @@ def build_stage_b_interpreter_native_candidate(
     compiler: Path | str = "i686-w64-mingw32-gcc",
     entry_symbol: str = "stage_b_payload_entry",
     payload_rva: int | None = None,
-    diagnostic_failure_trap: bool = False,
-    candidate_mode: str = STATIC_CLOSED_CANDIDATE_MODE,
     precompiled_objects: Path | str | None = None,
 ) -> dict[str, Any]:
     """Compile and compose one explicitly classified interpreter candidate."""
 
-    if not isinstance(diagnostic_failure_trap, bool):
-        raise StageBInterpreterNativeBuildError(
-            "diagnostic_failure_trap must be a boolean"
-        )
-    try:
-        candidate_mode = require_candidate_mode(candidate_mode)
-    except ValueError as exc:
-        raise StageBInterpreterNativeBuildError(str(exc)) from exc
-    if candidate_mode != STATIC_CLOSED_CANDIDATE_MODE:
-        raise StageBInterpreterNativeBuildError(
-            "executable candidate construction requires static-closed authority; "
-            "structural diagnostics are static source and plan artifacts"
-        )
-    if diagnostic_failure_trap:
-        raise StageBInterpreterNativeBuildError(
-            "executable candidate construction does not accept diagnostic traps"
-        )
     if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
         raise StageBInterpreterNativeBuildError(
             "payload entry symbol is not a C identifier"
@@ -546,8 +508,7 @@ def build_stage_b_interpreter_native_candidate(
     )
     runtime_plan = _validate_package_closure(interpreter, engine, runtime)
     _validate_candidate_authority_package_bindings(receipt, interpreter, engine)
-    structural_binding = _validate_candidate_mode_package_bindings(
-        candidate_mode=candidate_mode,
+    structural_binding = _validate_static_candidate_package_bindings(
         machine_ir=machine_ir,
         machine_ir_manifest=machine_ir_manifest,
         interpreter=interpreter,
@@ -692,7 +653,6 @@ def build_stage_b_interpreter_native_candidate(
             },
             compiler=toolchain.compiler,
             entry_symbol=entry_symbol,
-            diagnostic_failure_trap=diagnostic_failure_trap,
             relocation_digest=relocation_digest,
         )
         precompiled_object_binding = {
@@ -739,14 +699,7 @@ def build_stage_b_interpreter_native_candidate(
             dependencies = _native_source_dependency_closure(
                 artifact, package_sequence
             )
-            diagnostic_active = diagnostic_failure_trap and _uses_diagnostic_macro(
-                (artifact, *dependencies)
-            )
-            flags = _compile_flags(
-                artifact.sha256,
-                package_roots,
-                diagnostic_failure_trap=diagnostic_active,
-            )
+            flags = _compile_flags(artifact.sha256, package_roots)
             command = [
                 str(toolchain.compiler),
                 "-x",
@@ -779,7 +732,6 @@ def build_stage_b_interpreter_native_candidate(
                     "object_sha256": sha256_file(object_path),
                     "flags": _canonical_compile_flags(
                         artifact.sha256,
-                        diagnostic_failure_trap=diagnostic_active,
                         region_overrides=region_overrides is not None,
                     ),
                     "cache": "compiled_in_candidate_derivation",
@@ -911,8 +863,7 @@ def build_stage_b_interpreter_native_candidate(
         raise StageBInterpreterNativeBuildError(
             "v3 candidate-authority inputs changed during compilation"
         )
-    repeated_structural_binding = _validate_candidate_mode_package_bindings(
-        candidate_mode=candidate_mode,
+    repeated_structural_binding = _validate_static_candidate_package_bindings(
         machine_ir=machine_ir,
         machine_ir_manifest=machine_ir_manifest,
         interpreter=interpreter,
@@ -988,9 +939,6 @@ def build_stage_b_interpreter_native_candidate(
         "policy": {
             "architecture": "i686-pe32",
             "candidate_class": "release-static-closed",
-            "allow_deferred_potential_transfers": (
-                structural_binding["deferred_transfers"] > 0
-            ),
             "entry_symbol": entry_symbol,
             "image_base": contract.identity.preferred_base,
             "payload_rva": selected_rva,
@@ -1005,7 +953,6 @@ def build_stage_b_interpreter_native_candidate(
                 if candidate_runtime_relocations
                 else "fixed-base-reference-policy"
             ),
-            "diagnostic_failure_trap": diagnostic_failure_trap,
             "region_overrides": (
                 0
                 if region_overrides is None

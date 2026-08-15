@@ -86,7 +86,7 @@ def _unit() -> dict[str, object]:
             "original": {"rva_start": 0x1000, "rva_end": 0x1008},
             "instruction_bytes_sha256": "c" * 64,
         },
-        "expression_model": "stage-a-semantic-ir-v1",
+        "expression_model": "spaghetti-extractor-static-semantic-ir-v1",
         "instructions": [],
         "semantics": semantics,
         "control": {
@@ -110,11 +110,11 @@ class TransitionRecordV3Tests(unittest.TestCase):
         self.assertEqual(encoded["unit_ir_sha256"], exact.unit_ir_sha256)
         self.assertEqual(
             hashlib.sha256(canonical_json_bytes_v3(encoded)).hexdigest(),
-            "7ea0b27c29745c002bce91ecfeb895f73475717477e16184dd9131d285f5fc84",
+            "05590b4f525579fe645a96a30e173233c91629e053ee3a6ea4e758161fc0fdd9",
         )
         self.assertEqual(
             native.summary_id,
-            "transition-summary:959cfec62603990b009b5438",
+            "transition-summary:b7b872bec5eb35a6f577d5e4",
         )
         self.assertEqual(
             tuple(row.input_id for row in native.inputs),
@@ -125,18 +125,18 @@ class TransitionRecordV3Tests(unittest.TestCase):
         )
         self.assertEqual(
             native.memory_accesses[0].access_id,
-            "transition-memory:709f81449d16a6ea3f2428b5",
+            "transition-memory:48797d8bab5e4c1f1ef92992",
         )
         self.assertEqual(
             tuple(row.exit_id for row in native.exits),
             (
-                "transition-exit:e01dd21e11a46b0b6fb0cfa9",
+                "transition-exit:34e67bde59dd36c6ed2419e8",
                 "transition-exit:ce9f54df0ddcb1f759f5f75e",
             ),
         )
         self.assertEqual(
             native.faults[0].fault_id,
-            "transition-fault:bbcad39907c34b9cec161fb3",
+            "transition-fault:8ef821d6d7d8713d4d8a0d6b",
         )
         self.assertEqual(
             native.ordered_events[0].record_id,

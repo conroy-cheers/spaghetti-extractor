@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from ..artifacts.formats import STAGE_B_INTERPRETER_PROGRAM_FORMAT
 from ..util import sha256_bytes
 from .interpreter_model import (
     STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS,
-    STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT,
 )
 from .runtime_model import (
     DEFINEDNESS_USE_FORMAT,
@@ -18,7 +17,6 @@ from .runtime_model import (
     StageBNativeRuntimeError,
     _InterpreterTransferBinding,
     _MACHINE_IR_INPUT_MODE,
-    _STRICT_INPUT_MODE,
 )
 from .runtime_values import (
     _required_count,
@@ -37,7 +35,6 @@ def _validate_program_manifest(
     tuple[_InterpreterTransferBinding, ...],
     tuple[NativeUndefinedPolicy, ...],
     str | None,
-    tuple[dict[str, Any], ...],
 ]:
     if payload.get("format") != STAGE_B_INTERPRETER_PROGRAM_FORMAT:
         raise StageBNativeRuntimeError("interpreter program has an unsupported format")
@@ -47,10 +44,7 @@ def _validate_program_manifest(
         )
     if payload.get("status") != "ready" or payload.get("blockers") != []:
         raise StageBNativeRuntimeError("interpreter program is not runnable")
-    deferred = _validate_deferred_transfer_inventory(
-        payload,
-        label="interpreter program",
-    )
+    _validate_complete_semantic_coverage(payload, label="interpreter program")
     transfers = _required_list(payload.get("transfers"), "interpreter transfers")
     rvas: list[int] = []
     bindings: list[_InterpreterTransferBinding] = []
@@ -94,15 +88,11 @@ def _validate_program_manifest(
         _required_count(
             counts.get("input_transfers"), "interpreter input-transfer count"
         )
-        != len(rvas) + len(deferred)
+        != len(rvas)
         or _required_count(
             counts.get("blocked_transfers"), "interpreter blocked-transfer count"
         )
         != 0
-        or _required_count(
-            counts.get("deferred_transfers"), "interpreter deferred-transfer count"
-        )
-        != len(deferred)
     ):
         raise StageBNativeRuntimeError(
             "interpreter transfer scope does not match its inventory"
@@ -123,60 +113,23 @@ def _validate_program_manifest(
         },
         required=has_undefined,
     )
-    return tuple(rvas), tuple(bindings), policies, metadata_sha256, deferred
+    return tuple(rvas), tuple(bindings), policies, metadata_sha256
 
 
-def _validate_deferred_transfer_inventory(
+def _validate_complete_semantic_coverage(
     payload: Mapping[str, Any],
     *,
     label: str,
-) -> tuple[dict[str, Any], ...]:
-    rows = _required_list(payload.get("deferred_transfers"), f"{label} deferred transfers")
+) -> None:
     coverage = _required_object(payload.get("semantic_coverage"), f"{label} coverage")
-    policy = payload.get("execution_policy")
-    expected_status = "incomplete" if rows else "complete"
-    expected_policy = (
-        "fail_closed_on_deferred_potential_transfer_v1"
-        if rows
-        else "complete_transfer_inventory_v1"
-    )
     if (
-        coverage.get("status") != expected_status
+        coverage.get("status") != "complete"
         or coverage.get("acceptance_authority") is not False
-        or _required_count(
-            coverage.get("deferred_transfers"), f"{label} deferred coverage count"
-        )
-        != len(rows)
-        or policy != expected_policy
+        or payload.get("execution_policy") != "complete_transfer_inventory_v1"
     ):
-        raise StageBNativeRuntimeError(f"{label} deferred-transfer policy is malformed")
-    normalized: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    seen_rvas: set[int] = set()
-    for index, raw in enumerate(rows):
-        row = _required_object(raw, f"{label} deferred transfer {index}")
-        transfer_id = _required_string(
-            row.get("transfer_id"), f"{label} deferred transfer id"
+        raise StageBNativeRuntimeError(
+            f"{label} does not require complete semantic coverage"
         )
-        rva = _required_u32(row.get("rva_start"), f"{label} deferred transfer RVA")
-        if (
-            row.get("code") != "machine_ir_semantics_incomplete"
-            or row.get("failure_phase") != "semantic_qualification"
-            or row.get("reachability") != "potential"
-            or row.get("runtime_disposition")
-            != "fail_closed_as_unimplemented_if_reached"
-        ):
-            raise StageBNativeRuntimeError(
-                f"{label} deferred transfer {index} is not fail-closed potential code"
-            )
-        _required_string(row.get("message"), f"{label} deferred message")
-        _required_string(row.get("next_action"), f"{label} deferred next action")
-        if transfer_id in seen_ids or rva in seen_rvas:
-            raise StageBNativeRuntimeError(f"{label} has duplicate deferred transfers")
-        seen_ids.add(transfer_id)
-        seen_rvas.add(rva)
-        normalized.append(dict(row))
-    return tuple(normalized)
 
 
 def _semantic_input_binding(
@@ -185,22 +138,15 @@ def _semantic_input_binding(
     mode = payload.get("input_mode")
     state_machine = payload.get("state_machine")
     machine_ir = payload.get("machine_ir")
-    if mode is None and state_machine is not None and machine_ir is None:
-        mode = _STRICT_INPUT_MODE
-    expected_key = {
-        _STRICT_INPUT_MODE: "state_machine",
-        _MACHINE_IR_INPUT_MODE: "machine_ir",
-    }.get(mode)
     if (
-        expected_key is None
-        or (state_machine is None) == (machine_ir is None)
-        or (expected_key == "state_machine") != (state_machine is not None)
+        mode != _MACHINE_IR_INPUT_MODE
+        or state_machine is not None
+        or machine_ir is None
     ):
         raise StageBNativeRuntimeError(
-            f"{label} has an ambiguous or unsupported semantic input mode"
+            f"{label} must bind strict machine IR"
         )
-    value = state_machine if expected_key == "state_machine" else machine_ir
-    return str(mode), _required_object(value, f"{label} {expected_key}")
+    return str(mode), _required_object(machine_ir, f"{label} machine_ir")
 
 
 def _validate_typed_x87_operations(rows: list[Any]) -> None:

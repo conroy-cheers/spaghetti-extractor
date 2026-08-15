@@ -357,7 +357,7 @@ def emit_implementation_capabilities_v3(
                 "incomplete",
                 "fallback_coverage_receipt_missing",
                 "interpreter-package",
-                "close every deferred transfer and build the exact fallback-coverage receipt",
+                "close every lowering blocker and build the exact fallback-coverage receipt",
             )
         )
     else:

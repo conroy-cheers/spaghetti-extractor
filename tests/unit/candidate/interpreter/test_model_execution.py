@@ -223,7 +223,7 @@ int main(void) {
             _write_machine(machine, [_row()])
 
             write_stage_b_interpreter_package(
-                state_machine=machine, out=root / "package"
+                machine_ir=machine, out=root / "package"
             )
             program = json.loads(
                 (root / "package/state-machine-interpreter-program.json").read_text(
@@ -285,7 +285,7 @@ int main(void) {
             self.assertEqual(len(transfer.calls[0].stack_inputs), 1)
             self.assertEqual(transfer.calls[0].stack_inputs[0][:2], (0, 4))
             package = write_stage_b_interpreter_package(
-                state_machine=machine, out=root / "package"
+                machine_ir=machine, out=root / "package"
             )
             self.assertEqual(package["status"], "ready")
             self.assertIn(

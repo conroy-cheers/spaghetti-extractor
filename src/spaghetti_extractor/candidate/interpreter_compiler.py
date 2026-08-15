@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from ..artifacts.formats import (
+    INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
+    NATIVE_X87_REPLAY_FORMAT,
+)
 from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes
 from .interpreter_model import (
@@ -14,7 +18,6 @@ from .interpreter_model import (
     _Call,
     _FLAGS,
     _FLAG_INDEX,
-    _INSTRUCTION_EFFECT_SCHEDULE_FORMAT,
     _Node,
     _ORDINARY_CHECKED_DECODER,
     _ORDINARY_CHECKED_EXECUTOR,
@@ -24,11 +27,6 @@ from .interpreter_model import (
     _REP_SCAS_OWNED_REGISTERS,
     _Transfer,
     _TypedX87Program,
-    _X87_CHECKED_DECODER,
-    _X87_CHECKED_EXECUTOR,
-    _X87_PHYSICAL_FIELDS,
-    _X87_REPLAY_FORMAT,
-    _X87_REPLAY_MODEL,
 )
 from .interpreter_values import (
     _arity_ok,
@@ -52,7 +50,21 @@ from .interpreter_values import (
     _x87_singleton_candidate,
     _x87_slot,
 )
-from .x87 import typed_x87_operation_from_micro_op
+from .x87 import (
+    X87_CHECKED_DECODER,
+    X87_CHECKED_EXECUTOR,
+    X87_PHYSICAL_FIELDS,
+    X87_REPLAY_MODEL,
+    typed_x87_operation_from_micro_op,
+)
+
+
+_INSTRUCTION_EFFECT_SCHEDULE_FORMAT = INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
+_X87_REPLAY_FORMAT = NATIVE_X87_REPLAY_FORMAT
+_X87_REPLAY_MODEL = X87_REPLAY_MODEL
+_X87_CHECKED_DECODER = X87_CHECKED_DECODER
+_X87_CHECKED_EXECUTOR = X87_CHECKED_EXECUTOR
+_X87_PHYSICAL_FIELDS = X87_PHYSICAL_FIELDS
 
 
 @dataclass

@@ -16,12 +16,12 @@ from spaghetti_extractor.reconstruction.state_machine import normalize_stage_a_s
 
 def _transfer(**updates):
     row = {
-        "format": "stage-a-semantic-transfer-contract-v1",
+        "format": "spaghetti-extractor-static-transfer-v1",
         "id": "semantic-transfer:integer-branch",
         "function": "integer_branch",
         "block_id": "integer-branch",
         "status": "reimplementable",
-        "expression_model": "stage-a-semantic-ir-v1",
+        "expression_model": "spaghetti-extractor-static-semantic-ir-v1",
         "original": {"rva_start": 0x1000, "rva_end": 0x1004},
         "instructions": [{"rva": 0x1000, "bytes": "deadbeef"}],
         "register_writes": [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.unit.candidate.native_runtime._support import *
+from tests.unit.candidate.native_runtime._callback_support import *
 
 
 class NativeRuntimeValidationTests(unittest.TestCase):
@@ -131,28 +132,12 @@ class NativeRuntimeValidationTests(unittest.TestCase):
     def test_typed_x87_inventory_rejects_reintroduced_instruction_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            interpreter, engine = _packages(root, [_qualified_x87_transfer()])
-            plan_path = engine / "native-engine-plan.json"
-            plan = json.loads(plan_path.read_text(encoding="utf-8"))
-            plan["x87_operations"][0]["instruction_bytes"] = "d9e8"
-            plan_path.write_text(
-                json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n",
-                encoding="utf-8",
-            )
-            manifest_path = engine / "native-engine-package.json"
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            manifest["plan"]["sha256"] = sha256_file(plan_path)
-            manifest_path.write_text(
-                json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
-                encoding="utf-8",
-            )
+            unit = _qualified_x87_transfer()
+            unit["x87_micro_ops"][0]["bytes"] = "d9e8"
             with self.assertRaisesRegex(
-                StageBNativeRuntimeError, "forbidden instruction payload"
+                StageBInterpreterError, "raw instruction material"
             ):
-                plan_stage_b_native_runtime(
-                    interpreter_package=interpreter,
-                    native_engine_package=engine,
-                )
+                _packages(root, [unit])
 
 
 if __name__ == "__main__":

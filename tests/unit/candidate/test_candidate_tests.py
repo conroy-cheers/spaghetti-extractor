@@ -7,9 +7,9 @@ import unittest
 from pathlib import Path
 
 from spaghetti_extractor.candidate.functional import (
-    StageBFunctionalInputError,
-    stage_b_aggregate_functional_cases,
-    stage_b_run_functional_case,
+    CandidateTestInputError,
+    aggregate_candidate_test_cases,
+    run_candidate_test_case,
 )
 from spaghetti_extractor.util import write_json
 
@@ -27,13 +27,14 @@ class FunctionalShardTests(unittest.TestCase):
             write_json(
                 suite,
                 {
-                    "format": "stage-b-functional-suite-v1",
+                    "format": "spaghetti-extractor-candidate-test-suite-v1",
                     "target_name": "fixture",
                     "suite_id": "fixture-shards",
                     "suite_name": "fixture shards",
                     "cases": [
                         {
                             "id": "first",
+                            "kind": "expected-exit",
                             "args": ["one"],
                             "expected_returncode": 0,
                             "expected_stdout": "value:one\n",
@@ -41,6 +42,7 @@ class FunctionalShardTests(unittest.TestCase):
                         },
                         {
                             "id": "second",
+                            "kind": "expected-exit",
                             "args": ["two"],
                             "expected_returncode": 0,
                             "expected_stdout": "value:two\n",
@@ -52,7 +54,7 @@ class FunctionalShardTests(unittest.TestCase):
             reports = []
             for case_id in ("first", "second"):
                 output = root / f"case-{case_id}"
-                report = stage_b_run_functional_case(
+                report = run_candidate_test_case(
                     suite=suite,
                     case_id=case_id,
                     candidate_command=(sys.executable, str(candidate)),
@@ -62,12 +64,15 @@ class FunctionalShardTests(unittest.TestCase):
                 self.assertEqual(report["status"], "pass")
                 reports.append(output)
 
-            aggregate = stage_b_aggregate_functional_cases(
+            aggregate = aggregate_candidate_test_cases(
                 suite=suite,
                 case_reports=reports,
                 out=root / "aggregate",
             )
-            self.assertEqual(aggregate["format"], "stage-b-functional-report-v1")
+            self.assertEqual(
+                aggregate["format"],
+                "spaghetti-extractor-candidate-test-report-v1",
+            )
             self.assertEqual(aggregate["status"], "pass")
             self.assertEqual(aggregate["counts"], {"cases": 2, "passed": 2, "failed": 0})
             self.assertFalse(aggregate["oracle"]["original_runtime_observations"])
@@ -95,10 +100,11 @@ class FunctionalShardTests(unittest.TestCase):
             write_json(
                 suite,
                 {
-                    "format": "stage-b-functional-suite-v1",
+                    "format": "spaghetti-extractor-candidate-test-suite-v1",
                     "cases": [
                         {
                             "id": "full-output",
+                            "kind": "expected-exit",
                             "stdout_sink": "full_device",
                             "expected_returncode": 1,
                             "expected_stdout": "",
@@ -108,7 +114,7 @@ class FunctionalShardTests(unittest.TestCase):
                 },
             )
 
-            report = stage_b_run_functional_case(
+            report = run_candidate_test_case(
                 suite=suite,
                 case_id="full-output",
                 candidate_command=(sys.executable, str(candidate)),
@@ -132,10 +138,11 @@ class FunctionalShardTests(unittest.TestCase):
             write_json(
                 suite,
                 {
-                    "format": "stage-b-functional-suite-v1",
+                    "format": "spaghetti-extractor-candidate-test-suite-v1",
                     "cases": [
                         {
                             "id": "unsafe-output",
+                            "kind": "expected-exit",
                             "stdout_sink": "/tmp/arbitrary",
                             "expected_returncode": 0,
                             "expected_stdout": "",
@@ -145,14 +152,46 @@ class FunctionalShardTests(unittest.TestCase):
                 },
             )
             with self.assertRaisesRegex(
-                StageBFunctionalInputError, "stdout_sink must be capture or full_device"
+                CandidateTestInputError, "stdout_sink must be capture or full_device"
             ):
-                stage_b_run_functional_case(
+                run_candidate_test_case(
                     suite=suite,
                     case_id="unsafe-output",
                     candidate_command=(sys.executable, "-c", "pass"),
                     out=root / "case",
                 )
+
+    def test_bounded_liveness_requires_process_to_remain_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            suite = root / "suite.json"
+            write_json(
+                suite,
+                {
+                    "format": "spaghetti-extractor-candidate-test-suite-v1",
+                    "cases": [
+                        {
+                            "id": "stays-alive",
+                            "kind": "bounded-liveness",
+                            "liveness_seconds": 0.1,
+                            "candidate_timeout_seconds": 2,
+                        }
+                    ],
+                },
+            )
+            report = run_candidate_test_case(
+                suite=suite,
+                case_id="stays-alive",
+                candidate_command=(
+                    sys.executable,
+                    "-c",
+                    "import time; time.sleep(10)",
+                ),
+                out=root / "case",
+            )
+            self.assertEqual(report["status"], "pass")
+            self.assertTrue(report["case"]["candidate"]["liveness_observed"])
+            self.assertTrue(report["case"]["candidate"]["terminated_by_harness"])
 
     def test_aggregate_rejects_missing_or_tampered_cases(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -163,10 +202,11 @@ class FunctionalShardTests(unittest.TestCase):
             write_json(
                 suite,
                 {
-                    "format": "stage-b-functional-suite-v1",
+                    "format": "spaghetti-extractor-candidate-test-suite-v1",
                     "cases": [
                         {
                             "id": "only",
+                            "kind": "expected-exit",
                             "expected_returncode": 0,
                             "expected_stdout": "ok\n",
                             "expected_stderr": "",
@@ -175,25 +215,25 @@ class FunctionalShardTests(unittest.TestCase):
                 },
             )
             with self.assertRaisesRegex(
-                StageBFunctionalInputError, "exactly cover"
+                CandidateTestInputError, "exactly cover"
             ):
-                stage_b_aggregate_functional_cases(
+                aggregate_candidate_test_cases(
                     suite=suite, case_reports=[], out=root / "missing"
                 )
             case_out = root / "case"
-            stage_b_run_functional_case(
+            run_candidate_test_case(
                 suite=suite,
                 case_id="only",
                 candidate_command=(sys.executable, str(candidate)),
                 candidate_binary=candidate,
                 out=case_out,
             )
-            report_path = case_out / "functional-case-report.json"
+            report_path = case_out / "candidate-test-case-report.json"
             report = json.loads(report_path.read_text(encoding="utf-8"))
             report["case_id"] = "tampered"
             write_json(report_path, report)
-            with self.assertRaisesRegex(StageBFunctionalInputError, "self-hash"):
-                stage_b_aggregate_functional_cases(
+            with self.assertRaisesRegex(CandidateTestInputError, "self-hash"):
+                aggregate_candidate_test_cases(
                     suite=suite, case_reports=[case_out], out=root / "tampered"
                 )
 

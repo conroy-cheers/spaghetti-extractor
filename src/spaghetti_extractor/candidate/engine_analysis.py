@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from ..artifacts.formats import MACHINE_IR_FORMAT
 from ..external.callbacks import (
     CallbackABI,
     CallbackSource,
@@ -16,16 +17,15 @@ from ..external.callbacks import (
     parse_callback_source,
 )
 from ..external.contracts import CheckedExternalSiteContract
+from ..machine_ir.schema import RAW_INSTRUCTION_FIELDS
 from ..pe32.stage_binary import StageAInputError
-from ..util import sha256_bytes, sha256_file
+from ..util import sha256_file
 from .engine_model import (
     NativeTerminationImport,
     _CALL_KINDS,
     _MACHINE_FLAGS,
-    _MACHINE_IR_FORMAT,
     _MACHINE_REGISTERS,
     _PE32_CALLEE_PRESERVED_REGISTERS,
-    _RAW_INSTRUCTION_FIELDS,
     _canonical_sha256,
 )
 from .engine_x87 import (
@@ -34,6 +34,10 @@ from .engine_x87 import (
     _required_string,
     _required_u32,
 )
+
+
+_MACHINE_IR_FORMAT = MACHINE_IR_FORMAT
+_RAW_INSTRUCTION_FIELDS = RAW_INSTRUCTION_FIELDS
 
 
 def _parse_native_termination_import(

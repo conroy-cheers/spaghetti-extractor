@@ -121,7 +121,6 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 root,
                 rows=_machine_ir_indirect_external_result_rows(),
                 import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
-                machine_ir=True,
                 external_profile=profile,
             )
 
@@ -158,55 +157,17 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 [],
             )
 
-    def test_anonymous_dynamic_call_is_not_expanded_across_import_profiles(self) -> None:
+    def test_anonymous_dynamic_call_prevents_candidate_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            interpreter, engine = _packages(
-                root,
-                rows=_internal_indirect_rows(),
-                import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
-            )
-            profile = root / "external-profile.json"
-            _write_external_profile(profile)
-
-            package = write_stage_b_native_runtime_package(
-                interpreter_package=interpreter,
-                native_engine_package=engine,
-                external_profile=profile,
-                out=root / "runtime",
-            )
-
-            plan = json.loads(
-                (engine / "native-engine-plan.json").read_text(encoding="utf-8")
-            )
-            self.assertIsNone(plan["external_sites"][0]["import"])
-            self.assertEqual(plan["import_bindings"], [{
-                "dll": "msvcrt.dll",
-                "symbol": "__p__commode",
-                "ordinal": None,
-                "iat_va": 0x43219C,
-                "iat_rva": 0x3219C,
-            }])
-            rules = package["inputs"]["external_range_contracts"]["rules"]
-            self.assertEqual(rules, [])
-            dispatch = package["inputs"]["external_dispatch"]
-            self.assertEqual(dispatch["authorized_instruction_rvas"], [])
-            self.assertEqual(dispatch["unknown_site_disposition"], "fail-closed-before-call")
-            self.assertEqual(len(dispatch["blocked_sites"]), 1)
-            self.assertEqual(
-                dispatch["blocked_sites"][0]["category"],
-                "uncontracted_dynamic_external_target",
-            )
-            self.assertEqual(
-                dispatch["blocked_sites"][0]["runtime_disposition"],
-                "fail-closed-as-unimplemented-before-call",
-            )
-            source = (root / "runtime/native-runtime.c").read_text(
-                encoding="ascii"
-            )
-            self.assertIn("stage_b_native_external_site_authorized", source)
-            self.assertIn("stage_b_native_diagnostic_reason = 0x2009U", source)
-            self.assertIn("stage_b_native_diagnostic_reason = 0x200aU", source)
+            with self.assertRaisesRegex(
+                StageAInputError, "native engine plan is incomplete"
+            ):
+                _packages(
+                    root,
+                    rows=_internal_indirect_rows()[:1],
+                    import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
+                )
 
     def test_external_range_size_can_be_read_from_checked_call_stack(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -217,7 +178,6 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 root,
                 rows=_machine_ir_indirect_external_result_rows(),
                 import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
-                machine_ir=True,
                 external_profile=profile,
             )
 

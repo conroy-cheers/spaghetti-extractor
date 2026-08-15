@@ -1,69 +1,33 @@
-"""Machine-level ABI evidence and candidate ABI comparison."""
+"""Machine-level control-flow evidence for static semantics."""
 
 from __future__ import annotations
 
-import copy
-import json
-import os
-import platform
-import re
-import shutil
-import sys
-from bisect import bisect_left
-from dataclasses import dataclass
-from importlib import import_module
-from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
-import pefile
 
-from ..pe32.stage_binary import (
-    BlockSide,
-    StageABinary,
-    StageAImport,
-    StageAInputError,
-    StageASection,
-    _artifact_name,
-    _executable_section_for_rva,
-    _parse_linker_map_functions,
-    _parse_linker_map_symbol_line,
-    _parse_stage_a_pe,
-    _section_for_rva,
-)
-from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
-from ..util import sha256_bytes, sha256_file, utc_now, write_json
-
-from .common import (
-    ABI_FIXED_STDCALL_IMPORT_STACK_ARG_COUNTS,
-    BlockMapping,
-    STAGE_A_ABI_PROFILE_FUNCTION_MISMATCH_CATEGORIES,
-    _is_conditional_jump,
-    _mapping_source,
-    _range_report,
-)
-
-from .map_analysis import (
-    _capstone_mode,
-    _linker_function_match_key,
-    _recover_basic_blocks,
-)
-from .map_analysis import (
+from ...extraction.executable_classification import (
     _absolute_mem_operand_rva,
     _direct_branch_target,
-    _direct_cfg_edges,
-    _import_for_absolute_memory_operand,
-    _import_for_thunk_rva,
     _instruction_report,
     _resolved_branch_target,
 )
-
-from .abi_instruction import (
+from ...pe32.stage_binary import (
+    BlockSide,
+    StageABinary,
+    _executable_section_for_rva,
+    _section_for_rva,
+)
+from ...util import sha256_bytes
+from .instruction import (
     _abi_mem_operand_report,
     _abi_section_report,
     _abi_value_to_rva,
     _abi_x86_register_family,
+)
+from .support import (
+    _is_conditional_jump,
+    _range_report,
 )
 
 def _abi_switch_contracts(binary: StageABinary, block: BlockSide, instructions: list[Any]) -> list[dict[str, Any]]:

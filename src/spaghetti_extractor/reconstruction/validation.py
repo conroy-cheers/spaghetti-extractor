@@ -1,7 +1,7 @@
 """Deterministic validation synthesis for normalized reconstruction contracts.
 
 The solver boundary in this module is intentionally narrow.  It validates
-explicit proposed output and control expressions in ``stage-a-semantic-ir-v1``
+explicit proposed output and control expressions in ``spaghetti-extractor-static-semantic-ir-v1``
 against reference expressions.  It does not parse, execute, or make a semantic
 claim about arbitrary C source, generated adapters, or executable bytes.
 

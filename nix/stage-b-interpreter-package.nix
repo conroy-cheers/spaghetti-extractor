@@ -63,11 +63,10 @@ pkgs.runCommand
       .status == "ready" and
       .input_mode == "sanitized_machine_ir_v2" and
       .counts.input_transfers > 0 and
-      .counts.transfers + .counts.deferred_transfers == .counts.input_transfers and
+      .counts.transfers == .counts.input_transfers and
       .counts.blocked_transfers == 0 and
       .execution_policy == "complete_transfer_inventory_v1" and
-      .semantic_coverage.status == "complete" and
-      .counts.deferred_transfers == 0
+      .semantic_coverage.status == "complete"
     ' "$out/state-machine-interpreter-package.json" >/dev/null
     test "$(jq -r .lowering.program_source_sha256 \
       ${capabilityAnalysis}/fallback-capability-analysis.json)" = \

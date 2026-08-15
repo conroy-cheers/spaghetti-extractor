@@ -12,71 +12,19 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from ..artifacts.formats import (
+    CANDIDATE_TEST_CASE_REPORT_FORMAT,
+    CANDIDATE_TEST_REPORT_FORMAT,
+    CANDIDATE_TEST_SUITE_FORMAT,
+)
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
 
 
-STAGE_B_UPSTREAM_SUITE_MATERIALIZER = "stage-b-materialize-upstream-suite"
-
-
-class StageBFunctionalInputError(ValueError):
+class CandidateTestInputError(ValueError):
     pass
 
 
-def stage_b_materialize_upstream_suite(
-    *,
-    target_name: str,
-    suite_id: str,
-    suite_name: str,
-    suite_source: Path,
-    source_revision: str,
-    cases: Path,
-    out: Path,
-    suite_scope: str = "full",
-) -> dict[str, Any]:
-    if not suite_id or not suite_name:
-        raise StageBFunctionalInputError(
-            "Stage B upstream suite identity must be declared by the target"
-        )
-    if not source_revision:
-        raise StageBFunctionalInputError("Stage B upstream suite source revision must be non-empty")
-    if suite_scope not in {"full", "subset"}:
-        raise StageBFunctionalInputError("Stage B upstream suite scope must be full or subset")
-    cases_payload = _load_json(Path(cases))
-    case_entries = _materialized_suite_cases(cases_payload)
-    out = Path(out)
-    out.mkdir(parents=True, exist_ok=True)
-    source_hash = sha256_file(Path(suite_source))
-    suite = {
-        "format": "stage-b-functional-suite-v1",
-        "materializer": {
-            "name": STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
-            "source": str(suite_source),
-            "source_sha256": source_hash,
-            "source_revision": source_revision,
-            "cases": str(cases),
-            "cases_sha256": sha256_file(Path(cases)),
-        },
-        "target_name": target_name,
-        "suite_id": suite_id,
-        "suite_name": suite_name,
-        "suite_kind": "upstream_integration",
-        "suite_scope": suite_scope,
-        "upstream_suite": True,
-        "coverage": {
-            "source": str(suite_source),
-            "source_kind": "upstream_integration_suite",
-            "source_sha256": source_hash,
-            "source_revision": source_revision,
-            "materialized_by": STAGE_B_UPSTREAM_SUITE_MATERIALIZER,
-            "required_suite_ids": [suite_id],
-        },
-        "cases": case_entries,
-    }
-    write_json(out / "functional-suite.json", suite)
-    return suite
-
-
-def stage_b_run_functional_suite(
+def run_candidate_test_suite(
     *,
     suite: Path,
     candidate_command: tuple[str, ...],
@@ -86,12 +34,10 @@ def stage_b_run_functional_suite(
     strip_stderr_line_regexes: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
     started_at = utc_now()
-    payload = _load_json(Path(suite))
-    if not isinstance(payload, dict):
-        raise StageBFunctionalInputError("Stage B functional suite must be a JSON object")
+    payload = _load_functional_suite(Path(suite))
     cases_payload = payload.get("cases")
     if not isinstance(cases_payload, list) or not cases_payload:
-        raise StageBFunctionalInputError("Stage B functional suite must contain a non-empty cases list")
+        raise CandidateTestInputError("candidate test suite must contain a non-empty cases list")
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     (out / "cases").mkdir(parents=True, exist_ok=True)
@@ -103,7 +49,7 @@ def stage_b_run_functional_suite(
                 {
                     "id": f"case-{index:04d}",
                     "status": "fail",
-                    "blocker": "functional suite case entry must be an object",
+                    "blocker": "candidate test suite case entry must be an object",
                 }
             )
             continue
@@ -128,11 +74,11 @@ def stage_b_run_functional_suite(
         started_at=started_at,
         completed_at=utc_now(),
     )
-    write_json(out / "functional-report.json", result)
+    write_json(out / "candidate-test-report.json", result)
     return result
 
 
-def stage_b_run_functional_case(
+def run_candidate_test_case(
     *,
     suite: Path,
     case_id: str,
@@ -154,8 +100,8 @@ def stage_b_run_functional_case(
         if case["id"] == _artifact_name(case_id)
     ]
     if len(matches) != 1:
-        raise StageBFunctionalInputError(
-            f"functional suite has {len(matches)} matches for case {case_id!r}"
+        raise CandidateTestInputError(
+            f"candidate test suite has {len(matches)} matches for case {case_id!r}"
         )
     index, case = matches[0]
     output = Path(out)
@@ -176,7 +122,7 @@ def stage_b_run_functional_case(
         artifact = result["candidate"][stream]
         artifact["path"] = Path(str(artifact["path"])).relative_to(output).as_posix()
     core = {
-        "format": "stage-b-functional-case-report-v1",
+        "format": CANDIDATE_TEST_CASE_REPORT_FORMAT,
         "status": result["status"],
         "executes_original_binary": False,
         "started_at": started_at,
@@ -196,11 +142,11 @@ def stage_b_run_functional_case(
         "case": result,
     }
     report = {**core, "report_sha256": _canonical_sha256(core)}
-    write_json(output / "functional-case-report.json", report)
+    write_json(output / "candidate-test-case-report.json", report)
     return report
 
 
-def stage_b_aggregate_functional_cases(
+def aggregate_candidate_test_cases(
     *,
     suite: Path,
     case_reports: list[Path] | tuple[Path, ...],
@@ -217,16 +163,16 @@ def stage_b_aggregate_functional_cases(
     for report_value in case_reports:
         report_path = Path(report_value)
         if report_path.is_dir():
-            report_path = report_path / "functional-case-report.json"
+            report_path = report_path / "candidate-test-case-report.json"
         report = _load_json(report_path)
-        if not isinstance(report, dict) or report.get("format") != "stage-b-functional-case-report-v1":
-            raise StageBFunctionalInputError("unsupported functional case report")
+        if not isinstance(report, dict) or report.get("format") != CANDIDATE_TEST_CASE_REPORT_FORMAT:
+            raise CandidateTestInputError("unsupported candidate test case report")
         core = dict(report)
         expected_hash = core.pop("report_sha256", None)
         if expected_hash != _canonical_sha256(core):
-            raise StageBFunctionalInputError("functional case report self-hash is stale")
+            raise CandidateTestInputError("candidate test case report self-hash is stale")
         if report.get("suite_sha256") != suite_sha256:
-            raise StageBFunctionalInputError("functional case report is stale for suite")
+            raise CandidateTestInputError("candidate test case report is stale for suite")
         reports.append(report)
         roots.append(report_path.parent)
     reports_with_roots = sorted(
@@ -234,8 +180,8 @@ def stage_b_aggregate_functional_cases(
     )
     observed_indexes = [int(report.get("case_index", -1)) for report, _ in reports_with_roots]
     if observed_indexes != list(range(len(expected_cases))):
-        raise StageBFunctionalInputError(
-            "functional case reports do not exactly cover the suite case inventory"
+        raise CandidateTestInputError(
+            "candidate test case reports do not exactly cover the suite case inventory"
         )
     commands = {
         tuple(report.get("runner", {}).get("candidate_command", []))
@@ -250,17 +196,17 @@ def stage_b_aggregate_functional_cases(
         for report, _ in reports_with_roots
     }
     if len(commands) != 1 or len(bindings) != 1 or len(strip_policies) != 1:
-        raise StageBFunctionalInputError(
-            "functional case reports use inconsistent candidate bindings or runner policy"
+        raise CandidateTestInputError(
+            "candidate test case reports use inconsistent candidate bindings or runner policy"
         )
     output = Path(out)
     output.mkdir(parents=True, exist_ok=True)
     cases: list[dict[str, Any]] = []
     for (report, root), expected in zip(reports_with_roots, expected_cases):
         if report.get("case_id") != expected["id"]:
-            raise StageBFunctionalInputError("functional case report order or ID is stale")
+            raise CandidateTestInputError("candidate test case report order or ID is stale")
         if report.get("case_definition_sha256") != _canonical_sha256(expected):
-            raise StageBFunctionalInputError("functional case report definition is stale")
+            raise CandidateTestInputError("candidate test case report definition is stale")
         case = dict(report["case"])
         case["candidate"] = dict(case["candidate"])
         destination = output / "cases" / expected["id"]
@@ -271,8 +217,8 @@ def stage_b_aggregate_functional_cases(
             if not source.is_absolute():
                 source = root / source
             if not source.is_file() or sha256_file(source) != artifact["sha256"]:
-                raise StageBFunctionalInputError(
-                    f"functional case {expected['id']} {stream} artifact is stale"
+                raise CandidateTestInputError(
+                    f"candidate test case {expected['id']} {stream} artifact is stale"
                 )
             target = destination / f"candidate.{stream}"
             shutil.copyfile(source, target)
@@ -294,7 +240,7 @@ def stage_b_aggregate_functional_cases(
         completed_at=max(report["completed_at"] for report, _ in reports_with_roots),
         binary_binding=first_report["binary_binding"],
     )
-    write_json(output / "functional-report.json", result)
+    write_json(output / "candidate-test-report.json", result)
     return result
 
 
@@ -320,10 +266,10 @@ def _build_functional_report(
     suite_sha256 = sha256_file(suite_path)
     suite_case_manifest_sha256 = _case_manifest_sha256(case_manifest)
     result = {
-        "format": "stage-b-functional-report-v1",
+        "format": CANDIDATE_TEST_REPORT_FORMAT,
         "runner": {
-            "name": "stage-b-run-functional-suite",
-            "report_format": "stage-b-functional-report-v1",
+            "name": "candidate-run-test-suite",
+            "report_format": CANDIDATE_TEST_REPORT_FORMAT,
             "strip_stderr_line_regexes": list(strip_stderr_line_regexes),
         },
         "status": status,
@@ -368,11 +314,13 @@ def _build_functional_report(
 def _load_functional_suite(path: Path) -> dict[str, Any]:
     payload = _load_json(path)
     if not isinstance(payload, dict):
-        raise StageBFunctionalInputError("Stage B functional suite must be a JSON object")
+        raise CandidateTestInputError("candidate test suite must be a JSON object")
+    if payload.get("format") != CANDIDATE_TEST_SUITE_FORMAT:
+        raise CandidateTestInputError("candidate test suite has an unsupported format")
     cases = payload.get("cases")
     if not isinstance(cases, list) or not cases:
-        raise StageBFunctionalInputError(
-            "Stage B functional suite must contain a non-empty cases list"
+        raise CandidateTestInputError(
+            "candidate test suite must contain a non-empty cases list"
         )
     return payload
 
@@ -449,31 +397,39 @@ def _materialized_suite_cases(payload: Any) -> list[dict[str, Any]]:
     elif isinstance(payload, dict):
         entries = payload.get("cases")
     else:
-        raise StageBFunctionalInputError("Stage B upstream suite cases must be a JSON object or list")
+        raise CandidateTestInputError("candidate test suite cases must be a JSON object or list")
     if not isinstance(entries, list) or not entries:
-        raise StageBFunctionalInputError("Stage B upstream suite cases must contain a non-empty cases list")
+        raise CandidateTestInputError("candidate test suite cases must contain a non-empty cases list")
     results: list[dict[str, Any]] = []
     for entry in entries:
         if not isinstance(entry, dict):
-            raise StageBFunctionalInputError("Stage B upstream suite case entries must be objects")
+            raise CandidateTestInputError("candidate test suite case entries must be objects")
         case_id = entry.get("id")
         if not isinstance(case_id, str) or not case_id:
-            raise StageBFunctionalInputError("Stage B upstream suite cases must have non-empty string ids")
+            raise CandidateTestInputError("candidate test suite cases must have non-empty string ids")
         normalized = dict(entry)
         normalized["id"] = _artifact_name(case_id)
+        kind = normalized.get("kind")
+        if kind not in {"expected-exit", "bounded-liveness"}:
+            raise CandidateTestInputError(
+                "candidate test case kind must be expected-exit or bounded-liveness"
+            )
         _case_args(normalized)
         _case_stdin(normalized)
         _case_env(normalized)
         _case_cwd(normalized)
         _case_stdout_sink(normalized)
-        _case_expected_output(normalized)
+        if kind == "expected-exit":
+            _case_expected_output(normalized)
+        else:
+            _case_bounded_liveness(normalized)
         for timeout_key in ("timeout_seconds", "candidate_timeout_seconds"):
             if timeout_key not in normalized:
                 continue
             try:
                 float(normalized[timeout_key])
             except (TypeError, ValueError) as exc:
-                raise StageBFunctionalInputError(f"Stage B upstream suite case {timeout_key} must be numeric") from exc
+                raise CandidateTestInputError(f"candidate test suite case {timeout_key} must be numeric") from exc
         results.append(normalized)
     return results
 
@@ -529,22 +485,48 @@ def _run_functional_case(
     env_sha256 = _env_sha256(env)
     cwd = _case_cwd(case)
     stdout_sink = _case_stdout_sink(case)
-    expected = _case_expected_output(case)
-    candidate = _run_observed_process(
-        command=(*candidate_command, *args),
-        stdin_bytes=stdin_bytes,
-        env=env,
-        cwd=cwd,
-        timeout_seconds=candidate_timeout,
-        out_prefix=case_out / "candidate",
-        strip_stderr_line_regexes=strip_stderr_line_regexes,
-        stdout_sink=stdout_sink,
-    )
-    expectation = _functional_expected_output_result(candidate, expected)
-    timeout_failure = bool(candidate.get("timed_out"))
-    status = "pass" if expectation["status"] == "pass" and not timeout_failure else "fail"
+    kind = str(case["kind"])
+    if kind == "expected-exit":
+        expected = _case_expected_output(case)
+        candidate = _run_observed_process(
+            command=(*candidate_command, *args),
+            stdin_bytes=stdin_bytes,
+            env=env,
+            cwd=cwd,
+            timeout_seconds=candidate_timeout,
+            out_prefix=case_out / "candidate",
+            strip_stderr_line_regexes=strip_stderr_line_regexes,
+            stdout_sink=stdout_sink,
+        )
+        expectation = _functional_expected_output_result(candidate, expected)
+        timeout_failure = bool(candidate.get("timed_out"))
+        status = (
+            "pass"
+            if expectation["status"] == "pass" and not timeout_failure
+            else "fail"
+        )
+    else:
+        expected = _case_bounded_liveness(case)
+        candidate = _run_bounded_liveness_process(
+            command=(*candidate_command, *args),
+            stdin_bytes=stdin_bytes,
+            env=env,
+            cwd=cwd,
+            liveness_seconds=float(expected["liveness_seconds"]),
+            hard_timeout_seconds=candidate_timeout,
+            out_prefix=case_out / "candidate",
+            strip_stderr_line_regexes=strip_stderr_line_regexes,
+        )
+        expectation = {
+            "status": "pass" if candidate["liveness_observed"] else "fail",
+            "kind": "bounded-liveness",
+            "liveness_seconds": expected["liveness_seconds"],
+        }
+        timeout_failure = False
+        status = expectation["status"]
     return {
         "id": case_id,
+        "kind": kind,
         "status": status,
         "args": args,
         "timeout_seconds": timeout,
@@ -559,7 +541,20 @@ def _run_functional_case(
         "candidate": candidate,
         "mismatch": None
         if status == "pass"
-        else _functional_mismatch(candidate, expected, expectation, timeout_failure=timeout_failure),
+        else (
+            _functional_mismatch(
+                candidate,
+                expected,
+                expectation,
+                timeout_failure=timeout_failure,
+            )
+            if kind == "expected-exit"
+            else {
+                "kind": "candidate-exited-before-liveness-bound",
+                "returncode": candidate.get("returncode"),
+                "liveness_seconds": expected["liveness_seconds"],
+            }
+        ),
     }
 
 
@@ -585,11 +580,11 @@ def _run_observed_process(
         try:
             mode = full_device.stat().st_mode
         except OSError as exc:
-            raise StageBFunctionalInputError(
+            raise CandidateTestInputError(
                 "functional full_device stdout sink requires /dev/full"
             ) from exc
         if not stat.S_ISCHR(mode):
-            raise StageBFunctionalInputError(
+            raise CandidateTestInputError(
                 "functional full_device stdout sink requires character device /dev/full"
             )
         stdout_file = full_device.open("wb", buffering=0)
@@ -652,6 +647,72 @@ def _run_observed_process(
     }
 
 
+def _run_bounded_liveness_process(
+    *,
+    command: tuple[str, ...],
+    stdin_bytes: bytes,
+    env: dict[str, str],
+    cwd: str | None,
+    liveness_seconds: float,
+    hard_timeout_seconds: float,
+    out_prefix: Path,
+    strip_stderr_line_regexes: tuple[str, ...] | list[str],
+) -> dict[str, Any]:
+    if liveness_seconds <= 0 or hard_timeout_seconds <= liveness_seconds:
+        raise CandidateTestInputError(
+            "bounded-liveness hard timeout must exceed its positive liveness bound"
+        )
+    stdout_path = out_prefix.with_suffix(".stdout")
+    stderr_path = out_prefix.with_suffix(".stderr")
+    with stdout_path.open("wb") as stdout_file, stderr_path.open("wb") as stderr_file:
+        proc = subprocess.Popen(
+            list(command),
+            stdin=subprocess.PIPE,
+            stdout=stdout_file,
+            stderr=stderr_file,
+            cwd=cwd,
+            env={**os.environ, **env},
+            start_new_session=True,
+        )
+        assert proc.stdin is not None
+        try:
+            proc.stdin.write(stdin_bytes)
+            proc.stdin.close()
+            proc.wait(timeout=liveness_seconds)
+            liveness_observed = False
+            terminated_by_harness = False
+        except subprocess.TimeoutExpired:
+            liveness_observed = True
+            terminated_by_harness = True
+            _terminate_process_group(proc, signal.SIGTERM)
+            try:
+                proc.wait(timeout=max(0.1, hard_timeout_seconds - liveness_seconds))
+            except subprocess.TimeoutExpired:
+                _terminate_process_group(proc, signal.SIGKILL)
+                proc.wait()
+        except BaseException:
+            if proc.poll() is None:
+                _terminate_process_group(proc, signal.SIGKILL)
+                proc.wait()
+            raise
+    stdout = stdout_path.read_bytes()
+    stderr = _strip_matching_lines(
+        stderr_path.read_bytes(), strip_stderr_line_regexes
+    )
+    stderr_path.write_bytes(stderr)
+    return {
+        "command": list(command),
+        "cwd": cwd,
+        "returncode": proc.returncode,
+        "timed_out": False,
+        "liveness_observed": liveness_observed,
+        "terminated_by_harness": terminated_by_harness,
+        "stdout_sink": {"kind": "capture", "path": None},
+        "stdout": _stream_artifact(stdout_path, stdout),
+        "stderr": _stream_artifact(stderr_path, stderr),
+    }
+
+
 def _terminate_process_group(proc: subprocess.Popen[bytes], sig: signal.Signals) -> None:
     try:
         os.killpg(proc.pid, sig)
@@ -664,23 +725,23 @@ def _terminate_process_group(proc: subprocess.Popen[bytes], sig: signal.Signals)
 def _case_args(case: dict[str, Any]) -> tuple[str, ...]:
     args = case.get("args", [])
     if not isinstance(args, list) or not all(isinstance(item, str) for item in args):
-        raise StageBFunctionalInputError("functional suite case args must be a list of strings")
+        raise CandidateTestInputError("candidate test suite case args must be a list of strings")
     return tuple(args)
 
 
 def _case_stdin(case: dict[str, Any]) -> bytes:
     if "stdin" in case and "stdin_text" in case:
-        raise StageBFunctionalInputError("functional suite case cannot contain both stdin and stdin_text")
+        raise CandidateTestInputError("candidate test suite case cannot contain both stdin and stdin_text")
     value = case.get("stdin", case.get("stdin_text", ""))
     if not isinstance(value, str):
-        raise StageBFunctionalInputError("functional suite case stdin must be a string")
+        raise CandidateTestInputError("candidate test suite case stdin must be a string")
     return value.encode("utf-8")
 
 
 def _case_env(case: dict[str, Any]) -> dict[str, str]:
     env = case.get("env", {})
     if not isinstance(env, dict) or not all(isinstance(key, str) and isinstance(value, str) for key, value in env.items()):
-        raise StageBFunctionalInputError("functional suite case env must be an object of string values")
+        raise CandidateTestInputError("candidate test suite case env must be an object of string values")
     return dict(env)
 
 
@@ -689,15 +750,15 @@ def _case_cwd(case: dict[str, Any]) -> str | None:
     if cwd is None:
         return None
     if not isinstance(cwd, str) or not cwd:
-        raise StageBFunctionalInputError("functional suite case cwd must be a non-empty string when present")
+        raise CandidateTestInputError("candidate test suite case cwd must be a non-empty string when present")
     return cwd
 
 
 def _case_stdout_sink(case: dict[str, Any]) -> str:
     sink = case.get("stdout_sink", "capture")
     if not isinstance(sink, str) or sink not in {"capture", "full_device"}:
-        raise StageBFunctionalInputError(
-            "functional suite case stdout_sink must be capture or full_device"
+        raise CandidateTestInputError(
+            "candidate test suite case stdout_sink must be capture or full_device"
         )
     return sink
 
@@ -705,9 +766,9 @@ def _case_stdout_sink(case: dict[str, Any]) -> str:
 def _case_expected_output(case: dict[str, Any]) -> dict[str, Any]:
     value = case.get("expected_returncode", case.get("expect_returncode"))
     if value is None:
-        raise StageBFunctionalInputError("functional suite case expected_returncode must be present")
+        raise CandidateTestInputError("candidate test suite case expected_returncode must be present")
     if isinstance(value, bool) or not isinstance(value, int):
-        raise StageBFunctionalInputError("functional suite case expected_returncode must be an integer")
+        raise CandidateTestInputError("candidate test suite case expected_returncode must be an integer")
     stdout = _case_expected_stream(case, "stdout")
     stderr = _case_expected_stream(case, "stderr")
     return {
@@ -725,6 +786,47 @@ def _case_expected_output(case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _case_bounded_liveness(case: dict[str, Any]) -> dict[str, Any]:
+    if _case_stdout_sink(case) != "capture":
+        raise CandidateTestInputError(
+            "bounded-liveness cases require captured stdout"
+        )
+    value = case.get("liveness_seconds")
+    try:
+        liveness_seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise CandidateTestInputError(
+            "bounded-liveness case liveness_seconds must be numeric"
+        ) from exc
+    hard_timeout = _case_side_timeout_seconds(
+        case,
+        "candidate_timeout_seconds",
+        float(case.get("timeout_seconds", 30.0)),
+    )
+    if liveness_seconds <= 0 or hard_timeout <= liveness_seconds:
+        raise CandidateTestInputError(
+            "bounded-liveness hard timeout must exceed its positive liveness bound"
+        )
+    forbidden = {
+        "expected_returncode",
+        "expect_returncode",
+        "expected_stdout",
+        "expected_stdout_text",
+        "expected_stdout_base64",
+        "expected_stderr",
+        "expected_stderr_text",
+        "expected_stderr_base64",
+    }
+    if forbidden & set(case):
+        raise CandidateTestInputError(
+            "bounded-liveness cases cannot declare exit or output expectations"
+        )
+    return {
+        "liveness_seconds": liveness_seconds,
+        "hard_timeout_seconds": hard_timeout,
+    }
+
+
 def _case_expected_stream(case: dict[str, Any], stream: str) -> dict[str, Any]:
     direct_key = f"expected_{stream}"
     text_key = f"expected_{stream}_text"
@@ -732,15 +834,15 @@ def _case_expected_stream(case: dict[str, Any], stream: str) -> dict[str, Any]:
     policy_key = f"expected_{stream}_policy"
     policy = case.get(policy_key, "exact")
     if policy not in {"exact", "any"}:
-        raise StageBFunctionalInputError(f"functional suite case {policy_key} must be exact or any")
+        raise CandidateTestInputError(f"candidate test suite case {policy_key} must be exact or any")
     supplied = [key for key in (direct_key, text_key, base64_key) if key in case]
     if len(supplied) > 1:
-        raise StageBFunctionalInputError(
-            f"functional suite case cannot contain multiple {stream} expectations"
+        raise CandidateTestInputError(
+            f"candidate test suite case cannot contain multiple {stream} expectations"
         )
     if policy == "any":
         if supplied:
-            raise StageBFunctionalInputError(f"functional suite case cannot combine {policy_key}=any with {direct_key}")
+            raise CandidateTestInputError(f"candidate test suite case cannot combine {policy_key}=any with {direct_key}")
         return {
             "text": None,
             "base64": None,
@@ -749,18 +851,18 @@ def _case_expected_stream(case: dict[str, Any], stream: str) -> dict[str, Any]:
             "bytes": None,
         }
     if not supplied:
-        raise StageBFunctionalInputError(f"functional suite case {direct_key} must be present")
+        raise CandidateTestInputError(f"candidate test suite case {direct_key} must be present")
     if base64_key in case:
         encoded = case[base64_key]
         if not isinstance(encoded, str):
-            raise StageBFunctionalInputError(
-                f"functional suite case {base64_key} must be a string"
+            raise CandidateTestInputError(
+                f"candidate test suite case {base64_key} must be a string"
             )
         try:
             data = base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError) as exc:
-            raise StageBFunctionalInputError(
-                f"functional suite case {base64_key} is invalid"
+            raise CandidateTestInputError(
+                f"candidate test suite case {base64_key} is invalid"
             ) from exc
         return {
             "text": None,
@@ -771,7 +873,7 @@ def _case_expected_stream(case: dict[str, Any], stream: str) -> dict[str, Any]:
         }
     value = case.get(direct_key, case.get(text_key))
     if not isinstance(value, str):
-        raise StageBFunctionalInputError(f"functional suite case {direct_key} must be a string")
+        raise CandidateTestInputError(f"candidate test suite case {direct_key} must be a string")
     data = value.encode("utf-8")
     return {
         "text": value,
@@ -787,7 +889,7 @@ def _case_side_timeout_seconds(case: dict[str, Any], key: str, default: float) -
     try:
         return float(value)
     except (TypeError, ValueError) as exc:
-        raise StageBFunctionalInputError(f"functional suite case {key} must be numeric") from exc
+        raise CandidateTestInputError(f"candidate test suite case {key} must be numeric") from exc
 
 
 def _env_sha256(env: dict[str, str]) -> str:
@@ -907,6 +1009,6 @@ def _load_json(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
-        raise StageBFunctionalInputError(f"cannot read {path}: {exc}") from exc
+        raise CandidateTestInputError(f"cannot read {path}: {exc}") from exc
     except json.JSONDecodeError as exc:
-        raise StageBFunctionalInputError(f"invalid JSON in {path}: {exc}") from exc
+        raise CandidateTestInputError(f"invalid JSON in {path}: {exc}") from exc

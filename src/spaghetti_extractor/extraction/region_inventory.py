@@ -6,9 +6,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from ..artifacts.formats import STATIC_ANALYSIS_PROFILE_ID
 from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes
-from .schema import STATIC_ANALYSIS_MODEL_ID, STATIC_ANALYSIS_PROFILE_ID
+from .schema import STATIC_ANALYSIS_MODEL_ID
 
 
 SIDE_EXTRACTION_REQUEST_FORMAT = "stage-a-static-region-request-v1"

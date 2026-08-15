@@ -15,9 +15,9 @@ class InterpreterRenderingTests(unittest.TestCase):
             first = root / "first"
             second = root / "second"
             package = write_stage_b_interpreter_package(
-                state_machine=machine, out=first
+                machine_ir=machine, out=first
             )
-            write_stage_b_interpreter_package(state_machine=machine, out=second)
+            write_stage_b_interpreter_package(machine_ir=machine, out=second)
 
             self.assertEqual(package["status"], "ready")
             self.assertEqual(package["counts"]["transfers"], 1)

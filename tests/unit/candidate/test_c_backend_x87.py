@@ -11,12 +11,12 @@ from spaghetti_extractor.candidate.c_backend import write_stage_b_semantic_c_bac
 
 def _transfer(*, fpu_state: object = None) -> dict[str, object]:
     row: dict[str, object] = {
-        "format": "stage-a-semantic-transfer-contract-v1",
+        "format": "spaghetti-extractor-static-transfer-v1",
         "id": "semantic-transfer:replay-only-x87",
         "function": "fixture",
         "block_id": "fixture",
         "status": "reimplementable",
-        "expression_model": "stage-a-semantic-ir-v1",
+        "expression_model": "spaghetti-extractor-static-semantic-ir-v1",
         "original": {"rva_start": 0x2000, "rva_end": 0x2001},
         "instructions": [],
         "register_writes": [],

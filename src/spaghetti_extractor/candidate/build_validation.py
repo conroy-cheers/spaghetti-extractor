@@ -26,7 +26,6 @@ from .build_values import (
     _file,
     _read_json_object,
 )
-from .modes import STATIC_CLOSED_CANDIDATE_MODE
 from .runtime import plan_stage_b_native_runtime
 
 
@@ -78,21 +77,16 @@ def _validate_candidate_authority_package_bindings(
             )
         if package.payload.get("execution_policy") != "complete_transfer_inventory_v1":
             raise StageBInterpreterNativeBuildError(
-                f"{package.owner} package permits deferred transfers"
+                f"{package.owner} package does not require complete transfer coverage"
             )
         semantic_coverage = package.payload.get("semantic_coverage")
         if (
             not isinstance(semantic_coverage, Mapping)
             or semantic_coverage.get("status") != "complete"
-            or semantic_coverage.get("deferred_transfers") != 0
+            or semantic_coverage.get("acceptance_authority") is not False
         ):
             raise StageBInterpreterNativeBuildError(
                 f"{package.owner} package has incomplete semantic coverage"
-            )
-        deferred = package.payload.get("deferred_transfers")
-        if not isinstance(deferred, list) or deferred:
-            raise StageBInterpreterNativeBuildError(
-                f"{package.owner} package has deferred transfers"
             )
     manifest = engine.payload.get("machine_ir_manifest")
     if (
@@ -105,9 +99,8 @@ def _validate_candidate_authority_package_bindings(
         )
 
 
-def _validate_candidate_mode_package_bindings(
+def _validate_static_candidate_package_bindings(
     *,
-    candidate_mode: str,
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
     interpreter: _Package,
@@ -150,13 +143,11 @@ def _validate_candidate_mode_package_bindings(
         not isinstance(engine_policy, Mapping)
         or not isinstance(runtime_policy, Mapping)
         or not isinstance(runtime_inputs, Mapping)
-        or engine_policy.get("candidate_mode") != candidate_mode
-        or runtime_policy.get("candidate_mode") != candidate_mode
-        or runtime_inputs.get("candidate_mode") != candidate_mode
-        or getattr(runtime_plan, "candidate_mode", None) != candidate_mode
+        or engine_policy.get("execution_scope") != "complete-static-authority"
+        or runtime_policy.get("execution_scope") != "complete-static-authority"
     ):
         raise StageBInterpreterNativeBuildError(
-            "native package closure does not bind one candidate execution mode"
+            "native package closure does not require complete static authority"
         )
 
     interpreter_coverage = interpreter.payload.get("semantic_coverage")
@@ -167,18 +158,6 @@ def _validate_candidate_mode_package_bindings(
         raise StageBInterpreterNativeBuildError(
             "candidate package closure omits semantic coverage"
         )
-    interpreter_deferred = interpreter_coverage.get("deferred_transfers")
-    engine_deferred = engine_coverage.get("deferred_transfers")
-    if (
-        isinstance(interpreter_deferred, bool)
-        or not isinstance(interpreter_deferred, int)
-        or interpreter_deferred < 0
-        or engine_deferred != interpreter_deferred
-    ):
-        raise StageBInterpreterNativeBuildError(
-            "candidate package closure has inconsistent deferred-transfer counts"
-        )
-
     dispatch = engine.payload.get("implementation_dispatch_receipt")
     if not isinstance(dispatch, Mapping):
         raise StageBInterpreterNativeBuildError(
@@ -189,47 +168,27 @@ def _validate_candidate_mode_package_bindings(
     if (
         not isinstance(dispatch_policy, Mapping)
         or not isinstance(reachability, Mapping)
-        or dispatch_policy.get("candidate_mode") != candidate_mode
         or dispatch_policy.get("acceptance_authority") is not False
         or dispatch.get("blockers") != []
     ):
         raise StageBInterpreterNativeBuildError(
-            "implementation-dispatch receipt cannot authorize this execution mode"
+            "implementation-dispatch receipt is not a complete static binding"
         )
-    diagnostic_frontiers = engine.payload.get("diagnostic_frontiers")
-    if not isinstance(diagnostic_frontiers, list):
+    if (
+        interpreter_coverage.get("status") != "complete"
+        or interpreter_coverage.get("acceptance_authority") is not False
+        or engine_coverage.get("status") != "complete"
+        or engine_coverage.get("acceptance_authority") is not False
+        or dispatch.get("status") != "complete"
+        or reachability.get("status") != "complete"
+    ):
         raise StageBInterpreterNativeBuildError(
-            "native_engine package omits diagnostic frontier inventory"
+            "candidate package closure retains incomplete execution scope"
         )
-
-    if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
-        if (
-            interpreter_deferred != 0
-            or interpreter_coverage.get("status") != "complete"
-            or engine_coverage.get("status") != "complete"
-            or dispatch.get("status") != "complete"
-            or reachability.get("status") != "complete"
-            or diagnostic_frontiers
-        ):
-            raise StageBInterpreterNativeBuildError(
-                "static-closed package closure retains incomplete execution scope"
-            )
-    else:
-        if (
-            dispatch.get("status") not in {"complete", "diagnostic"}
-            or reachability.get("status") not in {"complete", "incomplete"}
-            or interpreter_coverage.get("status")
-            not in {"complete", "incomplete"}
-            or engine_coverage.get("status")
-            not in {"complete", "incomplete"}
-        ):
-            raise StageBInterpreterNativeBuildError(
-                "structural-diagnostic package closure is not fail-closed runnable"
-            )
 
     core = {
-        "format": "stage-b-candidate-execution-scope-v1",
-        "candidate_mode": candidate_mode,
+        "format": "spaghetti-extractor-static-candidate-binding-v1",
+        "execution_scope": "complete-static-authority",
         "acceptance_authority": "none",
         "machine_ir_sha256": machine_ir_sha256,
         "machine_ir_manifest_sha256": manifest_sha256,
@@ -238,8 +197,6 @@ def _validate_candidate_mode_package_bindings(
         "native_runtime_package_sha256": runtime.manifest_sha256,
         "dispatch_receipt_sha256": dispatch.get("receipt_sha256"),
         "reachability_status": reachability.get("status"),
-        "deferred_transfers": interpreter_deferred,
-        "diagnostic_frontiers": len(diagnostic_frontiers),
         "runtime_unknown_target_disposition": "fail-closed-as-unimplemented",
     }
     return {**core, "binding_sha256": native_build._canonical_sha256(core)}
@@ -579,17 +536,8 @@ def _validate_package_closure(
     if not isinstance(counts, Mapping):
         raise StageBInterpreterNativeBuildError("interpreter program counts are malformed")
     transfer_count = len(plan.transfer_rvas)
-    deferred_count = counts.get("deferred_transfers", 0)
     if (
-        not isinstance(deferred_count, int)
-        or isinstance(deferred_count, bool)
-        or deferred_count < 0
-    ):
-        raise StageBInterpreterNativeBuildError(
-            "interpreter program deferred-transfer count is malformed"
-        )
-    if (
-        counts.get("input_transfers") != transfer_count + deferred_count
+        counts.get("input_transfers") != transfer_count
         or counts.get("transfers") != transfer_count
         or counts.get("blocked_transfers") != 0
     ):
@@ -598,31 +546,11 @@ def _validate_package_closure(
         )
     coverage = program_payload.get("semantic_coverage")
     execution_policy = program_payload.get("execution_policy")
-    deferred_rows = program_payload.get("deferred_transfers")
-    if deferred_count:
-        if (
-            not isinstance(coverage, Mapping)
-            or coverage.get("status") != "incomplete"
-            or coverage.get("acceptance_authority") is not False
-            or execution_policy != "fail_closed_on_deferred_potential_transfer_v1"
-            or not isinstance(deferred_rows, list)
-            or len(deferred_rows) != deferred_count
-            or any(
-                not isinstance(item, Mapping)
-                or item.get("reachability") != "potential"
-                or item.get("runtime_disposition")
-                != "fail_closed_as_unimplemented_if_reached"
-                for item in deferred_rows
-            )
-        ):
-            raise StageBInterpreterNativeBuildError(
-                "interpreter deferred-transfer policy is incomplete"
-            )
-    elif (
+    if (
         not isinstance(coverage, Mapping)
         or coverage.get("status") != "complete"
+        or coverage.get("acceptance_authority") is not False
         or execution_policy != "complete_transfer_inventory_v1"
-        or deferred_rows != []
     ):
         raise StageBInterpreterNativeBuildError(
             "interpreter complete-transfer policy is malformed"

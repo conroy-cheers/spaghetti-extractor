@@ -3,22 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-from ..artifacts.formats import (
-    INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
-    MACHINE_IR_FORMAT as _MACHINE_IR_FORMAT,
-    NATIVE_X87_REPLAY_FORMAT as _X87_REPLAY_FORMAT,
-    NATIVE_X87_REPLAY_PROGRAM_FORMAT as _X87_REPLAY_PROGRAM_FORMAT,
-    STAGE_B_INTERPRETER_PACKAGE_FORMAT,
-    STAGE_B_INTERPRETER_PROGRAM_FORMAT,
-)
 from ..pe32.stage_binary import StageAInputError
 from .x87 import (
     TYPED_NATIVE_X87_PROGRAM_FORMAT,
     TypedX87Operation,
-    X87_CHECKED_DECODER,
-    X87_CHECKED_EXECUTOR,
 )
 
 
@@ -46,26 +35,9 @@ _FLAG_INDEX = {name: index for index, name in enumerate(_FLAGS)}
 _AF_FLAG_INDEX = len(_FLAGS)
 _REP_SCAS_OWNED_REGISTERS = ("edi", "ecx")
 _REP_SCAS_OWNED_FLAGS = ("cf", "pf", "af", "zf", "sf", "of")
-_X87_REPLAY_MODEL = "native_exact_x87_command_replay_obligation_v1"
 _X87_TYPED_PROGRAM_FORMAT = TYPED_NATIVE_X87_PROGRAM_FORMAT
-_X87_CHECKED_DECODER = X87_CHECKED_DECODER
-_X87_CHECKED_EXECUTOR = X87_CHECKED_EXECUTOR
-_INSTRUCTION_EFFECT_SCHEDULE_FORMAT = (
-    INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
-)
 _ORDINARY_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
 _ORDINARY_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
-_X87_PHYSICAL_FIELDS = (
-    "stack", "tags", "control", "status", "pending_exception", "last_opcode",
-    "instruction_pointer", "code_selector", "data_pointer", "data_selector",
-)
-_RAW_INSTRUCTION_FIELDS = frozenset({
-    "bytes",
-    "instruction_bytes",
-    "opcode_bytes",
-    "raw_bytes",
-    "encoded_instruction",
-})
 
 
 class StageBInterpreterError(StageAInputError):

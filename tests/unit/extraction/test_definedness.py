@@ -15,8 +15,8 @@ def _undefined() -> dict[str, object]:
 
 def _row(*, escapes: bool) -> dict[str, object]:
     return {
-        "format": "stage-a-semantic-transfer-contract-v1",
-        "expression_model": "stage-a-semantic-ir-v1",
+        "format": "spaghetti-extractor-static-transfer-v1",
+        "expression_model": "spaghetti-extractor-static-semantic-ir-v1",
         "id": "semantic-transfer:fixture-sar-and",
         "status": "reimplementable",
         "reachable": False,
@@ -34,7 +34,7 @@ def _row(*, escapes: bool) -> dict[str, object]:
         "outcome": {"kind": "fallthrough", "target_rva": 0x1005},
         "fpu_state": None,
         "instruction_effect_schedule": {
-            "format": "stage-a-instruction-ordered-effect-schedule-v1",
+            "format": "spaghetti-extractor-static-instruction-effects-v1",
             "status": "complete",
             "blockers": [],
             "records": [

@@ -1,6 +1,7 @@
 { pkgs, sdk }:
 
 let
+  target = builtins.fromJSON (builtins.readFile ./target.json);
   archive = pkgs.fetchurl {
     name = "dxball-1.09-distributable.zip";
     url = "https://archive.org/download/dxball-19/DXBall19.zip";
@@ -65,10 +66,26 @@ let
     maxCandidatesPerSeed = 12;
   };
   components = workflow.components;
+  runtimeData = pkgs.runCommand "dxball-1.09-candidate-runtime-data" {
+    __contentAddressed = true;
+  } ''
+    mkdir -p "$out"
+    cp -a ${original}/runtime/. "$out/"
+    rm -f "$out/DXBall.exe"
+  '';
+  candidateTests = {
+    "dxball-default-candidate" = workflow.candidateTestFor {
+      id = "dxball-default-candidate";
+      configurationId = target.workflow.default_configuration;
+      suite = ./tests/candidate-suite.json;
+      inherit runtimeData;
+      timeoutSeconds = 20;
+    };
+  };
 in
 sdk.target.pe32Bundle {
   targetRoot = ./.;
-  inherit workflow;
+  inherit workflow candidateTests;
   inputs = {
     inherit archive installer original;
   };

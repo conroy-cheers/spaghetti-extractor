@@ -40,6 +40,41 @@
         spaghetti-extractor-dev --repository ${testSource} refresh --check
         touch "$out"
       '';
+      productionPythonLint = pkgs.runCommand "spaghetti-extractor-production-python-lint" {
+        nativeBuildInputs = [ pkgs.ruff ];
+        preferLocalBuild = true;
+        allowSubstitutes = true;
+        __contentAddressed = true;
+      } ''
+        ruff check --select F401,F811,F821 \
+          ${testSource}/src/spaghetti_extractor/candidate \
+          ${testSource}/src/spaghetti_extractor/static_program \
+          ${testSource}/src/spaghetti_extractor/extraction \
+          ${testSource}/src/spaghetti_extractor/target_bundles \
+          ${testSource}/src/spaghetti_extractor/commands \
+          ${testSource}/src/spaghetti_extractor/artifacts/formats.py
+        touch "$out"
+      '';
+      architectureBoundaryCheck = pkgs.runCommand
+        "spaghetti-extractor-retired-architecture-boundary" { } ''
+          set -euo pipefail
+          test ! -e ${testSource}/src/spaghetti_extractor/reference_contract
+          test ! -e ${testSource}/src/spaghetti_extractor/candidate/modes.py
+          test ! -e ${testSource}/src/spaghetti_extractor/candidate/machine_ir_scope.py
+          test ! -e ${testSource}/nix/structural-diagnostics.nix
+          test ! -e ${testSource}/nix/stage-b-functional-suite.nix
+          test ! -e ${testSource}/nix/stage-b-upstream-shell-suite.nix
+          if grep -R -n -E \
+            'spaghetti_extractor\.reference_contract|candidate_mode|allow_deferred_potential_transfers|stage-b-run-functional-suite' \
+            ${testSource}/src ${testSource}/nix \
+            --exclude='checks.nix' \
+            --exclude='python-module-index.json' \
+            --exclude='test-suite-manifest.json'; then
+            echo "retired binary-pair or diagnostic-candidate API reintroduced" >&2
+            exit 1
+          fi
+          touch "$out"
+        '';
       roundtrip = import ../stage-a-roundtrip-corpus.nix {
         inherit pkgs;
         inherit (context) pythonEnv;
@@ -70,6 +105,8 @@
       };
       fullGate = pkgs.linkFarm "spaghetti-extractor-test-full" [
         { name = "repository-metadata-freshness"; path = repositoryMetadataFreshness; }
+        { name = "production-python-lint"; path = productionPythonLint; }
+        { name = "retired-architecture-boundary"; path = architectureBoundaryCheck; }
         { name = "python-suite"; path = fullSuite.aggregate; }
         { name = "authority-machine-ir-input"; path = authorityMachineIrInputCheck; }
         { name = "authority-graph-v3"; path = authorityGraphV3Check; }
@@ -80,6 +117,8 @@
       ];
       smokeGate = pkgs.linkFarm "spaghetti-extractor-test-smoke" [
         { name = "repository-metadata-freshness"; path = repositoryMetadataFreshness; }
+        { name = "production-python-lint"; path = productionPythonLint; }
+        { name = "retired-architecture-boundary"; path = architectureBoundaryCheck; }
         { name = "python-suite"; path = smokeSuite.aggregate; }
       ];
       benchmarkGate = pkgs.linkFarm "spaghetti-extractor-test-benchmark" [
@@ -146,6 +185,8 @@
         '';
         test-suite = fullGate;
         repository-metadata = repositoryMetadataFreshness;
+        production-python-lint = productionPythonLint;
+        retired-architecture-boundary = architectureBoundaryCheck;
         python-module-closure =
           assert !crossRoleClosure.success;
           pkgs.runCommand

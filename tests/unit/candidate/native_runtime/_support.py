@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import re
 import shutil
 import subprocess
@@ -15,10 +16,17 @@ from spaghetti_extractor.external.contracts import (
 from spaghetti_extractor.external.machine_import_profiles import (
     load_machine_import_profile_set,
 )
-from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
+from spaghetti_extractor.artifacts.artifact_set import (
+    ArtifactSetWriterV3,
+    canonical_sha256_v3,
+)
+from spaghetti_extractor.authority.external_site_records import (
+    CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+)
 from spaghetti_extractor.candidate.interpreter import (
     write_stage_b_interpreter_package,
 )
+from spaghetti_extractor.candidate.interpreter_model import StageBInterpreterError
 from spaghetti_extractor.candidate.engine import (
     write_stage_b_native_engine_package,
 )
@@ -29,7 +37,12 @@ from spaghetti_extractor.candidate.runtime import (
     write_stage_b_native_runtime_package,
 )
 from spaghetti_extractor.util import sha256_bytes, sha256_file
-from tests.unit.candidate.native_engine._support import _canonical_external_sites
+from spaghetti_extractor.errors import StageAInputError
+from tests.unit.candidate.native_engine._support import (
+    _canonical_external_sites,
+    _implementation_manifest,
+    _machine_ir_x87_transfer,
+)
 
 
 _CONTRACT_SHA256 = "a" * 64
@@ -51,14 +64,113 @@ def _transfer(rva: int = 0x1000) -> dict[str, object]:
     }
 
 
-def _write_state_machine(path: Path, rows: list[dict[str, object]]) -> None:
+def _as_machine_ir(row: dict[str, object]) -> dict[str, object]:
+    if row.get("format") == "stage-a-machine-ir-v2":
+        unit = copy.deepcopy(row)
+        original = unit["source"]["original"]
+        outcome = unit["semantics"].get("outcome")
+    else:
+        original = dict(row["original"])
+        outcome = row.get("outcome")
+        instructions = []
+        for instruction in row.get("instructions", []):
+            rva = int(instruction["rva"])
+            size = int(instruction["size"])
+            encoded = bytes.fromhex(str(instruction["bytes"]))
+            mnemonic = str(instruction["mnemonic"])
+            instructions.append({
+                "rva_start": rva,
+                "rva_end": rva + size,
+                "size": size,
+                "instruction_sha256": sha256_bytes(encoded),
+                "mnemonic": mnemonic,
+                "operands": [],
+                "registers_read": [],
+                "registers_written": [],
+                "groups": [
+                    group
+                    for group in ("call", "jump", "ret")
+                    if (
+                        (group == "call" and mnemonic == "call")
+                        or (group == "jump" and mnemonic.startswith("j"))
+                        or (group == "ret" and mnemonic.startswith("ret"))
+                    )
+                ],
+            })
+        unit = {
+            "format": "stage-a-machine-ir-v2",
+            "record_kind": "unit",
+            "id": row["id"],
+            "status": "qualified",
+            "reachable": True,
+            "source": {
+                "original": original,
+                "contract_sha256": row.get("contract_sha256", _CONTRACT_SHA256),
+                "instruction_bytes_sha256": row.get(
+                    "instruction_bytes_sha256", _INSTRUCTION_SHA256
+                ),
+                "semantic_export": None,
+            },
+            "instructions": instructions,
+            "x87_micro_ops": row.get("x87_micro_ops", []),
+            "semantics": {
+                "pre_state": row.get("pre_state", {}),
+                "register_writes": row.get("register_writes", []),
+                "flag_writes": row.get("flag_writes", []),
+                "memory_events": row.get("memory_events", []),
+                "external_events": row.get("ordered_events", []),
+                "faults": row.get("faults", []),
+                "ordered_events": row.get("ordered_events", []),
+                "edge_conditions": row.get("edge_conditions", []),
+                "outcome": outcome,
+                "stack_delta": row.get("stack_delta", 0),
+                "counts": row.get("counts", {}),
+                "fpu_state": row.get("fpu_state"),
+                "instruction_effect_schedule": row.get(
+                    "instruction_effect_schedule"
+                ),
+            },
+        }
+    start = int(original["rva_start"])
+    end = int(original["rva_end"])
+    if not unit.get("instructions"):
+        mnemonic = "ret" if isinstance(outcome, dict) and outcome.get("kind") == "return" else "nop"
+        unit["instructions"] = [{
+            "rva_start": start,
+            "rva_end": end,
+            "size": end - start,
+            "instruction_sha256": unit["source"]["instruction_bytes_sha256"],
+            "mnemonic": mnemonic,
+            "operands": [],
+            "registers_read": [],
+            "registers_written": [],
+            "groups": ["ret"] if mnemonic == "ret" else [],
+        }]
+    if not isinstance(unit.get("control"), dict):
+        kind = outcome.get("kind") if isinstance(outcome, dict) else "return"
+        direct = []
+        if isinstance(outcome, dict):
+            for key in ("target_rva", "true_target_rva", "false_target_rva"):
+                if isinstance(outcome.get(key), int):
+                    direct.append(outcome[key])
+        unit["control"] = {
+            "kind": kind,
+            "direct_targets": sorted(set(direct)),
+            "has_indirect_target": kind in {"indirect", "indirect_call"},
+        }
+    return unit
+
+
+def _write_machine_ir(path: Path, rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    units = [_as_machine_ir(row) for row in rows]
     path.write_text(
         "".join(
             json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
-            for row in rows
+            for row in units
         ),
         encoding="utf-8",
     )
+    return units
 
 
 def _packages(
@@ -67,29 +179,85 @@ def _packages(
     *,
     callback_targets: list[dict[str, object]] | None = None,
     import_iat_vas: dict[tuple[str, str], int] | None = None,
-    machine_ir: bool = False,
     modeled_termination: bool = False,
     selected_portable_components: list[dict[str, object]] | None = None,
     external_profile: Path | None = None,
 ) -> tuple[Path, Path]:
-    semantic_input = root / (
-        "machine-ir.jsonl" if machine_ir else "state-machine.jsonl"
+    semantic_input = root / "machine-ir.jsonl"
+    fixture_units = [_as_machine_ir(row) for row in (rows or [_transfer()])]
+    starts = {
+        int(unit["source"]["original"]["rva_start"])
+        for unit in fixture_units
+    }
+    for unit in tuple(fixture_units):
+        for direct_target in unit["control"]["direct_targets"]:
+            if direct_target not in starts:
+                fixture_units.append(_as_machine_ir(_transfer(direct_target)))
+                starts.add(direct_target)
+        for event in unit["semantics"]["external_events"]:
+            if event.get("kind") not in {
+                "external_call", "indirect_call", "internal_call"
+            }:
+                continue
+            return_rva = event.get("return_rva")
+            if isinstance(return_rva, int) and return_rva not in starts:
+                fixture_units.append(_as_machine_ir(_transfer(return_rva)))
+                starts.add(return_rva)
+    fixture_units = _write_machine_ir(semantic_input, fixture_units)
+    resolutions = []
+    summaries = []
+    by_rva = {
+        int(unit["source"]["original"]["rva_start"]): unit
+        for unit in fixture_units
+    }
+    for unit in fixture_units:
+        for event_index, event in enumerate(unit["semantics"]["external_events"]):
+            if event.get("kind") == "indirect_call" and not event.get("dll"):
+                internal_targets = [
+                    candidate["id"]
+                    for rva, candidate in sorted(by_rva.items())
+                    if rva not in {
+                        int(unit["source"]["original"]["rva_start"]),
+                        event.get("return_rva"),
+                    }
+                ]
+                resolutions.append({
+                    "status": "recovered",
+                    "source_unit_id": unit["id"],
+                    "source_event_index": event_index,
+                    "target_unit_ids": internal_targets,
+                })
+            if event.get("kind") == "internal_call":
+                target_rva = int(event["target_rva"])
+                target = by_rva[target_rva]
+                target_outcome = target["semantics"].get("outcome")
+                summaries.append({
+                    "target_rva": target_rva,
+                    "return_behavior": {
+                        "may_return": not (
+                            isinstance(target_outcome, dict)
+                            and target_outcome.get("kind") == "external_jump"
+                        )
+                    },
+                })
+    manifest = root / "machine-ir-manifest.json"
+    manifest.write_text(
+        json.dumps(
+            _implementation_manifest(
+                semantic_input,
+                roots=[str(fixture_units[0]["id"])],
+                reachable=[str(unit["id"]) for unit in fixture_units],
+                resolutions=resolutions,
+                summaries=summaries,
+            ),
+            sort_keys=True,
+        ),
+        encoding="utf-8",
     )
-    _write_state_machine(semantic_input, rows or [_transfer()])
     interpreter = root / "interpreter"
     engine = root / "engine"
-    interpreter_input = (
-        {"machine_ir": semantic_input}
-        if machine_ir
-        else {"state_machine": semantic_input}
-    )
-    write_stage_b_interpreter_package(**interpreter_input, out=interpreter)
-    engine_input = (
-        {"machine_ir": semantic_input}
-        if machine_ir
-        else {"state_machine": semantic_input}
-    )
-    canonical_external_sites = None
+    write_stage_b_interpreter_package(machine_ir=semantic_input, out=interpreter)
+    canonical_external_sites = root / "canonical-external-sites"
     profiles: tuple[Path, ...] = ()
     if external_profile is not None:
         profiles = (external_profile,)
@@ -99,14 +267,11 @@ def _packages(
         selected_contract = selected.contracts[0]
         if selected_contract.argument_words is None:
             raise AssertionError("runtime fixture requires one fixed-arity import contract")
-        fixture_units = rows or [_transfer()]
         event_candidates = [
             (unit, event)
             for unit in fixture_units
             for event in (
                 unit["semantics"]["external_events"]
-                if machine_ir
-                else unit["ordered_events"]
             )
             if event.get("kind") in {
                 "external_call", "external_jump", "indirect_call"
@@ -167,8 +332,19 @@ def _packages(
             event=event,
             unit_sha256=canonical_sha256_v3(unit),
         )
+        if import_iat_vas is None:
+            import_iat_vas = {(
+                selected_contract.identity.dll,
+                selected_contract.identity.value,
+            ): 0x43219C}
+    else:
+        ArtifactSetWriterV3(
+            artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+            bindings=(),
+        ).write(canonical_external_sites, [])
     write_stage_b_native_engine_package(
-        **engine_input,
+        machine_ir=semantic_input,
+        machine_ir_manifest=manifest,
         entry_rva=0x1000,
         preferred_image_base=0x400000,
         callback_targets=callback_targets or [],
@@ -495,355 +671,12 @@ def _write_sleep_profile(path: Path) -> None:
     }, sort_keys=True), encoding="utf-8")
 
 
-def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
-    profile = root / "callback-profile.json"
-    callback_source = {
-        "kind": "argument_pointee",
-        "argument": 0,
-        "offset": 4,
-    }
-    callback_abi = {
-        "kind": "generic_callback",
-        "argument_words": 4,
-        "stack_cleanup_bytes": 16,
-        "nullable": False,
-    }
-    profile_contract = {
-        "id": "fixture-register-class-a",
-        "import": {"dll": "user32.dll", "symbol": "RegisterClassA"},
-        "abi_template": "pe32-stdcall-v1",
-        "arity": {"kind": "fixed", "words": 1},
-        "disposition": "returns",
-        "result_register_relations": [
-            {"register": "eax", "relation": "exact"}
-        ],
-        "memory_effect": "readOnly",
-        "memory_footprints": [{
-            "access": "read",
-            "base_argument": 0,
-            "offset": 0,
-            "size": {"kind": "fixed", "bytes": 40},
-            "nullable": False,
-        }],
-        "world_effect": "callbackRegistration",
-        "callback_effect": "explicit",
-        "callback_source": callback_source,
-        "callback_lifetime": "until_class_unregistered_or_process_exit",
-        "callback_abi": callback_abi,
-    }
-    profile.write_text(json.dumps({
-        "format": "stage-a-external-environment-profile-v1",
-        "id": "fixture-callback-profile-v1",
-        "machine_import_call_contracts": [profile_contract],
-    }, sort_keys=True), encoding="utf-8")
-    profile_binding = {
-        "profile_id": "fixture-callback-profile-v1",
-        "profile_sha256": sha256_file(profile),
-        "entry_key": "machine_import_call_contracts",
-        "entry_index": 0,
-    }
-    registers = {
-        name: {"op": "reg", "name": name, "width": 32}
-        for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp")
-    }
-    flags = {
-        name: {"op": "flag", "name": name}
-        for name in ("cf", "zf", "sf", "of", "pf", "df")
-    }
-    argument = {"op": "reg", "name": "eax", "width": 32}
-    event = {
-        "family": "external",
-        "kind": "external_call",
-        "instruction_rva": 0x1000,
-        "return_rva": 0x1006,
-        "dll": "user32.dll",
-        "symbol": "RegisterClassA",
-        "ordinal": None,
-        "arguments": [argument],
-        "register_inputs": registers,
-        "flag_inputs": flags,
-        "stack_inputs": [{"offset": 0, "width": 4, "value": argument}],
-        "abi_contract": {
-            "template": "pe32-stdcall-v1",
-            "argument_words": 1,
-            "argument_base_offset": 0,
-            "contract_id": "fixture-register-class-a",
-            "profile_binding": profile_binding,
-            "disposition": "returns",
-            "result_register_relations": profile_contract[
-                "result_register_relations"
-            ],
-            "memory_effect": "readOnly",
-            "memory_footprints": [{
-                "access": "read",
-                "base_argument": 0,
-                "offset": 0,
-                "size": {"kind": "fixed", "byte_count": 40},
-                "nullable": False,
-            }],
-            "world_effect": "callbackRegistration",
-            "callback_effect": "explicit",
-            "callback_source": callback_source,
-            "callback_lifetime": "until_class_unregistered_or_process_exit",
-            "callback_abi": callback_abi,
-        },
-    }
-
-    def unit(rva: int, *, registration: bool) -> dict[str, object]:
-        size = 6 if registration else 1
-        ordered = [event] if registration else []
-        return {
-            "format": "stage-a-machine-ir-v2",
-            "record_kind": "unit",
-            "id": f"semantic-transfer:typed-{rva:08x}",
-            "status": "qualified",
-            "source": {
-                "original": {"rva_start": rva, "rva_end": rva + size, "size": size},
-                "contract_sha256": _CONTRACT_SHA256,
-                "instruction_bytes_sha256": _INSTRUCTION_SHA256,
-                "semantic_export": None,
-            },
-            "instructions": [{
-                "rva_start": rva,
-                "rva_end": rva + size,
-                "size": size,
-                "instruction_sha256": _INSTRUCTION_SHA256,
-                "mnemonic": "call" if registration else "ret",
-                "operands": [],
-                "registers_read": [],
-                "registers_written": [],
-                "groups": ["call"] if registration else ["ret"],
-            }],
-            "x87_micro_ops": [],
-            "semantics": {
-                "pre_state": {},
-                "register_writes": [],
-                "flag_writes": [],
-                "memory_events": [],
-                "external_events": ordered,
-                "faults": [],
-                "ordered_events": ordered,
-                "edge_conditions": [],
-                "outcome": (
-                    {"kind": "fallthrough", "target_rva": rva + size}
-                    if registration
-                    else {
-                        "kind": "return",
-                        "value": {"op": "reg", "name": "eax", "width": 32},
-                    }
-                ),
-                "stack_delta": 0,
-                "counts": {},
-                "fpu_state": None,
-                "instruction_effect_schedule": None,
-            },
-        }
-
-    registration = unit(0x1000, registration=True)
-    callback = unit(0x3000, registration=False)
-    machine_ir = root / "callback-machine-ir.jsonl"
-    _write_state_machine(machine_ir, [registration, callback])
-    manifest = root / "callback-machine-ir-manifest.json"
-    callback_evidence = {
-        "format": "stage-a-callback-registration-provenance-v1",
-        "record_kind": "callback_registration",
-        "status": "complete",
-        "unit_id": registration["id"],
-        "event_index": 0,
-        "instruction_rva": 0x1000,
-        "callback_source": callback_source,
-        "callback_abi": callback_abi,
-        "callback_lifetime": "until_class_unregistered_or_process_exit",
-        "callback_behavior": "registration",
-        "target_rvas": [0x3000],
-        "target_unit_ids": [callback["id"]],
-        "failure": None,
-    }
-    manifest.write_text(json.dumps({
-        "format": "stage-a-machine-ir-v2",
-        "artifacts": {
-            "machine_ir": {
-                "format": "stage-a-machine-ir-v2",
-                "sha256": sha256_file(machine_ir),
-            },
-        },
-        "control": {
-            "internal_call_preservation": {
-                "fixed_point_complete": True,
-                "summaries": [],
-            },
-            "external_interface_provenance": {
-                "callback_registrations": [callback_evidence],
-            },
-        },
-    }, sort_keys=True), encoding="utf-8")
-    interpreter = root / "callback-interpreter"
-    engine = root / "callback-engine"
-    identity_payload = {
-        "kind": "import",
-        "dll": "user32.dll",
-        "symbol": "RegisterClassA",
-        "ordinal": None,
-    }
-    checked_contract = checked_external_site_contract_from_event(
-        event=event,
-        identity=ExternalSiteIdentity.imported(
-            identity_payload, context="runtime callback fixture"
-        ),
-        transfer_kind="call",
-        disposition="returns_here",
-        callback_evidence=callback_evidence,
-        context="runtime callback fixture",
-    )
-    canonical_external_sites = _canonical_external_sites(
-        root,
-        unit=registration,
-        event_index=0,
-        identity=identity_payload,
-        contract=checked_contract,
-        callback_target_rvas=(0x3000,),
-    )
-    write_stage_b_interpreter_package(machine_ir=machine_ir, out=interpreter)
-    write_stage_b_native_engine_package(
-        machine_ir=machine_ir,
-        machine_ir_manifest=manifest,
-        entry_rva=0x1000,
-        fixed_image_base=0x400000,
-        preferred_image_base=0x400000,
-        import_iat_vas={("user32.dll", "RegisterClassA"): 0x432000},
-        canonical_external_sites=canonical_external_sites,
-        out=engine,
-    )
-    return interpreter, engine, profile
-
-
-def _rewrite_callback_engine_plan(
-    engine: Path, mutate: object
-) -> None:
-    plan_path = engine / "native-engine-plan.json"
-    plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    assert callable(mutate)
-    mutate(plan)
-    plan_path.write_text(
-        json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-    manifest_path = engine / "native-engine-package.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["plan"]["sha256"] = sha256_file(plan_path)
-    manifest["callback_adapter_receipts"] = plan[
-        "callback_adapter_receipts"
-    ]
-    manifest_path.write_text(
-        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _rehash_callback_receipt(receipt: dict[str, object]) -> None:
-    body = {
-        key: value
-        for key, value in receipt.items()
-        if key not in {"format", "receipt_sha256"}
-    }
-    receipt["receipt_sha256"] = sha256_bytes(
-        json.dumps(
-            body, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-        ).encode("ascii")
-    )
-
-
-def _rehash_implementation_entry(entry: dict[str, object]) -> None:
-    body = {key: value for key, value in entry.items() if key != "entry_sha256"}
-    entry["entry_sha256"] = sha256_bytes(
-        json.dumps(
-            body, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-        ).encode("ascii")
-    )
-
-
-def _rehash_implementation_receipt(receipt: dict[str, object]) -> None:
-    body = {
-        key: value
-        for key, value in receipt.items()
-        if key not in {"format", "receipt_sha256"}
-    }
-    receipt["receipt_sha256"] = sha256_bytes(
-        json.dumps(
-            body, sort_keys=True, separators=(",", ":"), ensure_ascii=True
-        ).encode("ascii")
-    )
-
-
-def _rewrite_implementation_engine_plan(engine: Path, mutate: object) -> None:
-    plan_path = engine / "native-engine-plan.json"
-    plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    receipt = plan["implementation_dispatch_receipt"]
-    assert callable(mutate)
-    mutate(receipt)
-    _rehash_implementation_receipt(receipt)
-    plan_path.write_text(
-        json.dumps(plan, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-    manifest_path = engine / "native-engine-package.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["plan"]["sha256"] = sha256_file(plan_path)
-    manifest["implementation_dispatch_receipt"] = receipt
-    manifest_path.write_text(
-        json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-
-
 def _qualified_x87_transfer() -> dict[str, object]:
-    encoded = bytes.fromhex("d9e8")
-    digest = sha256_bytes(encoded)
-    row = _transfer()
-    row.update({
-        "instruction_bytes_sha256": digest,
-        "original": {"rva_start": 0x1000, "rva_end": 0x1002, "size": 2},
-        "instructions": [{
-            "rva": 0x1000,
-            "size": 2,
-            "bytes": encoded.hex(),
-            "mnemonic": "fld1",
-            "op_str": "",
-        }],
-        "outcome": {"kind": "fallthrough", "target_rva": 0x1002},
-        "fpu_state": {
-            "model": "native_exact_x87_command_replay_obligation_v1",
-            "status": "required",
-            "authoritative_state_type": "StageA.X87.PhysicalState",
-            "required_fields": [
-                "stack", "tags", "control", "status", "pending_exception",
-                "last_opcode", "instruction_pointer", "code_selector",
-                "data_pointer", "data_selector",
-            ],
-            "missing_or_invalid_fields": [
-                "tags", "pending_exception", "last_opcode",
-                "instruction_pointer", "code_selector", "data_pointer",
-                "data_selector",
-            ],
-            "logical_state_guidance": {},
-            "replay": {
-                "format": "stage-a-native-exact-x87-command-replay-obligation-v1",
-                "checked_decoder": "StageA.Formal.decodeInstructionExact",
-                "checked_executor": "StageA.Formal.executeInstruction",
-                "architecture": "x86",
-                "bitness": 32,
-                "image_base": 0x400000,
-                "rva_start": 0x1000,
-                "rva_end": 0x1002,
-                "bytes": encoded.hex(),
-                "bytes_sha256": digest,
-                "instructions": [{
-                    "rva": 0x1000, "size": 2, "bytes": encoded.hex()
-                }],
-            },
-        },
-    })
-    return row
+    return copy.deepcopy(_machine_ir_x87_transfer(
+        rva=0x1000,
+        mnemonic="fadd",
+        encoded=bytes.fromhex("d8c1"),
+    ))
 
 
 def _attach_definedness_metadata(

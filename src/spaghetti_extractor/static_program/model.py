@@ -27,13 +27,13 @@ class StaticUnitContext:
     """Original-side unit input consumed by semantic extraction."""
 
     id: str
-    original: BlockSide
+    span: BlockSide
     kind: str
     source: Mapping[str, Any]
     invariant_checked: bool = False
 
     def __post_init__(self) -> None:
-        if not self.id or not self.kind or self.original.size <= 0:
+        if not self.id or not self.kind or self.span.size <= 0:
             raise StaticProgramContractError("static unit context is invalid")
         object.__setattr__(self, "source", _frozen_mapping(self.source))
 

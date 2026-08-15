@@ -48,10 +48,17 @@ let
   defaultConfiguration = target.workflow.default_configuration;
   components = workflow.components;
   componentRuntime = workflow.componentRuntimeFor defaultConfiguration;
+  candidateTests = {
+    "gnu-hello-default-candidate" = workflow.candidateTestFor {
+      id = "gnu-hello-default-candidate";
+      configurationId = defaultConfiguration;
+      suite = ./tests/candidate-suite.json;
+    };
+  };
 in
 sdk.target.pe32Bundle {
   targetRoot = ./.;
-  inherit workflow;
+  inherit workflow candidateTests;
   inputs.original = original;
   checks = {
     ascii-to-lower-contract = components.contracts.ascii-to-lower;

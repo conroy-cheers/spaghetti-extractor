@@ -23,12 +23,10 @@ from .engine_model import (
     _canonical_sha256,
 )
 from .engine_x87 import _blocker, _required_string, _required_u32
-from .modes import STATIC_CLOSED_CANDIDATE_MODE
 
 
 def _build_implementation_dispatch_receipt(
     *,
-    candidate_mode: str,
     semantic_input_sha256: str,
     machine_ir_manifest_payload: Mapping[str, Any] | None,
     machine_ir_manifest_sha256: str | None,
@@ -156,16 +154,15 @@ def _build_implementation_dispatch_receipt(
             reachability_status = "complete"
         else:
             reachability_status = "incomplete"
-            if candidate_mode == STATIC_CLOSED_CANDIDATE_MODE:
-                receipt_blockers.append(_blocker(
-                    "implementation_reachability_incomplete",
-                    observed_status=reachability.get("status"),
-                    potential_units=len(potential),
-                    frontiers=len(frontiers),
-                    next_action=(
-                        "close the prerequisite rooted static reachability receipt"
-                    ),
-                ))
+            receipt_blockers.append(_blocker(
+                "implementation_reachability_incomplete",
+                observed_status=reachability.get("status"),
+                potential_units=len(potential),
+                frontiers=len(frontiers),
+                next_action=(
+                    "close the prerequisite rooted static reachability receipt"
+                ),
+            ))
 
     entries = tuple(
         NativeImplementationEntry(
@@ -540,7 +537,6 @@ def _build_implementation_dispatch_receipt(
         ),
     ))
     receipt = NativeImplementationDispatchReceipt(
-        candidate_mode=candidate_mode,
         semantic_input_sha256=semantic_input_sha256,
         machine_ir_manifest_sha256=machine_ir_manifest_sha256,
         reachability_status=reachability_status,
@@ -554,6 +550,43 @@ def _build_implementation_dispatch_receipt(
         blockers=blockers_tuple,
     )
     return receipt, blockers_tuple
+
+
+def _machine_ir_internal_indirect_sites(
+    machine_ir_manifest_payload: Mapping[str, Any],
+) -> frozenset[tuple[str, int]]:
+    """Return indirect call sites proven to target only machine-IR units."""
+
+    control = machine_ir_manifest_payload.get("control")
+    provenance = (
+        control.get("external_interface_provenance")
+        if isinstance(control, Mapping)
+        else None
+    )
+    resolutions = (
+        provenance.get("resolutions")
+        if isinstance(provenance, Mapping)
+        else None
+    )
+    if not isinstance(resolutions, list):
+        return frozenset()
+    result: set[tuple[str, int]] = set()
+    for raw in resolutions:
+        if not isinstance(raw, Mapping) or raw.get("status") != "recovered":
+            continue
+        unit_id = raw.get("source_unit_id")
+        event_index = raw.get("source_event_index")
+        targets = raw.get("target_unit_ids")
+        if (
+            isinstance(unit_id, str)
+            and isinstance(event_index, int)
+            and not isinstance(event_index, bool)
+            and isinstance(targets, list)
+            and targets
+            and all(isinstance(target, str) and target for target in targets)
+        ):
+            result.add((unit_id, event_index))
+    return frozenset(result)
 
 
 def _machine_ir_internal_call_preservation(

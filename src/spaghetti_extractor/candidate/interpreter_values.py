@@ -11,8 +11,6 @@ from ..util import sha256_bytes
 from .interpreter_model import (
     StageBInterpreterError,
     _TypedX87Program,
-    _X87_CHECKED_DECODER,
-    _X87_CHECKED_EXECUTOR,
 )
 from .x87 import extract_typed_x87_operation
 

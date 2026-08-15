@@ -139,9 +139,9 @@ Candidate generation requires all of the following:
 - the independently recomputed candidate-authority receipt matches all inputs.
 
 The fallback engine interprets canonical machine IR and uses explicit native
-bridges for PE32 ABI and external operations. Diagnostic candidate modes may be
-built for static inspection, but only a static-closed candidate may reach the
-runtime test constructors.
+bridges for PE32 ABI and external operations. While authority is incomplete,
+the toolkit emits only a non-executable JSON frontier report. Candidate source,
+object code, PE composition, and runtime tests require final static authority.
 
 ## External Operations
 

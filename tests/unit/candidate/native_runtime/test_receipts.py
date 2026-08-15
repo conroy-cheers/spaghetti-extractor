@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tests.unit.candidate.native_runtime._support import *
+from tests.unit.candidate.native_runtime._callback_support import *
 
 
 class NativeRuntimeReceiptTests(unittest.TestCase):
@@ -56,7 +57,6 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
                 {
                     "transfers": 1,
                     "implementation_dispatches": 1,
-                    "diagnostic_frontiers": 0,
                     "authorized_external_sites": 0,
                     "blocked_external_sites": 0,
                 },

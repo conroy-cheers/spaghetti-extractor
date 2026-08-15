@@ -15,7 +15,7 @@ class ReconstructionIRReceiptTests(unittest.TestCase):
             json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
         )
         schedule = {
-            "format": "stage-a-instruction-ordered-effect-schedule-v1",
+            "format": "spaghetti-extractor-static-instruction-effects-v1",
             "records": [record],
             "blockers": [],
         }
@@ -82,7 +82,7 @@ class ReconstructionIRReceiptTests(unittest.TestCase):
             original.write_bytes(pe32_image(b"\xc3", virtual_size=1))
             _write_static_program_contract(static_program, original)
             row["static_program_export"] = {
-                "format": "spaghetti-extractor-static-program-semantic-binding-v1",
+                "format": "spaghetti-extractor-static-program-semantic-binding-v2",
                 "static_program_contract_sha256": sha256_file(static_program),
                 "semantic_transfer_sha256": "b" * 64,
             }

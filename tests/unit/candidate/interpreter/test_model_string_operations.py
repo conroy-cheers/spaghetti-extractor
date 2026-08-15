@@ -32,7 +32,7 @@ class InterpreterStringOperationModelTests(unittest.TestCase):
 
             package_dir = root / "package"
             package = write_stage_b_interpreter_package(
-                state_machine=machine, out=package_dir
+                machine_ir=machine, out=package_dir
             )
             self.assertEqual(package["status"], "ready")
             program = json.loads(
@@ -212,7 +212,7 @@ int main(void) {
 
             package_dir = root / "package"
             package = write_stage_b_interpreter_package(
-                state_machine=machine,
+                machine_ir=machine,
                 out=package_dir,
             )
             self.assertEqual(package["status"], "ready")
@@ -369,7 +369,7 @@ int main(void) {
             row["register_writes"] = []
             _write_machine(machine, [row])
             package_dir = root / "package"
-            write_stage_b_interpreter_package(state_machine=machine, out=package_dir)
+            write_stage_b_interpreter_package(machine_ir=machine, out=package_dir)
 
             harness = root / "harness.c"
             harness.write_text(

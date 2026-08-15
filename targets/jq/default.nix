@@ -63,7 +63,7 @@ let
     "jq-1.8.1-idiomatic-candidate-functional" = workflow.candidateTestFor {
       id = "jq-1.8.1-idiomatic-candidate-functional";
       configurationId = target.workflow.default_configuration;
-      suite = ./tests/functional-suite.json;
+      suite = ./tests/candidate-suite.json;
       timeoutSeconds = 90;
     };
   };

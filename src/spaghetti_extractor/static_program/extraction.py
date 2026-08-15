@@ -6,10 +6,9 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..artifacts.formats import STATIC_PROGRAM_CONTRACT_FORMAT
 from ..extraction.binary_inventory import parse_binary_cutpoint_inventory
 from ..pe32.stage_binary import BlockSide, StageAInputError, _parse_stage_a_pe
-from ..reference_contract.reference_semantics import _semantic_transfer_contracts
+from .semantics.transfer import semantic_transfers
 from ..roundtrip_fuzz.image_io import write_stage_a_load_image_contract
 from ..util import sha256_bytes, sha256_file, write_json
 from .model import StaticProgramContract, StaticUnitContext
@@ -218,7 +217,7 @@ def stage_a_export_static_program(
             contexts.append(
                 StaticUnitContext(
                     id=str(region["id"]),
-                    original=BlockSide(start, end),
+                    span=BlockSide(start, end),
                     kind="code",
                     source={"source": source},
                 )
@@ -246,17 +245,7 @@ def stage_a_export_static_program(
             }
             for root in uncovered_roots
         ]
-        placeholder = {
-            "format": STATIC_PROGRAM_CONTRACT_FORMAT,
-            "path": "static-program-contract.json",
-            "sha256": "0" * 64,
-        }
-        semantic_rows = _semantic_transfer_contracts(binary, contexts, placeholder)
-        for row in semantic_rows:
-            row.pop("reference_contract", None)
-            # Semantic extraction enumerates structural transfers. Rooted closure
-            # is the only phase permitted to establish behavioral reachability.
-            row["reachable"] = False
+        semantic_rows = semantic_transfers(binary, contexts)
         out.mkdir(parents=True, exist_ok=True)
         semantic_path = out / "semantic-transfer-contracts.jsonl"
         _write_jsonl(semantic_path, semantic_rows)

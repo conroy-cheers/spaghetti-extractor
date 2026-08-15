@@ -11,7 +11,6 @@
   namePrefix,
   regionOverridePackage ? null,
   entrySymbol ? "stage_b_payload_entry",
-  diagnosticFailureTrap ? false,
 }:
 
 let
@@ -38,7 +37,7 @@ let
       ${lib.escapeShellArg (if regionOverridePackage == null then "" else toString regionOverridePackage)} \
       ${compiler}/bin/i686-w64-mingw32-gcc \
       ${lib.escapeShellArg entrySymbol} \
-      ${if diagnosticFailureTrap then "1" else "0"} "$out" <<'PY'
+      "$out" <<'PY'
     import pathlib
     import sys
     from spaghetti_extractor.candidate.build import (
@@ -52,8 +51,7 @@ let
         region_override_package=pathlib.Path(sys.argv[4]) if sys.argv[4] else None,
         compiler=pathlib.Path(sys.argv[5]),
         entry_symbol=sys.argv[6],
-        diagnostic_failure_trap=sys.argv[7] == "1",
-        out_dir=pathlib.Path(sys.argv[8]),
+        out_dir=pathlib.Path(sys.argv[7]),
     )
     PY
     jq -e '

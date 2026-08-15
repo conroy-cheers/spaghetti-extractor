@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from ..artifacts.formats import (
+    MACHINE_IR_FORMAT,
+    SEMANTIC_IR_FORMAT,
+    SEMANTIC_TRANSFER_CONTRACT_FORMAT,
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PROGRAM_FORMAT,
 )
@@ -14,6 +17,7 @@ from ..machine_ir.fallback_capability import (
     FallbackCapabilityAnalysis,
     FallbackLoweringHashes,
 )
+from ..machine_ir.schema import RAW_INSTRUCTION_FIELDS
 from ..machine_ir.definedness import analyze_definedness_jsonl
 from ..util import sha256_bytes, sha256_file, write_json
 from .interpreter_compiler import _TransferCompiler
@@ -21,13 +25,8 @@ from .interpreter_model import (
     STAGE_B_INTERPRETER_DEFINEDNESS_USE_FIELDS,
     STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT,
     StageBInterpreterError,
-    _MACHINE_IR_FORMAT,
-    _RAW_INSTRUCTION_FIELDS,
     _Transfer,
     _TypedX87Program,
-    _X87_CHECKED_DECODER,
-    _X87_CHECKED_EXECUTOR,
-    _X87_TYPED_PROGRAM_FORMAT,
 )
 from .interpreter_render import (
     _INTERPRETER_INTERNAL_HEADER,
@@ -45,7 +44,19 @@ from .interpreter_values import (
     _string,
     _u32,
 )
-from .x87 import TYPED_NATIVE_X87_OPERATION_FORMAT
+from .x87 import (
+    TYPED_NATIVE_X87_OPERATION_FORMAT,
+    TYPED_NATIVE_X87_PROGRAM_FORMAT,
+    X87_CHECKED_DECODER,
+    X87_CHECKED_EXECUTOR,
+)
+
+
+_MACHINE_IR_FORMAT = MACHINE_IR_FORMAT
+_RAW_INSTRUCTION_FIELDS = RAW_INSTRUCTION_FIELDS
+_X87_TYPED_PROGRAM_FORMAT = TYPED_NATIVE_X87_PROGRAM_FORMAT
+_X87_CHECKED_DECODER = X87_CHECKED_DECODER
+_X87_CHECKED_EXECUTOR = X87_CHECKED_EXECUTOR
 
 
 def compile_stage_b_interpreter_program(state_machine: Path) -> tuple[_Transfer, ...]:
@@ -89,8 +100,8 @@ def _adapt_machine_ir_rows(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 code="malformed_machine_ir_input",
             )
         row: dict[str, Any] = {
-            "format": "stage-a-semantic-transfer-contract-v1",
-            "expression_model": "stage-a-semantic-ir-v1",
+            "format": SEMANTIC_TRANSFER_CONTRACT_FORMAT,
+            "expression_model": SEMANTIC_IR_FORMAT,
             "id": identity,
             "status": "reimplementable" if unit.get("status") == "qualified" else "incomplete",
             "reachable": unit.get("reachable") is True,
@@ -241,42 +252,30 @@ def _package_blocker_sort_key(blocker: Mapping[str, Any]) -> tuple[int, str, str
 
 def write_stage_b_interpreter_package(
     *,
-    state_machine: Path | None = None,
-    machine_ir: Path | None = None,
+    machine_ir: Path,
     out: Path,
 ) -> dict[str, Any]:
     """Write stable interpreter source, program data, and a strict manifest."""
 
-    if (state_machine is None) == (machine_ir is None):
-        raise StageBInterpreterError(
-            "provide exactly one of state_machine or machine_ir",
-            code="ambiguous_interpreter_input",
-        )
-    input_path = Path(state_machine if state_machine is not None else machine_ir)
-    input_kind = "state_machine" if state_machine is not None else "machine_ir"
+    input_path = Path(machine_ir)
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     input_rows = _read_jsonl(input_path)
-    if state_machine is not None:
-        rows = input_rows
-    else:
-        rows = _adapt_machine_ir_rows(input_rows)
-    definedness_input = input_path
-    if machine_ir is not None:
-        definedness_input = out / "machine-ir-adapted-semantics.jsonl"
-        definedness_input.write_text(
-            "".join(
-                json.dumps(
-                    _sanitize_generated_binding_names(row),
-                    sort_keys=True,
-                    separators=(",", ":"),
-                    ensure_ascii=True,
-                )
-                + "\n"
-                for row in rows
-            ),
-            encoding="ascii",
-        )
+    rows = _adapt_machine_ir_rows(input_rows)
+    definedness_input = out / "machine-ir-adapted-semantics.jsonl"
+    definedness_input.write_text(
+        "".join(
+            json.dumps(
+                _sanitize_generated_binding_names(row),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            + "\n"
+            for row in rows
+        ),
+        encoding="ascii",
+    )
     transfers, blockers = _compile_interpreter_rows(rows, collect_blockers=True)
     max_word_nodes = max((len(transfer.nodes) for transfer in transfers), default=0)
     if max_word_nodes > 1024:
@@ -320,19 +319,14 @@ def write_stage_b_interpreter_package(
         definedness_input=definedness_input,
         input_transfer_count=len(input_rows),
         blockers=blockers,
-        deferred_transfers=(),
-        sanitized_source_bindings=machine_ir is not None,
+        sanitized_source_bindings=True,
     )
     write_json(files["program_manifest"], program_payload)
     package = {
         "format": STAGE_B_INTERPRETER_PACKAGE_FORMAT,
         "status": "ready" if not blockers else "incomplete",
-        input_kind: {"path": input_path.name, "sha256": sha256_file(input_path)},
-        "input_mode": (
-            "strict_exact_state_machine_v1"
-            if state_machine is not None
-            else "sanitized_machine_ir_v2"
-        ),
+        "machine_ir": {"path": input_path.name, "sha256": sha256_file(input_path)},
+        "input_mode": "sanitized_machine_ir_v2",
         "program": {
             "path": files["program_manifest"].name,
             "sha256": sha256_file(files["program_manifest"]),
@@ -346,15 +340,13 @@ def write_stage_b_interpreter_package(
         "blockers": blockers,
         "semantic_coverage": program_payload["semantic_coverage"],
         "execution_policy": program_payload["execution_policy"],
-        "deferred_transfers": [],
         "authority": "candidate generation only; static and behavioral qualification remain required",
     }
-    if machine_ir is not None:
-        package["adapted_semantics"] = {
-            "path": definedness_input.name,
-            "sha256": sha256_file(definedness_input),
-            "role": "byte_free_definedness_analysis_input",
-        }
+    package["adapted_semantics"] = {
+        "path": definedness_input.name,
+        "sha256": sha256_file(definedness_input),
+        "role": "byte_free_definedness_analysis_input",
+    }
     write_json(out / "state-machine-interpreter-package.json", package)
     return package
 
@@ -451,12 +443,10 @@ def _program_payload(
     definedness_input: Path,
     input_transfer_count: int | None = None,
     blockers: Iterable[Mapping[str, Any]] = (),
-    deferred_transfers: Iterable[Mapping[str, Any]] = (),
     sanitized_source_bindings: bool = False,
 ) -> dict[str, Any]:
     rows = list(transfers)
     blocker_rows = [dict(item) for item in blockers]
-    deferred_rows = [dict(item) for item in deferred_transfers]
     input_count = len(rows) if input_transfer_count is None else input_transfer_count
     word_ops = sorted({node.op for row in rows for node in row.nodes})
     x87_ops = sorted({node.op for row in rows for node in row.x87_nodes})
@@ -500,7 +490,6 @@ def _program_payload(
             "input_transfers": input_count,
             "transfers": len(rows),
             "blocked_transfers": len(blocker_rows),
-            "deferred_transfers": len(deferred_rows),
             "word_nodes": sum(len(row.nodes) for row in rows),
             "x87_nodes": sum(len(row.x87_nodes) for row in rows),
             "x87_operations": sum(len(row.x87_operations) for row in rows),
@@ -526,16 +515,10 @@ def _program_payload(
         },
         "blockers": blocker_rows,
         "semantic_coverage": {
-            "status": "complete" if not deferred_rows else "incomplete",
-            "deferred_transfers": len(deferred_rows),
+            "status": "complete",
             "acceptance_authority": False,
         },
-        "execution_policy": (
-            "complete_transfer_inventory_v1"
-            if not deferred_rows
-            else "fail_closed_on_deferred_potential_transfer_v1"
-        ),
-        "deferred_transfers": deferred_rows,
+        "execution_policy": "complete_transfer_inventory_v1",
         "transfers": transfer_payloads,
         "authority": "untrusted generated program; Stage A checks every binding",
     }

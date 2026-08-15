@@ -36,7 +36,8 @@ PE bytes
   +-> complete interpreter/native fallback
   -> candidate/authority/ joins final authority, exact machine IR,
      fallback coverage, and the component runtime package
-  -> static-closed rebuilt candidate (or explicitly non-authorizing diagnostic)
+  -> non-executable runtime-frontier report while authority is incomplete
+  -> static-closed rebuilt candidate after final authority
   -> candidate/functional.py candidate-only tests
 ```
 
@@ -49,7 +50,7 @@ SDK through Nix; the root flake and generic modules never import `targets/`.
 |---|---|
 | `cli.py` | Canonical `spaghetti-extractor` command registry and exit policy. |
 | `commands/` | Lazy command groups behind the literal public command manifest. Internal workers are Python functions, not hidden CLI commands. |
-| `reference_contract/__init__.py` | Legacy-named internal semantic-kernel facade. Public artifacts are owned by `static_program/`. |
+| `static_program/` | Original-only static contract and semantic extraction API. |
 | `__main__.py` | `python -m spaghetti_extractor`. |
 
 `pyproject.toml` installs three console scripts. `spaghetti-extractor` is the
@@ -114,7 +115,6 @@ The active pipeline packages are ownership boundaries, not migration aliases:
 | `isa/` | Catalogs, corpus/oracle adapters, qualification, kernel selection, and frontier reporting. | Oracles veto qualification but cannot authorize candidate behavior. |
 | `reconstruction/` | Original-only opaque bootstrap, exact machine-IR construction, clustering, contract analysis, composition, and validation. | It proposes bounded reconstruction artifacts and has no candidate authority. |
 | `static_program/` | Typed original-only PE contract, strict codec, exact extraction, and filesystem binding. | It cannot contain a candidate, binary mapping, or behavioral-reachability assertion. |
-| `reference_contract/` | Legacy-named internal semantic extraction, executable classification, symbolic execution, and ABI recovery. | It emits no public binary-pair artifact and cannot authorize candidate generation. |
 | `artifacts/` | Shared format identifiers, canonical identities, immutable artifact-set records, codecs, streaming I/O, and scheduling. | Cross-subsystem identifiers have one literal owner; JSON mappings stop at codec boundaries. |
 | `pe32/` | Exact PE parsing, loader diagnostics, exports/TLS/imports, structural decode, COFF hints, roots, and cutpoint materialization. | It is the target-neutral binary substrate for extraction and candidate composition. |
 | `libraries/` | Artifact parsing, constellation matching, interface assignment, refinement, and replacement planning. | Recognition is proposal evidence and never grants replacement authority by name alone. |
@@ -128,10 +128,9 @@ active package modules at a reviewable size.
 
 ## Static Analysis
 
-`src/spaghetti_extractor/static_program/` owns the public original-only contract.
-The legacy-named `reference_contract/` package supplies internal semantic and ABI
-analysis to that frontend. Static PE and code extraction itself remains in
-`extraction/`:
+`src/spaghetti_extractor/static_program/` owns the original-only contract and
+its bounded semantic extraction. Static PE, executable-byte classification,
+and cutpoint recovery remain in `extraction/`:
 
 | Module | Purpose |
 |---|---|
@@ -193,18 +192,17 @@ implementation or authorize work through a compatibility adapter.
 
 ## Static Semantics
 
-The historically named `reference_contract/` package now contains only the
-static semantic and executable-classification implementation still shared by
-the original-only frontend. Its binary-pair generator, public authority path,
-and compatibility diagnostics have been removed:
+`static_program/semantics/` contains the original-only instruction and symbolic
+semantics. It accepts one exact PE and one static span at a time; there is no
+candidate-binary model, block mapper, or binary-pair verdict in this layer:
 
 | Module | Purpose |
 |---|---|
-| `common.py` | Shared types, active reference model, ranges, and issue records. |
-| `map_analysis.py`, `map_verification.py` | Explicit block-map analysis, padding verification, layout facts, and CFG proposals. |
-| `abi.py`, `abi_arguments.py`, `abi_control_flow.py`, `abi_instruction.py`, `abi_profile.py`, `abi_comparison.py`, `abi_clusters.py`, `abi_support.py` | Machine ABI/callsite evidence and repair clusters. |
-| `symbolic_execution.py`, `symbolic_expressions.py`, `symbolic_flags.py`, `symbolic_operands.py` | Bounded Z3-assisted local symbolic summaries. |
-| `reference_semantics.py` | Static instruction-semantic extraction shared by the original-only static-program frontend. |
+| `support.py` | Shared ranges, issue records, and static extraction helpers. |
+| `instruction.py`, `control.py` | Machine instruction, callsite, branch, switch, and import evidence. |
+| `expressions.py`, `flags.py`, `operands.py`, `symbolic_execution.py` | Bounded symbolic state and effect summaries. |
+| `transfer.py` | Original-only transfer and ordered instruction-effect export. |
+| `extraction/executable_classification.py` | Executable-byte, padding, function, and basic-block classification. |
 
 `static_program/extraction.py` and `reconstruction/static_export.py` convert a
 map-blind binary inventory into an original-only contract and state machine.
@@ -257,7 +255,6 @@ unique domain-local formats remain with their owner.
 | `authority_inputs/isa_evidence.py` | Projects binary-specific oracle and Lean qualification into exact authority evidence. |
 | `isa/frontier_report_v1.py` | Replays exact ISA requirements and selection authority into compact form-, field-, and RVA-level repair diagnostics without sharing an output identity with authority evidence. |
 | `authority_inputs/implementation_capabilities.py` | Binds fallback implementation capability IDs to the exact selected ISA forms. |
-| `candidate/machine_ir_scope.py` | Fail-closed partition of executable and deferred machine-IR transfers for candidate generation. |
 | `candidate/engine_layout.py` | Structural engine layout tables. |
 | `candidate/engine.py`, `candidate/engine_model.py`, `candidate/engine_analysis.py`, `candidate/engine_components.py`, `candidate/engine_render.py`, `candidate/engine_x87.py`, `candidate/engine_package.py` | Candidate engine model, machine-IR analysis, component/callback synthesis, typed x87 support, rendering, and deterministic packaging. |
 | `candidate/image.py` | Derives entry, callback, relocation, import, and zero-fill inputs from a checked load-image contract. |
@@ -266,7 +263,6 @@ unique domain-local formats remain with their owner.
 | `candidate/native_build.py` | Generic native compile/compose pipeline. |
 | `candidate/pe.py`, `candidate/pe_model.py` | PE image composition plus isolated structural models, anchors, relocations, and validation helpers. |
 | `candidate/x87.py` | Typed, byte-free x87 replay records. |
-| `candidate/modes.py` | Stable execution-scope identifiers; only static-closed scope may reach executable candidate construction, while structural scope is confined to static diagnostics. |
 | `pe32/recovered_executable_data.py` | Checked classification of immutable initialized data embedded in executable sections. |
 
 `reconstruction/plan.py` derives deterministic reconstruction clusters and
@@ -417,14 +413,13 @@ enforce this with `xvfb-run` where Wine is used.
 | `authority-final-gate.nix` | Strict final-authority record gate used by candidate generation, target validation, and runtime suites. |
 | `authority-graph-v3.nix`, `authority-graph-v3-boundaries.nix`, `authority-graph-v3-packs.nix`, `authority-resource-classes-v3.nix` | Manifest-driven v3 authority DAG, independently checked structural/dependency planning boundaries, stable schedule packs, and one shared resource policy used by dynamic preparation and standalone fixtures. |
 | `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix`, `test-fixture-catalog.nix`, `generated/test-suite-manifest.json` | Static, checked stable test shards and shared heavy fixtures; Nix evaluates no dynamic test discovery and unchanged shards substitute. |
-| `structural-diagnostics.nix` | Emits non-authorizing source, plans, and frontiers without object code, a PE, runtime packages, or Wine. |
+| `runtime-frontier-report.nix` | Emits a pure non-authorizing JSON projection of checked authority blockers; it cannot contain source, object code, a PE, runtime packages, or Wine. |
 | `candidate-test-suite.nix` | Binds a final-authority candidate to curated expected-output cases and executes it through isolated headless Wine. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure with an explicit checked phase role. |
 | `generated/python-module-index.json` | Generated checked local-import/resource graph and role closures consumed by phase-specific Python closures. |
 | `stage-b-linked-libraries.nix` | Library constellation and replacement-plan DAG. With no catalog it still classifies reviewed application ranges, import thunks, and unknown ownership without granting replacement authority. |
 | `stage-b-fallback-coverage-receipt.nix` | Checks one implementation kind for every structural machine-IR unit without claiming rooted reachability. |
-| `stage-b-functional-suite.nix` | Candidate-only expected-output suite. |
-| `stage-b-upstream-shell-suite.nix` | Candidate-only upstream shell tests under headless Wine. |
+| `candidate-test-aggregate.nix`, `candidate-test-suite.nix` | Final-authority-gated expected-exit and bounded-liveness tests under isolated headless Wine. |
 | `profile-registry-check.nix` | Exact-inventory, role, schema, and semantic validation for every reviewed reusable profile. |
 | `target-bundle-lint.nix` | Exact authored-file ownership validation for every target bundle. |
 | `xed-isa-catalog.nix` | Pinned deterministic XED instruction-catalog package and app. |
@@ -589,7 +584,7 @@ Tests are phase-oriented by filename:
   recognition, refinement, replacement planning, and non-authoritative source rendering.
 - `tests/unit/reconstruction/control/`: jump-table recovery, rooted control,
   overlapping starts, and semantic clustering.
-- `test_stage_b_*`: C/interpreter/native/PE/functional/Nix integration.
+- `candidate/`: fallback, native runtime, PE composition, and candidate-test integration.
 - `test_repository_boundaries.py`: package direction, generic/target separation,
   documented paths, developer metadata, and removed-surface checks.
 - `pe_fixtures.py`: generic synthetic PE32 constructors only.

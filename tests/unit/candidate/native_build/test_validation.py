@@ -4,31 +4,6 @@ from tests.unit.candidate.native_build._support import *
 
 
 class InterpreterNativeBuildValidationTests(unittest.TestCase):
-    def test_structural_mode_cannot_construct_a_runtime(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(
-                StageBNativeRuntimeError, "require a static-closed engine plan"
-            ):
-                _Packages(
-                    Path(temporary) / "inputs",
-                    candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-                )
-
-    def test_diagnostic_trap_cannot_prepare_an_object_graph(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            packages = _Packages(Path(temporary) / "inputs")
-            with self.assertRaisesRegex(
-                StageBInterpreterNativeBuildError,
-                "cannot prepare native object graphs",
-            ):
-                prepare_stage_b_interpreter_native_object_graph(
-                    interpreter_package=packages.interpreter,
-                    native_engine_package=packages.engine,
-                    native_runtime_package=packages.runtime,
-                    diagnostic_failure_trap=True,
-                    out_dir=Path(temporary) / "object-graph",
-                )
-
     def test_rejects_v1_receipt_before_compilation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             packages = _Packages(Path(temporary) / "inputs")

@@ -1,0 +1,18 @@
+{
+  "format": "spaghetti-extractor-candidate-test-suite-v1",
+  "target_name": "dxball",
+  "suite_id": "dxball-default-candidate",
+  "suite_name": "DX-Ball candidate bounded liveness",
+  "suite_kind": "curated_bounded_liveness",
+  "suite_scope": "default-configuration",
+  "upstream_suite": false,
+  "cases": [
+    {
+      "id": "launch-remains-live",
+      "kind": "bounded-liveness",
+      "args": [],
+      "liveness_seconds": 5,
+      "candidate_timeout_seconds": 20
+    }
+  ]
+}

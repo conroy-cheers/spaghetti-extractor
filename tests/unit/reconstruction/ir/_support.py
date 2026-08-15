@@ -94,14 +94,13 @@ def _row(
         b"\xff\x15\x40\x20\x40\x00": ("call", "dword ptr [0x402040]"),
     }[encoded]
     transfer = {
-        "format": "stage-a-semantic-transfer-contract-v1",
+        "format": "spaghetti-extractor-static-transfer-v1",
         "id": identity,
         "function": "fixture_main",
         "block_id": identity.removeprefix("semantic-transfer:"),
         "unit_kind": "semantic_transfer",
         "status": status,
-        "reachable": True,
-        "original": {
+        "span": {
             "rva_start": rva,
             "rva_end": rva + len(encoded),
             "size": len(encoded),
@@ -116,7 +115,7 @@ def _row(
             }
         ],
         "instruction_bytes_sha256": sha256_bytes(encoded),
-        "expression_model": "stage-a-semantic-ir-v1",
+        "expression_model": "spaghetti-extractor-static-semantic-ir-v1",
         "pre_state": {
             "registers": {name: _expr_register(name) for name in _REGISTERS},
             "flags": {name: {"op": "flag", "name": name} for name in _FLAGS},
@@ -150,7 +149,6 @@ def _row(
             "ordered_events": len(ordered_events or []),
             "edge_conditions": len(edge_conditions or []),
         },
-        "acceptance": "test semantic transfer",
         "blocker_category": None if status == "reimplementable" else "x87_typed_lowering_required",
         "blocker": None if status == "reimplementable" else "x87 replay has not yet been typed",
         "next_action": None if status == "reimplementable" else "consume the typed x87 micro-op",
@@ -215,7 +213,7 @@ def _write_static_program_contract(path: Path, original: Path) -> None:
     if not semantic_path.exists():
         semantic_path.write_text("", encoding="ascii")
     payload = {
-        "format": "spaghetti-extractor-static-program-contract-v1",
+        "format": "spaghetti-extractor-static-program-contract-v2",
         "generator": "spaghetti-extractor-static-program",
         "profile": "x86-pe32-static-reconstruction-v1",
         "status": "complete",

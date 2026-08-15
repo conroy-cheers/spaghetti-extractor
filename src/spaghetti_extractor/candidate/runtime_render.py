@@ -125,8 +125,8 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
         "product": 3,
         "bounded_zero_run": 4,
     }
-    diagnostic_iat_rvas = plan.diagnostic_writer_iat_rvas or (0, 0, 0)
-    diagnostic_writer_available = 1 if plan.diagnostic_writer_iat_rvas else 0
+    diagnostic_iat_rvas = (0, 0, 0)
+    diagnostic_writer_available = 0
     authorized_external_site_rows = "\n".join(
         f"  0x{rva:08x}U," for rva in plan.authorized_external_site_rvas
     ) or "  0U,"

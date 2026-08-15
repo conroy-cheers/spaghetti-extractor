@@ -618,9 +618,7 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
                 "external_sites": [site],
             }
             self.assertEqual(
-                _external_range_rules(
-                    native_plan, profile, candidate_mode="static-closed"
-                ),
+                _external_range_rules(native_plan, profile),
                 ((), (0x1000,), ()),
             )
 
@@ -632,11 +630,13 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 StageBNativeRuntimeError, "no checked external contract"
             ):
-                _external_range_rules(
-                    missing, profile, candidate_mode="static-closed"
-                )
+                _external_range_rules(missing, profile)
 
-            deferred = _external_range_rules(
+            with self.assertRaisesRegex(
+                StageBNativeRuntimeError,
+                "complete implementation reachability",
+            ):
+                _external_range_rules(
                     {
                         "implementation_dispatch_receipt": {
                             "reachability": {"status": "incomplete"}
@@ -649,14 +649,7 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
                         "external_protocol": None,
                     }]},
                     profile,
-                    candidate_mode="structural-diagnostic",
                 )
-            self.assertEqual(deferred[0], ())
-            self.assertEqual(deferred[1], ())
-            self.assertEqual(
-                deferred[2][0]["category"],
-                "uncontracted_dynamic_external_target",
-            )
 
 
 if __name__ == "__main__":

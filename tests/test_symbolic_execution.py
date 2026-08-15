@@ -3,22 +3,20 @@ from __future__ import annotations
 from types import SimpleNamespace
 import unittest
 
-from spaghetti_extractor.reference_contract.common import BlockMapping
-from spaghetti_extractor.reference_contract.reference_semantics import (
-    _semantic_transfer_contract,
-)
-from spaghetti_extractor.reference_contract.symbolic_execution import _symbolic_execute
 from spaghetti_extractor.pe32.stage_binary import BlockSide
+from spaghetti_extractor.static_program.model import StaticUnitContext
+from spaghetti_extractor.static_program.semantics.symbolic_execution import (
+    _symbolic_execute,
+)
+from spaghetti_extractor.static_program.semantics.transfer import semantic_transfer
 
 
 def _execute(encoded: bytes) -> dict[str, object]:
     side = BlockSide(0x1000, 0x1000 + len(encoded))
-    mapping = BlockMapping(
+    mapping = StaticUnitContext(
         id="fixture",
-        original=side,
-        candidate=side,
+        span=side,
         kind="fixture",
-        reachable=True,
         invariant_checked=True,
         source={},
     )
@@ -30,12 +28,10 @@ class SymbolicExecutionInstructionTests(unittest.TestCase):
     def test_single_instruction_transfer_emits_exact_effect_schedule(self) -> None:
         encoded = b"\x90"
         side = BlockSide(0x1000, 0x1001)
-        mapping = BlockMapping(
+        mapping = StaticUnitContext(
             id="fixture",
-            original=side,
-            candidate=side,
+            span=side,
             kind="fixture",
-            reachable=True,
             invariant_checked=True,
             source={},
         )
@@ -45,11 +41,10 @@ class SymbolicExecutionInstructionTests(unittest.TestCase):
             pe=SimpleNamespace(get_data=lambda rva, size: encoded),
         )
 
-        contract = _semantic_transfer_contract(
+        contract = semantic_transfer(
             binary,
             mapping,
             "fixture",
-            {"format": "fixture"},
         )
 
         self.assertEqual(contract["status"], "reimplementable")

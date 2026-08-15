@@ -1,6 +1,5 @@
 """Stable identifiers for the active static-analysis artifact family."""
 
-from ..artifacts.formats import STATIC_ANALYSIS_PROFILE_ID
 
 
 STATIC_ANALYSIS_MODEL_ID = "x86-pe32-machine-ir-v1"

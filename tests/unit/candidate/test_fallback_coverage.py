@@ -151,7 +151,6 @@ class _CoverageFixture:
             "input_transfers": len(self.units),
             "transfers": len(transfers),
             "blocked_transfers": 0,
-            "deferred_transfers": 0,
         }
         _write_json(self.program, {
             "format": "stage-b-semantic-interpreter-program-v1",
@@ -161,7 +160,6 @@ class _CoverageFixture:
             "blockers": [],
             "semantic_coverage": {
                 "status": "complete",
-                "deferred_transfers": 0,
                 "acceptance_authority": False,
             },
             "execution_policy": "complete_transfer_inventory_v1",
@@ -194,7 +192,6 @@ class _CoverageFixture:
             "blockers": [],
             "semantic_coverage": {
                 "status": "complete",
-                "deferred_transfers": 0,
                 "acceptance_authority": False,
             },
             "execution_policy": "complete_transfer_inventory_v1",

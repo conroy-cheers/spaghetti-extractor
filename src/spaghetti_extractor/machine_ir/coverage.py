@@ -417,8 +417,8 @@ def _validate_interpreter_lowering(
         or package_blockers
         or package_counts.get("input_transfers") != len(units)
         or package_counts.get("blocked_transfers") != 0
-        or package_counts.get("deferred_transfers") != 0
         or package_coverage.get("status") != "complete"
+        or package_coverage.get("acceptance_authority") is not False
         or package.get("execution_policy") != "complete_transfer_inventory_v1"
     ):
         raise FallbackCoverageReceiptError(
@@ -462,8 +462,8 @@ def _validate_interpreter_lowering(
         or program_counts.get("transfers") != len(transfers)
         or package_counts.get("transfers") != len(transfers)
         or program_counts.get("blocked_transfers") != 0
-        or program_counts.get("deferred_transfers") != 0
         or program_coverage.get("status") != "complete"
+        or program_coverage.get("acceptance_authority") is not False
         or program.get("execution_policy") != "complete_transfer_inventory_v1"
     ):
         raise FallbackCoverageReceiptError(

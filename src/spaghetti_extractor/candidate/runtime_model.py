@@ -7,11 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..artifacts.formats import (
-    CALLBACK_ADAPTER_RECEIPT_FORMAT as _CALLBACK_ADAPTER_RECEIPT_FORMAT,
-    IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT as _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT,
-    NATIVE_RUNTIME_PACKAGE_FORMAT,
-)
 from ..errors import StageAInputError
 from .interpreter_model import STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT
 
@@ -26,7 +21,6 @@ DEFINEDNESS_USE_FORMAT = STAGE_B_INTERPRETER_DEFINEDNESS_USE_FORMAT
 _INTERPRETER_MANIFEST_FILENAME = "state-machine-interpreter-package.json"
 _NATIVE_ENGINE_MANIFEST_FILENAME = "native-engine-package.json"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_STRICT_INPUT_MODE = "strict_exact_state_machine_v1"
 _MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v2"
 
 
@@ -163,7 +157,6 @@ class NativeExternalRangeRule:
 class NativeRuntimePlan:
     """Checked immutable inputs used to render one native runtime."""
 
-    candidate_mode: str
     entry_rva: int
     transfer_rvas: tuple[int, ...]
     recovered_executable_data_ranges: tuple[tuple[int, int], ...]
@@ -171,11 +164,9 @@ class NativeRuntimePlan:
     callback_adapter_receipts: tuple[dict[str, Any], ...]
     implementation_dispatch_receipt: dict[str, Any]
     implementation_dispatches: tuple[NativeImplementationDispatch, ...]
-    diagnostic_frontiers: tuple[dict[str, Any], ...]
     external_range_rules: tuple[NativeExternalRangeRule, ...]
     authorized_external_site_rvas: tuple[int, ...]
     blocked_external_sites: tuple[dict[str, Any], ...]
-    diagnostic_writer_iat_rvas: tuple[int, int, int] | None
     external_profile_path: Path | None
     external_profile_sha256: str | None
     external_profile_graph: tuple[tuple[Path, str, str], ...]
@@ -199,7 +190,6 @@ class NativeRuntimePlan:
 
     def payload(self) -> dict[str, Any]:
         return {
-            "candidate_mode": self.candidate_mode,
             "entry_rva": self.entry_rva,
             "transfer_rvas": list(self.transfer_rvas),
             "recovered_executable_data_ranges": [
@@ -216,9 +206,6 @@ class NativeRuntimePlan:
             "implementation_dispatch_receipt": dict(
                 self.implementation_dispatch_receipt
             ),
-            "diagnostic_frontiers": [
-                dict(frontier) for frontier in self.diagnostic_frontiers
-            ],
             "external_range_contracts": {
                 "profile": (
                     None
@@ -252,17 +239,6 @@ class NativeRuntimePlan:
                 ],
                 "unknown_site_disposition": "fail-closed-before-call",
             },
-            "diagnostic_writer": (
-                None
-                if self.diagnostic_writer_iat_rvas is None
-                else {
-                    "format": "stage-b-native-diagnostic-v4",
-                    "transport": "existing-kernel32-iat-binary-file-v1",
-                    "create_file_a_iat_rva": self.diagnostic_writer_iat_rvas[0],
-                    "write_file_iat_rva": self.diagnostic_writer_iat_rvas[1],
-                    "close_handle_iat_rva": self.diagnostic_writer_iat_rvas[2],
-                }
-            ),
             "definedness_use": {
                 "format": DEFINEDNESS_USE_FORMAT,
                 "metadata_sha256": self.definedness_metadata_sha256,

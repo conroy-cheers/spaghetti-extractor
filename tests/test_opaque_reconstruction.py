@@ -65,7 +65,7 @@ def _inventory() -> dict[str, object]:
 class OpaqueReconstructionTests(unittest.TestCase):
     def test_static_program_contract_rejects_pair_and_reachability_fields(self) -> None:
         base = {
-            "format": "spaghetti-extractor-static-program-contract-v1",
+            "format": "spaghetti-extractor-static-program-contract-v2",
             "generator": "spaghetti-extractor-static-program",
             "profile": "x86-pe32-static-reconstruction-v1",
             "status": "complete",
@@ -157,10 +157,11 @@ class OpaqueReconstructionTests(unittest.TestCase):
                 if line
             ]
             self.assertTrue(rows)
-            self.assertTrue(all(row["reachable"] is False for row in rows))
+            self.assertTrue(all("reachable" not in row for row in rows))
             self.assertTrue(
-                all("static_program_contract" not in row for row in rows)
+                all("reference_contract" not in row for row in rows)
             )
+            self.assertTrue(all("span" in row and "original" not in row for row in rows))
 
             semantic_path = output / "semantic-transfer-contracts.jsonl"
             semantic_path.write_text("{}\n", encoding="ascii")

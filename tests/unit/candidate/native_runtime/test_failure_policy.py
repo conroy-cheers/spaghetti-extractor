@@ -4,15 +4,9 @@ from tests.unit.candidate.native_runtime._support import *
 
 
 class NativeRuntimeFailurePolicyTests(unittest.TestCase):
-    def test_variadic_legacy_site_is_a_diagnostic_frontier(self) -> None:
+    def test_uncontracted_variadic_site_prevents_candidate_generation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            interpreter, engine = _packages(
-                root,
-                rows=_machine_ir_indirect_external_result_rows(),
-                import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
-                machine_ir=True,
-            )
             profile = root / "external-profile.json"
             profile.write_text(
                 json.dumps({
@@ -38,20 +32,14 @@ class NativeRuntimeFailurePolicyTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            package = write_stage_b_native_runtime_package(
-                interpreter_package=interpreter,
-                native_engine_package=engine,
-                external_profile=profile,
-                out=root / "runtime",
-            )
-
-            dispatch = package["inputs"]["external_dispatch"]
-            self.assertEqual(dispatch["authorized_instruction_rvas"], [])
-            self.assertEqual(len(dispatch["blocked_sites"]), 1)
-            self.assertEqual(
-                dispatch["blocked_sites"][0]["category"],
-                "checked_external_contract_missing",
-            )
+            with self.assertRaisesRegex(
+                StageAInputError, "native engine plan is incomplete"
+            ):
+                _packages(
+                    root,
+                    rows=_machine_ir_indirect_external_result_rows(),
+                    import_iat_vas={("msvcrt.dll", "__p__commode"): 0x43219C},
+                )
 
     def test_qualified_unobserved_undefined_slot_uses_recorded_zero_witness(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

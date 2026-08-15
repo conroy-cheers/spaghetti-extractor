@@ -24,7 +24,7 @@ from ..pe32.recovered_executable_data import (
     load_recovered_executable_data_contract,
 )
 from ..pe32.stage_binary import StageAInputError
-from ..util import sha256_bytes, sha256_file, write_json
+from ..util import sha256_bytes, sha256_file
 from .engine_analysis import (
     _RegisterImportSiteAnalysis,
     _adapt_native_machine_ir_unit,
@@ -47,9 +47,9 @@ from .engine_components import (
     _machine_ir_callback_registrations,
     _machine_ir_external_interface_methods,
     _machine_ir_internal_call_preservation,
+    _machine_ir_internal_indirect_sites,
     _previous_callback_storage_writes,
 )
-from .engine_layout import render_stage_b_engine_layout_c
 from .engine_model import (
     NativeCallbackAdapter,
     NativeCallbackPassthrough,
@@ -57,9 +57,6 @@ from .engine_model import (
     NativeEnginePlan,
     NativeExternalSite,
     NativeImportBinding,
-    NativeImplementationDispatchReceipt,
-    NativeImplementationEntry,
-    NativeImplementationTarget,
     NativeTerminationImport,
     NativeX87Operation,
     PE32_BASE_RELOCATION_EVIDENCE_FORMAT,
@@ -67,16 +64,13 @@ from .engine_model import (
     _HEX_BYTES,
     _MACHINE_IR_INPUT_MODE,
     _SEMANTIC_RUNTIME_EVENT_KINDS,
-    _STRICT_INPUT_MODE,
     _X87ReplayASLRUnsafe,
     _canonical_sha256,
 )
-from .engine_render import _bridge_assembly, _wrapper_header, _wrapper_source
 from .engine_x87 import (
     _absolute_iat_va,
     _blocker,
     _callback_spec,
-    _frontier,
     _indirect_call_encoding,
     _instruction_inventory,
     _parse_pe_base_relocation_evidence,
@@ -86,12 +80,6 @@ from .engine_x87 import (
     _required_sha256,
     _required_string,
     _required_u32,
-)
-from .machine_ir_scope import partition_candidate_machine_ir_units
-from .modes import (
-    STATIC_CLOSED_CANDIDATE_MODE,
-    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-    require_candidate_mode,
 )
 from .x87 import (
     TYPED_NATIVE_X87_OPERATION_FORMAT,
@@ -104,19 +92,16 @@ from .x87 import (
 
 def plan_stage_b_native_engine(
     *,
-    state_machine: Path | None = None,
-    machine_ir: Path | None = None,
-    machine_ir_manifest: Path | None = None,
+    machine_ir: Path,
+    machine_ir_manifest: Path,
     recovered_executable_data: Path | str | None = None,
     entry_rva: int,
     callback_targets: Iterable[int | Mapping[str, Any]] = (),
     import_iat_vas: Mapping[tuple[str, str | int], int] | None = None,
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
-    canonical_external_sites: Path | str | None = None,
+    canonical_external_sites: Path | str,
     machine_import_profiles: Iterable[Path | str] = (),
-    candidate_mode: str = STATIC_CLOSED_CANDIDATE_MODE,
-    allow_deferred_potential_transfers: bool = False,
     fixed_image_base: int | None = None,
     preferred_image_base: int | None = None,
     initial_zero_ranges: Iterable[tuple[int, int]] = (),
@@ -124,17 +109,7 @@ def plan_stage_b_native_engine(
 ) -> NativeEnginePlan:
     """Plan machine-level external bridges from one strict or byte-free input."""
 
-    if (state_machine is None) == (machine_ir is None):
-        raise StageAInputError("provide exactly one of state_machine or machine_ir")
-    candidate_mode = require_candidate_mode(candidate_mode)
-    if (
-        candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
-        and allow_deferred_potential_transfers
-    ):
-        raise StageAInputError(
-            "static-closed mode cannot defer potential transfers"
-        )
-    input_path = Path(state_machine if state_machine is not None else machine_ir)
+    input_path = Path(machine_ir)
     if fixed_image_base is not None:
         fixed_image_base = _required_u32(fixed_image_base, "fixed image base")
     if preferred_image_base is None:
@@ -154,7 +129,7 @@ def plan_stage_b_native_engine(
         checked_zero_ranges.append((start, end))
     normalized_zero_ranges = tuple(sorted(checked_zero_ranges))
     raw_rows = _read_jsonl_objects(
-        input_path, "state machine" if state_machine is not None else "machine IR"
+        input_path, "machine IR"
     )
     semantic_input_sha256 = sha256_file(input_path)
     selected_portable_components = tuple(selected_portable_components)
@@ -162,39 +137,19 @@ def plan_stage_b_native_engine(
         tuple(machine_import_profiles)
     ).by_identity()
     callback_targets = tuple(callback_targets)
-    machine_ir_mode = machine_ir is not None
-    machine_ir_manifest_payload = (
-        _machine_ir_manifest_payload(
-            machine_ir=Path(machine_ir),
-            manifest=(
-                None if machine_ir_manifest is None else Path(machine_ir_manifest)
-            ),
-        )
-        if machine_ir_mode
-        else None
+    machine_ir_mode = True
+    machine_ir_manifest_payload = _machine_ir_manifest_payload(
+        machine_ir=Path(machine_ir),
+        manifest=Path(machine_ir_manifest),
     )
-    checked_external_contracts_required = (
-        candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
-        and machine_ir_mode
-        and machine_ir_manifest_payload is not None
+    checked_external_contracts_required = True
+    authoritative_external_index = load_authoritative_external_sites(
+        canonical_external_sites
     )
-    authoritative_external_index = (
-        None
-        if canonical_external_sites is None
-        else load_authoritative_external_sites(canonical_external_sites)
-    )
-    authoritative_external_sites = (
-        {}
-        if authoritative_external_index is None
-        else authoritative_external_index.by_event()
-    )
+    authoritative_external_sites = authoritative_external_index.by_event()
     consumed_authoritative_site_ids: set[str] = set()
     recovered_data_ranges: tuple[RecoveredExecutableDataRange, ...] = ()
     if recovered_executable_data is not None:
-        if not machine_ir_mode:
-            raise StageAInputError(
-                "recovered executable data requires sanitized machine IR input"
-            )
         recovered_data = load_recovered_executable_data_contract(
             recovered_executable_data
         )
@@ -238,20 +193,16 @@ def plan_stage_b_native_engine(
         if machine_ir_mode
         else {}
     )
-    deferred_transfers: list[dict[str, Any]] = []
-    if machine_ir_mode:
-        scoped_rows, deferred_transfers = partition_candidate_machine_ir_units(
-            raw_rows,
-            allow_deferred_potential_transfers=allow_deferred_potential_transfers,
-        )
-        rows = [
-            _adapt_native_machine_ir_unit(row, index)
-            for index, row in enumerate(scoped_rows)
-        ]
-        implementation_source_rows = scoped_rows
-    else:
-        rows = raw_rows
-        implementation_source_rows = raw_rows
+    internal_indirect_sites = (
+        _machine_ir_internal_indirect_sites(machine_ir_manifest_payload)
+        if machine_ir_mode
+        else frozenset()
+    )
+    rows = [
+        _adapt_native_machine_ir_unit(row, index)
+        for index, row in enumerate(raw_rows)
+    ]
+    implementation_source_rows = raw_rows
     sites: list[NativeExternalSite] = []
     import_iat_vas = import_iat_vas or {}
     import_bindings: list[NativeImportBinding] = []
@@ -282,9 +233,7 @@ def plan_stage_b_native_engine(
             rows,
             import_iat_vas=import_iat_vas,
             internal_call_preserved_registers=internal_call_preserved_registers,
-            allow_diagnostic_abi_hypotheses=(
-                candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
-            ),
+            allow_diagnostic_abi_hypotheses=False,
         )
         if machine_ir_mode
         else _RegisterImportSiteAnalysis({}, {})
@@ -294,7 +243,6 @@ def plan_stage_b_native_engine(
         propagated_import_analysis.diagnostic_dependencies
     )
     blockers: list[dict[str, Any]] = []
-    diagnostic_frontiers: list[dict[str, Any]] = []
     checked_termination_import = _parse_native_termination_import(
         termination_import, import_iat_vas
     )
@@ -413,6 +361,11 @@ def plan_stage_b_native_engine(
                     internal_call_inputs.setdefault(target_rva, []).append(
                         (transfer_id, event_index, event)
                     )
+                event_index += 1
+                continue
+            if kind == "indirect_call" and (
+                transfer_id, event_index
+            ) in internal_indirect_sites:
                 event_index += 1
                 continue
             if kind in _SEMANTIC_RUNTIME_EVENT_KINDS:
@@ -554,8 +507,8 @@ def plan_stage_b_native_engine(
                                 for dependency in dependencies
                             ],
                         }
-                        diagnostic_frontiers.append(_frontier(
-                            "diagnostic_internal_call_abi_hypothesis",
+                        blockers.append(_blocker(
+                            "internal_call_abi_provenance_incomplete",
                             transfer_id=transfer_id,
                             event_index=event_index,
                             instruction_rva=instruction_rva,
@@ -564,12 +517,8 @@ def plan_stage_b_native_engine(
                                 "callee-preserved register frame is not statically closed"
                             ),
                             observed=target_resolution_evidence,
-                            runtime_disposition=(
-                                "require-live-target-equals-exact-iat-or-fail-closed"
-                            ),
                             next_action=(
-                                "prove the internal call frame or retain this only as "
-                                "candidate diagnostic evidence"
+                                "prove the internal call frame before candidate generation"
                             ),
                         ))
                 if not machine_ir_mode and (raw is None or not _indirect_call_encoding(raw)):
@@ -882,29 +831,6 @@ def plan_stage_b_native_engine(
                         "its exact artifact to static candidate generation"
                     ),
                 ))
-            if (
-                candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
-                and checked_external_contract is None
-                and (protocol_target is not None or dll is not None)
-            ):
-                diagnostic_frontiers.append(_frontier(
-                    "external_site_contract_deferred",
-                    transfer_id=transfer_id,
-                    event_index=event_index,
-                    instruction_rva=instruction_rva,
-                    detail=(
-                        checked_external_contract_error
-                        or "event has no exact machine ABI contract"
-                    ),
-                    runtime_disposition=(
-                        "require-exact-profile-or-fail-closed-as-unimplemented"
-                    ),
-                    next_action=(
-                        "emit an exact machine-level external-site contract before "
-                        "promoting this candidate to static-closed"
-                    ),
-                ))
-
             site = NativeExternalSite(
                 id=len(sites),
                 transfer_id=transfer_id,
@@ -1401,13 +1327,10 @@ def plan_stage_b_native_engine(
         ))
     implementation_dispatch_receipt, implementation_blockers = (
         _build_implementation_dispatch_receipt(
-            candidate_mode=candidate_mode,
             semantic_input_sha256=semantic_input_sha256,
             machine_ir_manifest_payload=machine_ir_manifest_payload,
             machine_ir_manifest_sha256=(
-                None
-                if machine_ir_manifest is None
-                else sha256_file(machine_ir_manifest)
+                sha256_file(machine_ir_manifest)
             ),
             inventory_source_rows=raw_rows,
             source_rows=implementation_source_rows,
@@ -1417,32 +1340,8 @@ def plan_stage_b_native_engine(
         )
     )
     blockers.extend(implementation_blockers)
-    if (
-        candidate_mode == STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE
-        and implementation_dispatch_receipt.reachability_status != "complete"
-    ):
-        diagnostic_frontiers.append(_frontier(
-            "rooted_reachability_incomplete",
-            observed_status=(
-                implementation_dispatch_receipt.reachability_status
-            ),
-            potential_units=len(
-                implementation_dispatch_receipt.potential_unit_ids
-            ),
-            frontiers=len(
-                implementation_dispatch_receipt.reachability_frontiers
-            ),
-            runtime_disposition="exact-active-target-or-unimplemented",
-            next_action=(
-                "close rooted reachability before promoting this candidate to "
-                "static-closed"
-            ),
-        ))
     return NativeEnginePlan(
-        candidate_mode=candidate_mode,
-        input_mode=(
-            _MACHINE_IR_INPUT_MODE if machine_ir_mode else _STRICT_INPUT_MODE
-        ),
+        input_mode=_MACHINE_IR_INPUT_MODE,
         entry_rva=_required_u32(entry_rva, "entry RVA"),
         transfer_count=len(rows),
         external_sites=tuple(sorted(sites, key=lambda item: item.instruction_rva)),
@@ -1455,17 +1354,8 @@ def plan_stage_b_native_engine(
         callback_passthroughs=callback_passthroughs,
         x87_operations=tuple(x87_operations),
         termination_import=checked_termination_import,
-        deferred_transfers=tuple(deferred_transfers),
         recovered_executable_data_ranges=recovered_data_ranges,
         fixed_image_base=fixed_image_base,
-        diagnostic_frontiers=tuple(sorted(
-            diagnostic_frontiers,
-            key=lambda item: (
-                str(item.get("category")),
-                str(item.get("transfer_id")),
-                str(item.get("event_index")),
-            ),
-        )),
         blockers=tuple(blockers),
     )
 
@@ -1479,8 +1369,6 @@ __all__ = [
     "NATIVE_ENGINE_PACKAGE_FORMAT",
     "NATIVE_ENGINE_PLAN_FORMAT",
     "PE32_BASE_RELOCATION_EVIDENCE_FORMAT",
-    "STATIC_CLOSED_CANDIDATE_MODE",
-    "STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE",
     "NativeEnginePlan",
     "NativeCallbackTarget",
     "NativeExternalSite",

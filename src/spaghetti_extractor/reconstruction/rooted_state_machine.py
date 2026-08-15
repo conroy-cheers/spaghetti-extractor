@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..reference_contract.reference_semantics import _semantic_transfer_contract
+from ..static_program.semantics.transfer import semantic_transfer
 from ..artifacts.formats import MACHINE_IR_FORMAT
 from ..pe32.recursive_decode import (
     ROOTED_INSTRUCTION_VIEW_FORMAT,
@@ -129,7 +129,6 @@ def close_state_machine_rooted_direct_control(
                 _view_transfer(
                     binary=binary,
                     view=view,
-                    static_program_path=static_program_contract,
                     static_program_sha256=static_program.sha256,
                 )
                 for view in discovery["views"]
@@ -615,7 +614,6 @@ def _view_transfer(
     *,
     binary: Any,
     view: Mapping[str, Any],
-    static_program_path: Path,
     static_program_sha256: str,
 ) -> dict[str, Any]:
     start = _u32(view.get("rva_start"), "rooted view start")
@@ -638,7 +636,7 @@ def _view_transfer(
     span = BlockSide(start, end)
     mapped = StaticUnitContext(
         id=identity,
-        original=span,
+        span=span,
         kind="code",
         invariant_checked=False,
         source={
@@ -650,15 +648,10 @@ def _view_transfer(
             }
         },
     )
-    raw = _semantic_transfer_contract(
+    raw = semantic_transfer(
         binary,
         mapped,
         identity,
-        {
-            "format": "spaghetti-extractor-static-program-contract-v1",
-            "path": static_program_path.name,
-            "sha256": static_program_sha256,
-        },
         semantic_side=span,
         semantic_block_id=identity,
     )

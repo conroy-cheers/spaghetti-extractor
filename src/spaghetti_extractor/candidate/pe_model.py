@@ -8,7 +8,6 @@ all reusable runtime bytes must come from a validated
 from __future__ import annotations
 
 import json
-import os
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +17,6 @@ import pefile
 
 from ..artifacts.formats import (
     PAYLOAD_RELOCATION_INVENTORY_FORMAT,
-    PE_COMPOSITION_MANIFEST_FORMAT,
 )
 from ..roundtrip_fuzz.image_io import (
     load_stage_a_load_image_contract,

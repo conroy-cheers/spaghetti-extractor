@@ -28,7 +28,7 @@ class ReconstructionIRRootModelTests(unittest.TestCase):
             _write_static_program_contract(static_program, original)
             for row in rows:
                 row["static_program_export"] = {
-                    "format": "spaghetti-extractor-static-program-semantic-binding-v1",
+                    "format": "spaghetti-extractor-static-program-semantic-binding-v2",
                     "static_program_contract_sha256": sha256_file(static_program),
                     "semantic_transfer_sha256": "b" * 64,
                 }

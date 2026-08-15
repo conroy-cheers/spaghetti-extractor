@@ -1,109 +1,40 @@
-"""Reference-contract generation, sidecars, and obligation diagnostics."""
+"""Exact original-image semantic transfer extraction."""
 
 from __future__ import annotations
 
-import copy
 import json
-import os
-import platform
-import re
-import shutil
-import sys
-from bisect import bisect_left
-from dataclasses import dataclass
-from importlib import import_module
-from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import capstone
-from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
-import pefile
 
-from ..pe32.stage_binary import (
+from ...artifacts.formats import (
+    INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
+    SEMANTIC_IR_FORMAT,
+    SEMANTIC_TRANSFER_CONTRACT_FORMAT,
+)
+from ...extraction.cutpoints import semantic_cutpoint_spans_for_side
+from ...extraction.executable_classification import _capstone_mode, _instruction_report
+from ...pe32.stage_binary import (
     BlockSide,
     StageABinary,
-    StageAImport,
-    StageAInputError,
-    StageASection,
-    _artifact_name,
-    _executable_section_for_rva,
-    _parse_linker_map_functions,
-    _parse_linker_map_symbol_line,
-    _parse_stage_a_pe,
-    _section_for_rva,
 )
-from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
-from ..util import sha256_bytes, sha256_file, utc_now, write_json
-
-from .common import (
-    NonCodeWaiver,
-    REFERENCE_CONTRACT_MODEL_ID,
-    _incomplete_record,
+from ...util import sha256_bytes
+from ..model import StaticUnitContext
+from .expressions import _expr_json
+from .support import (
     _mapping_source,
     _range_report,
-)
-from ..static_program.model import StaticUnitContext
-
-from .map_analysis import (
-    _capstone_mode,
-    _generated_map_issues,
-    _import_signature,
-    _layout_issues,
-    _section_compatibility_signature,
-    _section_permission_signature,
-    _section_rva_start_signature,
-)
-from .map_analysis import (
-    _direct_cfg_edges,
-    _gaps,
-    _instruction_report,
-)
-from .map_verification import (
-    _parse_block_map,
-    _verify_waiver_side,
-    _waiver_obligations,
-)
-
-from .abi import (
-    _abi_function_evidence,
-)
-from .abi_arguments import (
-    _abi_import_prototypes,
-)
-from .abi_clusters import (
-    _abi_cluster_contracts,
-    _abi_evidence_by_block,
-    _abi_evidence_by_function,
-    _abi_functions,
-    _cluster_contract,
-)
-from .abi_comparison import (
-    _contract_candidate_abi_coverage_gaps,
-)
-from .abi_profile import (
-    _stage_a_abi_profile_comparison_gaps,
-)
-from .abi_support import (
-    _block_id_for_instruction,
-    _contract_constraint,
-    _count_by,
     _safe_gap_part,
     _safe_int,
 )
-
 from .symbolic_execution import (
-    _import_z3,
     _symbolic_execute,
     _symbolic_incomplete,
 )
-from .symbolic_expressions import (
-    _expr_json,
-)
 
-def _semantic_transfer_contracts(
+def semantic_transfers(
     binary: StageABinary,
     mappings: list[StaticUnitContext],
-    contract_ref: dict[str, Any],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for mapped in mappings:
@@ -114,9 +45,9 @@ def _semantic_transfer_contracts(
         spans = semantic_cutpoint_spans_for_side(
             binary,
             {
-                "rva_start": mapped.original.rva_start,
-                "rva_end": mapped.original.rva_end,
-                "size": mapped.original.size,
+                "rva_start": mapped.span.rva_start,
+                "rva_end": mapped.span.rva_end,
+                "size": mapped.span.size,
             },
             mapped.id,
             periodic=False,
@@ -128,11 +59,10 @@ def _semantic_transfer_contracts(
                 if split
                 else mapped.id
             )
-            row = _semantic_transfer_contract(
+            row = semantic_transfer(
                 binary,
                 mapped,
                 function_name,
-                contract_ref,
                 semantic_side=BlockSide(
                     span["rva_start"],
                     span["rva_end"],
@@ -148,30 +78,27 @@ def _semantic_transfer_contracts(
             rows.append(row)
     return sorted(rows, key=lambda item: (str(item.get("function") or ""), str(item.get("block_id") or "")))
 
-def _semantic_transfer_contract(
+def semantic_transfer(
     binary: StageABinary,
     mapped: StaticUnitContext,
     function_name: str,
-    contract_ref: dict[str, Any],
     *,
     semantic_side: BlockSide | None = None,
     semantic_block_id: str | None = None,
 ) -> dict[str, Any]:
-    side = semantic_side or mapped.original
+    side = semantic_side or mapped.span
     block_id = semantic_block_id or mapped.id
     data = binary.pe.get_data(side.rva_start, side.size)
     instructions = _semantic_disassemble_block(binary, side, data)
     base_row: dict[str, Any] = {
-        "format": "stage-a-semantic-transfer-contract-v1",
+        "format": SEMANTIC_TRANSFER_CONTRACT_FORMAT,
         "id": f"semantic-transfer:{_safe_gap_part(block_id)}",
         "unit_kind": "semantic_transfer",
-        "expression_model": "stage-a-semantic-ir-v1",
+        "expression_model": SEMANTIC_IR_FORMAT,
         "status": "incomplete",
-        "reference_contract": contract_ref,
         "function": function_name or None,
         "block_id": block_id,
-        "reachable": True,
-        "original": _range_report(side),
+        "span": _range_report(side),
         "instruction_bytes_sha256": sha256_bytes(data),
         "instructions": instructions,
         "pre_state": _semantic_pre_state(binary),
@@ -194,7 +121,6 @@ def _semantic_transfer_contract(
             "ordered_events": 0,
             "edge_conditions": 0,
         },
-        "acceptance": "guidance contract only; candidate static and behavioral validation remain required",
     }
     if len(data) != side.size:
         return {
@@ -617,7 +543,7 @@ def _semantic_instruction_effect_schedule(
         instruction_side = BlockSide(instruction_rva, instruction_end)
         instruction_mapping = StaticUnitContext(
             id=f"{mapped.id}~instruction-{index}",
-            original=instruction_side,
+            span=instruction_side,
             kind=mapped.kind,
             invariant_checked=mapped.invariant_checked,
             source=mapped.source,
@@ -760,7 +686,7 @@ def _semantic_instruction_effect_schedule(
             )
 
     schedule: dict[str, Any] = {
-        "format": "stage-a-instruction-ordered-effect-schedule-v1",
+        "format": INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
         "status": "complete" if not blockers else "incomplete",
         "proof_authority": False,
         "ordering": "strict_contiguous_rva_order",
@@ -1345,171 +1271,6 @@ def _semantic_stack_affine_expr(expr: Any) -> tuple[int, int] | None:
         return left[0] - right[0], left[1] - right[1]
     return None
 
-def _semantic_memory_frame_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
-    frames: dict[str, dict[str, Any]] = {}
-    accesses: list[dict[str, Any]] = []
-    for function in _abi_functions(contract):
-        function_name = str(function.get("name") or "")
-        for access_kind, access_list_name in (("read", "memory_reads"), ("write", "memory_writes")):
-            for index, access in enumerate(function.get(access_list_name, []) if isinstance(function.get(access_list_name), list) else []):
-                if not isinstance(access, dict):
-                    continue
-                frame = _semantic_memory_frame_for_access(access)
-                frames.setdefault(str(frame["id"]), frame)
-                instruction = access.get("instruction") if isinstance(access.get("instruction"), dict) else {}
-                accesses.append(
-                    {
-                        "id": f"memory-access:{_safe_gap_part(function_name)}:{instruction.get('rva', 'unknown')}:{access_kind}:{index}",
-                        "function": function_name or None,
-                        "block_id": _block_id_for_instruction(function, instruction),
-                        "access": access_kind,
-                        "width": access.get("width"),
-                        "frame_id": frame["id"],
-                        "frame_kind": frame["frame_kind"],
-                        "addressing": access.get("addressing") if isinstance(access.get("addressing"), dict) else {},
-                        "instruction": instruction,
-                        "status": "classified" if frame["frame_kind"] != "unknown" else "incomplete",
-                        "blocker": None if frame["frame_kind"] != "unknown" else "memory frame could not be classified from static addressing evidence",
-                        "source_access": access,
-                    }
-                )
-    return {
-        "format": "stage-a-memory-frame-contracts-v1",
-        "reference_contract": contract_ref,
-        "frames": sorted(frames.values(), key=lambda item: str(item.get("id") or "")),
-        "accesses": sorted(accesses, key=lambda item: str(item.get("id") or "")),
-        "counts": {
-            "frames": len(frames),
-            "accesses": len(accesses),
-            "by_frame_kind": _count_by(list(frames.values()), "frame_kind"),
-            "by_access": _count_by(accesses, "access"),
-        },
-    }
-
-def _semantic_memory_frame_for_access(access: dict[str, Any]) -> dict[str, Any]:
-    role = str(access.get("memory_role") or "unknown")
-    section = access.get("memory_section") if isinstance(access.get("memory_section"), dict) else {}
-    addressing = access.get("addressing") if isinstance(access.get("addressing"), dict) else {}
-    base = str(addressing.get("base") or "")
-    entry_pointer = access.get("entry_register_pointer") if isinstance(access.get("entry_register_pointer"), dict) else {}
-    if role == "import_address_table":
-        frame_kind = "iat.import"
-        frame_key = str(access.get("memory_rva") or "unknown")
-    elif role.startswith("global_"):
-        frame_kind = "global.rw" if section.get("writable") is True else "global.ro"
-        frame_key = str(section.get("name") or access.get("memory_rva") or "unknown")
-    elif role == "stack_argument_slot":
-        frame_kind = "stack.arg"
-        frame_key = base or "stack"
-    elif role in {"stack_local_slot", "stack_pointer_slot"}:
-        frame_kind = "stack.local"
-        frame_key = base or "stack"
-    elif entry_pointer:
-        frame_kind = "object.pointer_candidate"
-        frame_key = str(entry_pointer.get("register") or base or "entry")
-    elif role == "argument_pointer_deref":
-        frame_kind = "object.argument_pointer"
-        frame_key = base or "argument"
-    elif role == "global_pointer_deref":
-        frame_kind = "object.global_pointer"
-        frame_key = base or str(access.get("memory_rva") or "global")
-    elif role == "computed_pointer_deref":
-        frame_kind = "object.computed_pointer"
-        frame_key = base or "computed"
-    elif role == "absolute_memory_slot":
-        frame_kind = "absolute.memory"
-        frame_key = str(access.get("memory_rva") or "absolute")
-    elif role == "computed_memory":
-        frame_kind = "computed.memory"
-        frame_key = base or "computed"
-    else:
-        frame_kind = f"role.{_safe_gap_part(role)}" if role else "role.unknown"
-        frame_key = role
-    return {
-        "id": f"frame:{_safe_gap_part(frame_kind)}:{_safe_gap_part(frame_key)}",
-        "frame_kind": frame_kind,
-        "memory_role": role,
-        "section": section or None,
-        "base_register": base or None,
-        "entry_register_pointer": entry_pointer or None,
-        "status": "classified",
-    }
-
-def _semantic_call_summary_contracts(contract: dict[str, Any], contract_ref: dict[str, Any]) -> dict[str, Any]:
-    summaries: list[dict[str, Any]] = []
-    for function in _abi_functions(contract):
-        function_name = str(function.get("name") or "")
-        for index, callsite in enumerate(function.get("callsites", []) if isinstance(function.get("callsites"), list) else []):
-            if not isinstance(callsite, dict):
-                continue
-            summary = _semantic_call_summary(function_name, index, callsite)
-            summaries.append(summary)
-    return {
-        "format": "stage-a-call-summary-contracts-v1",
-        "reference_contract": contract_ref,
-        "calls": sorted(summaries, key=lambda item: str(item.get("id") or "")),
-        "counts": {
-            "calls": len(summaries),
-            "by_status": _count_by(summaries, "status"),
-            "by_target_kind": _count_by(summaries, "target_kind"),
-        },
-    }
-
-def _semantic_call_summary(function_name: str, index: int, callsite: dict[str, Any]) -> dict[str, Any]:
-    target = callsite.get("target") if isinstance(callsite.get("target"), dict) else {}
-    inventory = callsite.get("argument_inventory") if isinstance(callsite.get("argument_inventory"), dict) else {}
-    hidden = callsite.get("hidden_sret_or_out_param_evidence") if isinstance(callsite.get("hidden_sret_or_out_param_evidence"), dict) else {}
-    varargs = callsite.get("varargs_evidence") if isinstance(callsite.get("varargs_evidence"), dict) else {}
-    targets = callsite.get("function_pointer_targets") if isinstance(callsite.get("function_pointer_targets"), list) else []
-    blockers: list[str] = []
-    indirect_boundary = (target.get("kind") == "function_pointer" and target.get("status") == "unresolved")
-    if any(isinstance(item, dict) and item.get("status") == "unresolved" for item in targets) and not indirect_boundary:
-        blockers.append("function-pointer target set is unresolved")
-    fmt = varargs.get("format_string") if isinstance(varargs.get("format_string"), dict) else {}
-    if fmt.get("status") == "incomplete":
-        blockers.append(str(fmt.get("reason") or "varargs format-string inventory is incomplete"))
-    status = "complete" if not blockers else "incomplete"
-    return {
-        "id": str(callsite.get("id") or f"callsite:{_safe_gap_part(function_name)}:{index}"),
-        "function": function_name or None,
-        "block_id": callsite.get("block_id"),
-        "status": status,
-        "target_kind": target.get("kind") or "unknown",
-        "target": target,
-        "calling_convention": inventory.get("calling_convention") or "unknown",
-        "argument_inventory": inventory,
-        "return_value": {"register": "eax", "status": "environment_response_or_direct_call_result"},
-        "stack_delta": callsite.get("stack_delta") if isinstance(callsite.get("stack_delta"), dict) else {"status": "unknown"},
-        "hidden_sret_or_out_param_evidence": hidden,
-        "varargs_evidence": varargs,
-        "function_pointer_targets": targets,
-        "indirect_boundary": {"status": "explicit", "effect_model": "preserve_target_expression_and_call_response"} if indirect_boundary else None,
-        "blockers": blockers,
-        "next_action": _semantic_call_summary_next_action(function_name, target, blockers, varargs, hidden),
-        "source_callsite": callsite,
-    }
-
-def _semantic_call_summary_next_action(
-    function_name: str,
-    target: dict[str, Any],
-    blockers: list[str],
-    varargs: dict[str, Any],
-    hidden: dict[str, Any],
-) -> str:
-    if blockers:
-        if any("function-pointer" in item for item in blockers):
-            return f"recover finite function-pointer targets for {function_name} or keep the indirect boundary explicit"
-        if varargs.get("status") == "candidate" or any("varargs" in item or "format" in item for item in blockers):
-            return f"recover the format-string and variadic argument inventory for {function_name}"
-        return f"complete the call summary for {function_name}"
-    if varargs.get("status") == "candidate":
-        return "preserve the variadic import/prototype boundary exactly in generated C"
-    if hidden.get("status") == "candidate":
-        return "preserve the hidden sret/out-param channel across this call"
-    if target.get("kind") == "import":
-        return "preserve this call as an import/environment boundary"
-    return "preserve this call target, argument inventory, and return-value use"
-
 __all__ = [
     '_ORDINARY_CHECKED_DECODER',
     '_ORDINARY_CHECKED_EXECUTOR',
@@ -1520,9 +1281,6 @@ __all__ = [
     '_X87_SINGLETON_CHECKED_EXECUTOR',
     '_semantic_call_register_inputs_json',
     '_semantic_call_stack_inputs_json',
-    '_semantic_call_summary',
-    '_semantic_call_summary_contracts',
-    '_semantic_call_summary_next_action',
     '_semantic_disassemble_block',
     '_semantic_edge_conditions',
     '_semantic_effects_from_observables',
@@ -1537,15 +1295,13 @@ __all__ = [
     '_semantic_json_contains_op',
     '_semantic_json_sha256',
     '_semantic_memory_event_json',
-    '_semantic_memory_frame_contracts',
-    '_semantic_memory_frame_for_access',
     '_semantic_ordered_event_json',
     '_semantic_outcome_json',
     '_semantic_pre_state',
     '_semantic_stack_delta_expr',
     '_semantic_stack_delta_from_observables',
-    '_semantic_transfer_contract',
-    '_semantic_transfer_contracts',
+    'semantic_transfer',
+    'semantic_transfers',
     '_semantic_transfer_inventory_contains_x87',
     '_semantic_x87_expression_valid',
     '_semantic_x87_instruction_effect_schedule',

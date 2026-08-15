@@ -36,7 +36,7 @@ def _unit(
             "original": {"rva_start": 0x1000, "rva_end": 0x1001},
             "instruction_bytes_sha256": instruction_digest,
         },
-        "expression_model": "stage-a-semantic-ir-v1",
+        "expression_model": "spaghetti-extractor-static-semantic-ir-v1",
         "instructions": [],
         "semantics": {
             "pre_state": {

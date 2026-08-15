@@ -6,7 +6,6 @@ from .c_backend import _runtime_header, _runtime_helpers
 from .interpreter_model import (
     StageBInterpreterError,
     _Action,
-    _Call,
     _Node,
     _Transfer,
 )

@@ -7,16 +7,6 @@ from tests.unit.candidate.native_build._support import *
     shutil.which("i686-w64-mingw32-gcc"), "i686 MinGW compiler unavailable"
 )
 class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
-    def test_structural_mode_fails_before_candidate_compilation(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            with self.assertRaisesRegex(
-                StageBNativeRuntimeError, "require a static-closed engine plan"
-            ):
-                _Packages(
-                    Path(temporary) / "inputs",
-                    candidate_mode=STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
-                )
-
     def test_compile_keys_track_only_transitive_source_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -133,22 +123,6 @@ class InterpreterNativeBuildIntegrationTests(unittest.TestCase):
                     source_bundle=bundle,
                     compiler="i686-w64-mingw32-gcc",
                     out_dir=root / "object",
-                )
-
-    def test_diagnostic_mode_cannot_create_compile_bundles(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            packages = _Packages(root / "inputs")
-            with self.assertRaisesRegex(
-                StageBInterpreterNativeBuildError,
-                "cannot prepare native object graphs",
-            ):
-                prepare_stage_b_interpreter_native_object_graph(
-                    interpreter_package=packages.interpreter,
-                    native_engine_package=packages.engine,
-                    native_runtime_package=packages.runtime,
-                    diagnostic_failure_trap=True,
-                    out_dir=root / "diagnostic-graph",
                 )
 
     def test_compile_graph_records_exact_quoted_include_closures(self) -> None:

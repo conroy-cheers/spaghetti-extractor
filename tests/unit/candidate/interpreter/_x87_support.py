@@ -12,6 +12,8 @@ from spaghetti_extractor.candidate.interpreter import (
     StageBInterpreterError,
     compile_stage_b_interpreter_machine_ir,
     compile_stage_b_interpreter_program,
+)
+from tests.unit.candidate.interpreter._support import (
     write_stage_b_interpreter_package,
 )
 from spaghetti_extractor.candidate.x87 import (
@@ -210,7 +212,7 @@ def _machine_ir_mixed_unit() -> dict[str, object]:
         "target_rva": 0x1003,
     }
     unit["semantics"]["instruction_effect_schedule"] = {
-        "format": "stage-a-instruction-ordered-effect-schedule-v1",
+        "format": "spaghetti-extractor-static-instruction-effects-v1",
         "status": "complete",
         "proof_authority": False,
         "ordering": "strict_contiguous_rva_order",
@@ -437,7 +439,7 @@ def _scheduled_mixed_row() -> dict[str, object]:
         records.append(record)
 
     schedule: dict[str, object] = {
-        "format": "stage-a-instruction-ordered-effect-schedule-v1",
+        "format": "spaghetti-extractor-static-instruction-effects-v1",
         "status": "complete",
         "proof_authority": False,
         "ordering": "strict_contiguous_rva_order",

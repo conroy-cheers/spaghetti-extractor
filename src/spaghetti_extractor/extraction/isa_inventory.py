@@ -6,9 +6,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from ..artifacts.formats import STATIC_ANALYSIS_PROFILE_ID
 from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes
-from .schema import STATIC_ANALYSIS_MODEL_ID, STATIC_ANALYSIS_PROFILE_ID
+from .schema import STATIC_ANALYSIS_MODEL_ID
 from .region_inventory import (
     SideExtractionRequest,
     canonical_request_sha256,

@@ -15,7 +15,6 @@ from ..external.machine_import_profiles import (
     load_machine_import_profile_set,
 )
 from ..util import sha256_file, write_json
-from .modes import STATIC_CLOSED_CANDIDATE_MODE, require_candidate_mode
 from .runtime_model import (
     DEFINEDNESS_USE_FORMAT,
     NATIVE_RUNTIME_BINDINGS_FILENAME,
@@ -30,14 +29,13 @@ from .runtime_model import (
     _NATIVE_ENGINE_MANIFEST_FILENAME,
 )
 from .runtime_plan_validation import (
-    _diagnostic_writer_iat_rvas,
     _external_range_rules,
     _validate_native_plan,
     _validate_native_termination,
 )
 from .runtime_program_validation import (
     _semantic_input_binding,
-    _validate_deferred_transfer_inventory,
+    _validate_complete_semantic_coverage,
     _validate_program_manifest,
     _validate_typed_x87_operations,
 )
@@ -120,7 +118,6 @@ def plan_stage_b_native_runtime(
         transfer_bindings,
         undefined_policies,
         definedness_metadata_sha256,
-        interpreter_deferred,
     ) = (
         _validate_program_manifest(program, state_machine_sha256)
     )
@@ -154,15 +151,10 @@ def plan_stage_b_native_runtime(
         native_manifest_path.parent, plan_ref, "native-engine plan"
     )
     native_plan = _read_json_object(native_plan_path, "native-engine plan")
-    candidate_mode = require_candidate_mode(native_plan.get("candidate_mode"))
-    if candidate_mode != STATIC_CLOSED_CANDIDATE_MODE:
-        raise StageBNativeRuntimeError(
-            "native runtime packages require a static-closed engine plan"
-        )
     native_policy = _required_object(native.get("policy"), "native-engine policy")
-    if native_policy.get("candidate_mode") != candidate_mode:
+    if native_policy.get("execution_scope") != "complete-static-authority":
         raise StageBNativeRuntimeError(
-            "native-engine manifest and plan use different candidate modes"
+            "native-engine package does not require complete static authority"
         )
     if native.get("callback_adapter_receipts") != native_plan.get(
         "callback_adapter_receipts"
@@ -176,14 +168,9 @@ def plan_stage_b_native_runtime(
         raise StageBNativeRuntimeError(
             "native-engine manifest and plan bind different implementation dispatch receipts"
         )
-    native_deferred = _validate_deferred_transfer_inventory(
-        native_plan,
-        label="native-engine plan",
+    _validate_complete_semantic_coverage(
+        native_plan, label="native-engine plan"
     )
-    if native_deferred != interpreter_deferred:
-        raise StageBNativeRuntimeError(
-            "interpreter and native engine defer different machine-IR transfers"
-        )
     operations = _required_list(
         native_plan.get("x87_operations"), "native-engine typed x87 operations"
     )
@@ -202,10 +189,6 @@ def plan_stage_b_native_runtime(
         recovered_executable_data_ranges,
     ) = _validate_native_plan(
         native_plan,
-        candidate_mode=candidate_mode,
-        deferred_transfer_ids=frozenset(
-            str(row["transfer_id"]) for row in interpreter_deferred
-        ),
         state_machine_sha256=state_machine_sha256,
         input_mode=input_mode,
         transfer_rvas=transfer_rvas,
@@ -242,12 +225,9 @@ def plan_stage_b_native_runtime(
     ) = _external_range_rules(
         native_plan,
         external_profile_path,
-        candidate_mode=candidate_mode,
     )
-    diagnostic_writer_iat_rvas = _diagnostic_writer_iat_rvas(native_plan)
 
     return NativeRuntimePlan(
-        candidate_mode=candidate_mode,
         entry_rva=entry_rva,
         transfer_rvas=transfer_rvas,
         recovered_executable_data_ranges=recovered_executable_data_ranges,
@@ -255,17 +235,9 @@ def plan_stage_b_native_runtime(
         callback_adapter_receipts=callback_adapter_receipts,
         implementation_dispatch_receipt=implementation_dispatch_receipt,
         implementation_dispatches=implementation_dispatches,
-        diagnostic_frontiers=tuple(
-            dict(frontier)
-            for frontier in _required_list(
-                native_plan.get("diagnostic_frontiers"),
-                "native-engine diagnostic frontiers",
-            )
-        ),
         external_range_rules=external_range_rules,
         authorized_external_site_rvas=authorized_external_site_rvas,
         blocked_external_sites=blocked_external_sites,
-        diagnostic_writer_iat_rvas=diagnostic_writer_iat_rvas,
         external_profile_path=external_profile_path,
         external_profile_sha256=(
             None
@@ -383,7 +355,6 @@ def write_stage_b_native_runtime_package(
         "counts": {
             "transfers": len(plan.transfer_rvas),
             "implementation_dispatches": len(plan.implementation_dispatches),
-            "diagnostic_frontiers": len(plan.diagnostic_frontiers),
             "authorized_external_sites": len(
                 plan.authorized_external_site_rvas
             ),
@@ -391,11 +362,9 @@ def write_stage_b_native_runtime_package(
         },
         "policy": {
             "architecture": "i686-pe32",
-            "candidate_mode": plan.candidate_mode,
+            "execution_scope": "complete-static-authority",
             "freestanding": True,
-            "static_hybrid_closure_receipt_required": (
-                plan.candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
-            ),
+            "static_hybrid_closure_receipt_required": True,
             "implementation_dispatch": (
                 "exact-linked-class-per-interpreter-transfer-v1"
             ),

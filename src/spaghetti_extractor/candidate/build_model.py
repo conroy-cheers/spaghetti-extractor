@@ -5,8 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Mapping
 
-from ..artifacts.formats import INTERPRETER_NATIVE_BUILD_FORMAT
 from . import native_build
 
 
@@ -32,7 +32,6 @@ _C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _INCLUDE_DIRECTIVE = re.compile(r'^\s*#\s*include\s+(.+?)\s*(?://.*)?$')
 _QUOTED_INCLUDE = re.compile(r'^"([^"\r\n]+)"(?:\s*/\*.*\*/\s*)?$')
 _SYSTEM_INCLUDE = re.compile(r"^<[^>\r\n]+>(?:\s*/\*.*\*/\s*)?$")
-_DIAGNOSTIC_MACRO = "STAGE_B_NATIVE_DIAGNOSTIC_FAILURE_TRAP"
 _PAYLOAD_SYMBOL = re.compile(
     r"(?m)^\s*(0x[0-9a-fA-F]+)\s+(_?stage_b_payload_(?:entry|callback_[0-9a-fA-F]{8}))\b"
 )

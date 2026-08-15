@@ -1,65 +1,12 @@
-"""Symbolic x86 block execution used to propose semantic contracts."""
+"""x86 flag expressions for static semantics."""
 
 from __future__ import annotations
 
-import copy
-import json
-import os
-import platform
-import re
-import shutil
-import sys
-from bisect import bisect_left
-from dataclasses import dataclass
-from importlib import import_module
-from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-import capstone
-from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
-import pefile
+from ...pe32.stage_binary import StageAInputError
 
-from ..pe32.stage_binary import (
-    BlockSide,
-    StageABinary,
-    StageAImport,
-    StageAInputError,
-    StageASection,
-    _artifact_name,
-    _executable_section_for_rva,
-    _parse_linker_map_functions,
-    _parse_linker_map_symbol_line,
-    _parse_stage_a_pe,
-    _section_for_rva,
-)
-from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
-from ..util import sha256_bytes, sha256_file, utc_now, write_json
-
-from .common import (
-    BlockMapping,
-    _is_conditional_jump,
-    _parse_int,
-)
-
-from .map_analysis import (
-    _capstone_mode,
-)
-from .map_analysis import (
-    _external_import_call,
-    _resolved_branch_target,
-)
-from .map_verification import (
-    _external_import_jump,
-)
-
-from .abi_control_flow import (
-    _abi_indexed_jump_table_contract,
-)
-from .abi_instruction import (
-    _abi_mem_operand_report,
-)
-
-from .symbolic_expressions import (
+from .expressions import (
     _bool_and,
     _bool_eq,
     _bool_not,

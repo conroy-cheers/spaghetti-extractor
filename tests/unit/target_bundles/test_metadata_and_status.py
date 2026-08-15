@@ -18,6 +18,10 @@ from spaghetti_extractor.target_bundles.project_status import (
     StatusArtifactError,
     build_project_status,
 )
+from spaghetti_extractor.target_bundles.runtime_frontiers import (
+    RUNTIME_FRONTIER_REPORT_FORMAT,
+    build_runtime_frontier_report,
+)
 
 
 def _metadata() -> dict[str, object]:
@@ -176,6 +180,74 @@ class ProjectStatusTests(unittest.TestCase):
             )
 
 
+class RuntimeFrontierReportTests(unittest.TestCase):
+    def _build(self, authority: dict[str, object]) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "authority.json"
+            source.write_text(
+                json.dumps({
+                    "format": "spaghetti-extractor-authority-diagnostics-v3",
+                    **authority,
+                }),
+                encoding="ascii",
+            )
+            return build_runtime_frontier_report(
+                authority_diagnostics=source,
+                out=root / "runtime-frontiers.json",
+            )
+
+    def test_projection_is_non_authorizing_and_filters_nonruntime_rows(self) -> None:
+        result = self._build({
+            "status": "incomplete",
+            "authorizing": False,
+            "primary_frontiers": [
+                {
+                    "status": "incomplete",
+                    "family": "indirect-targets-v3",
+                    "code": "target_unknown",
+                    "record_id": "unit:1",
+                },
+                {
+                    "status": "incomplete",
+                    "family": "documentation",
+                    "code": "label_missing",
+                    "record_id": "note:1",
+                },
+            ],
+            "dependency_consequences": [],
+        })
+        self.assertEqual(result["format"], RUNTIME_FRONTIER_REPORT_FORMAT)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertFalse(result["authorizing"])
+        self.assertEqual([row["record_id"] for row in result["frontiers"]], ["unit:1"])
+        self.assertFalse(result["policy"]["candidate_generated"])
+        self.assertFalse(result["policy"]["runtime_executed"])
+        self.assertFalse(result["policy"]["original_binary_executed"])
+
+    def test_runtime_violation_wins_and_complete_projection_is_empty(self) -> None:
+        violated = self._build({
+            "status": "violated",
+            "authorizing": False,
+            "primary_frontiers": [{
+                "status": "violated",
+                "family": "external-sites-v3",
+                "code": "abi_contradiction",
+                "record_id": "site:1",
+            }],
+            "dependency_consequences": [],
+        })
+        self.assertEqual(violated["status"], "violated")
+        complete = self._build({
+            "status": "complete",
+            "authorizing": True,
+            "primary_frontiers": [],
+            "dependency_consequences": [],
+        })
+        self.assertEqual(complete["status"], "complete")
+        self.assertEqual(complete["frontiers"], [])
+
+
 class CandidateStatusTests(unittest.TestCase):
     def _build(
         self,
@@ -187,6 +259,7 @@ class CandidateStatusTests(unittest.TestCase):
         suites: dict[str, object] | None = None,
         project_target_id: str = "fixture",
         configuration_binding: str = "default",
+        require_candidate_test_suite: bool = False,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -234,6 +307,7 @@ class CandidateStatusTests(unittest.TestCase):
                 project_status=project_path,
                 configuration_status=configuration_path,
                 candidate_test_suites=suites or {},
+                require_candidate_test_suite=require_candidate_test_suite,
                 out=output,
             )
 
@@ -250,6 +324,18 @@ class CandidateStatusTests(unittest.TestCase):
         self.assertTrue(result["build_ready"])
         self.assertEqual(result["candidate"]["status"], "ready_to_build")
         self.assertEqual(result["counts"]["candidate_test_suites"], 1)
+
+    def test_missing_required_suite_blocks_acceptance_but_not_build(self) -> None:
+        result = self._build(require_candidate_test_suite=True)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertTrue(result["build_ready"])
+        self.assertFalse(
+            result["candidate"]["acceptance_preconditions_ready"]
+        )
+        self.assertEqual(
+            result["primary_frontiers"][0]["code"],
+            "candidate_test_suite_missing",
+        )
 
     def test_authority_and_configuration_blockers_are_distinct(self) -> None:
         authority = self._build(

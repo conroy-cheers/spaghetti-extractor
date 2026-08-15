@@ -5,12 +5,12 @@ round-trip qualification, and Stage B must agree on these values without
 importing one another's implementation modules.
 """
 
-SEMANTIC_IR_FORMAT = "stage-a-semantic-ir-v1"
+SEMANTIC_IR_FORMAT = "spaghetti-extractor-static-semantic-ir-v1"
 SEMANTIC_TRANSFER_CONTRACT_FORMAT = (
-    "stage-a-semantic-transfer-contract-v1"
+    "spaghetti-extractor-static-transfer-v1"
 )
 INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT = (
-    "stage-a-instruction-ordered-effect-schedule-v1"
+    "spaghetti-extractor-static-instruction-effects-v1"
 )
 INTERPRETER_NATIVE_BUILD_FORMAT = "stage-b-interpreter-native-build-v1"
 STAGE_B_INTERPRETER_PROGRAM_FORMAT = "stage-b-semantic-interpreter-program-v1"
@@ -20,9 +20,9 @@ NATIVE_ENGINE_PACKAGE_FORMAT = "stage-b-native-engine-package-v1"
 NATIVE_RUNTIME_PACKAGE_FORMAT = "stage-b-native-runtime-package-v1"
 MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
 STATIC_ANALYSIS_PROFILE_ID = "x86-pe32-static-reconstruction-v1"
-STATIC_PROGRAM_CONTRACT_FORMAT = "spaghetti-extractor-static-program-contract-v1"
+STATIC_PROGRAM_CONTRACT_FORMAT = "spaghetti-extractor-static-program-contract-v2"
 STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT = (
-    "spaghetti-extractor-static-program-semantic-binding-v1"
+    "spaghetti-extractor-static-program-semantic-binding-v2"
 )
 FALLBACK_CAPABILITY_ANALYSIS_FORMAT = (
     "spaghetti-extractor-fallback-capability-analysis-v1"
@@ -33,9 +33,6 @@ LAUNCH_ASSUMPTION_TEMPLATE_FORMAT = (
     "spaghetti-extractor-pe32-launch-assumption-template-v1"
 )
 NATIVE_X87_REPLAY_FORMAT = "stage-a-native-exact-x87-command-replay-obligation-v1"
-NATIVE_X87_REPLAY_PROGRAM_FORMAT = (
-    "stage-b-native-exact-x87-command-replay-program-v1"
-)
 ISA_ENCODING_PROPOSAL_FORMAT = (
     "stage-a-side-isa-executable-encoding-proposal-v1"
 )
@@ -93,10 +90,18 @@ CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA = (
     "spaghetti-extractor-canonical-external-site-record-v3"
 )
 CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3 = "canonical-external-sites-v3"
+CANDIDATE_TEST_SUITE_FORMAT = "spaghetti-extractor-candidate-test-suite-v1"
+CANDIDATE_TEST_CASE_REPORT_FORMAT = (
+    "spaghetti-extractor-candidate-test-case-report-v1"
+)
+CANDIDATE_TEST_REPORT_FORMAT = "spaghetti-extractor-candidate-test-report-v1"
 __all__ = [
     "AUTHORITY_DIAGNOSTICS_V3_FORMAT",
     "CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA",
     "CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3",
+    "CANDIDATE_TEST_SUITE_FORMAT",
+    "CANDIDATE_TEST_CASE_REPORT_FORMAT",
+    "CANDIDATE_TEST_REPORT_FORMAT",
     "COMPONENT_INTERFACE_REFINEMENT_FORMAT",
     "COMPONENT_INTERFACE_SPEC_FORMAT",
     "COMPONENT_QUALIFICATION_FORMAT",
@@ -131,7 +136,6 @@ __all__ = [
     "NATIVE_ENGINE_PLAN_FORMAT",
     "NATIVE_RUNTIME_PACKAGE_FORMAT",
     "NATIVE_X87_REPLAY_FORMAT",
-    "NATIVE_X87_REPLAY_PROGRAM_FORMAT",
     "PAYLOAD_RELOCATION_INVENTORY_FORMAT",
     "PE_COMPOSITION_MANIFEST_FORMAT",
     "REGION_REPLACEMENT_BUNDLE_FORMAT",

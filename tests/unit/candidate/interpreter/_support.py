@@ -13,7 +13,7 @@ from spaghetti_extractor.candidate.interpreter import (
     compile_stage_b_interpreter_machine_ir,
     compile_stage_b_interpreter_program,
     write_fallback_capability_analysis,
-    write_stage_b_interpreter_package,
+    write_stage_b_interpreter_package as _write_stage_b_interpreter_package,
 )
 
 
@@ -70,6 +70,88 @@ def _write_machine(path: Path, rows: list[dict[str, object]]) -> None:
         "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
         encoding="utf-8",
     )
+
+
+def _test_machine_ir_unit(row: dict[str, object]) -> dict[str, object]:
+    if row.get("format") == "stage-a-machine-ir-v2":
+        return row
+    original = dict(row.get("original", {}))
+    semantics = {
+        name: row.get(name)
+        for name in (
+            "pre_state",
+            "register_writes",
+            "flag_writes",
+            "memory_events",
+            "external_events",
+            "faults",
+            "ordered_events",
+            "edge_conditions",
+            "outcome",
+            "stack_delta",
+            "counts",
+            "fpu_state",
+            "instruction_effect_schedule",
+        )
+    }
+    return {
+        "format": "stage-a-machine-ir-v2",
+        "record_kind": "unit",
+        "id": row["id"],
+        "status": "incomplete" if row.get("status") == "incomplete" else "qualified",
+        "reachable": row.get("reachable", True),
+        "source": {
+            "original": original,
+            "contract_sha256": row.get("contract_sha256", _SHA_A),
+            "instruction_bytes_sha256": row.get(
+                "instruction_bytes_sha256", _SHA_B
+            ),
+            "semantic_export": None,
+        },
+        "instructions": _without_raw_instruction_material(
+            row.get("instructions", [])
+        ),
+        "x87_micro_ops": row.get("x87_micro_ops", []),
+        "semantics": semantics,
+    }
+
+
+def _without_raw_instruction_material(value):
+    forbidden = {
+        "bytes",
+        "instruction_bytes",
+        "opcode_bytes",
+        "raw_bytes",
+        "encoded_instruction",
+    }
+    if isinstance(value, dict):
+        return {
+            key: _without_raw_instruction_material(item)
+            for key, item in value.items()
+            if key not in forbidden
+        }
+    if isinstance(value, list):
+        return [_without_raw_instruction_material(item) for item in value]
+    return value
+
+
+def write_stage_b_interpreter_package(*, machine_ir: Path, out: Path):
+    rows = [
+        json.loads(line)
+        for line in Path(machine_ir).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if all(row.get("format") == "stage-a-machine-ir-v2" for row in rows):
+        strict_input = Path(machine_ir)
+    else:
+        strict_input = Path(machine_ir).with_name(
+            f"{Path(machine_ir).stem}-strict.jsonl"
+        )
+        _write_machine(
+            strict_input,
+            [_test_machine_ir_unit(row) for row in rows],
+        )
+    return _write_stage_b_interpreter_package(machine_ir=strict_input, out=out)
 
 
 def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
@@ -198,7 +280,7 @@ def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
             "counts": {},
             "fpu_state": None,
             "instruction_effect_schedule": {
-                "format": "stage-a-instruction-ordered-effect-schedule-v1",
+                "format": "spaghetti-extractor-static-instruction-effects-v1",
                 "status": "complete",
                 "proof_authority": False,
                 "ordering": "strict_contiguous_rva_order",
@@ -423,7 +505,7 @@ def _machine_ir_stack_call_after_register_reuse_unit() -> dict[str, object]:
             "counts": {},
             "fpu_state": None,
             "instruction_effect_schedule": {
-                "format": "stage-a-instruction-ordered-effect-schedule-v1",
+                "format": "spaghetti-extractor-static-instruction-effects-v1",
                 "status": "complete",
                 "proof_authority": False,
                 "ordering": "strict_contiguous_rva_order",
@@ -552,7 +634,7 @@ def _machine_ir_load_compare_branch_unit() -> dict[str, object]:
             "counts": {},
             "fpu_state": None,
             "instruction_effect_schedule": {
-                "format": "stage-a-instruction-ordered-effect-schedule-v1",
+                "format": "spaghetti-extractor-static-instruction-effects-v1",
                 "status": "complete",
                 "proof_authority": False,
                 "ordering": "strict_contiguous_rva_order",

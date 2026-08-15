@@ -64,10 +64,10 @@ let
         import sys
 
         from spaghetti_extractor.candidate.functional import (
-            stage_b_run_functional_case,
+            run_candidate_test_case,
         )
 
-        stage_b_run_functional_case(
+        run_candidate_test_case(
             suite=pathlib.Path(sys.argv[1]),
             case_id=sys.argv[2],
             candidate_binary=pathlib.Path(sys.argv[3]),
@@ -80,8 +80,8 @@ let
         )
         PY
         if ! ${pkgs.jq}/bin/jq -e '.status == "pass"' \
-          "$out/functional-case-report.json" >/dev/null; then
-          ${pkgs.jq}/bin/jq . "$out/functional-case-report.json" >&2
+          "$out/candidate-test-case-report.json" >/dev/null; then
+          ${pkgs.jq}/bin/jq . "$out/candidate-test-case-report.json" >&2
           ${pkgs.coreutils}/bin/cat "$out/artifacts/${case.id}/candidate.stdout" >&2
           ${pkgs.coreutils}/bin/cat "$out/artifacts/${case.id}/candidate.stderr" >&2
           exit 1
@@ -104,10 +104,10 @@ let
       import sys
 
       from spaghetti_extractor.candidate.functional import (
-          stage_b_aggregate_functional_cases,
+          aggregate_candidate_test_cases,
       )
 
-      stage_b_aggregate_functional_cases(
+      aggregate_candidate_test_cases(
           suite=pathlib.Path(sys.argv[1]),
           out=pathlib.Path(sys.argv[2]),
           case_reports=[pathlib.Path(value) for value in sys.argv[3:]],
@@ -115,12 +115,12 @@ let
       PY
       ${pkgs.jq}/bin/jq -e \
         --argjson expected ${toString (builtins.length cases)} '
-        .format == "stage-b-functional-report-v1" and
+        .format == "spaghetti-extractor-candidate-test-report-v1" and
         .status == "pass" and
         (.oracle.original_runtime_observations | not) and
         .counts.cases == $expected and .counts.passed == $expected and
         .counts.failed == 0 and (.cases | length) == $expected
-      ' "$out/functional-report.json" >/dev/null
+      ' "$out/candidate-test-report.json" >/dev/null
     '';
 in
 assert builtins.isString namePrefix && namePrefix != "";

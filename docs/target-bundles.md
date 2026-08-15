@@ -46,10 +46,11 @@ all phase derivations under `authority.phases`.
 
 Component runtimes are available under `components.runtimes.<configuration>`.
 Static candidate packages are indexed under `candidate.static.<configuration>`.
-Structural diagnostics are a separate static package containing generated
-source, plans, and frontiers; they never contain object code, a PE, or a Wine
-runner. These attributes are lazy: exporting the complete family does not
-realize every candidate.
+Runtime frontiers are a separate pure JSON package projected from checked
+authority diagnostics. They contain no generated source, object code, PE,
+runtime package, or Wine runner. Candidate attributes remain lazy, and the
+strict candidate constructor cannot evaluate successfully before final
+authority closes.
 
 Regression and acceptance are deliberately separate:
 

@@ -36,7 +36,7 @@ let
   authorityWorkflow = callWith ./authority-workflow.nix authorityCommon;
   componentWorkflow = callWith ./stage-b-components.nix analysisCommon;
   hybridCandidate = callWith ./stage-b-hybrid-candidate.nix candidateCommon;
-  structuralDiagnostics = callWith ./structural-diagnostics.nix candidateCommon;
+  runtimeFrontierReport = callWith ./runtime-frontier-report.nix analysisCommon;
   candidateTestSuite = callWith ./candidate-test-suite.nix candidateCommon;
   targetBundleLint = callWith ./target-bundle-lint.nix analysisCommon;
   projectStatusPythonSource = import ./python-module-closure.nix {
@@ -201,12 +201,9 @@ let
           runtimeCompiler = compiler;
         };
       };
-      structuralDiagnostic = structuralDiagnostics {
-        machineIr = analysis.machineIr;
-        staticExport = analysis.staticExport;
-        machineImportProfiles = machineImportProfiles
-          ++ candidateMachineImportProfiles;
-        namePrefix = "${namePrefix}-structural";
+      runtimeFrontiers = runtimeFrontierReport {
+        authorityDiagnostics = authority.diagnostics;
+        namePrefix = "${namePrefix}-runtime";
       };
       configurationIds = if hasComponents
         then builtins.attrNames components.runtimeConfigurations else [ ];
@@ -218,17 +215,19 @@ let
         id,
         configurationId,
         suite,
+        runtimeData ? null,
         timeoutSeconds ? 30,
         stripStderrLineRegexes ? [ ],
       }: candidateTestSuite {
-        inherit id configurationId suite timeoutSeconds stripStderrLineRegexes;
+        inherit id configurationId suite runtimeData timeoutSeconds
+          stripStderrLineRegexes;
         namePrefix = "${namePrefix}-${configurationId}";
         candidateBinary = "${staticCandidates.${configurationId}.candidate}/candidate.exe";
         authorityGate = authority.finalAuthorityGate;
       };
     in {
       inherit analysis authority components interpreter candidateFor
-        candidateTestFor configurationIds staticCandidates structuralDiagnostic
+        candidateTestFor configurationIds staticCandidates runtimeFrontiers
         hasComponents;
       originalBinary = original;
       inherit binaryIdentity;
@@ -368,7 +367,7 @@ let
           bundle = workflow.components.bundle;
         };
         diagnostics = {
-          structural = workflow.structuralDiagnostic;
+          runtime-frontiers = workflow.runtimeFrontiers;
           target-ownership = ownership;
         };
         candidate = {
@@ -394,6 +393,14 @@ let
           echo "run project analyze, inspect component proposals, then configure a default component configuration" >&2
           exit 1
         '';
+      defaultCandidateTests = lib.filterAttrs
+        (_: test: test.configurationId == defaultConfiguration) candidateTests;
+      candidateTestsRequired = pkgs.runCommand
+        "spaghetti-extractor-${metadata.id}-candidate-tests-required"
+        { __contentAddressed = true; } ''
+          echo "target ${metadata.id} has no candidate-only test suite for default configuration ${defaultConfiguration}" >&2
+          exit 1
+        '';
       standardAcceptanceChecks = {
         final-authority = workflow.authority.finalAuthorityGate;
       } // (if hasComponents then {
@@ -401,8 +408,11 @@ let
           workflow.staticCandidates.${defaultConfiguration}.candidate;
       } else {
         component-intent = componentIntentRequired;
-      } // lib.mapAttrs' (id: test:
-        lib.nameValuePair "candidate-test-${id}" test.aggregate) candidateTests);
+      } // (if defaultCandidateTests == { } then {
+        candidate-tests = candidateTestsRequired;
+      } else lib.mapAttrs' (id: test:
+        lib.nameValuePair "candidate-test-${id}" test.aggregate)
+        defaultCandidateTests));
       bundle = mkBundleRecord {
         inherit targetRoot apps;
         artifacts = standardArtifacts;
@@ -511,6 +521,7 @@ let
               ${lib.escapeShellArg metadata.id} \
               ${lib.escapeShellArg configurationId} \
               ${lib.escapeShellArg (builtins.toJSON configurationTestIndex)} \
+              ${if configurationId == defaultConfiguration then "1" else "0"} \
               "$out/candidate-status.json" <<'PY'
             import json
             import pathlib
@@ -523,7 +534,8 @@ let
                 target_id=sys.argv[3],
                 configuration_id=sys.argv[4],
                 candidate_test_suites=json.loads(sys.argv[5]),
-                out=pathlib.Path(sys.argv[6]),
+                require_candidate_test_suite=sys.argv[6] == "1",
+                out=pathlib.Path(sys.argv[7]),
             )
             PY
             jq -e '
@@ -577,7 +589,7 @@ let
           authorityDiagnostics = workflow.authority.diagnostics;
           regressionCheck = bundle.defaultCheck;
           acceptanceCheck = bundle.acceptanceCheck;
-          structuralDiagnostics = workflow.structuralDiagnostic;
+          runtimeFrontierReport = workflow.runtimeFrontiers;
         };
         components = {
           proposals = workflow.analysis.componentProposals;
@@ -616,7 +628,7 @@ let
             then workflow.componentRuntimes.${defaultConfiguration} else null;
           staticCandidate = if hasComponents
             then workflow.staticCandidates.${defaultConfiguration} else null;
-          structuralDiagnostic = workflow.structuralDiagnostic;
+          runtimeFrontiers = workflow.runtimeFrontiers;
         };
       };
 in
@@ -635,12 +647,11 @@ in
   };
   candidate = {
     hybrid = hybridCandidate;
-    structuralDiagnostics = structuralDiagnostics;
+    runtimeFrontierReport = runtimeFrontierReport;
     testSuite = candidateTestSuite;
   };
   lifting = {
     linkedLibraries = callWith ./stage-b-linked-libraries.nix analysisCommon;
-    functionalSuite = callWith ./stage-b-functional-suite.nix analysisCommon;
     components = componentWorkflow;
   };
   validation = {
@@ -649,7 +660,6 @@ in
       inherit pkgs;
       inherit (context) pythonEnv fixtures;
     };
-    upstreamShellSuite = import ./stage-b-upstream-shell-suite.nix { inherit pkgs; };
   };
   target = {
     pe32Bundle = mkPe32Bundle;

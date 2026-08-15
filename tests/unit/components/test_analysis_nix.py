@@ -69,6 +69,10 @@ class ComponentAnalysisNixTests(unittest.TestCase):
             'resolution = pkgs.runCommand', 1
         )[1].split('mkContract =', 1)[0]
         self.assertNotIn("${componentProposals}", resolution_body)
+        contract_gate = module.split(
+            '.format == "spaghetti-extractor-component-contract-package-v2"', 1
+        )[1].split('"$out/contract.json"', 1)[0]
+        self.assertIn('.status == "violated"', contract_gate)
 
         proposal_input = (
             ROOT / "nix" / "stage-b-component-proposal-input.nix"
@@ -104,7 +108,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("runtimes = workflow.componentRuntimes", sdk)
         self.assertIn("static = lib.mapAttrs", sdk)
         self.assertIn("diagnostics = {", sdk)
-        self.assertIn("structural = workflow.structuralDiagnostic", sdk)
+        self.assertIn("runtime-frontiers = workflow.runtimeFrontiers", sdk)
         self.assertNotIn("diagnostic = lib.mapAttrs", sdk)
         self.assertNotIn("target = {\n    bundle =", sdk)
 
@@ -395,16 +399,14 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn('package = module.split(".", 1)[0]', closure)
         self.assertIn("run `nix run .#dev -- refresh`", closure)
 
-    def test_structural_diagnostics_cannot_emit_or_execute_a_candidate(self) -> None:
+    def test_runtime_frontier_report_cannot_emit_or_execute_a_candidate(self) -> None:
         module = (
-            ROOT / "nix" / "structural-diagnostics.nix"
+            ROOT / "nix" / "runtime-frontier-report.nix"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('"static_only": True', module)
-        self.assertIn('"executable": False', module)
-        self.assertIn('"object_code_emitted": False', module)
-        self.assertIn('"wine_execution_permitted": False', module)
-        self.assertIn('test ! -e "$out/candidate.exe"', module)
+        self.assertIn("build_runtime_frontier_report", module)
+        self.assertIn(".policy.object_code_emitted", module)
+        self.assertIn("runtime frontier report emitted implementation material", module)
         self.assertNotIn("wine ", module.lower())
 
     def test_candidate_suites_require_authority_and_headless_wine(self) -> None:
@@ -434,7 +436,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("candidateMode ?", module)
         self.assertNotIn('"structural-diagnostic"', module)
         self.assertIn("candidate_authority=optional_path", module)
-        self.assertIn('candidate_mode="static-closed"', module)
+        self.assertIn('execution_scope == "complete-static-authority"', module)
         self.assertNotIn("write_static_hybrid_closure_receipt", module)
         self.assertNotIn("write_final_candidate_authorization", module)
         self.assertNotIn("stage-b-final-candidate-generation-authorization-v1", module)

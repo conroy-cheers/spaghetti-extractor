@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import unittest
 
-from spaghetti_extractor.reference_contract.reference_semantics import (
+from spaghetti_extractor.static_program.semantics.transfer import (
     _semantic_stack_delta_expr,
 )
 
 
-class ReferenceContractStackTests(unittest.TestCase):
+class StaticSemanticStackTests(unittest.TestCase):
     def test_nested_push_arithmetic_is_affine(self) -> None:
         expression = (
             "sub",

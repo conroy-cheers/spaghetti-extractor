@@ -136,7 +136,6 @@ class _Fixture:
             "input_transfers": 1,
             "transfers": 1,
             "blocked_transfers": 0,
-            "deferred_transfers": 0,
         }
         program = self.interpreter / "state-machine-interpreter-program.json"
         _write_json(
@@ -149,7 +148,6 @@ class _Fixture:
                 "blockers": [],
                 "semantic_coverage": {
                     "status": "complete",
-                    "deferred_transfers": 0,
                     "acceptance_authority": False,
                 },
                 "execution_policy": "complete_transfer_inventory_v1",
@@ -191,7 +189,6 @@ class _Fixture:
                 "blockers": [],
                 "semantic_coverage": {
                     "status": "complete",
-                    "deferred_transfers": 0,
                     "acceptance_authority": False,
                 },
                 "execution_policy": "complete_transfer_inventory_v1",

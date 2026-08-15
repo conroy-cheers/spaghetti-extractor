@@ -116,7 +116,7 @@ let
     componentRuntimes.minimal = artifact;
     staticCandidates.default = candidate;
     staticCandidates.minimal = candidate;
-    structuralDiagnostic = artifact;
+    runtimeFrontiers = artifact;
   };
   changedConfigurationStatus = pkgs.runCommand
     "minimal-sdk-configuration-status-changed" { } ''

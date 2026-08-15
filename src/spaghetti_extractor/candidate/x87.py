@@ -18,6 +18,19 @@ TYPED_NATIVE_X87_OPERATION_FORMAT = "stage-b-typed-native-x87-operation-v1"
 TYPED_NATIVE_X87_PROGRAM_FORMAT = "stage-b-typed-native-x87-program-v1"
 X87_CHECKED_DECODER = "StageA.Formal.decodeInstructionExact"
 X87_CHECKED_EXECUTOR = "StageA.Formal.executeInstruction"
+X87_REPLAY_MODEL = "native_exact_x87_command_replay_obligation_v1"
+X87_PHYSICAL_FIELDS = (
+    "stack",
+    "tags",
+    "control",
+    "status",
+    "pending_exception",
+    "last_opcode",
+    "instruction_pointer",
+    "code_selector",
+    "data_pointer",
+    "data_selector",
+)
 
 X87_MEMORY_NO_SIZE_MNEMONICS = frozenset({
     "fldenv", "fnstenv", "fstenv", "frstor", "fnsave", "fsave",
@@ -447,6 +460,8 @@ __all__ = [
     "TypedX87Operation",
     "X87_CHECKED_DECODER",
     "X87_CHECKED_EXECUTOR",
+    "X87_PHYSICAL_FIELDS",
+    "X87_REPLAY_MODEL",
     "X87_MEMORY_NO_SIZE_MNEMONICS",
     "X87_MEMORY_SIZE_KEYWORDS",
     "extract_typed_x87_operation",

@@ -309,8 +309,10 @@ int main(void) {
             with self.assertRaises(FrozenInstanceError):
                 operation.rva_start = 0x2000  # type: ignore[misc]
 
+            machine_ir = root / "machine-ir.jsonl"
+            _write_machine(machine_ir, [_machine_ir_x87_unit()])
             package = write_stage_b_interpreter_package(
-                state_machine=machine, out=root / "package"
+                machine_ir=machine_ir, out=root / "package"
             )
             program = json.loads(
                 (root / "package/state-machine-interpreter-program.json").read_text(
@@ -345,7 +347,7 @@ int main(void) {
             self.assertNotIn("0xd9U,0xe8U", program_source)
             self.assertIn("{ 25U, 1U, 0U, {0U,0U,0U,0U,0U} }", program_source)
             self.assertEqual(
-                program["transfers"][0]["instruction_bytes_sha256"],
+                program["transfers"][0]["source_span_sha256"],
                 sha256_bytes(bytes.fromhex("d9e8")),
             )
             self.assertNotIn("instruction_bytes", json.dumps(operation_record, sort_keys=True))
@@ -432,8 +434,10 @@ int main(void) {
             self.assertEqual(register_node.immediate, 1)
             self.assertEqual(transfer.x87_nodes, ())
 
+            machine_ir = root / "machine-ir.jsonl"
+            _write_machine(machine_ir, [_machine_ir_mixed_unit()])
             package = write_stage_b_interpreter_package(
-                state_machine=machine, out=package_dir
+                machine_ir=machine_ir, out=package_dir
             )
             self.assertEqual(package["status"], "ready")
             self.assertEqual(package["counts"]["x87_nodes"], 0)
@@ -580,8 +584,8 @@ int main(void) {
             root = Path(temporary)
             machine = root / "state-machine.jsonl"
             package_dir = root / "package"
-            _write_machine(machine, [_replay_row()])
-            write_stage_b_interpreter_package(state_machine=machine, out=package_dir)
+            _write_machine(machine, [_machine_ir_x87_unit()])
+            write_stage_b_interpreter_package(machine_ir=machine, out=package_dir)
             harness = root / "replay-harness.c"
             harness.write_text(
                 r'''
@@ -657,7 +661,7 @@ int main(void) {
             ):
                 compile_stage_b_interpreter_program(machine)
 
-    def test_package_collects_sorted_actionable_replay_blockers(self) -> None:
+    def test_package_rejects_legacy_replay_rows_before_emission(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             machine = root / "state-machine.jsonl"
@@ -703,31 +707,15 @@ int main(void) {
             valid = _replay_row(rva_start=0x1000)
             _write_machine(machine, [bad_sequence, valid, bad_digest])
 
-            package = write_stage_b_interpreter_package(
-                state_machine=machine, out=root / "package"
+            with self.assertRaisesRegex(
+                StageBInterpreterError, "raw instruction material"
+            ):
+                write_stage_b_interpreter_package(
+                    machine_ir=machine, out=root / "package"
+                )
+            self.assertFalse(
+                (root / "package/state-machine-package.json").exists()
             )
-            second = write_stage_b_interpreter_package(
-                state_machine=machine, out=root / "package-second"
-            )
-
-            self.assertEqual(package["status"], "incomplete")
-            self.assertEqual(package["blockers"], second["blockers"])
-            self.assertEqual(package["counts"]["input_transfers"], 3)
-            self.assertEqual(package["counts"]["transfers"], 1)
-            self.assertEqual(package["counts"]["blocked_transfers"], 2)
-            self.assertEqual(
-                [blocker["rva_start"] for blocker in package["blockers"]],
-                [0x2000, 0x3000],
-            )
-            self.assertEqual(
-                [blocker["code"] for blocker in package["blockers"]],
-                ["malformed_x87_replay", "x87_replay_interleaving_unavailable"],
-            )
-            self.assertIn(
-                "instruction-ordered effect schedule",
-                package["blockers"][1]["next_action"],
-            )
-            self.assertTrue(all(blocker["next_action"] for blocker in package["blockers"]))
 
 
 if __name__ == "__main__":

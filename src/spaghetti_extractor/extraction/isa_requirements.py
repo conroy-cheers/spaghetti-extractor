@@ -21,7 +21,6 @@ import capstone
 from capstone import x86_const
 
 from ..isa.semantic_forms import (
-    LEAN_ISA_REQUIREMENT_FORM_FORMAT,
     lean_semantic_form_classifier_sha256,
     lean_semantic_form_core,
     lean_semantic_form_id,

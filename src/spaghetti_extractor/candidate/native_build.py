@@ -20,7 +20,6 @@ import pefile
 
 from ..artifacts.formats import (
     NATIVE_ENGINE_PACKAGE_FORMAT as _NATIVE_FORMAT,
-    NATIVE_ENGINE_PLAN_FORMAT as _NATIVE_PLAN_FORMAT,
 )
 from ..errors import StageAInputError
 from ..roundtrip_fuzz.image_io import (

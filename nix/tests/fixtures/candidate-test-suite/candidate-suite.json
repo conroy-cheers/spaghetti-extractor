@@ -1,5 +1,5 @@
 {
-  "format": "stage-b-functional-suite-v1",
+  "format": "spaghetti-extractor-candidate-test-suite-v1",
   "target_name": "candidate-test-constructor-fixture",
   "suite_id": "minimal-import-call",
   "suite_name": "Minimal candidate-only import call",
@@ -9,6 +9,7 @@
   "cases": [
     {
       "id": "writes-expected-output",
+      "kind": "expected-exit",
       "args": [],
       "expected_returncode": 0,
       "expected_stdout": "fixture\n",

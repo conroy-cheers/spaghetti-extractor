@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..artifacts.formats import INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT
+from ..artifacts.formats import (
+    INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT,
+    NATIVE_X87_REPLAY_FORMAT,
+)
 from ..pe32.stage_binary import StageAInputError
 from ..util import sha256_bytes
 from .engine_model import (
@@ -19,21 +21,23 @@ from .engine_model import (
     _SHA256,
     _STATE_OFFSETS,
     _X87ReplayASLRUnsafe,
-    _X87_CHECKED_DECODER,
-    _X87_CHECKED_EXECUTOR,
-    _X87_PHYSICAL_FIELDS,
-    _X87_REPLAY_FORMAT,
-    _X87_REPLAY_MODEL,
     _X87_VALUE_EMPTY_OFFSET,
     _X87_VALUE_SIZE,
     _X87_VALUE_TAG_OFFSET,
 )
 from .x87 import (
+    X87_CHECKED_DECODER as _X87_CHECKED_DECODER,
+    X87_CHECKED_EXECUTOR as _X87_CHECKED_EXECUTOR,
     X87_MEMORY_NO_SIZE_MNEMONICS as _X87_MEMORY_NO_SIZE_MNEMONICS,
     X87_MEMORY_SIZE_KEYWORDS as _X87_MEMORY_SIZE_KEYWORDS,
+    X87_PHYSICAL_FIELDS as _X87_PHYSICAL_FIELDS,
+    X87_REPLAY_MODEL as _X87_REPLAY_MODEL,
     extract_typed_x87_operation,
     typed_x87_operation_from_micro_op,
 )
+
+
+_X87_REPLAY_FORMAT = NATIVE_X87_REPLAY_FORMAT
 
 
 def _render_typed_x87_instruction(operation: NativeX87Operation) -> str:

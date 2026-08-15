@@ -217,7 +217,6 @@ forbidden = {
     "spaghetti_extractor.commands.expert_components",
     "spaghetti_extractor.commands.diagnostic_contracts",
     "spaghetti_extractor.candidate.engine",
-    "spaghetti_extractor.reference_contract.generation",
 }
 if required not in sys.modules:
     raise SystemExit("selected command group was not loaded")

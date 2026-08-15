@@ -16,13 +16,11 @@ from ..external.machine_import_profiles import (
     MachineImportProfileError,
     load_machine_import_profile_set,
 )
-from .modes import STATIC_CLOSED_CANDIDATE_MODE
 from .runtime_model import (
     NativeExternalRangeRule,
     NativeImplementationDispatch,
     StageBNativeRuntimeError,
     _InterpreterTransferBinding,
-    _STRICT_INPUT_MODE,
 )
 from .runtime_receipts import (
     _validate_callback_adapter_receipts,
@@ -41,8 +39,6 @@ from .runtime_values import (
 def _validate_native_plan(
     payload: dict[str, Any],
     *,
-    candidate_mode: str,
-    deferred_transfer_ids: frozenset[str],
     state_machine_sha256: str,
     input_mode: str,
     transfer_rvas: tuple[int, ...],
@@ -57,46 +53,21 @@ def _validate_native_plan(
 ]:
     if payload.get("format") != NATIVE_ENGINE_PLAN_FORMAT:
         raise StageBNativeRuntimeError("native-engine plan has an unsupported format")
-    if payload.get("candidate_mode") != candidate_mode:
-        raise StageBNativeRuntimeError(
-            "native-engine plan candidate mode changed during validation"
-        )
     if payload.get("status") != "ready":
         raise StageBNativeRuntimeError("native-engine plan is not ready")
     if payload.get("state_machine_sha256") != state_machine_sha256:
         raise StageBNativeRuntimeError(
             "interpreter and native-engine packages bind different state machines"
         )
-    if payload.get("input_mode", _STRICT_INPUT_MODE) != input_mode:
+    if payload.get("input_mode") != input_mode:
         raise StageBNativeRuntimeError(
             "native-engine plan and packages bind different semantic input modes"
         )
     if _required_list(payload.get("blockers"), "native-engine blockers"):
         raise StageBNativeRuntimeError("ready native-engine plan contains blockers")
-    diagnostic_frontiers = _required_list(
-        payload.get("diagnostic_frontiers"),
-        "native-engine diagnostic frontiers",
-    )
-    if any(
-        not isinstance(frontier, Mapping)
-        or frontier.get("severity") != "diagnostic"
-        for frontier in diagnostic_frontiers
-    ):
-        raise StageBNativeRuntimeError(
-            "native-engine diagnostic frontier inventory is malformed"
-        )
-    if (
-        candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
-        and diagnostic_frontiers
-    ):
-        raise StageBNativeRuntimeError(
-            "static-closed native engine contains diagnostic frontiers"
-        )
     implementation_dispatch_receipt, implementation_dispatches = (
         _validate_implementation_dispatch_receipt(
             payload,
-            candidate_mode=candidate_mode,
-            deferred_transfer_ids=deferred_transfer_ids,
             state_machine_sha256=state_machine_sha256,
             transfer_bindings=transfer_bindings,
         )
@@ -314,55 +285,9 @@ def _validate_native_termination(value: Any) -> bool:
     return True
 
 
-def _diagnostic_writer_iat_rvas(
-    native_plan: dict[str, Any],
-) -> tuple[int, int, int] | None:
-    required = ("CreateFileA", "WriteFile", "CloseHandle")
-    found: dict[str, int] = {}
-    for site_index, raw_site in enumerate(
-        _required_list(native_plan.get("external_sites"), "native-engine external sites")
-    ):
-        site = _required_object(raw_site, f"native-engine external site {site_index}")
-        imported = site.get("import")
-        if not isinstance(imported, dict):
-            continue
-        if str(imported.get("dll", "")).lower() != "kernel32.dll":
-            continue
-        symbol = imported.get("symbol")
-        if symbol not in required:
-            continue
-        iat_va = _required_u32(site.get("iat_va"), f"{symbol} IAT VA")
-        previous = found.setdefault(symbol, iat_va)
-        if previous != iat_va:
-            raise StageBNativeRuntimeError(
-                f"native-engine external sites disagree on the {symbol} IAT VA"
-            )
-    if any(symbol not in found for symbol in required):
-        return None
-    image_policy = _required_object(
-        native_plan.get("image_base_policy"), "native-engine image-base policy"
-    )
-    if image_policy.get("kind") != "fixed":
-        return None
-    image_base = _required_u32(
-        image_policy.get("image_base"), "native-engine fixed image base"
-    )
-    if any(found[symbol] < image_base for symbol in required):
-        raise StageBNativeRuntimeError(
-            "diagnostic writer IAT VA precedes the fixed image base"
-        )
-    return (
-        found["CreateFileA"] - image_base,
-        found["WriteFile"] - image_base,
-        found["CloseHandle"] - image_base,
-    )
-
-
 def _external_range_rules(
     native_plan: dict[str, Any],
     profile_path: Path | None,
-    *,
-    candidate_mode: str,
 ) -> tuple[
     tuple[NativeExternalRangeRule, ...],
     tuple[int, ...],
@@ -429,28 +354,16 @@ def _external_range_rules(
         dispatch_receipt.get("reachability"),
         "native-engine implementation reachability",
     )
-    strict_closed_scope = (
-        candidate_mode == STATIC_CLOSED_CANDIDATE_MODE
-        and dispatch_reachability.get("status") == "complete"
-    )
+    if dispatch_reachability.get("status") != "complete":
+        raise StageBNativeRuntimeError(
+            "native runtime requires complete implementation reachability"
+        )
 
     def block_site(
         *, site_index: int, site: Mapping[str, Any], category: str, detail: str
     ) -> None:
-        if strict_closed_scope:
-            raise StageBNativeRuntimeError(detail)
-        instruction_rva = _required_u32(
-            site.get("instruction_rva"),
-            f"native-engine external site {site_index} instruction RVA",
-        )
-        blocked_sites.append({
-            "category": category,
-            "severity": "diagnostic",
-            "site_index": site_index,
-            "instruction_rva": instruction_rva,
-            "detail": detail,
-            "runtime_disposition": "fail-closed-as-unimplemented-before-call",
-        })
+        del site_index, site, category
+        raise StageBNativeRuntimeError(detail)
 
     for site_index, raw_site in enumerate(external_sites):
         site = _required_object(raw_site, f"native-engine external site {site_index}")

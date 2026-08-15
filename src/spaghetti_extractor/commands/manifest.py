@@ -196,9 +196,9 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "render recovered external operations as non-authoritative C calls",
     },
     {
-        "name": "expert stage-b-run-functional-suite",
+        "name": "expert candidate-run-test-suite",
         "group": "spaghetti_extractor.commands.validation",
-        "help": "run curated candidate-only expected-output tests under headless Wine",
+        "help": "run a curated candidate-only test suite",
     },
 )
 
@@ -242,7 +242,7 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "expert stage-b-compose-components": "expert",
     "expert stage-b-build-component-runtime": "expert",
     "expert stage-b-render-source-operations": "diagnostic",
-    "expert stage-b-run-functional-suite": "diagnostic",
+    "expert candidate-run-test-suite": "diagnostic",
 }
 
 

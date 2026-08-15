@@ -40,7 +40,6 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
             )
             self.assertEqual(strict["status"], "incomplete")
             self.assertEqual(strict["counts"]["blocked_transfers"], 1)
-            self.assertEqual(strict["counts"]["deferred_transfers"], 0)
 
             report_path = root / "capability.json"
             capability = write_fallback_capability_analysis(
@@ -103,7 +102,6 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
             )
             self.assertEqual(package["status"], "incomplete")
             self.assertEqual(package["counts"]["blocked_transfers"], 1)
-            self.assertEqual(package["counts"]["deferred_transfers"], 0)
 
     def test_undefined_nodes_emit_complete_non_authoritative_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -120,7 +118,7 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
             _write_machine(machine, [row])
 
             write_stage_b_interpreter_package(
-                state_machine=machine, out=root / "package"
+                machine_ir=machine, out=root / "package"
             )
             program = json.loads(
                 (root / "package/state-machine-interpreter-program.json").read_text(
@@ -170,7 +168,7 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
             })])
             package_dir = root / "package"
             write_stage_b_interpreter_package(
-                state_machine=machine, out=package_dir
+                machine_ir=machine, out=package_dir
             )
             transfer = compile_stage_b_interpreter_program(machine)[0]
             undefined_index = next(
@@ -276,7 +274,7 @@ int main(void) {
             _write_machine(machine, [row])
             package_dir = root / "package"
             write_stage_b_interpreter_package(
-                state_machine=machine, out=package_dir
+                machine_ir=machine, out=package_dir
             )
             harness = root / "harness.c"
             harness.write_text(
@@ -370,7 +368,7 @@ int main(void) {
             _write_machine(machine, [compiled, blocked])
 
             package = write_stage_b_interpreter_package(
-                state_machine=machine,
+                machine_ir=machine,
                 out=root / "package",
             )
 
@@ -423,7 +421,7 @@ int main(void) {
             self.assertEqual((value.op, value.aux, value.immediate), ("reg", 0, 0))
 
             write_stage_b_interpreter_package(
-                state_machine=machine, out=root / "package"
+                machine_ir=machine, out=root / "package"
             )
             program = json.loads(
                 (root / "package/state-machine-interpreter-program.json").read_text(
@@ -440,7 +438,7 @@ int main(void) {
             machine = root / "state-machine.jsonl"
             _write_machine(machine, [_row()])
             write_stage_b_interpreter_package(
-                state_machine=machine, out=root / "package"
+                machine_ir=machine, out=root / "package"
             )
 
             source = (root / "package/state-machine-interpreter.c").read_text(

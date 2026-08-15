@@ -1,5 +1,5 @@
 {
-  "format": "stage-b-functional-suite-v1",
+  "format": "spaghetti-extractor-candidate-test-suite-v1",
   "target_name": "jq",
   "suite_id": "jq-1.8.1-idiomatic-candidate-functional",
   "suite_name": "jq 1.8.1 idiomatic candidate functional suite",
@@ -16,6 +16,7 @@
   "cases": [
     {
       "id": "identity",
+      "kind": "expected-exit",
       "args": ["-b", "-c", "."],
       "stdin": "{\"answer\":42}\n",
       "expected_returncode": 0,
@@ -24,6 +25,7 @@
     },
     {
       "id": "field-projection",
+      "kind": "expected-exit",
       "args": ["-b", "-c", ".answer"],
       "stdin": "{\"answer\":42}\n",
       "expected_returncode": 0,
@@ -32,6 +34,7 @@
     },
     {
       "id": "null-input",
+      "kind": "expected-exit",
       "repair_class_hint": "short_option_state_machine",
       "args": ["-b", "-n", "."],
       "expected_returncode": 0,
@@ -40,6 +43,7 @@
     },
     {
       "id": "string-argument",
+      "kind": "expected-exit",
       "args": ["-b", "-n", "-c", "--arg", "name", "spaghetti", "{name:$name}"],
       "expected_returncode": 0,
       "expected_stdout": "{\"name\":\"spaghetti\"}\n",
@@ -47,6 +51,7 @@
     },
     {
       "id": "json-argument",
+      "kind": "expected-exit",
       "args": ["-b", "-n", "-c", "--argjson", "n", "42", "$n + 1"],
       "expected_returncode": 0,
       "expected_stdout": "43\n",
@@ -54,6 +59,7 @@
     },
     {
       "id": "raw-slurp",
+      "kind": "expected-exit",
       "args": ["-b", "-R", "-s", "-c", "."],
       "stdin": "alpha\nbeta\n",
       "expected_returncode": 0,
@@ -62,6 +68,7 @@
     },
     {
       "id": "raw-output",
+      "kind": "expected-exit",
       "args": ["-b", "-r", ".value"],
       "stdin": "{\"value\":\"hello\"}\n",
       "expected_returncode": 0,
@@ -70,6 +77,7 @@
     },
     {
       "id": "ascii-output",
+      "kind": "expected-exit",
       "args": ["-b", "-a", "-c", "."],
       "stdin": "{\"text\":\"café\"}\n",
       "candidate_timeout_seconds": 90,
@@ -79,6 +87,7 @@
     },
     {
       "id": "streaming-parser",
+      "kind": "expected-exit",
       "args": ["-b", "-c", "--stream", "."],
       "stdin": "[1]\n",
       "expected_returncode": 0,
@@ -87,6 +96,7 @@
     },
     {
       "id": "string-positionals",
+      "kind": "expected-exit",
       "args": ["-b", "-n", "-c", "--args", "$ARGS.positional", "one", "two"],
       "expected_returncode": 0,
       "expected_stdout": "[\"one\",\"two\"]\n",
@@ -94,6 +104,7 @@
     },
     {
       "id": "json-positionals",
+      "kind": "expected-exit",
       "args": ["-b", "-n", "-c", "--jsonargs", "$ARGS.positional", "1", "true", "null"],
       "expected_returncode": 0,
       "expected_stdout": "[1,true,null]\n",
@@ -101,6 +112,7 @@
     },
     {
       "id": "exit-status-false",
+      "kind": "expected-exit",
       "args": ["-b", "-n", "-e", "false"],
       "expected_returncode": 1,
       "expected_stdout": "false\n",
@@ -108,6 +120,7 @@
     },
     {
       "id": "exit-status-empty",
+      "kind": "expected-exit",
       "args": ["-b", "-n", "-e", "empty"],
       "expected_returncode": 4,
       "expected_stdout": "",
@@ -115,6 +128,7 @@
     },
     {
       "id": "raw-output-zero",
+      "kind": "expected-exit",
       "args": ["-b", "--raw-output0", "-n", "\"a\",\"b\""],
       "expected_returncode": 0,
       "expected_stdout_base64": "YQBiAA==",
@@ -122,6 +136,7 @@
     },
     {
       "id": "json-sequence",
+      "kind": "expected-exit",
       "args": ["-b", "-c", "--seq", "."],
       "stdin": "\u001e1\n\u001e2\n",
       "expected_returncode": 0,

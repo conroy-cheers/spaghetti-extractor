@@ -12,11 +12,9 @@ from .common import Handler, path_argument
 
 def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
     if name == "stage-b-generate-interpreter":
-        path_argument(command, "state_machine")
-        path_argument(command, "machine_ir")
+        path_argument(command, "machine_ir", required=True)
         path_argument(command, "out", required=True)
         return lambda a: write_stage_b_interpreter_package(
-            state_machine=a.state_machine,
             machine_ir=a.machine_ir,
             out=a.out,
         )
@@ -32,7 +30,6 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             machine_ir_manifest=a.machine_ir_manifest,
             entry_rva=a.entry_rva,
             canonical_external_sites=a.canonical_external_sites,
-            allow_deferred_potential_transfers=False,
             out=a.out,
         )
 

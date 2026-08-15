@@ -275,7 +275,7 @@ let
       PY
       jq -e '
         .format == "spaghetti-extractor-component-contract-package-v2" and
-        (.status == "checked" or .status == "incomplete") and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
         (.authority.activation_authorized | not) and
         .authority.activation_requires_separate_behavioral_evidence
       ' "$out/contract.json" >/dev/null

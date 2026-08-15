@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from ..util import sha256_file
 from .runtime_model import StageBNativeRuntimeError, _SHA256_RE

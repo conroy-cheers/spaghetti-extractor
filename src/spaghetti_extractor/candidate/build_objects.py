@@ -115,7 +115,6 @@ def _load_precompiled_native_objects(
     packages: Mapping[str, Any],
     compiler: Path,
     entry_symbol: str,
-    diagnostic_failure_trap: bool,
     relocation_digest: str,
 ) -> list[tuple[dict[str, Any], Path]]:
     path = Path(value)
@@ -134,7 +133,6 @@ def _load_precompiled_native_objects(
         or payload.get("packages") != packages
         or payload.get("compiler") != _native_compiler_binding(compiler)
         or payload.get("entry_symbol") != entry_symbol
-        or payload.get("diagnostic_failure_trap") != diagnostic_failure_trap
     ):
         raise StageBInterpreterNativeBuildError("native object package build binding is stale")
     units = payload.get("units")
@@ -189,7 +187,6 @@ def _load_precompiled_native_objects(
             package_roots=package_roots,
             compiler=compiler,
             compiler_binding=compiler_binding,
-            diagnostic_failure_trap=diagnostic_failure_trap,
             region_overrides=region_overrides,
         )
         for index, artifact in enumerate(expected_artifacts)

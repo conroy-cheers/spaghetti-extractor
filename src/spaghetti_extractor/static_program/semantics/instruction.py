@@ -1,66 +1,28 @@
-"""Machine-level ABI evidence and candidate ABI comparison."""
+"""Machine-level instruction evidence for static semantics."""
 
 from __future__ import annotations
 
-import copy
-import json
-import os
-import platform
-import re
-import shutil
-import sys
-from bisect import bisect_left
-from dataclasses import dataclass
-from importlib import import_module
-from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-import capstone
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
-import pefile
 
-from ..pe32.stage_binary import (
-    BlockSide,
-    StageABinary,
-    StageAImport,
-    StageAInputError,
-    StageASection,
-    _artifact_name,
-    _executable_section_for_rva,
-    _parse_linker_map_functions,
-    _parse_linker_map_symbol_line,
-    _parse_stage_a_pe,
-    _section_for_rva,
-)
-from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
-from ..util import sha256_bytes, sha256_file, utc_now, write_json
-
-from .common import (
-    ABI_FIXED_STDCALL_IMPORT_STACK_ARG_COUNTS,
-    BlockMapping,
-    STAGE_A_ABI_PROFILE_FUNCTION_MISMATCH_CATEGORIES,
-    _is_conditional_jump,
-    _mapping_source,
-    _range_report,
-)
-
-from .map_analysis import (
-    _capstone_mode,
-    _linker_function_match_key,
-    _recover_basic_blocks,
-)
-from .map_analysis import (
-    _absolute_mem_operand_rva,
-    _direct_branch_target,
-    _direct_cfg_edges,
-    _import_for_absolute_memory_operand,
+from ...extraction.executable_classification import (
     _import_for_thunk_rva,
     _instruction_report,
     _resolved_branch_target,
 )
-
-from .abi_support import (
+from ...pe32.stage_binary import (
+    BlockSide,
+    StageABinary,
+    StageAImport,
+    StageASection,
+    _section_for_rva,
+)
+from ...util import sha256_bytes
+from .support import (
     _count_by,
+    _is_conditional_jump,
+    _range_report,
     _safe_int,
 )
 

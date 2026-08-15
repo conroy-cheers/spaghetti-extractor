@@ -280,12 +280,7 @@ let
         fixed_image_base=inputs.fixed_image_base,
         preferred_image_base=inputs.image_base,
         machine_import_profiles=(profile_bundle,),
-        canonical_external_sites=(
-            pathlib.Path(canonical_external_sites_path)
-            if canonical_external_sites_path else None
-        ),
-        candidate_mode="static-closed",
-        allow_deferred_potential_transfers=False,
+        canonical_external_sites=pathlib.Path(canonical_external_sites_path),
         out=output,
         initial_zero_ranges=inputs.initial_zero_ranges,
         selected_portable_components=selected_portable_components,
@@ -295,10 +290,9 @@ let
       .format == "stage-b-native-engine-package-v1" and
       .status == "ready" and
       .counts.input_transfers > 0 and
-      .counts.transfers + .counts.deferred_transfers == .counts.input_transfers and
-      .counts.deferred_transfers == 0 and
+      .counts.transfers == .counts.input_transfers and
       .counts.blockers == 0 and
-      .policy.candidate_mode == "static-closed" and
+      .policy.execution_scope == "complete-static-authority" and
       .policy.static_hybrid_closure_receipt_required and
       (.authority | contains("candidate generation only"))
     ' "$out/native-engine-package.json" >/dev/null
@@ -334,7 +328,7 @@ let
     jq -e '
       .format == "stage-b-native-runtime-package-v1" and
       .status == "ready" and
-      .policy.candidate_mode == "static-closed" and
+      .policy.execution_scope == "complete-static-authority" and
       .policy.static_hybrid_closure_receipt_required and
       (.acceptance_authority | not)
     ' "$out/native-runtime-package.json" >/dev/null
@@ -347,7 +341,6 @@ let
     nativeEnginePackage = nativeEngine;
     nativeRuntimePackage = nativeRuntime;
     inherit compiler namePrefix;
-    diagnosticFailureTrap = false;
     regionOverridePackage = componentRuntime;
   };
 
@@ -402,8 +395,6 @@ let
         recovered_executable_data=pathlib.Path(sys.argv[11]),
         precompiled_objects=pathlib.Path(sys.argv[12]),
         compiler=pathlib.Path(sys.argv[13]),
-        diagnostic_failure_trap=False,
-        candidate_mode="static-closed",
         out_dir=pathlib.Path(sys.argv[14]),
       )
     PY
@@ -412,7 +403,7 @@ let
       .status == "candidate-generated" and
       .acceptance_authority == "none" and
       .inputs.candidate_authority.status == "authorized" and
-      .inputs.execution_scope.candidate_mode == "static-closed" and
+      .inputs.execution_scope.execution_scope == "complete-static-authority" and
       .inputs.execution_scope.acceptance_authority == "none" and
       .policy.candidate_class == "release-static-closed"
     ' "$out/interpreter-native-build-manifest.json" >/dev/null

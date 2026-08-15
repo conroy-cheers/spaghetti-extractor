@@ -27,6 +27,9 @@ from spaghetti_extractor.authority.final_authority import (
     AuthorityFamilyBindingV3,
     FinalAuthorityRecordV3,
 )
+from spaghetti_extractor.authority.external_site_records import (
+    CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+)
 from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactSetWriterV3,
@@ -59,10 +62,6 @@ from spaghetti_extractor.candidate.pe import (
 )
 from spaghetti_extractor.candidate.authority import (
     build_candidate_authority,
-)
-from spaghetti_extractor.candidate.modes import (
-    STATIC_CLOSED_CANDIDATE_MODE,
-    STRUCTURAL_DIAGNOSTIC_CANDIDATE_MODE,
 )
 from spaghetti_extractor.machine_ir.coverage import (
     FALLBACK_COVERAGE_RECEIPT_FORMAT,
@@ -179,8 +178,6 @@ class _Packages:
     def __init__(
         self,
         root: Path,
-        *,
-        candidate_mode: str = STATIC_CLOSED_CANDIDATE_MODE,
     ) -> None:
         self.root = root
         self.interpreter = root / "interpreter"
@@ -195,6 +192,7 @@ class _Packages:
         self.final_authority = root / "final-authority-v3"
         self.fallback_receipt = root / "fallback-coverage-receipt.json"
         self.candidate_authority = root / "candidate-authority-v3.json"
+        self.canonical_external_sites = root / "canonical-external-sites"
         root.mkdir(parents=True)
 
         unit = _transfer()
@@ -278,11 +276,15 @@ class _Packages:
         write_stage_b_interpreter_package(
             machine_ir=self.machine_ir, out=self.interpreter
         )
+        ArtifactSetWriterV3(
+            artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+            bindings=(),
+        ).write(self.canonical_external_sites, [])
         write_stage_b_native_engine_package(
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.machine_ir_manifest,
             entry_rva=0x1000,
-            candidate_mode=candidate_mode,
+            canonical_external_sites=self.canonical_external_sites,
             out=self.engine,
         )
         write_stage_b_native_runtime_package(
