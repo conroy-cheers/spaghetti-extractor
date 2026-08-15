@@ -12,18 +12,19 @@ import pefile
 from ..artifacts.formats import (
     SEMANTIC_IR_FORMAT,
     SEMANTIC_TRANSFER_CONTRACT_FORMAT,
+    STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT,
 )
 from ..external.callbacks import parse_callback_abi, parse_callback_source
 from ..external.machine_import_profiles import load_machine_import_profile_set
 from ..pe32.stage_binary import StageAInputError
+from ..static_program.codec import load_static_program_contract_binding
+from ..static_program.model import StaticProgramContractBinding
 from ..util import sha256_bytes, sha256_file
 
 
 STAGE_B_STATE_MACHINE_FORMAT = "stage-b-state-machine-transfer-v1"
 STAGE_A_SEMANTIC_IR_MODEL = SEMANTIC_IR_FORMAT
-STAGE_A_REFERENCE_CONTRACT_FORMAT = "stage-a-reference-contract-v1"
 STAGE_A_SEMANTIC_TRANSFER_FORMAT = SEMANTIC_TRANSFER_CONTRACT_FORMAT
-STAGE_A_SEMANTIC_EXPORT_BINDING_FORMAT = "stage-a-semantic-export-binding-v1"
 
 _TRANSFER_FIELDS = (
     "format",
@@ -64,111 +65,18 @@ _OPTIONAL_TRANSFER_FIELDS = (
 
 
 @dataclass(frozen=True)
-class StageAReferenceContractBinding:
+class StateMachineBinding:
     path: Path
     sha256: str
-    original_pe_sha256: str
-    semantic_transfer_contracts: Path
-
-
-@dataclass(frozen=True)
-class StageBStateMachineBinding:
-    path: Path
-    sha256: str
-    reference_contract_sha256: str
+    static_program_contract_sha256: str
     semantic_transfer_contracts_sha256: str
     transfer_count: int
-
-
-def load_stage_a_reference_contract_binding(
-    path: Path,
-    *,
-    original_pe: Path | None = None,
-) -> StageAReferenceContractBinding:
-    """Validate the public Stage A export fields used by the opaque handoff."""
-
-    path = Path(path).resolve()
-    payload = _read_json_object(path, "Stage A reference contract")
-    expected_fields = {
-        "format", "generator", "generated_at", "model", "status", "tool_versions",
-        "inputs", "original", "candidate", "constraints", "families", "coverage",
-        "assumptions", "issues", "counts", "sidecars",
-    }
-    if set(payload) != expected_fields:
-        raise StageAInputError(
-            "Stage A reference contract schema does not match the public export format"
-        )
-    if payload.get("format") != STAGE_A_REFERENCE_CONTRACT_FORMAT:
-        raise StageAInputError(
-            f"Stage A reference contract must have format {STAGE_A_REFERENCE_CONTRACT_FORMAT}"
-        )
-    if payload.get("generator") != "stage-a-export-reference-contract":
-        raise StageAInputError(
-            "Stage A reference contract was not produced by the public export interface"
-        )
-    model = payload.get("model")
-    if not isinstance(model, str) or not model.startswith("x86-pe32-"):
-        raise StageAInputError("Stage A reference contract is not an x86 PE32 contract")
-
-    original = _object(payload.get("original"), "Stage A reference contract original")
-    inputs = _object(payload.get("inputs"), "Stage A reference contract inputs")
-    if set(inputs) != {
-        "original", "candidate", "mapping", "layout_contract"
-    }:
-        raise StageAInputError("Stage A reference contract input inventory has schema drift")
-    original_input = _object(inputs.get("original"), "Stage A reference contract original input")
-    original_digest = _digest(original.get("sha256"), "reference contract original.sha256")
-    input_digest = _digest(
-        original_input.get("sha256"), "reference contract inputs.original.sha256"
-    )
-    if original_digest != input_digest or original_input.get("exists") is not True:
-        raise StageAInputError("Stage A reference contract has inconsistent original PE bindings")
-    if original.get("machine") != "i386" or original.get("bitness") != 32:
-        raise StageAInputError("Stage A reference contract original is not i386 PE32")
-    if original_pe is not None:
-        original_pe = Path(original_pe).resolve()
-        if not original_pe.is_file() or original_pe.is_symlink():
-            raise StageAInputError("opaque Stage B provenance original must be a regular PE file")
-        if sha256_file(original_pe) != original_digest:
-            raise StageAInputError("Stage A reference contract is not bound to the supplied original PE")
-        try:
-            pe = pefile.PE(data=original_pe.read_bytes(), fast_load=True)
-        except (OSError, pefile.PEFormatError) as exc:
-            raise StageAInputError(f"opaque Stage B provenance original is not a PE: {exc}") from exc
-        if int(pe.FILE_HEADER.Machine) != 0x14C or int(pe.OPTIONAL_HEADER.Magic) != 0x10B:
-            raise StageAInputError("opaque Stage B provenance original is not i386 PE32")
-
-    sidecars = _object(payload.get("sidecars"), "Stage A reference contract sidecars")
-    unit = _object(sidecars.get("unit_contracts"), "Stage A unit-contract sidecars")
-    directory_raw = unit.get("directory")
-    if not isinstance(directory_raw, str) or not directory_raw:
-        raise StageAInputError("Stage A reference contract omits its unit-contract directory")
-    semantic_spec = _object(
-        unit.get("semantic_transfer_contracts"),
-        "Stage A semantic-transfer sidecar",
-    )
-    semantic_raw = semantic_spec.get("path")
-    if not isinstance(semantic_raw, str) or not semantic_raw:
-        raise StageAInputError("Stage A reference contract omits semantic-transfer contracts")
-    directory = Path(directory_raw)
-    if not directory.is_absolute():
-        directory = path.parent / directory
-    semantic_path = Path(semantic_raw)
-    if not semantic_path.is_absolute():
-        semantic_path = directory / semantic_path
-    semantic_path = semantic_path.resolve()
-    return StageAReferenceContractBinding(
-        path=path,
-        sha256=sha256_file(path),
-        original_pe_sha256=original_digest,
-        semantic_transfer_contracts=semantic_path,
-    )
 
 
 def normalize_stage_a_semantic_transfer(
     row: dict[str, Any],
     *,
-    reference_contract_sha256: str | None = None,
+    static_program_contract_sha256: str | None = None,
     semantic_transfer_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Preserve the checked Stage A transfer IR used to generate Stage B source."""
@@ -181,23 +89,24 @@ def normalize_stage_a_semantic_transfer(
     source_bytes = _canonical_json(normalized)
     normalized["stage_b_format"] = STAGE_B_STATE_MACHINE_FORMAT
     normalized["contract_sha256"] = sha256_bytes(source_bytes)
-    existing_binding = row.get("stage_a_export")
+    existing_binding = row.get("static_program_export")
     if existing_binding is not None:
         binding = _parse_semantic_export_binding(existing_binding)
-        if reference_contract_sha256 is not None and (
-            binding["reference_contract_sha256"] != reference_contract_sha256
+        if static_program_contract_sha256 is not None and (
+            binding["static_program_contract_sha256"]
+            != static_program_contract_sha256
         ):
-            raise StageAInputError("state-machine reference-contract binding changed")
+            raise StageAInputError("state-machine static-program binding changed")
         if semantic_transfer_sha256 is not None and (
             binding["semantic_transfer_sha256"] != semantic_transfer_sha256
         ):
             raise StageAInputError("state-machine semantic-transfer binding changed")
-        normalized["stage_a_export"] = binding
-    elif reference_contract_sha256 is not None or semantic_transfer_sha256 is not None:
-        normalized["stage_a_export"] = {
-            "format": STAGE_A_SEMANTIC_EXPORT_BINDING_FORMAT,
-            "reference_contract_sha256": _digest(
-                reference_contract_sha256, "semantic export reference contract"
+        normalized["static_program_export"] = binding
+    elif static_program_contract_sha256 is not None or semantic_transfer_sha256 is not None:
+        normalized["static_program_export"] = {
+            "format": STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT,
+            "static_program_contract_sha256": _digest(
+                static_program_contract_sha256, "semantic export static program"
             ),
             "semantic_transfer_sha256": _digest(
                 semantic_transfer_sha256, "semantic export transfer"
@@ -206,35 +115,35 @@ def normalize_stage_a_semantic_transfer(
     return normalized
 
 
-def write_stage_b_state_machine_from_stage_a_export(
+def write_state_machine_from_static_program(
     *,
-    reference_contract: Path,
+    static_program_contract: Path,
     semantic_transfer_contracts: Path,
     out: Path,
     original_pe: Path | None = None,
-) -> StageBStateMachineBinding:
-    """Derive the canonical Stage B state machine from public Stage A exports."""
+) -> StateMachineBinding:
+    """Derive the canonical machine-state IR from an original-only contract."""
 
-    reference = load_stage_a_reference_contract_binding(
-        reference_contract, original_pe=original_pe
+    static_program = load_static_program_contract_binding(
+        static_program_contract, original_pe=original_pe
     )
     semantic_path = Path(semantic_transfer_contracts).resolve()
     if not semantic_path.is_file() or semantic_path.is_symlink():
         raise StageAInputError("Stage A semantic-transfer sidecar must be a regular file")
-    declared_semantic = reference.semantic_transfer_contracts
-    if (
-        semantic_path != declared_semantic
-        and declared_semantic.is_file()
-        and sha256_file(semantic_path) != sha256_file(declared_semantic)
-    ):
+    declared_semantic = static_program.semantic_transfers
+    if semantic_path != declared_semantic:
         raise StageAInputError(
-            "semantic-transfer input is not the sidecar declared by the reference contract"
+            "semantic-transfer input is not the sidecar declared by the static program"
         )
-    raw_rows = _load_stage_a_semantic_transfer_rows(semantic_path, reference)
+    if sha256_file(semantic_path) != static_program.semantic_transfers_sha256:
+        raise StageAInputError(
+            "semantic-transfer input differs from the static-program hash binding"
+        )
+    raw_rows = _load_stage_a_semantic_transfer_rows(semantic_path, static_program)
     rows = [
         normalize_stage_a_semantic_transfer(
             row,
-            reference_contract_sha256=reference.sha256,
+            static_program_contract_sha256=static_program.sha256,
             semantic_transfer_sha256=sha256_bytes(_canonical_json(row)),
         )
         for row in raw_rows
@@ -245,29 +154,29 @@ def write_stage_b_state_machine_from_stage_a_export(
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     write_stage_b_state_machine(out, rows)
-    return StageBStateMachineBinding(
+    return StateMachineBinding(
         path=out.resolve(),
         sha256=sha256_file(out),
-        reference_contract_sha256=reference.sha256,
+        static_program_contract_sha256=static_program.sha256,
         semantic_transfer_contracts_sha256=sha256_file(semantic_path),
         transfer_count=len(rows),
     )
 
 
-def validate_stage_b_state_machine_export_chain(
+def validate_state_machine_static_program_chain(
     *,
     state_machine: Path,
-    reference_contract: Path,
+    static_program_contract: Path,
     semantic_transfer_contracts: Path,
     original_pe: Path | None = None,
-) -> StageBStateMachineBinding:
-    """Check that a state machine is exactly reproducible from its Stage A exports."""
+) -> StateMachineBinding:
+    """Check that a state machine is exactly reproducible from static evidence."""
 
     state_machine = Path(state_machine).resolve()
     with tempfile.TemporaryDirectory(prefix="stage-b-state-machine-check-") as temporary:
         expected_path = Path(temporary) / "expected.jsonl"
-        expected = write_stage_b_state_machine_from_stage_a_export(
-            reference_contract=reference_contract,
+        expected = write_state_machine_from_static_program(
+            static_program_contract=static_program_contract,
             semantic_transfer_contracts=semantic_transfer_contracts,
             out=expected_path,
             original_pe=original_pe,
@@ -279,10 +188,10 @@ def validate_stage_b_state_machine_export_chain(
             raise StageAInputError(
                 "Stage B state machine is not the canonical derivative of the Stage A exports"
             )
-        return StageBStateMachineBinding(
+        return StateMachineBinding(
             path=state_machine,
             sha256=observed_sha,
-            reference_contract_sha256=expected.reference_contract_sha256,
+            static_program_contract_sha256=expected.static_program_contract_sha256,
             semantic_transfer_contracts_sha256=expected.semantic_transfer_contracts_sha256,
             transfer_count=expected.transfer_count,
         )
@@ -1095,7 +1004,7 @@ def _validate_restartable_string_events(
 
 def _load_stage_a_semantic_transfer_rows(
     path: Path,
-    reference: StageAReferenceContractBinding,
+    static_program: StaticProgramContractBinding,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
@@ -1109,7 +1018,7 @@ def _load_stage_a_semantic_transfer_rows(
                 f"Stage A semantic-transfer line {line_number} is invalid JSON: {exc}"
             ) from exc
         row = _object(raw, f"Stage A semantic-transfer line {line_number}")
-        expected_fields = set(_TRANSFER_FIELDS) | {"reference_contract"}
+        expected_fields = set(_TRANSFER_FIELDS)
         allowed_fields = expected_fields | set(_OPTIONAL_TRANSFER_FIELDS)
         missing = sorted(expected_fields - set(row))
         extra = sorted(set(row) - allowed_fields)
@@ -1209,37 +1118,28 @@ def _load_stage_a_semantic_transfer_rows(
             raise StageAInputError(
                 f"Stage A semantic-transfer line {line_number} instruction digest changed"
             )
-        contract = _object(
-            row.get("reference_contract"),
-            f"Stage A semantic-transfer line {line_number} reference contract",
-        )
-        if contract.get("format") != STAGE_A_REFERENCE_CONTRACT_FORMAT:
-            raise StageAInputError(
-                f"Stage A semantic-transfer line {line_number} has an invalid contract format"
-            )
-        if contract.get("sha256") != reference.sha256:
-            raise StageAInputError(
-                f"Stage A semantic-transfer line {line_number} is not bound to the reference contract"
-            )
         rows.append(dict(row))
     return rows
 
 
 def _parse_semantic_export_binding(value: Any) -> dict[str, str]:
-    binding = _object(value, "state-machine Stage A export binding")
+    binding = _object(value, "state-machine static-program export binding")
     expected = {
         "format",
-        "reference_contract_sha256",
+        "static_program_contract_sha256",
         "semantic_transfer_sha256",
     }
     if set(binding) != expected:
         raise StageAInputError("state-machine Stage A export binding has undeclared fields")
-    if binding.get("format") != STAGE_A_SEMANTIC_EXPORT_BINDING_FORMAT:
-        raise StageAInputError("state-machine Stage A export binding has an unsupported format")
+    if binding.get("format") != STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT:
+        raise StageAInputError(
+            "state-machine static-program export binding has an unsupported format"
+        )
     return {
-        "format": STAGE_A_SEMANTIC_EXPORT_BINDING_FORMAT,
-        "reference_contract_sha256": _digest(
-            binding.get("reference_contract_sha256"), "state-machine reference contract"
+        "format": STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT,
+        "static_program_contract_sha256": _digest(
+            binding.get("static_program_contract_sha256"),
+            "state-machine static-program contract",
         ),
         "semantic_transfer_sha256": _digest(
             binding.get("semantic_transfer_sha256"), "state-machine semantic transfer"
@@ -1286,16 +1186,12 @@ def _u32(value: Any, context: str) -> int:
 
 
 __all__ = [
-    "STAGE_A_REFERENCE_CONTRACT_FORMAT",
-    "STAGE_A_SEMANTIC_EXPORT_BINDING_FORMAT",
     "STAGE_A_SEMANTIC_IR_MODEL",
     "STAGE_A_SEMANTIC_TRANSFER_FORMAT",
     "STAGE_B_STATE_MACHINE_FORMAT",
-    "StageAReferenceContractBinding",
-    "StageBStateMachineBinding",
+    "StateMachineBinding",
     "annotate_state_machine_import_contracts",
     "function_state_machine_binding",
-    "load_stage_a_reference_contract_binding",
     "normalize_stage_a_semantic_transfer",
     "normalize_stage_a_semantic_transfers",
     "semantic_direct_targets",
@@ -1303,7 +1199,7 @@ __all__ = [
     "stage_b_state_machine_source_coverage",
     "state_machine_binding_from_rows",
     "state_machine_rows_from_functions",
-    "validate_stage_b_state_machine_export_chain",
+    "validate_state_machine_static_program_chain",
     "write_stage_b_state_machine",
-    "write_stage_b_state_machine_from_stage_a_export",
+    "write_state_machine_from_static_program",
 ]

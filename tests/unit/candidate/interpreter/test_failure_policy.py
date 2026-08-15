@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from spaghetti_extractor.machine_ir.fallback_capability import (
+    FallbackCapabilityAnalysis,
+    FallbackCapabilityAnalysisError,
+)
 from tests.unit.candidate.interpreter._support import *
 
 
 class InterpreterFailurePolicyTests(unittest.TestCase):
-    def test_machine_ir_can_explicitly_defer_only_potential_incomplete_rows(self) -> None:
+    def test_capability_analysis_reports_incomplete_rows_without_emitting_code(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             machine = root / "machine-ir.jsonl"
@@ -38,25 +42,51 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
             self.assertEqual(strict["counts"]["blocked_transfers"], 1)
             self.assertEqual(strict["counts"]["deferred_transfers"], 0)
 
-            package = write_stage_b_interpreter_package(
+            report_path = root / "capability.json"
+            capability = write_fallback_capability_analysis(
                 machine_ir=machine,
-                out=root / "deferred",
-                allow_deferred_potential_transfers=True,
+                out=report_path,
             )
-            self.assertEqual(package["status"], "ready")
-            self.assertEqual(package["semantic_coverage"]["status"], "incomplete")
+            self.assertEqual(capability["status"], "incomplete")
+            self.assertEqual(capability["counts"]["required_units"], 2)
+            self.assertEqual(capability["counts"]["lowerable_units"], 1)
             self.assertEqual(
-                package["execution_policy"],
-                "fail_closed_on_deferred_potential_transfer_v1",
+                capability["unlowerable_unit_ids"],
+                ["semantic-transfer:potential-data"],
             )
-            self.assertEqual(package["counts"]["input_transfers"], 2)
-            self.assertEqual(package["counts"]["transfers"], 1)
-            self.assertEqual(package["counts"]["blocked_transfers"], 0)
-            self.assertEqual(package["counts"]["deferred_transfers"], 1)
+            self.assertFalse(capability["trust"]["candidate_executable"])
+            self.assertEqual(list(root.glob("capability*")), [report_path])
+
+    def test_capability_analysis_digest_covers_generated_source_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine = root / "machine-ir.jsonl"
+            _write_machine(machine, [_machine_ir_pre_call_tail_unit()])
+            report_path = root / "capability.json"
+            report = write_fallback_capability_analysis(
+                machine_ir=machine,
+                out=report_path,
+            )
+
+            checked = FallbackCapabilityAnalysis.from_payload(report)
+            self.assertTrue(checked.complete)
+            self.assertEqual(checked.required_units, 1)
             self.assertEqual(
-                package["deferred_transfers"][0]["runtime_disposition"],
-                "fail_closed_as_unimplemented_if_reached",
+                set(checked.lowering.to_payload()),
+                {
+                    "program_source_sha256",
+                    "interpreter_source_sha256",
+                    "runtime_header_sha256",
+                    "interpreter_header_sha256",
+                    "interpreter_internal_header_sha256",
+                },
             )
+            report["lowering"]["program_source_sha256"] = "f" * 64
+            with self.assertRaisesRegex(
+                FallbackCapabilityAnalysisError,
+                "capability SHA-256 is stale",
+            ):
+                FallbackCapabilityAnalysis.from_payload(report)
 
     def test_machine_ir_never_defers_reachable_incomplete_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -70,7 +100,6 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
             package = write_stage_b_interpreter_package(
                 machine_ir=machine,
                 out=root / "package",
-                allow_deferred_potential_transfers=True,
             )
             self.assertEqual(package["status"], "incomplete")
             self.assertEqual(package["counts"]["blocked_transfers"], 1)

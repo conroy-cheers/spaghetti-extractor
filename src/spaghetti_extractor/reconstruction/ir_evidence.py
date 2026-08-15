@@ -1,10 +1,10 @@
-"""External, reference, binary, and source-location inventory helpers."""
+"""External, static-program, binary, and source-location inventory helpers."""
 
 from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from ..pe32.stage_binary import StageABinary
 from .ir_decoding import _sanitize_metadata
@@ -93,7 +93,7 @@ def _external_inventory(units: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _reference_inventory(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+def _static_program_inventory(payload: Mapping[str, Any] | None) -> dict[str, Any]:
     empty = {
         "roots": [],
         "jump_table_targets": [],
@@ -102,89 +102,83 @@ def _reference_inventory(payload: Mapping[str, Any] | None) -> dict[str, Any]:
     }
     if payload is None:
         return empty
-    constraints = payload.get("constraints")
-    if not isinstance(constraints, Mapping):
+    structural = payload.get("structural_universe")
+    families = payload.get("families")
+    if not isinstance(structural, Mapping) or not isinstance(families, Mapping):
         return empty
-    coverage = constraints.get("executable_byte_coverage")
-    original_coverage = coverage.get("original") if isinstance(coverage, Mapping) else None
-    waiver_values = (
-        original_coverage.get("waived_noncode_ranges", [])
-        if isinstance(original_coverage, Mapping)
-        else []
-    )
-    noncode = [span for value in waiver_values if (span := _optional_range(value)) is not None]
-    roots_constraint = constraints.get("roots_and_jump_tables")
+    padding = structural.get("padding")
+    noncode = [
+        span
+        for row in padding if isinstance(padding, list) and isinstance(row, Mapping)
+        for span in [_optional_range(row.get("span"))]
+        if span is not None
+    ] if isinstance(padding, list) else []
+    roots_raw = structural.get("roots")
     roots = (
-        [_sanitize_metadata(item, "reference") for item in roots_constraint.get("roots", [])]
-        if isinstance(roots_constraint, Mapping) and isinstance(roots_constraint.get("roots"), list)
-        else []
-    )
-    targets = (
-        [_sanitize_metadata(item, "reference") for item in roots_constraint.get("jump_table_targets", [])]
-        if isinstance(roots_constraint, Mapping) and isinstance(roots_constraint.get("jump_table_targets"), list)
+        [_sanitize_metadata(item, "static_program") for item in roots_raw]
+        if isinstance(roots_raw, list)
         else []
     )
     public = {
-        "executable_byte_coverage": _constraint_projection(coverage),
-        "function_ranges": _constraint_projection(constraints.get("function_ranges")),
-        "basic_blocks_and_cfg": _constraint_projection(constraints.get("basic_blocks_and_cfg")),
-        "roots_and_jump_tables": _constraint_projection(roots_constraint),
-        "import_thunks": _constraint_projection(constraints.get("import_thunks")),
+        "pe_layout": _constraint_projection(families.get("pe_layout")),
+        "executable_coverage": _constraint_projection(
+            families.get("executable_coverage")
+        ),
+        "structural_units": _constraint_projection(families.get("structural_units")),
+        "roots": _constraint_projection(families.get("roots")),
+        "cfg": _constraint_projection(families.get("cfg")),
+        "imports": _constraint_projection(families.get("imports")),
     }
     return {
         "roots": roots,
-        "jump_table_targets": targets,
+        # Structural CFG destinations are not finite-target certificates.
+        # Indirect targets become authoritative only through the dedicated
+        # checked target-recovery phase.
+        "jump_table_targets": [],
         "noncode_ranges": noncode,
         "public": public,
     }
 
 
 def _constraint_projection(value: Any) -> Any:
-    return _sanitize_metadata(value, "reference") if isinstance(value, Mapping) else None
+    return (
+        _sanitize_metadata(value, "static_program")
+        if isinstance(value, Mapping)
+        else None
+    )
 
 
-def _reference_issues(payload: Mapping[str, Any] | None) -> list[ExportIssue]:
+def _static_program_issues(payload: Mapping[str, Any] | None) -> list[ExportIssue]:
     if payload is None:
         return []
     result: list[ExportIssue] = []
-    constraints = payload.get("constraints")
-    if isinstance(constraints, Mapping):
-        # The reconstruction frontend consumes only static binary facts needed
-        # to prevent omitted code or malformed external boundaries. Optional
-        # layout and symbol-derived families remain advisory.
-        for family in (
-            "pe_sections_imports_relocations_image_base",
-            "executable_byte_coverage",
-            "basic_blocks_and_cfg",
-            "roots_and_jump_tables",
-            "import_thunks",
-            "padding_alignment",
-        ):
-            constraint = constraints.get(family)
+    families = payload.get("families")
+    if isinstance(families, Mapping):
+        for family, constraint in families.items():
             if not isinstance(constraint, Mapping):
                 continue
             raw_status = constraint.get("status")
-            if raw_status not in {"failed", "violated", "incomplete", "not_provided"}:
+            if raw_status not in {"violated", "incomplete"}:
                 continue
-            status = "violated" if raw_status in {"failed", "violated"} else "incomplete"
+            status = str(raw_status)
             result.append(
                 ExportIssue(
                     status=status,
-                    category=f"reference_{family}_{raw_status}",
+                    category=f"static_program_{family}_{raw_status}",
                     message=str(
                         constraint.get("blocker")
-                        or f"reference contract family {family} is {raw_status}"
+                        or f"static-program family {family} is {raw_status}"
                     ),
                     next_action=str(
                         constraint.get("next_action")
-                        or f"complete the reference contract {family} evidence"
+                        or f"complete the static-program {family} evidence"
                     ),
                     location=SourceLocation(
                         None,
                         None,
                         None,
                         None,
-                        f"reference_contract.constraints.{family}",
+                        f"static_program_contract.families.{family}",
                     ),
                 )
             )
@@ -276,7 +270,7 @@ def _binding_projection(value: Any) -> dict[str, Any] | None:
         key: value.get(key)
         for key in (
             "format",
-            "reference_contract_sha256",
+            "static_program_contract_sha256",
             "semantic_transfer_sha256",
         )
     }

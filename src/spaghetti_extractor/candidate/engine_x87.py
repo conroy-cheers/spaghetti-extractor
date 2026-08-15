@@ -349,8 +349,8 @@ def _qualified_machine_ir_x87_operations(
                 relocation_evidence.pe_sha256
                 if relocation is not None and relocation_evidence is not None else None
             ),
-            relocation_reference_contract_sha256=(
-                relocation_evidence.reference_contract_sha256
+            relocation_static_program_contract_sha256=(
+                relocation_evidence.static_program_contract_sha256
                 if relocation is not None and relocation_evidence is not None else None
             ),
             fixed_image_base=fixed_binding,
@@ -629,8 +629,8 @@ def _qualified_x87_operations(
                     if relocation is not None and relocation_evidence is not None
                     else None
                 ),
-                relocation_reference_contract_sha256=(
-                    relocation_evidence.reference_contract_sha256
+                relocation_static_program_contract_sha256=(
+                    relocation_evidence.static_program_contract_sha256
                     if relocation is not None and relocation_evidence is not None
                     else None
                 ),
@@ -726,7 +726,7 @@ def _parse_pe_base_relocation_evidence(
     if value is None:
         return None
     expected_fields = {
-        "format", "complete", "pe_sha256", "reference_contract_sha256",
+        "format", "complete", "pe_sha256", "static_program_contract_sha256",
         "image_base", "relocations"
     }
     if set(value) != expected_fields:
@@ -740,9 +740,9 @@ def _parse_pe_base_relocation_evidence(
     pe_sha256 = _required_sha256(
         value.get("pe_sha256"), "PE base-relocation evidence PE SHA-256"
     )
-    reference_contract_sha256 = _required_sha256(
-        value.get("reference_contract_sha256"),
-        "PE base-relocation evidence reference-contract SHA-256",
+    static_program_contract_sha256 = _required_sha256(
+        value.get("static_program_contract_sha256"),
+        "PE base-relocation evidence static-program SHA-256",
     )
     image_base = _required_u32(
         value.get("image_base"), "PE base-relocation evidence image base"
@@ -796,7 +796,7 @@ def _parse_pe_base_relocation_evidence(
             raise StageAInputError("PE base-relocation evidence ranges overlap")
     return _PEBaseRelocationEvidence(
         pe_sha256=pe_sha256,
-        reference_contract_sha256=reference_contract_sha256,
+        static_program_contract_sha256=static_program_contract_sha256,
         image_base=image_base,
         relocations=tuple(rows),
     )

@@ -1,8 +1,7 @@
-"""Reference-contract model identity.
+"""Legacy package boundary for shared static semantic implementation.
 
-Generation and diagnostics are intentionally imported from their owning
-modules.  Keeping this package facade data-only prevents every consumer from
-acquiring the full extraction and diagnostic dependency graphs.
+The public binary-pair contract path has been removed. New artifact consumers
+must use :mod:`spaghetti_extractor.static_program`.
 """
 
 from .common import REFERENCE_CONTRACT_MODEL_ID

@@ -89,6 +89,12 @@ assert base.structural.plan.format == "spaghetti-extractor-structural-pack-index
 assert base.dependency.plan.format == "spaghetti-extractor-dependency-pack-index-v3";
 assert base.structural.plan.unit_count == 4;
 assert base.dependency.plan.scc_count == 3;
+assert base.external.evidence.itemIds == [
+  "unit:a"
+  "unit:b"
+  "unit:c"
+  "unit:d"
+];
 assert baseStructural == repeatedStructural;
 assert baseDependency == repeatedDependency;
 assert changedKeys baseStructural changedStructural == [ structuralKeyA ];

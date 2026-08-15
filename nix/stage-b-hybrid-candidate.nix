@@ -249,7 +249,7 @@ let
             if isinstance(portable_payload, dict)
             else portable_payload
         )
-    reference_sha256 = None
+    static_program_sha256 = None
     with machine_ir.open(encoding="utf-8") as source:
         for line in source:
             if not line.strip():
@@ -257,12 +257,12 @@ let
             unit = json.loads(line)
             export = unit.get("source", {}).get("semantic_export")
             if isinstance(export, dict):
-                reference_sha256 = export.get("reference_contract_sha256")
-            if reference_sha256 is not None:
+                static_program_sha256 = export.get("static_program_contract_sha256")
+            if static_program_sha256 is not None:
                 break
     inputs = derive_native_image_inputs(
         load_image_contract=load_contract,
-        reference_contract_sha256=reference_sha256,
+        static_program_contract_sha256=static_program_sha256,
     )
     termination = select_native_termination_import(
         profile_paths=profiles,

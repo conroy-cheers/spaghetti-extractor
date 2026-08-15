@@ -338,7 +338,7 @@ class LinkedLibraryRecognitionTests(LinkedLibraryTestCase):
                 },
                 "inputs": {
                     "original_sha256": sha256_file(self.original),
-                    "reference_contract_sha256": "f" * 64,
+                    "static_program_contract_sha256": "f" * 64,
                 },
                 "exact_inventory_matches": True,
                 "remaining_premises": [],
@@ -405,7 +405,7 @@ class LinkedLibraryRecognitionTests(LinkedLibraryTestCase):
                 },
                 "inputs": {
                     "original_sha256": sha256_file(self.original),
-                    "reference_contract_sha256": "f" * 64,
+                    "static_program_contract_sha256": "f" * 64,
                 },
                 "exact_inventory_matches": True,
                 "remaining_premises": [{"id": "unclosed"}],

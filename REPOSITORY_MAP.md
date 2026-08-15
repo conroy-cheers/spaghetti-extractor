@@ -27,7 +27,7 @@ experiments remain available in Git history and are not supported interfaces.
 PE bytes
   -> extraction/binary_inventory.py
   -> extraction/isa_inventory.py + ISA qualification
-  -> reference_contract/generation.py / reconstruction/opaque.py
+  -> static_program/extraction.py / reconstruction/static_export.py
   -> reconstruction/state_machine.py
   -> reconstruction/ir.py
   +-> authority_inputs/ exact-bound proposals -> authority/ checked graph
@@ -49,7 +49,7 @@ SDK through Nix; the root flake and generic modules never import `targets/`.
 |---|---|
 | `cli.py` | Canonical `spaghetti-extractor` command registry and exit policy. |
 | `commands/` | Lazy command groups behind the literal public command manifest. Internal workers are Python functions, not hidden CLI commands. |
-| `reference_contract/__init__.py` | Data-only model-identity facade; generation and diagnostics retain separate dependency closures. |
+| `reference_contract/__init__.py` | Legacy-named internal semantic-kernel facade. Public artifacts are owned by `static_program/`. |
 | `__main__.py` | `python -m spaghetti_extractor`. |
 
 `pyproject.toml` installs three console scripts. `spaghetti-extractor` is the
@@ -113,7 +113,8 @@ The active pipeline packages are ownership boundaries, not migration aliases:
 | `external/` | Canonical ABI, interface, operation-profile, and external-site contract schemas plus candidate projection. | Proposal-only v2 profile/callable paths are removed; runtime construction consumes canonical v3 sites. |
 | `isa/` | Catalogs, corpus/oracle adapters, qualification, kernel selection, and frontier reporting. | Oracles veto qualification but cannot authorize candidate behavior. |
 | `reconstruction/` | Original-only opaque bootstrap, exact machine-IR construction, clustering, contract analysis, composition, and validation. | It proposes bounded reconstruction artifacts and has no candidate authority. |
-| `reference_contract/` | Original-only PE/reference-contract construction, symbolic execution, ABI recovery, explanations, and obligation diffs. | Its narrow facade exports only supported static operations; generated contracts remain evidence, not candidate authority. |
+| `static_program/` | Typed original-only PE contract, strict codec, exact extraction, and filesystem binding. | It cannot contain a candidate, binary mapping, or behavioral-reachability assertion. |
+| `reference_contract/` | Legacy-named internal semantic extraction, executable classification, symbolic execution, and ABI recovery. | It emits no public binary-pair artifact and cannot authorize candidate generation. |
 | `artifacts/` | Shared format identifiers, canonical identities, immutable artifact-set records, codecs, streaming I/O, and scheduling. | Cross-subsystem identifiers have one literal owner; JSON mappings stop at codec boundaries. |
 | `pe32/` | Exact PE parsing, loader diagnostics, exports/TLS/imports, structural decode, COFF hints, roots, and cutpoint materialization. | It is the target-neutral binary substrate for extraction and candidate composition. |
 | `libraries/` | Artifact parsing, constellation matching, interface assignment, refinement, and replacement planning. | Recognition is proposal evidence and never grants replacement authority by name alone. |
@@ -127,9 +128,10 @@ active package modules at a reviewable size.
 
 ## Static Analysis
 
-`src/spaghetti_extractor/reference_contract/` owns original-side reference
-semantics, ABI recovery, bounded symbolic summaries, and diagnostics. Static PE
-and code extraction itself remains in `extraction/`:
+`src/spaghetti_extractor/static_program/` owns the public original-only contract.
+The legacy-named `reference_contract/` package supplies internal semantic and ABI
+analysis to that frontend. Static PE and code extraction itself remains in
+`extraction/`:
 
 | Module | Purpose |
 |---|---|
@@ -142,8 +144,8 @@ and code extraction itself remains in `extraction/`:
 | `isa_requirements.py` | Required Lean form/capability projection. |
 | `x87_profile.py` | x87-specific static requirements and replay metadata. |
 
-PE primitives live in `pe32/pe.py`, `pe32/stage_binary.py`,
-`pe32/coff_symbols.py`, and `pe32/recursive_decode.py`.
+PE primitives live in `pe32/pe.py`, `pe32/stage_binary.py`, and
+`pe32/recursive_decode.py`.
 `reconstruction/rooted_state_machine.py` performs rooted static control recovery.
 `extraction/ghidra.py` is an optional, non-authorizing static proposal adapter.
 It hash-binds Ghidra output to the submitted PE and never executes the original
@@ -160,7 +162,7 @@ sets.
 | `authority_inputs/indexed_target_evidence.py` | Rechecks immutable PE tables, bounded selectors, exact targets, and alias safety. |
 | `authority_inputs/external_site_evidence.py` | Selects exact external profiles and emits replayable external-call evidence. |
 | `authority_inputs/isa_evidence.py` | Binds form-scoped oracle/Lean results back to each exact machine-IR occurrence. |
-| `authority_inputs/implementation_capabilities.py` | Binds checked ISA selection and fallback coverage to the actual interpreter package. |
+| `authority_inputs/implementation_capabilities.py` | Projects a strict non-executable lowering capability over checked ISA selections; executable generation later rechecks the same source identities. |
 
 `src/spaghetti_extractor/authority/` is the authoritative typed pipeline on
 the content-addressed graph:
@@ -189,12 +191,12 @@ The transition proposal layer projects exact machine-IR units directly into
 checked native v3 records. No production v3 authority phase may import a v2
 implementation or authorize work through a compatibility adapter.
 
-## Reference Contracts
+## Static Semantics
 
-`reference_contract/__init__.py` exports only the stable model identity.
-Generation and read-only diagnostics are imported from their owning modules,
-so a diagnostic command cannot acquire the full extraction graph through a
-package facade:
+The historically named `reference_contract/` package now contains only the
+static semantic and executable-classification implementation still shared by
+the original-only frontend. Its binary-pair generator, public authority path,
+and compatibility diagnostics have been removed:
 
 | Module | Purpose |
 |---|---|
@@ -202,10 +204,12 @@ package facade:
 | `map_analysis.py`, `map_verification.py` | Explicit block-map analysis, padding verification, layout facts, and CFG proposals. |
 | `abi.py`, `abi_arguments.py`, `abi_control_flow.py`, `abi_instruction.py`, `abi_profile.py`, `abi_comparison.py`, `abi_clusters.py`, `abi_support.py` | Machine ABI/callsite evidence and repair clusters. |
 | `symbolic_execution.py`, `symbolic_expressions.py`, `symbolic_flags.py`, `symbolic_operands.py` | Bounded Z3-assisted local symbolic summaries. |
-| `generation.py`, `reference_constraints.py`, `reference_semantics.py`, `reference_units.py`, `reference_sidecars.py`, `reference_gaps.py`, `reference_diagnostics.py`, `diagnostics.py`, `reference_utils.py` | Original-only contract generation, semantic sidecars, gaps, read-only diagnostics, and helpers. |
+| `reference_semantics.py` | Static instruction-semantic extraction shared by the original-only static-program frontend. |
 
-`reconstruction/opaque.py` converts a map-blind binary inventory into a
-conservative self-map used to emit a baseline contract and state machine.
+`static_program/extraction.py` and `reconstruction/static_export.py` convert a
+map-blind binary inventory into an original-only contract and state machine.
+The contract contains no candidate image, binary mapping, or behavioral
+reachability assertion.
 `artifacts/formats.py` centralizes identifiers shared across subsystem boundaries;
 unique domain-local formats remain with their owner.
 
@@ -237,7 +241,8 @@ unique domain-local formats remain with their owner.
 | `reconstruction/composition.py` | Composes compatible machine units into larger reconstruction clusters. |
 | `reconstruction/contract_analysis.py` | Derives cluster inputs, outputs, effects, and frontiers. |
 | `reconstruction/validation.py` | Synthesizes finite validation cases. |
-| `reconstruction/opaque.py` | Original-only bootstrap from static inventory. |
+| `static_program/model.py`, `static_program/codec.py`, `static_program/extraction.py` | Typed original-only static-program schema, strict parser, and exact extractor. |
+| `reconstruction/static_export.py` | Original-only static-program and canonical state-machine orchestration. |
 | `candidate/c_backend.py` | Shared low-level C runtime helpers used by the active interpreter fallback. |
 | `candidate/c_domains.py`, `candidate/c_render.py` | Shared closed semantic domains plus expression/transition C rendering isolated from package validation. |
 | `candidate/interpreter.py`, `candidate/interpreter_model.py`, `candidate/interpreter_compiler.py`, `candidate/interpreter_package.py`, `candidate/interpreter_render.py`, `candidate/interpreter_values.py` | Portable machine-IR interpreter model, lowering, rendering, packaging, and strict value decoding. |
@@ -396,7 +401,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `machine-import-control-profile.nix` | Content-addressed no-return import projection that isolates machine IR from ordinary API-profile edits. |
 | `stage-b-component-analysis.nix` | Original inventory through component proposals. |
 | `stage-b-component-discovery.nix` | Independent proposal phase; publishes the bounded v2 package only after streaming every rich record through its complete integrity audit. |
-| `stage-b-interpreter-package.nix` | Machine-IR interpreter package. |
+| `fallback-capability-analysis.nix` | Non-executable lowering analysis projected into final static authority; emits no source or object code. |
 | `stage-b-native-object-graph.nix` | Controlled-IFD source normalization plus independently content-addressed native objects and assembly; a changed compile bundle invalidates only its object and final package. |
 | `stage-b-hybrid-candidate.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |
 | `ca-python-json-phase.nix` | Generic CA phase constructor with explicit store dependencies, schema/status checking, and phase manifests. |
@@ -405,7 +410,8 @@ enforce this with `xvfb-run` where Wine is used.
 | `authority-graph-manifest.nix`, `authority-workflow.nix` | Registry-derived graph-manifest realization and the reusable fail-closed target adapter that combines exact machine IR with typed external evidence artifacts. |
 | `authority-diagnostics.nix` | Non-authorizing checked-artifact summary for precise operator feedback across sharded authority families. |
 | `authority-input-exception-evidence.nix`, `authority-input-external-site-evidence.nix`, `authority-input-indexed-target-evidence.nix`, `authority-input-isa-evidence.nix`, `authority-input-standard-evidence.nix` | Content-addressed exact-evidence providers for exception, external-call, indirect-target, ISA, launch-root, callback, and invariant families. |
-| `authority-input-implementation-capabilities.nix` | Exact fallback-capability projection over the selected binary-specific ISA inventory. |
+| `authority-input-implementation-capabilities.nix` | Exact, sparse fallback-capability projection over the selected binary-specific ISA inventory. Missing records remain localized incomplete authority. |
+| `stage-b-interpreter-package.nix` | Generates executable fallback source only after final authority closes, then checks every generated source/header hash against the static capability analysis. |
 | `authority-isa-frontiers.nix` | Separate content-addressed ISA repair report; diagnostic changes cannot invalidate the authoritative ISA artifact or its downstream closure. |
 | `authority-input-external-inputs.nix` | Content-addressed ingestion of exact machine-import profiles and PE/load-image roots into native-v3 input artifact sets. |
 | `authority-final-gate.nix` | Strict final-authority record gate used by candidate generation, target validation, and runtime suites. |

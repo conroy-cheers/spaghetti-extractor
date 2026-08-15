@@ -461,13 +461,13 @@ class NativeEngineValidationTests(NativeEngineTestCase):
             root = Path(tmp)
             machine = self._write(root, [_absolute_x87_replay_transfer()])
             with self.assertRaisesRegex(
-                StageAInputError, "bind different reference contracts"
+                StageAInputError, "bind different static-program contracts"
             ):
                 plan_stage_b_native_engine(
                     state_machine=machine,
                     entry_rva=0x1420,
                     base_relocation_evidence=_relocation_evidence(
-                        reference_contract_sha256="e" * 64
+                        static_program_contract_sha256="e" * 64
                     ),
                 )
 

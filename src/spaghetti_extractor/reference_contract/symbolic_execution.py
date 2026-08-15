@@ -36,10 +36,10 @@ from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
 
 from .common import (
-    BlockMapping,
     _is_conditional_jump,
     _parse_int,
 )
+from ..static_program.model import StaticUnitContext
 
 from .map_analysis import (
     _capstone_mode,
@@ -156,7 +156,7 @@ def _symbolic_execute(
     side: BlockSide,
     data: bytes,
     binary_name: str,
-    mapped: BlockMapping,
+    mapped: StaticUnitContext,
     *,
     external_call_index_base: int = 0,
 ) -> dict[str, Any]:

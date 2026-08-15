@@ -595,7 +595,7 @@ class NativeX87Operation:
     relocation_type: int | None = None
     relocation_width: int | None = None
     relocation_pe_sha256: str | None = None
-    relocation_reference_contract_sha256: str | None = None
+    relocation_static_program_contract_sha256: str | None = None
     fixed_image_base: int | None = None
 
     def payload(self) -> dict[str, Any]:
@@ -619,8 +619,8 @@ class NativeX87Operation:
                     "kind": "highlow",
                     "width": self.relocation_width,
                     "pe_sha256": self.relocation_pe_sha256,
-                    "reference_contract_sha256": (
-                        self.relocation_reference_contract_sha256
+                    "static_program_contract_sha256": (
+                        self.relocation_static_program_contract_sha256
                     ),
                 }
                 if self.relocation_source_rva is not None
@@ -655,7 +655,7 @@ class _PEBaseRelocation:
 @dataclass(frozen=True)
 class _PEBaseRelocationEvidence:
     pe_sha256: str
-    reference_contract_sha256: str
+    static_program_contract_sha256: str
     image_base: int
     relocations: tuple[_PEBaseRelocation, ...]
 

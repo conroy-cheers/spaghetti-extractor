@@ -132,7 +132,7 @@ class RootedDirectControlTests(unittest.TestCase):
                 path,
                 state_machine_sha256="1" * 64,
                 original_sha256="2" * 64,
-                reference_sha256="3" * 64,
+                static_program_sha256="3" * 64,
                 materialized_rvas={0x1000, 0x1100},
             )
 
@@ -160,7 +160,7 @@ class RootedDirectControlTests(unittest.TestCase):
                 path,
                 state_machine_sha256="1" * 64,
                 original_sha256="2" * 64,
-                reference_sha256="3" * 64,
+                static_program_sha256="3" * 64,
                 materialized_rvas={0x1000, 0x1100},
             )
 
@@ -180,7 +180,7 @@ class RootedDirectControlTests(unittest.TestCase):
                     path,
                     state_machine_sha256="1" * 64,
                     original_sha256="2" * 64,
-                    reference_sha256="3" * 64,
+                    static_program_sha256="3" * 64,
                     materialized_rvas=set(),
                 )
 
@@ -217,7 +217,7 @@ def _manifest() -> dict:
         "inputs": {
             "state_machine": {"sha256": "1" * 64},
             "original_pe": {"sha256": "2" * 64},
-            "reference_contract": {"sha256": "3" * 64},
+            "static_program_contract": {"sha256": "3" * 64},
         },
         "binary": {"sha256": "2" * 64},
         "source_map": [

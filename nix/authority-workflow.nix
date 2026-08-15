@@ -254,59 +254,7 @@ let
     builtins.fromJSON (
       builtins.readFile "${generatedExternalSiteEvidence}/metadata.json"
     );
-  fallbackInterpreter =
-    if
-      diagnosticEmptyEvidence
-      || builtins.hasAttr "implementation_capabilities" externalArtifacts
-    then
-      null
-    else
-      import ./stage-b-interpreter-package.nix {
-        inherit pkgs pythonEnv pythonSource;
-        machineIr = machineIrPackage;
-        namePrefix = "${name}-standard-fallback";
-        # The package remains useful evidence while target closure is
-        # incomplete.  It fails closed on a deferred transfer if executed.
-        allowDeferredPotentialTransfers = true;
-      };
-  fallbackInterpreterMetadata =
-    if fallbackInterpreter == null then null else
-    builtins.fromJSON (
-      builtins.readFile
-        "${fallbackInterpreter}/state-machine-interpreter-package.json"
-    );
-  fallbackCoverageReceipt =
-    if
-      fallbackInterpreterMetadata == null
-      || fallbackInterpreterMetadata.semantic_coverage.status != "complete"
-    then
-      null
-    else
-      import ./stage-b-fallback-coverage-receipt.nix {
-        inherit pkgs pythonEnv pythonSource;
-        machineIr = machineIrPackage;
-        interpreterPackage = fallbackInterpreter;
-        namePrefix = "${name}-standard-fallback";
-        inherit contentAddressed;
-      };
-  generatedImplementationCapabilities =
-    if fallbackInterpreter == null then null else
-    import ./authority-input-implementation-capabilities.nix {
-      inherit pkgs pythonEnv pythonSource;
-      machineIr = machineIrPackage;
-      semanticIndex = targetEvidenceGraph.phases."semantic-index-v3".artifact;
-      isaQualification = targetEvidenceGraph.phases."isa-qualification-v3".artifact;
-      interpreterPackage = fallbackInterpreter;
-      inherit fallbackCoverageReceipt;
-      namePrefix = "${name}-standard-fallback";
-    };
-  generatedImplementationCapabilitiesMetadata =
-    if generatedImplementationCapabilities == null then null else
-    builtins.fromJSON (
-      builtins.readFile
-        "${generatedImplementationCapabilities}/projection-metadata.json"
-    );
-  generatedProviderArtifacts =
+  generatedProviderArtifactsWithoutImplementation =
     generatedExceptionEvidenceArtifact
     // generatedTargetEvidenceArtifact
     // generatedISAEvidenceArtifact
@@ -317,14 +265,50 @@ let
         expectedRecordIds =
           generatedExternalSiteEvidenceMetadata.record_ids;
       };
-    }
+    };
+  preImplementationExternalArtifacts =
+    emptyArtifacts // nativeExternalArtifacts // (
+      if diagnosticEmptyEvidence then { } else
+      earlyStandardExternalArtifacts
+      // generatedProviderArtifactsWithoutImplementation
+    ) // externalArtifacts // {
+      machine_ir = machineInput.externalArtifact;
+    };
+  preImplementationGraph = mkGraph preImplementationExternalArtifacts;
+  fallbackCapabilityAnalysis =
+    if
+      diagnosticEmptyEvidence
+      || builtins.hasAttr "implementation_capabilities" externalArtifacts
+    then
+      null
+    else
+      import ./fallback-capability-analysis.nix {
+        inherit pkgs pythonEnv pythonSource contentAddressed;
+        machineIr = machineIrPackage;
+        namePrefix = "${name}-standard-fallback";
+      };
+  generatedImplementationCapabilities =
+    if fallbackCapabilityAnalysis == null then null else
+    import ./authority-input-implementation-capabilities.nix {
+      inherit pkgs pythonEnv pythonSource;
+      machineIr = machineIrPackage;
+      semanticIndex = preImplementationGraph.phases."semantic-index-v3".artifact;
+      isaQualification = preImplementationGraph.phases."isa-qualification-v3".artifact;
+      capabilityAnalysis = fallbackCapabilityAnalysis;
+      namePrefix = "${name}-standard-fallback";
+    };
+  generatedProviderArtifacts =
+    generatedProviderArtifactsWithoutImplementation
     // lib.optionalAttrs (generatedImplementationCapabilities != null) {
       implementation_capabilities = {
         artifact =
           "${generatedImplementationCapabilities}/implementation-capabilities";
         expectedKind = externalKinds.implementation_capabilities;
-        expectedRecordIds =
-          generatedImplementationCapabilitiesMetadata.record_ids;
+        # Capability evidence is intentionally sparse when lowering is
+        # incomplete.  Schedule against every structural unit while allowing
+        # missing records to become localized fallback-coverage blockers.
+        expectedRecordIds = null;
+        itemIds = machineInput.expectedRecordIds;
       };
     };
   standardExternalArtifacts =
@@ -345,6 +329,26 @@ let
         inherit pkgs pythonEnv pythonSource contentAddressed;
         name = "${name}-final-authority-gate-v3";
         artifact = finalAuthorityArtifact;
+      };
+  fallbackInterpreter =
+    if fallbackCapabilityAnalysis == null || finalAuthorityGate == null then
+      null
+    else
+      import ./stage-b-interpreter-package.nix {
+        inherit pkgs pythonEnv pythonSource;
+        machineIr = machineIrPackage;
+        capabilityAnalysis = fallbackCapabilityAnalysis;
+        inherit finalAuthorityGate;
+        namePrefix = "${name}-standard-fallback";
+      };
+  fallbackCoverageReceipt =
+    if fallbackInterpreter == null then null else
+      import ./stage-b-fallback-coverage-receipt.nix {
+        inherit pkgs pythonEnv pythonSource;
+        machineIr = machineIrPackage;
+        interpreterPackage = fallbackInterpreter;
+        namePrefix = "${name}-standard-fallback";
+        inherit contentAddressed;
       };
   diagnosticsArtifacts = lib.mapAttrs (
     _: phase: phase.artifact
@@ -367,6 +371,7 @@ assert unknownOverrides == [ ];
     bootstrapGraph
     bootstrapExternalArtifacts
     externalInputs
+    fallbackCapabilityAnalysis
     fallbackCoverageReceipt
     fallbackInterpreter
     generatedExternalSiteEvidence
@@ -380,6 +385,8 @@ assert unknownOverrides == [ ];
     manifest
     manifestDerivation
     nativeExternalArtifacts
+    preImplementationExternalArtifacts
+    preImplementationGraph
     standardEvidence
     targetEvidenceGraph
     targetEvidenceExternalArtifacts

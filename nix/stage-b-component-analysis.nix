@@ -40,7 +40,7 @@ let
   ];
   staticExportPythonSource = mkPythonClosure "static-export" [
     "spaghetti_extractor.pe32.behavioral_roots"
-    "spaghetti_extractor.reconstruction.opaque"
+    "spaghetti_extractor.reconstruction.static_export"
   ];
   rootedControlPythonSource = mkPythonClosure "rooted-control" [
     "spaghetti_extractor.reconstruction.rooted_state_machine"
@@ -161,7 +161,7 @@ let
     '';
 
   staticExport = pkgs.runCommand
-    "${namePrefix}-opaque-static-export-v1"
+    "${namePrefix}-static-program-export-v1"
     commonAttrs
     ''
       set -euo pipefail
@@ -172,14 +172,14 @@ let
         "$out" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.reconstruction.opaque import (
-          stage_a_export_opaque_reconstruction,
+      from spaghetti_extractor.reconstruction.static_export import (
+          export_static_reconstruction,
       )
       from spaghetti_extractor.pe32.behavioral_roots import generate_behavioral_roots
       from spaghetti_extractor.util import write_json
 
       original, inventory, output = map(pathlib.Path, sys.argv[1:])
-      stage_a_export_opaque_reconstruction(
+      export_static_reconstruction(
           original=original,
           inventory=inventory,
           out=output,
@@ -191,16 +191,18 @@ let
       PY
       expected_sha256="$(sha256sum ${lib.escapeShellArg (toString original)} | cut -d ' ' -f 1)"
       jq -e --arg expected_sha256 "$expected_sha256" '
-        .format == "stage-a-opaque-static-export-v1" and
+        .format == "spaghetti-extractor-static-program-export-v1" and
         .status == "ready" and
         .original.sha256 == $expected_sha256 and
-        .counts.regions > 0 and .counts.transfers == .counts.regions and
+        .counts.units > 0 and
+        .counts.semantic_transfers == .counts.units and
+        .counts.state_machine_transfers == .counts.semantic_transfers and
         (.trust.executes_original_binary | not) and
-        (.trust.uses_linker_map | not) and
-        (.trust.uses_symbols_for_authority | not) and
-        .trust.includes_all_recovered_code and
-        (.trust.reference_contract_is_formal_acceptance | not)
-      ' "$out/opaque-static-export.json" >/dev/null
+        (.trust.uses_candidate_binary | not) and
+        (.trust.uses_binary_mapping | not) and
+        (.trust.claims_whole_program_equivalence | not) and
+        .trust.behavioral_reachability_separate
+      ' "$out/static-program-export.json" >/dev/null
       jq -e --arg expected_sha256 "$expected_sha256" '
         .format == "stage-a-behavioral-roots-v1" and
         .status == "complete" and
@@ -224,7 +226,7 @@ let
       ${python} - \
         ${inputStateMachine} \
         ${lib.escapeShellArg (toString original)} \
-        ${staticExport}/reference-contract.json \
+        ${staticExport}/static-program-contract.json \
         ${lib.escapeShellArg (builtins.toJSON [ "${machineImportControlProfile}/control-dispositions.json" ])} \
         ${if controlManifest == null then "-" else "${controlManifest}/machine-ir-manifest.json"} \
         "$out/state-machine.jsonl" \
@@ -236,11 +238,11 @@ let
           close_state_machine_rooted_direct_control,
       )
 
-      source, original, reference, profiles_json, control_manifest, output, report = sys.argv[1:]
+      source, original, static_program, profiles_json, control_manifest, output, report = sys.argv[1:]
       close_state_machine_rooted_direct_control(
           state_machine=pathlib.Path(source),
           original_pe=pathlib.Path(original),
-          reference_contract=pathlib.Path(reference),
+          static_program_contract=pathlib.Path(static_program),
           machine_import_profiles=tuple(
               pathlib.Path(path) for path in json.loads(profiles_json)
           ),
@@ -271,7 +273,7 @@ let
       ${python} - \
         ${stateMachineInput} \
         ${lib.escapeShellArg (toString original)} \
-        ${staticExport}/reference-contract.json \
+        ${staticExport}/static-program-contract.json \
         ${if preparedMachineIr == null then "-" else toString preparedMachineIr} \
         "$out" <<'PY'
       import json
@@ -283,14 +285,14 @@ let
       (
           state_machine,
           original,
-          reference,
+          static_program,
           prepared_machine_ir,
           output,
       ) = sys.argv[1:]
       export_machine_ir_package(
           state_machine=pathlib.Path(state_machine),
           original_pe=pathlib.Path(original),
-          reference_contract=pathlib.Path(reference),
+          static_program_contract=pathlib.Path(static_program),
           prepared_machine_ir=(
               None
               if prepared_machine_ir == "-"
@@ -356,7 +358,7 @@ let
       ${python} - \
         ${stateMachineInput} \
         ${lib.escapeShellArg (toString original)} \
-        ${staticExport}/reference-contract.json \
+        ${staticExport}/static-program-contract.json \
         ${if reuse == null then "-" else toString reuse} \
         "$out" <<'PY'
       import pathlib
@@ -365,11 +367,11 @@ let
           prepare_machine_ir_units_package,
       )
 
-      state_machine, original, reference, reuse, output = sys.argv[1:]
+      state_machine, original, static_program, reuse, output = sys.argv[1:]
       prepare_machine_ir_units_package(
           state_machine=pathlib.Path(state_machine),
           original_pe=pathlib.Path(original),
-          reference_contract=pathlib.Path(reference),
+          static_program_contract=pathlib.Path(static_program),
           prepared_machine_ir=None if reuse == "-" else pathlib.Path(reuse),
           out=pathlib.Path(output),
       )

@@ -36,13 +36,13 @@ from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
 
 from .common import (
-    BlockMapping,
     NonCodeWaiver,
     REFERENCE_CONTRACT_MODEL_ID,
     _incomplete_record,
     _mapping_source,
     _range_report,
 )
+from ..static_program.model import StaticUnitContext
 
 from .map_analysis import (
     _capstone_mode,
@@ -102,7 +102,7 @@ from .symbolic_expressions import (
 
 def _semantic_transfer_contracts(
     binary: StageABinary,
-    mappings: list[BlockMapping],
+    mappings: list[StaticUnitContext],
     contract_ref: dict[str, Any],
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -150,7 +150,7 @@ def _semantic_transfer_contracts(
 
 def _semantic_transfer_contract(
     binary: StageABinary,
-    mapped: BlockMapping,
+    mapped: StaticUnitContext,
     function_name: str,
     contract_ref: dict[str, Any],
     *,
@@ -170,7 +170,7 @@ def _semantic_transfer_contract(
         "reference_contract": contract_ref,
         "function": function_name or None,
         "block_id": block_id,
-        "reachable": mapped.reachable,
+        "reachable": True,
         "original": _range_report(side),
         "instruction_bytes_sha256": sha256_bytes(data),
         "instructions": instructions,
@@ -541,7 +541,7 @@ def _semantic_instruction_effect_schedule(
     side: BlockSide,
     data: bytes,
     instructions: list[dict[str, Any]],
-    mapped: BlockMapping,
+    mapped: StaticUnitContext,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Propose an exact-byte instruction ledger for checked Lean replay.
 
@@ -615,12 +615,10 @@ def _semantic_instruction_effect_schedule(
 
         instruction_end = instruction_rva + instruction_size
         instruction_side = BlockSide(instruction_rva, instruction_end)
-        instruction_mapping = BlockMapping(
+        instruction_mapping = StaticUnitContext(
             id=f"{mapped.id}~instruction-{index}",
             original=instruction_side,
-            candidate=instruction_side,
             kind=mapped.kind,
-            reachable=mapped.reachable,
             invariant_checked=mapped.invariant_checked,
             source=mapped.source,
         )

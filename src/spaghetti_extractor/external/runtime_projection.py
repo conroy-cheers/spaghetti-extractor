@@ -79,8 +79,8 @@ def load_authoritative_external_sites(
                     event_sha256=site.event_sha256,
                     target_sha256=site.target_sha256,
                     contract=checked_external_site_contract_from_authority(
-                        site.contract,
-                        context=f"canonical external site {site.site_id}",
+                        site.contract.to_payload(),
+                        context=f"canonical external site {site.site_id!r}",
                     ),
                 )
             )

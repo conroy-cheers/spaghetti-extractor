@@ -10,11 +10,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..authority_inputs.machine_ir_authority import build_machine_ir_authority_bindings
-from .state_machine import (
-    STAGE_B_STATE_MACHINE_FORMAT,
-    load_stage_a_reference_contract_binding,
-    normalize_stage_a_semantic_transfer,
-)
+from .state_machine import STAGE_B_STATE_MACHINE_FORMAT, normalize_stage_a_semantic_transfer
+from ..static_program.codec import load_static_program_contract_binding
 from ..pe32.stage_binary import StageABinary, _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 from .ir_decoding import _semantic_call_events
@@ -61,7 +58,7 @@ def prepare_machine_ir_units_package(
     state_machine: Path,
     original_pe: Path,
     out: Path,
-    reference_contract: Path | None = None,
+    static_program_contract: Path | None = None,
     prepared_machine_ir: Path | None = None,
 ) -> PreparedMachineIRPackage:
     """Prepare exact byte-bound units independently of global control analysis."""
@@ -75,11 +72,13 @@ def prepare_machine_ir_units_package(
             "machine IR v2 supports x86 PE32 inputs only",
             code="unsupported_binary_model",
         )
-    reference_sha256: str | None = None
-    if reference_contract is not None:
-        reference_path = _regular_file(reference_contract, "reference contract")
-        reference_sha256 = load_stage_a_reference_contract_binding(
-            reference_path, original_pe=original_path
+    static_program_sha256: str | None = None
+    if static_program_contract is not None:
+        static_program_path = _regular_file(
+            static_program_contract, "static-program contract"
+        )
+        static_program_sha256 = load_static_program_contract_binding(
+            static_program_path, original_pe=original_path
         ).sha256
 
     rows = _read_canonical_rows(state_path)
@@ -87,12 +86,12 @@ def prepare_machine_ir_units_package(
     reusable, _reusable_state_sha256 = _load_reusable_prepared_units(
         prepared_machine_ir,
         binary_sha256=binary.sha256,
-        reference_sha256=reference_sha256,
+        static_program_sha256=static_program_sha256,
     )
     prepared, reused_units = _prepare_units(
         rows,
         binary=binary,
-        reference_sha256=reference_sha256,
+        static_program_sha256=static_program_sha256,
         reusable=reusable,
     )
     prepared_bytes = b"".join(_canonical_json(unit) + b"\n" for unit in prepared)
@@ -106,12 +105,12 @@ def prepare_machine_ir_units_package(
                 "sha256": state_sha256,
             },
             "original_pe": {"path": original_path.name, "sha256": binary.sha256},
-            "reference_contract": (
+            "static_program_contract": (
                 None
-                if reference_contract is None
+                if static_program_contract is None
                 else {
-                    "path": Path(reference_contract).name,
-                    "sha256": reference_sha256,
+                    "path": Path(static_program_contract).name,
+                    "sha256": static_program_sha256,
                 }
             ),
             "prepared_machine_ir": (
@@ -201,14 +200,14 @@ def _read_canonical_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def _preparation_input_sha256(
-    row: Mapping[str, Any], *, binary_sha256: str, reference_sha256: str | None
+    row: Mapping[str, Any], *, binary_sha256: str, static_program_sha256: str | None
 ) -> str:
     return sha256_bytes(
         _canonical_json(
             {
                 "format": "stage-a-machine-ir-unit-preparation-input-v1",
                 "binary_sha256": binary_sha256,
-                "reference_contract_sha256": reference_sha256,
+                "static_program_contract_sha256": static_program_sha256,
                 "state_machine_row": row,
             }
         )
@@ -239,7 +238,7 @@ def _load_reusable_prepared_units(
     value: Path | None,
     *,
     binary_sha256: str,
-    reference_sha256: str | None,
+    static_program_sha256: str | None,
 ) -> tuple[dict[str, dict[str, Any]], str | None]:
     if value is None:
         return {}, None
@@ -268,10 +267,14 @@ def _load_reusable_prepared_units(
     )
     artifacts = manifest.get("artifacts")
     artifact = artifacts.get(artifact_key) if isinstance(artifacts, Mapping) else None
-    reference = inputs.get("reference_contract") if isinstance(inputs, Mapping) else None
+    static_program = (
+        inputs.get("static_program_contract") if isinstance(inputs, Mapping) else None
+    )
     state_machine = inputs.get("state_machine") if isinstance(inputs, Mapping) else None
-    reference_binding_sha256 = (
-        reference.get("sha256") if isinstance(reference, Mapping) else None
+    static_program_binding_sha256 = (
+        static_program.get("sha256")
+        if isinstance(static_program, Mapping)
+        else None
     )
     if (
         not isinstance(binary, Mapping)
@@ -280,8 +283,8 @@ def _load_reusable_prepared_units(
         or not isinstance(state_machine, Mapping)
         or not isinstance(state_machine.get("sha256"), str)
         or re.fullmatch(r"[0-9a-f]{64}", state_machine["sha256"]) is None
-        or (reference is not None and not isinstance(reference, Mapping))
-        or reference_binding_sha256 != reference_sha256
+        or (static_program is not None and not isinstance(static_program, Mapping))
+        or static_program_binding_sha256 != static_program_sha256
         or not isinstance(artifact, Mapping)
         or not isinstance(artifact.get("sha256"), str)
     ):
@@ -350,7 +353,7 @@ def _prepare_units(
     rows: Sequence[Mapping[str, Any]],
     *,
     binary: StageABinary,
-    reference_sha256: str | None,
+    static_program_sha256: str | None,
     reusable: Mapping[str, Mapping[str, Any]],
 ) -> tuple[list[dict[str, Any]], int]:
     prepared: list[dict[str, Any]] = []
@@ -360,7 +363,7 @@ def _prepare_units(
         preparation_input_sha256 = _preparation_input_sha256(
             row,
             binary_sha256=binary.sha256,
-            reference_sha256=reference_sha256,
+            static_program_sha256=static_program_sha256,
         )
         cached = reusable.get(identity)
         if (
@@ -385,7 +388,7 @@ def _prepare_units(
             unit = _prepare_unit(
                 row,
                 binary=binary,
-                reference_sha256=reference_sha256,
+                static_program_sha256=static_program_sha256,
             )
         _assert_byte_free(unit)
         prepared.append(unit)
@@ -426,7 +429,7 @@ def _prepare_unit(
     row: Mapping[str, Any],
     *,
     binary: StageABinary,
-    reference_sha256: str | None,
+    static_program_sha256: str | None,
 ) -> dict[str, Any]:
     identity = _required_string(row.get("id"), "unit id")
     span = _unit_span(row, identity)
@@ -437,21 +440,21 @@ def _prepare_unit(
         block_id=_optional_string(row.get("block_id")),
         span=span,
     )
-    binding = row.get("stage_a_export")
-    if reference_sha256 is not None:
+    binding = row.get("static_program_export")
+    if static_program_sha256 is not None:
         if not isinstance(binding, Mapping):
             raise MachineIRExportError(
-                f"{identity}: supplied reference contract is not bound by the state machine",
-                code="missing_reference_contract_binding",
+                f"{identity}: supplied static-program contract is not bound by the state machine",
+                code="missing_static_program_contract_binding",
                 unit_id=identity,
                 rva=span.start,
             )
         if isinstance(binding, Mapping) and binding.get(
-            "reference_contract_sha256"
-        ) != reference_sha256:
+            "static_program_contract_sha256"
+        ) != static_program_sha256:
             raise MachineIRExportError(
-                f"{identity}: state-machine reference-contract binding differs",
-                code="reference_contract_binding_mismatch",
+                f"{identity}: state-machine static-program binding differs",
+                code="static_program_contract_binding_mismatch",
                 unit_id=identity,
                 rva=span.start,
             )
@@ -521,7 +524,7 @@ def _prepare_unit(
             "input_sha256": _preparation_input_sha256(
                 row,
                 binary_sha256=binary.sha256,
-                reference_sha256=reference_sha256,
+                static_program_sha256=static_program_sha256,
             ),
             "decoded_control_reconciliation": (
                 DECODED_CONTROL_RECONCILIATION_FORMAT

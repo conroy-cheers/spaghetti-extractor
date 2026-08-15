@@ -1,8 +1,8 @@
 # Spaghetti Extractor
 
 Spaghetti Extractor is a reusable toolkit for reconstructing 32-bit Windows PE
-programs as progressively more portable C. It extracts a static reference
-contract from an opaque original binary, generates a machine-oriented baseline,
+programs as progressively more portable C. It extracts an original-only static
+program contract from an opaque binary, generates a machine-oriented baseline,
 and supports replacing bounded components with reviewed source while reporting
 precise remaining gaps.
 
@@ -16,7 +16,7 @@ repair iteration.
 
 1. Inventory the original PE, executable bytes, imports, relocations, roots,
    code regions, and required ISA forms.
-2. Emit an original-only reference contract and canonical machine IR.
+2. Emit an original-only static-program contract and canonical machine IR.
 3. Recognize libraries and external interfaces, then emit typed v3 evidence
    packs for exact units, transitions, memory, targets, induction, external
    sites, callbacks, roots, exceptions, ISA qualification, and fallback
@@ -78,7 +78,7 @@ spaghetti-extractor expert stage-a-inventory-binary \
 spaghetti-extractor expert stage-a-inventory-isa \
   --binary original.exe --inventory build/inventory.json \
   --out build/isa.json
-spaghetti-extractor expert stage-a-export-opaque-reconstruction \
+spaghetti-extractor expert static-program-export \
   --original original.exe --inventory build/inventory.json \
   --out build/static-export
 ```

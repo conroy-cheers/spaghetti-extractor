@@ -61,7 +61,7 @@ def entry(
         "encoding_id": "encoding-" + form_id,
         "instruction_bytes": instruction or [0x90],
         "required_features": features or [],
-        "effects": [effect],
+        "effects": [_canonical_effect(effect)],
         "defined_outputs": defined_outputs(),
     }
 
@@ -103,9 +103,46 @@ def v2_entry(
         "encoding_id": "encoding-" + form_id,
         "instruction_bytes": instruction or [0x90],
         "required_features": [],
-        "effects": effects,
+        "effects": [_canonical_effect(effect) for effect in effects],
         "defined_outputs": outputs or defined_outputs(),
     }
+
+
+def _canonical_effect(effect: dict) -> dict:
+    result = copy.deepcopy(effect)
+    effect_class = result.get("class")
+    if effect_class == "register":
+        for field in ("reads", "writes"):
+            result[field] = [
+                {"register": value, "lsb": 0}
+                if isinstance(value, str)
+                else value
+                for value in result.get(field, [])
+            ]
+    elif effect_class == "memory":
+        result.setdefault("condition", None)
+    elif effect_class == "branch":
+        for outcome in result.get("outcomes", []):
+            if "target_eip" not in outcome:
+                continue
+            target = outcome.pop("target_eip")
+            outcome["target"] = (
+                None
+                if target is None
+                else {"kind": "fixed", "target_eip": target}
+            )
+    elif effect_class == "divide":
+        for field in ("dividend_high", "dividend_low"):
+            value = result.get(field)
+            if isinstance(value, str):
+                result[field] = {"register": value, "lsb": 0}
+        divisor = result.get("divisor")
+        if isinstance(divisor, str):
+            result["divisor"] = {
+                "kind": "register",
+                "location": {"register": divisor, "lsb": 0},
+            }
+    return result
 
 
 def v2_catalog_payload(*entries: dict) -> dict:

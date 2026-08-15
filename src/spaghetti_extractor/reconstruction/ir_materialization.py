@@ -6,15 +6,13 @@ import copy
 from typing import Any, Callable, Mapping, Sequence
 
 from ..authority_inputs.bindings import indirect_exit_id_v2
-from ..reference_contract.common import BlockMapping
+from ..artifacts.formats import STATIC_PROGRAM_CONTRACT_FORMAT
 from ..reference_contract.reference_semantics import _semantic_transfer_contract
 from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
 from ..pe32.recovered_executable_data import recover_executable_data_ranges
-from .state_machine import (
-    STAGE_A_REFERENCE_CONTRACT_FORMAT,
-    normalize_stage_a_semantic_transfer,
-)
+from .state_machine import normalize_stage_a_semantic_transfer
 from ..pe32.stage_binary import BlockSide, StageABinary
+from ..static_program.model import StaticUnitContext
 from ..pe32.target_cutpoint_materialization import plan_recovered_target_cutpoints_v2
 from ..util import sha256_bytes
 from .control_reachability import (
@@ -65,8 +63,8 @@ def _materialize_recovered_target_cutpoints(
     *,
     binary: StageABinary,
     units: Sequence[Mapping[str, Any]],
-    reference: Mapping[str, Any],
-    reference_sha256: str | None,
+    static_program: Mapping[str, Any],
+    static_program_sha256: str | None,
     finite_dataflow_factory: Callable[..., Any],
 ) -> tuple[
     list[dict[str, Any]],
@@ -87,7 +85,7 @@ def _materialize_recovered_target_cutpoints(
         for unit in units
         if unit["source_location"].get("block_id")
     }
-    roots = _initial_control_roots(binary, reference, block_starts)
+    roots = _initial_control_roots(binary, static_program, block_starts)
     root_unit_ids = [
         str(starts[rva]["id"])
         for root in roots
@@ -115,10 +113,10 @@ def _materialize_recovered_target_cutpoints(
     iteration_rows: list[dict[str, Any]] = []
     final_plan: dict[str, Any] | None = None
     converged_cutpoints = False
-    contract_ref = {
-        "format": STAGE_A_REFERENCE_CONTRACT_FORMAT,
-        "path": "reference-contract.json",
-        "sha256": reference_sha256,
+    static_program_ref = {
+        "format": STATIC_PROGRAM_CONTRACT_FORMAT,
+        "path": "static-program-contract.json",
+        "sha256": static_program_sha256,
     }
     max_cutpoint_rounds = 16
     recovery_ids = {str(row.get("id")) for row in recoveries}
@@ -224,8 +222,8 @@ def _materialize_recovered_target_cutpoints(
             binary=binary,
             augmented=augmented,
             plan=plan,
-            contract_ref=contract_ref,
-            reference_sha256=reference_sha256,
+            static_program_ref=static_program_ref,
+            static_program_sha256=static_program_sha256,
             iteration=iteration,
             materialized_rows=materialized_rows,
             superseded_rows=superseded_rows,
@@ -371,8 +369,8 @@ def _materialize_target_cutpoint_plan(
     binary: StageABinary,
     augmented: list[dict[str, Any]],
     plan: Mapping[str, Any],
-    contract_ref: Mapping[str, Any],
-    reference_sha256: str | None,
+    static_program_ref: Mapping[str, Any],
+    static_program_sha256: str | None,
     iteration: int,
     materialized_rows: list[dict[str, Any]],
     superseded_rows: list[dict[str, Any]],
@@ -441,12 +439,10 @@ def _materialize_target_cutpoint_plan(
                     continue
                 identity = f"recovered-target-cutpoint-{start:08x}-{end:08x}"
                 side = BlockSide(start, end)
-                mapping = BlockMapping(
+                mapping = StaticUnitContext(
                     id=identity,
                     original=side,
-                    candidate=side,
                     kind="code",
-                    reachable=True,
                     invariant_checked=False,
                     source={"source": {"function": identity}},
                 )
@@ -454,20 +450,22 @@ def _materialize_target_cutpoint_plan(
                     binary,
                     mapping,
                     identity,
-                    contract_ref,
+                    static_program_ref,
                 )
                 semantic_sha256 = sha256_bytes(_canonical_json(raw))
                 normalized = normalize_stage_a_semantic_transfer(
                     raw,
-                    reference_contract_sha256=reference_sha256,
+                    static_program_contract_sha256=static_program_sha256,
                     semantic_transfer_sha256=(
-                        semantic_sha256 if reference_sha256 is not None else None
+                        semantic_sha256
+                        if static_program_sha256 is not None
+                        else None
                     ),
                 )
                 unit = _prepare_unit(
                     normalized,
                     binary=binary,
-                    reference_sha256=reference_sha256,
+                    static_program_sha256=static_program_sha256,
                 )
                 unit["preparation"]["target_cutpoint_materialization"] = {
                     "format": "stage-a-target-cutpoint-unit-binding-v2",
@@ -504,7 +502,7 @@ def _classify_executable_data_before_control(
     *,
     binary: StageABinary,
     units: Sequence[Mapping[str, Any]],
-    reference: Mapping[str, Any],
+    static_program: Mapping[str, Any],
     precomputed_static_recoveries: Sequence[Mapping[str, Any]] | None = None,
     precomputed_data_ranges: Sequence[Any] | None = None,
     precomputed_static_rounds: int = 0,
@@ -534,7 +532,7 @@ def _classify_executable_data_before_control(
         for unit in units
         if unit["source_location"].get("block_id")
     }
-    root_rows = _initial_control_roots(binary, reference, block_starts)
+    root_rows = _initial_control_roots(binary, static_program, block_starts)
     root_unit_ids = [
         str(starts[rva]["id"])
         for root in root_rows
@@ -807,12 +805,12 @@ def _classify_executable_data_before_control(
 
 def _initial_control_roots(
     binary: StageABinary,
-    reference: Mapping[str, Any],
+    static_program: Mapping[str, Any],
     block_starts: Mapping[str, int],
 ) -> list[dict[str, Any]]:
     submitted = [
         _resolved_root(root, block_starts)
-        for root in reference.get("roots", [])
+        for root in static_program.get("roots", [])
         if isinstance(root, Mapping)
     ]
     binary_roots: list[dict[str, Any]] = [

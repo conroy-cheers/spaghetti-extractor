@@ -444,11 +444,20 @@ let
       shardSpec ? artifact
     ) "external artifact ${artifactName} shard ${shardKey} has no artifact";
     assert ensure (
-      shardSpec ? expectedRecordIds
-      && builtins.isList shardSpec.expectedRecordIds
-    ) "external artifact ${artifactName} shard ${shardKey} has no record inventory";
+      (shardSpec ? itemIds && builtins.isList shardSpec.itemIds)
+      || (shardSpec ? expectedRecordIds
+        && builtins.isList shardSpec.expectedRecordIds)
+    ) "external artifact ${artifactName} shard ${shardKey} has no scheduling inventory";
+    assert ensure (
+      !(shardSpec ? expectedRecordIds)
+      || shardSpec.expectedRecordIds == null
+      || builtins.isList shardSpec.expectedRecordIds
+    ) "external artifact ${artifactName} shard ${shardKey} has an invalid completeness inventory";
     let
-      itemIds = lib.sort builtins.lessThan shardSpec.expectedRecordIds;
+      itemIds = lib.sort builtins.lessThan (
+        shardSpec.itemIds or shardSpec.expectedRecordIds
+      );
+      expectedRecordIds = shardSpec.expectedRecordIds or itemIds;
       validation = artifactSetConstructor {
         inherit
           pkgs
@@ -460,7 +469,7 @@ let
         name = "authority-graph-v3-input-${sanitize artifactName}-${sanitize shardKey}";
         artifact = shardSpec.artifact;
         allowedStatuses = shardSpec.allowedStatuses or allowedStatuses;
-        expectedRecordIds = itemIds;
+        inherit expectedRecordIds;
       };
       gatedArtifact =
         pkgs.runCommand "authority-graph-v3-validated-${sanitize artifactName}-${sanitize shardKey}"
@@ -509,14 +518,17 @@ let
           {
             whole = {
               inherit (spec) artifact;
-              expectedRecordIds = spec.expectedRecordIds or [ ];
+              expectedRecordIds = spec.expectedRecordIds or null;
+              itemIds = spec.itemIds or (spec.expectedRecordIds or [ ]);
             };
           };
       shards = lib.mapAttrs (validateExternalShard artifactName spec.expectedKind
         allowedStatuses
       ) shardSpecs;
       descriptors = builtins.attrValues shards;
-      declaredIds = lib.sort builtins.lessThan (spec.expectedRecordIds or [ ]);
+      declaredIds = lib.sort builtins.lessThan (
+        spec.itemIds or (spec.expectedRecordIds or [ ])
+      );
       observedIds = lib.sort builtins.lessThan (
         lib.concatMap (descriptor: descriptor.itemIds) descriptors
       );

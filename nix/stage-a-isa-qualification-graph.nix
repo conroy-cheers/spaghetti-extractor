@@ -102,27 +102,16 @@ let
       | type == "array"
     )
   '';
-  mkArtifactSchemaPredicate = legacyFormat: layeredFormat: ''
-    (
-      .format == "${legacyFormat}"
-      or (
-        .format == "${layeredFormat}"
-        and (${layeredArtifactSchemaPredicate})
-      )
-    )
+  mkArtifactSchemaPredicate = currentFormat: ''
+    .format == "${currentFormat}"
+    and (${layeredArtifactSchemaPredicate})
     and .trust.proof_authority == false
     and .trust.closes_stage_a_proof == false
   '';
-  mkQualifiedArtifactPredicate = legacyFormat: layeredFormat: schemaPredicate: ''
+  mkQualifiedArtifactPredicate = currentFormat: schemaPredicate: ''
     (${schemaPredicate})
-    and (
-      (
-        .format == "${legacyFormat}"
-        and .status == "qualified"
-      )
-      or (
-        .format == "${layeredFormat}"
-        and .status == "qualified"
+    and .format == "${currentFormat}"
+    and .status == "qualified"
         and .qualification_layers.structural.status == "complete"
         and (
           .qualification_layers.structural.counts.required_forms > 0
@@ -146,21 +135,11 @@ let
         and .qualification_layers.concrete_oracle.counts.disputed == 0
         and .qualification_layers.concrete_oracle.counts.vetoed == 0
         and .qualification_layers.concrete_oracle.diagnostics == []
-      )
-    )
   '';
   mkUsableSelectionArtifactPredicate =
-    legacyFormat: layeredFormat: schemaPredicate: ''
+    currentFormat: schemaPredicate: ''
     (${schemaPredicate})
-    and (
-      (
-        .format == "${legacyFormat}"
-        and .status == "qualified"
-        and .counts.disputed == 0
-        and .counts.vetoed == 0
-      )
-      or (
-        .format == "${layeredFormat}"
+    and .format == "${currentFormat}"
         and (
           .status == "qualified"
           or .status == "incomplete"
@@ -185,26 +164,19 @@ let
         )
         and .qualification_layers.concrete_oracle.counts.disputed == 0
         and .qualification_layers.concrete_oracle.counts.vetoed == 0
-      )
-    )
   '';
-  qualificationArtifactSchemaPredicate = mkArtifactSchemaPredicate
-    "stage-a-isa-kernel-qualification-v1"
-    "stage-a-isa-kernel-qualification-v2";
+  qualificationArtifactSchemaPredicate =
+    mkArtifactSchemaPredicate "stage-a-isa-kernel-qualification-v2";
   qualifiedQualificationArtifactPredicate =
-    mkQualifiedArtifactPredicate "stage-a-isa-kernel-qualification-v1"
-      "stage-a-isa-kernel-qualification-v2"
+    mkQualifiedArtifactPredicate "stage-a-isa-kernel-qualification-v2"
       qualificationArtifactSchemaPredicate;
-  selectionArtifactSchemaPredicate = mkArtifactSchemaPredicate
-    "stage-a-isa-kernel-selection-v1"
-    "stage-a-isa-kernel-selection-v2";
+  selectionArtifactSchemaPredicate =
+    mkArtifactSchemaPredicate "stage-a-isa-kernel-selection-v2";
   qualifiedSelectionArtifactPredicate =
-    mkQualifiedArtifactPredicate "stage-a-isa-kernel-selection-v1"
-      "stage-a-isa-kernel-selection-v2"
+    mkQualifiedArtifactPredicate "stage-a-isa-kernel-selection-v2"
       selectionArtifactSchemaPredicate;
   usableSelectionArtifactPredicate =
-    mkUsableSelectionArtifactPredicate "stage-a-isa-kernel-selection-v1"
-      "stage-a-isa-kernel-selection-v2"
+    mkUsableSelectionArtifactPredicate "stage-a-isa-kernel-selection-v2"
       selectionArtifactSchemaPredicate;
   mkSingleConformance =
     { backend, corpusInput, suffix ? backend, withForms ? backend == "lean" }:

@@ -20,6 +20,13 @@ NATIVE_ENGINE_PACKAGE_FORMAT = "stage-b-native-engine-package-v1"
 NATIVE_RUNTIME_PACKAGE_FORMAT = "stage-b-native-runtime-package-v1"
 MACHINE_IR_FORMAT = "stage-a-machine-ir-v2"
 STATIC_ANALYSIS_PROFILE_ID = "x86-pe32-static-reconstruction-v1"
+STATIC_PROGRAM_CONTRACT_FORMAT = "spaghetti-extractor-static-program-contract-v1"
+STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT = (
+    "spaghetti-extractor-static-program-semantic-binding-v1"
+)
+FALLBACK_CAPABILITY_ANALYSIS_FORMAT = (
+    "spaghetti-extractor-fallback-capability-analysis-v1"
+)
 CALLER_MEMORY_FRAME_MODEL = "pe32-declared-pointer-arguments-v1"
 SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL = "same-library-call-through-v1"
 LAUNCH_ASSUMPTION_TEMPLATE_FORMAT = (
@@ -138,6 +145,9 @@ __all__ = [
     "SOURCE_OPERATION_CATALOG_FORMAT",
     "SOURCE_OPERATION_RENDERING_FORMAT",
     "STATIC_ANALYSIS_PROFILE_ID",
+    "STATIC_PROGRAM_CONTRACT_FORMAT",
+    "STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT",
+    "FALLBACK_CAPABILITY_ANALYSIS_FORMAT",
     "STATIC_MACHINE_IMPORT_PROFILE_FORMAT",
     "TARGET_HINTS_ARTIFACT_KIND",
 ]

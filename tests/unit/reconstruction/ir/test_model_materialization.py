@@ -94,7 +94,7 @@ class ReconstructionIRMaterializationModelTests(unittest.TestCase):
                     _classify_executable_data_before_control(
                         binary=binary,
                         units=units,
-                        reference={"roots": [], "noncode_ranges": []},
+                        static_program={"roots": [], "noncode_ranges": []},
                         finite_dataflow_factory=FiniteU32Dataflow,
                     )
                 )

@@ -111,10 +111,41 @@ class ComponentAnalysisNixTests(unittest.TestCase):
     def test_interpreter_package_is_a_generic_content_addressed_phase(self) -> None:
         module = (ROOT / "nix" / "stage-b-interpreter-package.nix").read_text(encoding="utf-8")
         self.assertIn("machineIr", module)
+        self.assertIn("capabilityAnalysis", module)
+        self.assertIn("finalAuthorityGate", module)
         self.assertIn("write_stage_b_interpreter_package", module)
+        for digest in (
+            "program_source_sha256",
+            "interpreter_source_sha256",
+            "runtime_header_sha256",
+            "interpreter_header_sha256",
+            "interpreter_internal_header_sha256",
+        ):
+            self.assertIn(digest, module)
         self.assertIn("__contentAddressed = true;", module)
         self.assertNotIn("stage-b-jq", module.lower())
         self.assertNotIn("wine", module.lower())
+
+    def test_fallback_authority_does_not_use_ifd_or_prebuild_executable_code(self) -> None:
+        workflow = (ROOT / "nix" / "authority-workflow.nix").read_text(
+            encoding="utf-8"
+        )
+        implementation = (
+            ROOT / "nix" / "authority-input-implementation-capabilities.nix"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("fallbackCapabilityAnalysis", workflow)
+        self.assertIn("capabilityAnalysis = fallbackCapabilityAnalysis", workflow)
+        self.assertIn("inherit finalAuthorityGate", workflow)
+        self.assertNotIn("preImplementationReadiness", workflow)
+        self.assertNotIn("authority-preimplementation-readiness.nix", workflow)
+        self.assertNotIn("builtins.readFile", workflow[workflow.index(
+            "fallbackCapabilityAnalysis ="
+        ):workflow.index("diagnosticsArtifacts =")])
+        self.assertIn("expectedRecordIds = null", workflow)
+        self.assertIn("itemIds = machineInput.expectedRecordIds", workflow)
+        self.assertIn("--capability-analysis", implementation)
+        self.assertNotIn("--implementation-file", implementation)
 
     def test_native_object_graph_normalizes_ifd_inputs_into_ca_units(self) -> None:
         module = (ROOT / "nix" / "stage-b-native-object-graph.nix").read_text(

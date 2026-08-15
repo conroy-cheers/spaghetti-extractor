@@ -136,7 +136,7 @@ class RepositoryBoundaryTests(unittest.TestCase):
         )
         forbidden_names = {
             "contract_tools.py",
-            "opaque_reconstruction.py",
+            "static_export.py",
             "rooted_state_machine.py",
             "semantic_components.py",
         }
@@ -341,7 +341,7 @@ class RepositoryBoundaryTests(unittest.TestCase):
         for heading in (
             "## Runtime Data Flow",
             "## Static Analysis",
-            "## Reference Contracts",
+            "## Static Semantics",
             "## Components And Portable Source",
             "## ISA Model And Oracles",
             "## Nix Constructors",

@@ -22,14 +22,14 @@ class ReconstructionIRRootModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = root / "original.exe"
-            reference = root / "reference-contract.json"
+            static_program = root / "static-program-contract.json"
             machine = root / "state-machine.jsonl"
             original.write_bytes(pe32_tls_image((0x1010,)))
-            _write_reference_contract(reference, original)
+            _write_static_program_contract(static_program, original)
             for row in rows:
-                row["stage_a_export"] = {
-                    "format": "stage-a-semantic-export-binding-v1",
-                    "reference_contract_sha256": sha256_file(reference),
+                row["static_program_export"] = {
+                    "format": "spaghetti-extractor-static-program-semantic-binding-v1",
+                    "static_program_contract_sha256": sha256_file(static_program),
                     "semantic_transfer_sha256": "b" * 64,
                 }
             _write_machine(machine, rows)
@@ -37,7 +37,7 @@ class ReconstructionIRRootModelTests(unittest.TestCase):
             package = export_machine_ir_package(
                 state_machine=machine,
                 original_pe=original,
-                reference_contract=reference,
+                static_program_contract=static_program,
                 out=root / "out",
             )
             roots = _read_json(package.manifest)["control"]["roots"]

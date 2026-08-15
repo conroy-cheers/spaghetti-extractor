@@ -285,7 +285,8 @@ let
     externalArtifacts.evidence = {
       artifact = emptyEvidence;
       expectedKind = "optional-evidence";
-      expectedRecordIds = [ ];
+      expectedRecordIds = null;
+      itemIds = unitIds;
     };
     bindings = [ fixtureBinding ];
   };

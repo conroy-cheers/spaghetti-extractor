@@ -24,6 +24,11 @@ TESTKIT = {"commands": ("*",)}
 
 
 RETIRED_COMMANDS = (
+    "stage-a-export-opaque-reconstruction",
+    "stage-a-export-reference-contract",
+    "stage-a-smoke-contract",
+    "stage-a-explain-contract",
+    "stage-a-diff-contract",
     "stage-a-check-isa-conformance-worker",
     "stage-b-record-candidate",
     "stage-b-validate-candidate",
@@ -179,7 +184,6 @@ import spaghetti_extractor.cli
 forbidden = {
     "spaghetti_extractor.commands.workflows",
     "spaghetti_extractor.commands.proposal_static",
-    "spaghetti_extractor.commands.diagnostic_contracts",
     "spaghetti_extractor.commands.runtime",
     "spaghetti_extractor.candidate.engine",
     "spaghetti_extractor.candidate.interpreter",
@@ -203,15 +207,15 @@ import sys
 from spaghetti_extractor.cli import main
 with contextlib.redirect_stdout(io.StringIO()):
     try:
-        main(["expert", "stage-a-smoke-contract", "--help"])
+        main(["expert", "static-program-export", "--help"])
     except SystemExit as exc:
         if exc.code != 0:
             raise
-required = "spaghetti_extractor.commands.diagnostic_contracts"
+required = "spaghetti_extractor.commands.proposal_static"
 forbidden = {
     "spaghetti_extractor.commands.runtime",
     "spaghetti_extractor.commands.expert_components",
-    "spaghetti_extractor.commands.proposal_static",
+    "spaghetti_extractor.commands.diagnostic_contracts",
     "spaghetti_extractor.candidate.engine",
     "spaghetti_extractor.reference_contract.generation",
 }
@@ -231,7 +235,27 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
     def test_active_command_keeps_argument_errors_at_exit_two(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaisesRegex(SystemExit, "2"):
-                main(["expert", "stage-a-smoke-contract"])
+                main(["expert", "static-program-export"])
+
+    def test_native_engine_command_exposes_only_static_closed_inputs(self) -> None:
+        parser = _build_parser(
+            selected_command="expert stage-b-generate-native-engine"
+        )
+        command = _command_parser(
+            parser, "expert stage-b-generate-native-engine"
+        )
+        actions = {action.dest: action for action in command._actions}
+
+        self.assertNotIn("state_machine", actions)
+        self.assertNotIn("allow_deferred_potential_transfers", actions)
+        for name in (
+            "machine_ir",
+            "machine_ir_manifest",
+            "canonical_external_sites",
+            "entry_rva",
+            "out",
+        ):
+            self.assertTrue(actions[name].required, name)
 
     def test_operator_workflows_select_explicit_products(self) -> None:
         index = {

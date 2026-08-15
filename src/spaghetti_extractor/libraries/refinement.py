@@ -396,7 +396,7 @@ def _derive_dynamic_requirements_from_report(
             "machine_ir_sha256": machine.ir_sha256,
             "machine_ir_manifest_sha256": machine.manifest_sha256,
             "machine_import_report_sha256": sha256_file(report_path),
-            "reference_contract_sha256": inputs.get("reference_contract_sha256"),
+            "static_program_contract_sha256": inputs.get("static_program_contract_sha256"),
         },
         "libraries": libraries,
         "imports": imports,

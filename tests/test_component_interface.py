@@ -866,7 +866,9 @@ def _external_site_slice(
             "out_interface_relations": [],
         },
     )
-    contract = checked_external_site_contract_from_authority(authority_contract)
+    contract = checked_external_site_contract_from_authority(
+        authority_contract.to_payload()
+    )
     target_sha256 = canonical_sha256_v3(identity)
     return ComponentExternalSiteSlice(
         lift_unit_id="compare-route",

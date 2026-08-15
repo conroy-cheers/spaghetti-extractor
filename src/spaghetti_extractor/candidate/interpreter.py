@@ -12,6 +12,7 @@ from .interpreter_model import (
 from .interpreter_package import (
     compile_stage_b_interpreter_machine_ir,
     compile_stage_b_interpreter_program,
+    write_fallback_capability_analysis,
     write_stage_b_interpreter_package,
 )
 
@@ -24,4 +25,5 @@ __all__ = [
     "compile_stage_b_interpreter_machine_ir",
     "compile_stage_b_interpreter_program",
     "write_stage_b_interpreter_package",
+    "write_fallback_capability_analysis",
 ]

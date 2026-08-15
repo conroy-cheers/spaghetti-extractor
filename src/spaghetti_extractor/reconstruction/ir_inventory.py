@@ -421,7 +421,7 @@ def _exact_only_control_inventory(
 def _control_inventory(
     binary: StageABinary,
     units: Sequence[dict[str, Any]],
-    reference: Mapping[str, Any],
+    static_program: Mapping[str, Any],
     *,
     executable_classification: Mapping[str, Any],
     preclassified_static_recoveries: Sequence[Mapping[str, Any]],
@@ -436,7 +436,7 @@ def _control_inventory(
         for unit in units
         if unit["source_location"].get("block_id")
     }
-    initial_roots = _initial_control_roots(binary, reference, block_starts)
+    initial_roots = _initial_control_roots(binary, static_program, block_starts)
     roots_by_rva: dict[int, dict[str, Any]] = {}
     for root in initial_roots:
         raw_rva = root.get("rva", root.get("target_rva"))
@@ -548,7 +548,7 @@ def _control_inventory(
                     location=SourceLocation(None, None, None, RvaSpan(rva, rva + 1), "control.roots"),
                 )
             )
-    checked_targets = reference.get("jump_table_targets", [])
+    checked_targets = static_program.get("jump_table_targets", [])
     root_unit_ids = [
         starts[int(root["rva"])]["id"]
         for root in roots

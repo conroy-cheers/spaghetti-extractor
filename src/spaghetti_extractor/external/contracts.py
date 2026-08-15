@@ -554,9 +554,8 @@ def checked_external_site_contract_from_authority(
 ) -> CheckedExternalSiteContract:
     """Project one checked v3 authority contract into the runtime ABI model."""
 
-    if isinstance(contract, Mapping):
-        raw = _json(contract, context)
-        expected_fields = {
+    raw = _json(contract, context)
+    expected_fields = {
             "id",
             "identity",
             "transfer_kind",
@@ -570,46 +569,24 @@ def checked_external_site_contract_from_authority(
             "callback_effect",
             "machine_contract",
             "callbacks",
-        }
-        if set(raw) != expected_fields:
-            raise CheckedExternalSiteContractError(
-                f"{context} has noncanonical authority fields"
-            )
-        machine = raw["machine_contract"]
-        identity = raw["identity"]
-        transfer_kind = raw["transfer_kind"]
-        disposition = raw["disposition"]
-        profile_id = raw["profile_id"]
-        profile_sha256 = raw["profile_sha256"]
-        argument_words = raw["argument_words"]
-        arguments = raw["arguments"]
-        authority_callback_effect = raw["callback_effect"]
-        callbacks = raw["callbacks"]
-        contract_id = raw["id"]
-        memory_effect = raw["memory_effect"]
-        world_effect = raw["world_effect"]
-    else:
-        # Compatibility for in-process authority producers.  The public wire
-        # payload above is the dependency-neutral consumer interface.
-        from ..authority.external_site_records import ExternalContractV3
-
-        if not isinstance(contract, ExternalContractV3):
-            raise CheckedExternalSiteContractError(
-                f"{context} is not an ExternalContractV3 or authority payload"
-            )
-        machine = contract.machine_contract.to_value()
-        identity = contract.identity.to_value()
-        transfer_kind = contract.transfer_kind
-        disposition = contract.disposition
-        profile_id = contract.profile_id
-        profile_sha256 = contract.profile_sha256
-        argument_words = contract.argument_words
-        arguments = [value.to_value() for value in contract.arguments]
-        authority_callback_effect = contract.callback_effect
-        callbacks = [row.to_payload() for row in contract.callbacks]
-        contract_id = contract.contract_id
-        memory_effect = contract.memory_effect
-        world_effect = contract.world_effect
+    }
+    if set(raw) != expected_fields:
+        raise CheckedExternalSiteContractError(
+            f"{context} has noncanonical authority fields"
+        )
+    machine = raw["machine_contract"]
+    identity = raw["identity"]
+    transfer_kind = raw["transfer_kind"]
+    disposition = raw["disposition"]
+    profile_id = raw["profile_id"]
+    profile_sha256 = raw["profile_sha256"]
+    argument_words = raw["argument_words"]
+    arguments = raw["arguments"]
+    authority_callback_effect = raw["callback_effect"]
+    callbacks = raw["callbacks"]
+    contract_id = raw["id"]
+    memory_effect = raw["memory_effect"]
+    world_effect = raw["world_effect"]
     if not isinstance(machine, Mapping) or not isinstance(identity, Mapping):
         raise CheckedExternalSiteContractError(
             f"{context} has malformed identity or machine contract"

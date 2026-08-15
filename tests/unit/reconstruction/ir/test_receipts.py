@@ -67,7 +67,7 @@ class ReconstructionIRReceiptTests(unittest.TestCase):
             ),
         )
 
-    def test_optional_reference_contract_is_hash_bound_and_projects_block_root(self) -> None:
+    def test_optional_static_program_contract_is_hash_bound_and_projects_block_root(self) -> None:
         row = _row(
             "semantic-transfer:return",
             0x1000,
@@ -77,13 +77,13 @@ class ReconstructionIRReceiptTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original = root / "original.exe"
-            reference = root / "reference-contract.json"
+            static_program = root / "static-program-contract.json"
             machine = root / "state-machine.jsonl"
             original.write_bytes(pe32_image(b"\xc3", virtual_size=1))
-            _write_reference_contract(reference, original)
-            row["stage_a_export"] = {
-                "format": "stage-a-semantic-export-binding-v1",
-                "reference_contract_sha256": sha256_file(reference),
+            _write_static_program_contract(static_program, original)
+            row["static_program_export"] = {
+                "format": "spaghetti-extractor-static-program-semantic-binding-v1",
+                "static_program_contract_sha256": sha256_file(static_program),
                 "semantic_transfer_sha256": "b" * 64,
             }
             _write_machine(machine, [row])
@@ -91,21 +91,21 @@ class ReconstructionIRReceiptTests(unittest.TestCase):
             package = export_machine_ir_package(
                 state_machine=machine,
                 original_pe=original,
-                reference_contract=reference,
+                static_program_contract=static_program,
                 out=root / "out",
             )
             manifest = _read_json(package.manifest)
 
             self.assertEqual(package.status, "qualified")
             self.assertEqual(
-                manifest["inputs"]["reference_contract"]["sha256"],
-                sha256_file(reference),
+                manifest["inputs"]["static_program_contract"]["sha256"],
+                sha256_file(static_program),
             )
             self.assertEqual(manifest["control"]["roots"][0]["block_id"], "return")
             self.assertEqual(manifest["control"]["roots"][0]["rva"], 0x1000)
             self.assertEqual(
-                manifest["reference_inventory"]["roots_and_jump_tables"]["status"],
-                "satisfied",
+                manifest["static_program_inventory"]["roots"]["status"],
+                "complete",
             )
 
 

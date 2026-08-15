@@ -9,11 +9,11 @@ from pathlib import Path
 from spaghetti_extractor.reconstruction.state_machine import (
     STAGE_A_SEMANTIC_IR_MODEL,
     STAGE_A_SEMANTIC_TRANSFER_FORMAT,
-    StageAReferenceContractBinding,
     _load_stage_a_semantic_transfer_rows,
     _validate_restartable_string_events,
     normalize_stage_a_semantic_transfer,
 )
+from spaghetti_extractor.static_program.model import StaticProgramContractBinding
 from spaghetti_extractor.pe32.stage_binary import StageAInputError
 
 
@@ -123,28 +123,24 @@ class StateMachineSchemaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             sidecar = root / "semantic-transfer-contracts.jsonl"
-            reference_path = root / "reference-contract.json"
-            reference_path.write_text("{}\n", encoding="ascii")
-            reference_sha256 = hashlib.sha256(b"{}\n").hexdigest()
-            row = {
-                **_blocked_transfer(),
-                "reference_contract": {
-                    "format": "stage-a-reference-contract-v1",
-                    "sha256": reference_sha256,
-                },
-            }
+            contract_path = root / "static-program-contract.json"
+            contract_path.write_text("{}\n", encoding="ascii")
+            contract_sha256 = hashlib.sha256(b"{}\n").hexdigest()
+            row = _blocked_transfer()
             sidecar.write_text(
                 json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n",
                 encoding="ascii",
             )
-            reference = StageAReferenceContractBinding(
-                path=reference_path,
-                sha256=reference_sha256,
+            sidecar_sha256 = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+            static_program = StaticProgramContractBinding(
+                path=contract_path,
+                sha256=contract_sha256,
                 original_pe_sha256="0" * 64,
-                semantic_transfer_contracts=sidecar,
+                semantic_transfers=sidecar,
+                semantic_transfers_sha256=sidecar_sha256,
             )
 
-            loaded = _load_stage_a_semantic_transfer_rows(sidecar, reference)
+            loaded = _load_stage_a_semantic_transfer_rows(sidecar, static_program)
 
         self.assertEqual(len(loaded), 1)
         self.assertEqual(

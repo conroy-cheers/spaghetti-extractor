@@ -209,57 +209,49 @@ def _write_machine(path: Path, rows: list[dict[str, object]]) -> None:
     )
 
 
-def _write_reference_contract(path: Path, original: Path) -> None:
+def _write_static_program_contract(path: Path, original: Path) -> None:
     original_digest = sha256_file(original)
+    semantic_path = path.parent / "semantic-transfers.jsonl"
+    if not semantic_path.exists():
+        semantic_path.write_text("", encoding="ascii")
     payload = {
-        "format": "stage-a-reference-contract-v1",
-        "generator": "stage-a-export-reference-contract",
-        "generated_at": "1970-01-01T00:00:00+00:00",
-        "model": "x86-pe32-env-v1",
-        "status": "pass",
-        "tool_versions": {},
-        "inputs": {
-            "original": {"path": original.name, "sha256": original_digest, "exists": True},
-            "candidate": None,
-            "mapping": None,
-            "layout_contract": None,
-        },
-        "original": {
+        "format": "spaghetti-extractor-static-program-contract-v1",
+        "generator": "spaghetti-extractor-static-program",
+        "profile": "x86-pe32-static-reconstruction-v1",
+        "status": "complete",
+        "binary": {
             "sha256": original_digest,
             "machine": "i386",
             "bitness": 32,
         },
-        "candidate": None,
-        "constraints": {
-            "executable_byte_coverage": {
-                "status": "satisfied",
-                "original": {
-                    "mapped_code_ranges": [
-                        {"rva_start": 0x1000, "rva_end": 0x1001, "size": 1}
-                    ],
-                    "waived_noncode_ranges": [],
-                    "gaps": [],
-                },
-            },
-            "function_ranges": {"status": "satisfied", "functions": []},
-            "basic_blocks_and_cfg": {"status": "satisfied", "basic_blocks": []},
-            "roots_and_jump_tables": {
-                "status": "satisfied",
-                "roots": [{"kind": "entry", "block_id": "return"}],
-                "jump_table_targets": [],
-            },
-            "import_thunks": {"status": "not_applicable", "mapped_import_thunks": []},
+        "structural_universe": {
+            "units": [{"id": "return", "kind": "code"}],
+            "padding": [],
+            "roots": [{"kind": "pe_entrypoint", "block_id": "return"}],
+            "cfg_edges": [],
         },
-        "families": {},
-        "coverage": {},
-        "assumptions": [],
-        "issues": [],
-        "counts": {},
+        "families": {
+            "pe_layout": {"status": "complete"},
+            "executable_coverage": {"status": "complete"},
+            "structural_units": {"status": "complete"},
+            "roots": {"status": "complete"},
+            "cfg": {"status": "complete"},
+            "imports": {"status": "complete"},
+        },
         "sidecars": {
-            "unit_contracts": {
-                "directory": ".",
-                "semantic_transfer_contracts": {"path": "semantic-transfers.jsonl"},
+            "semantic_transfers": {
+                "path": semantic_path.name,
+                "sha256": sha256_file(semantic_path),
             }
+        },
+        "issues": [],
+        "counts": {"units": 1},
+        "trust": {
+            "executes_original_binary": False,
+            "uses_candidate_binary": False,
+            "uses_binary_mapping": False,
+            "claims_whole_program_equivalence": False,
+            "behavioral_reachability_separate": True,
         },
     }
     path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")

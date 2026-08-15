@@ -1,10 +1,11 @@
-"""Bind authority-v3 fallback coverage to an actual interpreter build.
+"""Bind authority-v3 fallback coverage to a checked lowering capability.
 
 The semantic interpreter package is generated from exact machine IR, but its
-package manifest intentionally has no Stage A authority.  This adapter bridges
-that boundary conservatively: it revalidates the complete lowering, binds
-actual built engine files, intersects it with checked ISA qualifications, and
-emits the existing per-unit ``implementation-capabilities-v3`` records.
+capability analysis intentionally emits no executable material.  This adapter
+bridges that boundary conservatively: it revalidates the complete lowering,
+intersects it with checked ISA qualifications, and emits per-unit
+``implementation-capabilities-v3`` records.  Candidate construction later
+rechecks generated source bytes against the same capability identity.
 
 The engine manifest is one package-level attestation.  Per-unit records are
 only projections of that attestation; they never invent supported ISA forms.
@@ -52,6 +53,10 @@ from ..artifacts.io import (
 from ..machine_ir.coverage import (
     FallbackCoverageReceiptError,
     validate_stage_b_fallback_coverage_receipt,
+)
+from ..machine_ir.fallback_capability import (
+    FallbackCapabilityAnalysis,
+    FallbackCapabilityAnalysisError,
 )
 from ..util import sha256_file
 
@@ -235,12 +240,13 @@ def emit_implementation_capabilities_v3(
     machine_ir_manifest: Path,
     semantic_index_path: Path,
     isa_qualification_path: Path,
-    interpreter_package: Path,
+    interpreter_package: Path | None,
     fallback_coverage_receipt: Path | None,
     implementation_files: Mapping[str, Path],
     capability_id: str,
     output_directory: Path,
     build_package_identity: str | None = None,
+    capability_analysis: Path | None = None,
 ) -> dict[str, Any]:
     """Emit one engine attestation and exact per-unit capability projections."""
 
@@ -248,6 +254,10 @@ def emit_implementation_capabilities_v3(
         raise ImplementationCapabilitiesV3Error("capability ID is invalid")
     machine_ir = _resolve(machine_ir, "machine-ir.jsonl")
     machine_ir_manifest = _resolve(machine_ir_manifest, "machine-ir-manifest.json")
+    if (capability_analysis is None) == (interpreter_package is None):
+        raise ImplementationCapabilitiesV3Error(
+            "provide exactly one of capability analysis or interpreter package"
+        )
     if fallback_coverage_receipt is not None:
         fallback_coverage_receipt = _resolve(
             fallback_coverage_receipt, "fallback-coverage-receipt.json"
@@ -276,8 +286,10 @@ def emit_implementation_capabilities_v3(
             f"output directory already exists: {output_directory}"
         )
     output_directory.mkdir(parents=True)
-    built_files, built_issues = _built_files(
-        implementation_files, output_directory
+    built_files, built_issues = (
+        ((), ())
+        if capability_analysis is not None
+        else _built_files(implementation_files, output_directory)
     )
     issues: list[CapabilityIssueV3] = list(built_issues)
     for name, reader in (("semantic-index", semantic), ("isa-qualification", isa)):
@@ -293,8 +305,53 @@ def emit_implementation_capabilities_v3(
                 )
             )
 
+    analysis: FallbackCapabilityAnalysis | None = None
+    analysis_sha256: str | None = None
+    lowerable_unit_ids: set[str] | None = None
+    if capability_analysis is not None:
+        capability_analysis = Path(capability_analysis)
+        try:
+            raw_analysis = json.loads(
+                capability_analysis.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ImplementationCapabilitiesV3Error(
+                f"cannot read fallback capability analysis: {exc}"
+            ) from exc
+        try:
+            analysis = FallbackCapabilityAnalysis.from_payload(raw_analysis)
+        except FallbackCapabilityAnalysisError as exc:
+            raise ImplementationCapabilitiesV3Error(str(exc)) from exc
+        analysis_sha256 = sha256_file(capability_analysis)
+        if (
+            analysis.capability_id != capability_id
+            or analysis.machine_ir_sha256 != sha256_file(machine_ir)
+        ):
+            raise ImplementationCapabilitiesV3Error(
+                "fallback capability analysis binds different inputs"
+            )
+        lowerable_unit_ids = set(analysis.lowerable_unit_ids)
+        if lowerable_unit_ids | set(analysis.unlowerable_unit_ids) != set(machine_by_id):
+            raise ImplementationCapabilitiesV3Error(
+                "fallback capability unit inventory binds different machine IR"
+            )
+        if not analysis.complete:
+            issues.append(
+                CapabilityIssueV3(
+                    "incomplete",
+                    "fallback_capability_analysis_incomplete",
+                    "fallback-capability-analysis",
+                    "close every non-executable fallback lowering blocker",
+                )
+            )
+
     receipt = None
-    if fallback_coverage_receipt is None:
+    if capability_analysis is not None:
+        if fallback_coverage_receipt is not None or implementation_files:
+            raise ImplementationCapabilitiesV3Error(
+                "analysis authority cannot include built fallback evidence"
+            )
+    elif fallback_coverage_receipt is None:
         issues.append(
             CapabilityIssueV3(
                 "incomplete",
@@ -426,6 +483,16 @@ def emit_implementation_capabilities_v3(
                 )
             )
             continue
+        if lowerable_unit_ids is not None and unit_id not in lowerable_unit_ids:
+            issues.append(
+                CapabilityIssueV3(
+                    "incomplete",
+                    "fallback_unit_not_lowerable",
+                    unit_id,
+                    "complete the non-executable fallback lowering analysis",
+                )
+            )
+            continue
         valid_units[unit_id] = selected_forms
         all_selected_forms.update(selected_forms)
 
@@ -460,7 +527,14 @@ def emit_implementation_capabilities_v3(
                 )
 
     package_binding = (
-        None
+        {
+            "capability_analysis_sha256": analysis_sha256,
+            "capability_sha256": analysis.capability_sha256,
+            "machine_ir_sha256": analysis.machine_ir_sha256,
+            "lowering": analysis.lowering.to_payload(),
+        }
+        if analysis is not None
+        else None
         if receipt is None
         else {
             "fallback_receipt_sha256": receipt.receipt_sha256,
@@ -478,13 +552,18 @@ def emit_implementation_capabilities_v3(
         "built_files": [row.to_payload() for row in built_files],
         "selected_qualified_form_ids": sorted(all_selected_forms),
     }
-    implementation_sha256 = canonical_sha256_v3(
-        implementation_identity_payload
+    implementation_sha256 = (
+        analysis.capability_sha256
+        if analysis is not None
+        else canonical_sha256_v3(implementation_identity_payload)
     )
 
     global_status = _status(issues)
     projections: list[ArtifactRecordV3] = []
-    if built_files and receipt is not None and global_status != "violated":
+    implementation_available = (
+        analysis is not None and global_status == "complete"
+    ) or (bool(built_files) and receipt is not None)
+    if implementation_available and global_status != "violated":
         for unit_id, selected_forms in sorted(valid_units.items()):
             semantic_row = semantic_by_id[unit_id]
             provisional = ImplementationCapabilityV3(
@@ -526,16 +605,6 @@ def emit_implementation_capabilities_v3(
         dependencies=dependencies,
         status=global_status,
     ).write(output_directory / "implementation-capabilities", projections)
-    (output_directory / "projection-metadata.json").write_bytes(
-        canonical_json_bytes_v3(
-            {
-                "format": "spaghetti-extractor-implementation-capability-projection-metadata-v3",
-                "artifact_kind": projection_manifest.artifact_kind,
-                "record_ids": sorted(record.record_id for record in projections),
-                "status": global_status,
-            }
-        )
-    )
     manifest: dict[str, Any] = {
         "format": FALLBACK_ENGINE_CAPABILITY_MANIFEST_V3_FORMAT,
         "status": global_status,
@@ -711,7 +780,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--machine-ir-manifest", type=Path, required=True)
     parser.add_argument("--semantic-index", type=Path, required=True)
     parser.add_argument("--isa-qualification", type=Path, required=True)
-    parser.add_argument("--interpreter-package", type=Path, required=True)
+    parser.add_argument("--interpreter-package", type=Path)
+    parser.add_argument("--capability-analysis", type=Path)
     parser.add_argument("--fallback-coverage-receipt", type=Path)
     parser.add_argument(
         "--implementation-file",
@@ -743,6 +813,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         capability_id=arguments.capability_id,
         output_directory=arguments.out,
         build_package_identity=arguments.build_package_identity,
+        capability_analysis=arguments.capability_analysis,
     )
     if manifest["status"] == "complete":
         validate_implementation_capabilities_v3(

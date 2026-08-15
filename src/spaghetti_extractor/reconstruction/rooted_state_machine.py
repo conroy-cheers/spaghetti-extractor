@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..reference_contract.common import BlockMapping
 from ..reference_contract.reference_semantics import _semantic_transfer_contract
 from ..artifacts.formats import MACHINE_IR_FORMAT
 from ..pe32.recursive_decode import (
@@ -17,12 +16,13 @@ from ..pe32.recursive_decode import (
 from .state_machine import (
     STAGE_B_STATE_MACHINE_FORMAT,
     annotate_state_machine_import_contracts,
-    load_stage_a_reference_contract_binding,
     normalize_stage_a_semantic_transfer,
     semantic_direct_targets,
     write_stage_b_state_machine,
 )
 from ..pe32.stage_binary import BlockSide, StageAInputError, _parse_stage_a_pe
+from ..static_program.codec import load_static_program_contract_binding
+from ..static_program.model import StaticUnitContext
 from ..util import sha256_bytes, sha256_file, write_json
 
 
@@ -33,7 +33,7 @@ def close_state_machine_rooted_direct_control(
     *,
     state_machine: Path,
     original_pe: Path,
-    reference_contract: Path,
+    static_program_contract: Path,
     out: Path,
     report: Path,
     machine_import_profiles: Sequence[Path] = (),
@@ -51,8 +51,8 @@ def close_state_machine_rooted_direct_control(
 
     state_machine = _regular_file(state_machine, "base state machine")
     original_pe = _regular_file(original_pe, "original PE")
-    reference_contract = _regular_file(
-        reference_contract, "reference contract"
+    static_program_contract = _regular_file(
+        static_program_contract, "static-program contract"
     )
     machine_import_profiles = tuple(
         _regular_file(path, "machine import profile")
@@ -68,8 +68,8 @@ def close_state_machine_rooted_direct_control(
     if iteration_budget <= 0:
         raise StageAInputError("rooted decode iteration budget must be positive")
 
-    reference = load_stage_a_reference_contract_binding(
-        reference_contract, original_pe=original_pe
+    static_program = load_static_program_contract_binding(
+        static_program_contract, original_pe=original_pe
     )
     base_rows = _canonical_state_machine_rows(state_machine)
     annotated_rows, terminating_rvas = annotate_state_machine_import_contracts(
@@ -90,7 +90,7 @@ def close_state_machine_rooted_direct_control(
                 control_manifest,
                 state_machine_sha256=sha256_file(state_machine),
                 original_sha256=sha256_file(original_pe),
-                reference_sha256=reference.sha256,
+                static_program_sha256=static_program.sha256,
                 materialized_rvas={_transfer_start(row) for row in merged},
             )
             if control_manifest is not None
@@ -129,8 +129,8 @@ def close_state_machine_rooted_direct_control(
                 _view_transfer(
                     binary=binary,
                     view=view,
-                    reference_path=reference_contract,
-                    reference_sha256=reference.sha256,
+                    static_program_path=static_program_contract,
+                    static_program_sha256=static_program.sha256,
                 )
                 for view in discovery["views"]
             ]
@@ -201,7 +201,7 @@ def close_state_machine_rooted_direct_control(
         "inputs": {
             "state_machine_sha256": sha256_file(state_machine),
             "original_pe_sha256": sha256_file(original_pe),
-            "reference_contract_sha256": reference.sha256,
+            "static_program_contract_sha256": static_program.sha256,
             "machine_import_profile_sha256s": [
                 sha256_file(path) for path in machine_import_profiles
             ],
@@ -370,7 +370,7 @@ def _manifest_seed_roots(
     *,
     state_machine_sha256: str,
     original_sha256: str,
-    reference_sha256: str,
+    static_program_sha256: str,
     materialized_rvas: set[int],
 ) -> list[dict[str, Any]]:
     """Read control-frontier proposals from an exactly bound machine IR.
@@ -396,9 +396,9 @@ def _manifest_seed_roots(
     original_binding = _mapping(
         inputs.get("original_pe"), "control manifest original-PE binding"
     )
-    reference_binding = _mapping(
-        inputs.get("reference_contract"),
-        "control manifest reference-contract binding",
+    static_program_binding = _mapping(
+        inputs.get("static_program_contract"),
+        "control manifest static-program binding",
     )
     expected_bindings = (
         (
@@ -408,9 +408,9 @@ def _manifest_seed_roots(
         ),
         (original_binding.get("sha256"), original_sha256, "original PE"),
         (
-            reference_binding.get("sha256"),
-            reference_sha256,
-            "reference contract",
+            static_program_binding.get("sha256"),
+            static_program_sha256,
+            "static program",
         ),
     )
     for observed, expected, label in expected_bindings:
@@ -615,8 +615,8 @@ def _view_transfer(
     *,
     binary: Any,
     view: Mapping[str, Any],
-    reference_path: Path,
-    reference_sha256: str,
+    static_program_path: Path,
+    static_program_sha256: str,
 ) -> dict[str, Any]:
     start = _u32(view.get("rva_start"), "rooted view start")
     end = _u32(view.get("rva_end"), "rooted view end")
@@ -636,12 +636,10 @@ def _view_transfer(
         )
     identity = f"rooted-view-{start:08x}-{end:08x}"
     span = BlockSide(start, end)
-    mapped = BlockMapping(
+    mapped = StaticUnitContext(
         id=identity,
         original=span,
-        candidate=span,
         kind="code",
-        reachable=True,
         invariant_checked=False,
         source={
             "source": {
@@ -657,9 +655,9 @@ def _view_transfer(
         mapped,
         identity,
         {
-            "format": "stage-a-reference-contract-v1",
-            "path": reference_path.name,
-            "sha256": reference_sha256,
+            "format": "spaghetti-extractor-static-program-contract-v1",
+            "path": static_program_path.name,
+            "sha256": static_program_sha256,
         },
         semantic_side=span,
         semantic_block_id=identity,
@@ -667,7 +665,7 @@ def _view_transfer(
     transfer_sha256 = sha256_bytes(_canonical_json(raw))
     return normalize_stage_a_semantic_transfer(
         raw,
-        reference_contract_sha256=reference_sha256,
+        static_program_contract_sha256=static_program_sha256,
         semantic_transfer_sha256=transfer_sha256,
     )
 

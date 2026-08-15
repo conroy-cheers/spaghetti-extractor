@@ -10,6 +10,10 @@ from ..artifacts.formats import (
     STAGE_B_INTERPRETER_PACKAGE_FORMAT,
     STAGE_B_INTERPRETER_PROGRAM_FORMAT,
 )
+from ..machine_ir.fallback_capability import (
+    FallbackCapabilityAnalysis,
+    FallbackLoweringHashes,
+)
 from ..machine_ir.definedness import analyze_definedness_jsonl
 from ..util import sha256_bytes, sha256_file, write_json
 from .interpreter_compiler import _TransferCompiler
@@ -41,7 +45,6 @@ from .interpreter_values import (
     _string,
     _u32,
 )
-from .machine_ir_scope import partition_candidate_machine_ir_units
 from .x87 import TYPED_NATIVE_X87_OPERATION_FORMAT
 
 
@@ -241,7 +244,6 @@ def write_stage_b_interpreter_package(
     state_machine: Path | None = None,
     machine_ir: Path | None = None,
     out: Path,
-    allow_deferred_potential_transfers: bool = False,
 ) -> dict[str, Any]:
     """Write stable interpreter source, program data, and a strict manifest."""
 
@@ -255,15 +257,10 @@ def write_stage_b_interpreter_package(
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     input_rows = _read_jsonl(input_path)
-    deferred_transfers: list[dict[str, Any]] = []
     if state_machine is not None:
         rows = input_rows
     else:
-        scoped_units, deferred_transfers = partition_candidate_machine_ir_units(
-            input_rows,
-            allow_deferred_potential_transfers=allow_deferred_potential_transfers,
-        )
-        rows = _adapt_machine_ir_rows(scoped_units)
+        rows = _adapt_machine_ir_rows(input_rows)
     definedness_input = input_path
     if machine_ir is not None:
         definedness_input = out / "machine-ir-adapted-semantics.jsonl"
@@ -323,7 +320,7 @@ def write_stage_b_interpreter_package(
         definedness_input=definedness_input,
         input_transfer_count=len(input_rows),
         blockers=blockers,
-        deferred_transfers=deferred_transfers,
+        deferred_transfers=(),
         sanitized_source_bindings=machine_ir is not None,
     )
     write_json(files["program_manifest"], program_payload)
@@ -349,7 +346,7 @@ def write_stage_b_interpreter_package(
         "blockers": blockers,
         "semantic_coverage": program_payload["semantic_coverage"],
         "execution_policy": program_payload["execution_policy"],
-        "deferred_transfers": deferred_transfers,
+        "deferred_transfers": [],
         "authority": "candidate generation only; static and behavioral qualification remain required",
     }
     if machine_ir is not None:
@@ -360,6 +357,79 @@ def write_stage_b_interpreter_package(
         }
     write_json(out / "state-machine-interpreter-package.json", package)
     return package
+
+
+def write_fallback_capability_analysis(
+    *, machine_ir: Path, out: Path
+) -> dict[str, Any]:
+    """Analyze exact fallback lowering without emitting executable material."""
+
+    machine_ir = Path(machine_ir)
+    input_rows = _read_jsonl(machine_ir)
+    rows = _adapt_machine_ir_rows(input_rows)
+    transfers, blockers = _compile_interpreter_rows(rows, collect_blockers=True)
+    max_word_nodes = max((len(row.nodes) for row in transfers), default=0)
+    if max_word_nodes > 1024:
+        blockers.append({
+            "transfer_index": 0,
+            "transfer_id": None,
+            "rva_start": None,
+            "code": "word_node_capacity_exceeded",
+            "failure_phase": "package_capacity",
+            "message": (
+                f"interpreter requires {max_word_nodes} word nodes; "
+                "the supported maximum is 1024"
+            ),
+            "next_action": (
+                "split the oversized transfer or raise the checked interpreter "
+                "profile limit"
+            ),
+        })
+    blockers.sort(key=_package_blocker_sort_key)
+    blocked_ids = {
+        row.get("transfer_id")
+        for row in blockers
+        if isinstance(row.get("transfer_id"), str)
+    }
+    lowered_ids = sorted(
+        row.identity for row in transfers if row.identity not in blocked_ids
+    )
+    input_ids = sorted(
+        _string(row.get("id"), "machine-IR unit id") for row in input_rows
+    )
+    lowering = FallbackLoweringHashes(
+        program_source_sha256=sha256_bytes(
+            _program_source(transfers).encode("ascii")
+        ),
+        interpreter_source_sha256=sha256_bytes(
+            _interpreter_source(max_word_nodes=max(1, max_word_nodes)).encode(
+                "ascii"
+            )
+        ),
+        runtime_header_sha256=sha256_bytes(
+            _interpreter_runtime_header().encode("ascii")
+        ),
+        interpreter_header_sha256=sha256_bytes(
+            _interpreter_header().encode("ascii")
+        ),
+        interpreter_internal_header_sha256=sha256_bytes(
+            _INTERPRETER_INTERNAL_HEADER.encode("ascii")
+        ),
+    )
+    report = FallbackCapabilityAnalysis.create(
+        machine_ir_path=machine_ir.name,
+        machine_ir_sha256=sha256_file(machine_ir),
+        capability_id="machine-ir-fallback-v3",
+        lowering=lowering,
+        required_unit_ids=input_ids,
+        lowerable_unit_ids=lowered_ids,
+        blockers=blockers,
+        max_word_nodes_per_transfer=max_word_nodes,
+    ).to_payload()
+    out = Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_json(out, report)
+    return report
 
 
 def _sanitize_generated_binding_names(value: Any) -> Any:

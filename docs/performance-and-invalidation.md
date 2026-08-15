@@ -115,7 +115,7 @@ host. Times are wall-clock unless the row names aggregate shard execution.
 | Generic full-suite peak shard RSS | 163,416 KiB |
 
 Machine-consumed JSON is emitted in canonical compact form. On the GNU Hello
-analysis artifacts this reduced the exact reference contract from 70.2 MiB to
+analysis artifacts this reduced the exact static-program contract from 70.2 MiB to
 30.5 MiB, ABI callsites from 57.1 MiB to 25.5 MiB, the machine-IR manifest from
 32.1 MiB to 18.0 MiB, and the reconstruction plan from 59.0 MiB to 30.8 MiB.
 The v2 component-proposal package is 59 MiB instead of the former 143.5 MiB

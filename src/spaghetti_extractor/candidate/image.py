@@ -31,7 +31,7 @@ class NativeImageInputs:
 def derive_native_image_inputs(
     *,
     load_image_contract: Path | str,
-    reference_contract_sha256: str | None = None,
+    static_program_contract_sha256: str | None = None,
 ) -> NativeImageInputs:
     contract = load_stage_a_load_image_contract(Path(load_image_contract))
     headers = contract.runtime_headers.data
@@ -78,16 +78,16 @@ def derive_native_image_inputs(
         and relocation.width > 0
     ]
     if relocation_rows:
-        if reference_contract_sha256 is None:
+        if static_program_contract_sha256 is None:
             raise StageAInputError(
-                "relocatable native image inputs require a reference-contract SHA-256"
+                "relocatable native image inputs require a static-program SHA-256"
             )
         fixed_image_base = None
         relocation_evidence: Mapping[str, Any] | None = {
             "format": "stage-b-pe32-base-relocation-evidence-v1",
             "complete": True,
             "pe_sha256": contract.identity.pe_sha256,
-            "reference_contract_sha256": reference_contract_sha256,
+            "static_program_contract_sha256": static_program_contract_sha256,
             "image_base": contract.identity.preferred_base,
             "relocations": sorted(relocation_rows, key=lambda row: row["source_rva"]),
         }

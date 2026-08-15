@@ -76,29 +76,9 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "bind PE entry, executable export, and immutable TLS callback roots",
     },
     {
-        "name": "expert stage-a-export-opaque-reconstruction",
+        "name": "expert static-program-export",
         "group": "spaghetti_extractor.commands.proposal_static",
-        "help": "emit the original-only reference contract and canonical state machine",
-    },
-    {
-        "name": "expert stage-a-export-reference-contract",
-        "group": "spaghetti_extractor.commands.proposal_static",
-        "help": "emit reusable static constraints and source-mapped transfer contracts",
-    },
-    {
-        "name": "expert stage-a-smoke-contract",
-        "group": "spaghetti_extractor.commands.diagnostic_contracts",
-        "help": "run the cheap reference-contract consistency gate",
-    },
-    {
-        "name": "expert stage-a-explain-contract",
-        "group": "spaghetti_extractor.commands.diagnostic_contracts",
-        "help": "explain one static contract region, family, or issue",
-    },
-    {
-        "name": "expert stage-a-diff-contract",
-        "group": "spaghetti_extractor.commands.diagnostic_contracts",
-        "help": "diff two static contract iterations",
+        "help": "emit the original-only static program and canonical state machine",
     },
     {
         "name": "expert stage-a-expand-import-abi",
@@ -158,7 +138,7 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
     {
         "name": "expert stage-b-generate-native-engine",
         "group": "spaghetti_extractor.commands.runtime",
-        "help": "emit PE32 ABI bridges for the generated interpreter",
+        "help": "emit strict PE32 ABI bridges from checked machine IR and external sites",
     },
     {
         "name": "expert stage-b-generate-native-runtime",
@@ -238,11 +218,7 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "candidate test": "operator",
     "expert stage-a-inventory-binary": "proposal",
     "expert stage-a-export-behavioral-roots": "proposal",
-    "expert stage-a-export-opaque-reconstruction": "proposal",
-    "expert stage-a-export-reference-contract": "proposal",
-    "expert stage-a-smoke-contract": "diagnostic",
-    "expert stage-a-explain-contract": "diagnostic",
-    "expert stage-a-diff-contract": "diagnostic",
+    "expert static-program-export": "proposal",
     "expert stage-a-expand-import-abi": "proposal",
     "expert stage-a-inventory-isa": "proposal",
     "expert stage-a-check-isa-conformance": "expert",

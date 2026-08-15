@@ -36,10 +36,10 @@ from ..extraction.cutpoints import semantic_cutpoint_spans_for_side
 from ..util import sha256_bytes, sha256_file, utc_now, write_json
 
 from .common import (
-    BlockMapping,
     _is_conditional_jump,
     _parse_int,
 )
+from ..static_program.model import StaticUnitContext
 
 from .map_analysis import (
     _capstone_mode,
@@ -238,7 +238,7 @@ def _memory_write_expr(
     memory_events.append(("write", _memory_expr(width_bits, canonical_address), value))
     memory_writes.append((canonical_address, width_bits, value))
 
-def _external_call_contract(mapped: BlockMapping, index: int) -> dict[str, Any] | None:
+def _external_call_contract(mapped: StaticUnitContext, index: int) -> dict[str, Any] | None:
     calls = mapped.source.get("external_calls", mapped.source.get("external_events", []))
     if not isinstance(calls, list) or index >= len(calls):
         return None

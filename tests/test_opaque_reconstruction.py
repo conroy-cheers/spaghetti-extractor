@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,11 +9,16 @@ from pathlib import Path
 from tests.pe_fixtures import pe32_image
 from spaghetti_extractor.extraction.binary_inventory import stage_a_inventory_binary
 from spaghetti_extractor.extraction.cutpoints import semantic_cutpoint_spans_for_side
-from spaghetti_extractor.reconstruction.opaque import (
-    opaque_self_map_from_inventory,
-    stage_a_export_opaque_reconstruction,
+from spaghetti_extractor.reconstruction.static_export import (
+    export_static_reconstruction,
 )
-from spaghetti_extractor.pe32.stage_binary import StageAInputError, _parse_stage_a_pe
+from spaghetti_extractor.reconstruction.ir_evidence import _static_program_inventory
+from spaghetti_extractor.static_program.codec import (
+    load_static_program_contract_binding,
+    parse_static_program_contract,
+)
+from spaghetti_extractor.static_program.model import StaticProgramContractError
+from spaghetti_extractor.pe32.stage_binary import _parse_stage_a_pe
 from spaghetti_extractor.util import sha256_bytes
 
 
@@ -57,35 +63,67 @@ def _inventory() -> dict[str, object]:
 
 
 class OpaqueReconstructionTests(unittest.TestCase):
-    def test_binary_only_inventory_becomes_conservative_identity_map(self) -> None:
-        payload = opaque_self_map_from_inventory(
-            _inventory(), binary_path="/nix/store/example/hello.exe", entry_rva=0x1000
+    def test_static_program_contract_rejects_pair_and_reachability_fields(self) -> None:
+        base = {
+            "format": "spaghetti-extractor-static-program-contract-v1",
+            "generator": "spaghetti-extractor-static-program",
+            "profile": "x86-pe32-static-reconstruction-v1",
+            "status": "complete",
+            "binary": {"machine": "i386", "bitness": 32, "sha256": "1" * 64},
+            "structural_universe": {"units": [{"id": "u", "kind": "code"}]},
+            "families": {},
+            "sidecars": {
+                "semantic_transfers": {
+                    "path": "semantic.jsonl",
+                    "sha256": "2" * 64,
+                }
+            },
+            "issues": [],
+            "counts": {"units": 1},
+            "trust": {
+                "executes_original_binary": False,
+                "uses_candidate_binary": False,
+                "uses_binary_mapping": False,
+                "claims_whole_program_equivalence": False,
+                "behavioral_reachability_separate": True,
+            },
+        }
+        for mutation in (
+            {"binary": {**base["binary"], "candidate": {}}},
+            {
+                "structural_universe": {
+                    "units": [{"id": "u", "kind": "code", "reachable": True}]
+                }
+            },
+        ):
+            with self.subTest(mutation=mutation):
+                with self.assertRaises(StaticProgramContractError):
+                    parse_static_program_contract({**base, **mutation})
+
+        with self.assertRaises(StaticProgramContractError):
+            parse_static_program_contract(
+                {**base, "profile": "x86-pe32-unreviewed-profile"}
+            )
+
+    def test_structural_cfg_edges_do_not_authorize_indirect_targets(self) -> None:
+        inventory = _static_program_inventory(
+            {
+                "structural_universe": {
+                    "roots": [],
+                    "padding": [],
+                    "cfg_edges": [
+                        {
+                            "source_unit_id": "u0",
+                            "target_rvas": [0x1234],
+                            "indirect": True,
+                        }
+                    ],
+                },
+                "families": {},
+            }
         )
-        self.assertEqual(payload["status"], "pass")
-        self.assertEqual(payload["counts"], {
-            "blocks": 1,
-            "waivers": 1,
-            "issues": 0,
-            "roots": 1,
-        })
-        self.assertTrue(payload["blocks"][0]["reachable"])
-        self.assertEqual(payload["blocks"][0]["root"]["kind"], "pe_entrypoint")
-        self.assertEqual(payload["waivers"][0]["binary"], "original")
-        self.assertIsNone(payload["linker_maps"]["original"])
 
-    def test_linker_map_provenance_is_rejected(self) -> None:
-        inventory = _inventory()
-        inventory["linker_map_sha256"] = "2" * 64
-        with self.assertRaisesRegex(StageAInputError, "must not contain linker-map"):
-            opaque_self_map_from_inventory(
-                inventory, binary_path="hello.exe", entry_rva=0x1000
-            )
-
-    def test_entrypoint_must_be_covered(self) -> None:
-        with self.assertRaisesRegex(StageAInputError, "does not bind the PE entrypoint"):
-            opaque_self_map_from_inventory(
-                _inventory(), binary_path="hello.exe", entry_rva=0x2000
-            )
+        self.assertEqual(inventory["jump_table_targets"], [])
 
     def test_public_inventory_round_trips_through_opaque_export(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -101,15 +139,38 @@ class OpaqueReconstructionTests(unittest.TestCase):
                 out=inventory,
             )
 
-            result = stage_a_export_opaque_reconstruction(
+            result = export_static_reconstruction(
                 original=original,
                 inventory=inventory,
                 out=output,
             )
 
             self.assertEqual(result["status"], "ready")
-            self.assertTrue((output / "reference-contract.json").is_file())
+            self.assertTrue((output / "static-program-contract.json").is_file())
             self.assertTrue((output / "state-machine.jsonl").is_file())
+            self.assertFalse((output / "opaque-self-map.json").exists())
+            rows = [
+                json.loads(line)
+                for line in (output / "semantic-transfer-contracts.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line
+            ]
+            self.assertTrue(rows)
+            self.assertTrue(all(row["reachable"] is False for row in rows))
+            self.assertTrue(
+                all("static_program_contract" not in row for row in rows)
+            )
+
+            semantic_path = output / "semantic-transfer-contracts.jsonl"
+            semantic_path.write_text("{}\n", encoding="ascii")
+            with self.assertRaisesRegex(
+                StaticProgramContractError, "semantic sidecar differs"
+            ):
+                load_static_program_contract_binding(
+                    output / "static-program-contract.json",
+                    original_pe=original,
+                )
 
     def test_opaque_inventory_splits_nop_padding_before_code(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

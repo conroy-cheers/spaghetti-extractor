@@ -346,22 +346,22 @@ def plan_stage_b_native_engine(
         machine_ir_micro_ops = row.get("_machine_ir_x87_micro_ops")
         if fpu_state is not None or machine_ir_micro_ops:
             if relocation_evidence is not None:
-                export = row.get("stage_a_export")
+                export = row.get("static_program_export")
                 if not isinstance(export, Mapping):
                     raise StageAInputError(
-                        f"transfer {row_index} lacks its Stage A export binding"
+                        f"transfer {row_index} lacks its static-program export binding"
                     )
                 bound_contract = _required_sha256(
-                    export.get("reference_contract_sha256"),
-                    f"transfer {row_index} Stage A reference-contract SHA-256",
+                    export.get("static_program_contract_sha256"),
+                    f"transfer {row_index} Stage A static-program SHA-256",
                 )
                 if (
                     bound_contract
-                    != relocation_evidence.reference_contract_sha256
+                    != relocation_evidence.static_program_contract_sha256
                 ):
                     raise StageAInputError(
                         f"transfer {row_index} and PE relocation evidence bind "
-                        "different reference contracts"
+                        "different static-program contracts"
                     )
             try:
                 qualified = (

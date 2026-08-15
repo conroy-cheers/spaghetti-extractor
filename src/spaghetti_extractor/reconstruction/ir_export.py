@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable
 
 from ..authority_inputs.machine_ir_authority import build_machine_ir_authority_bindings
 from ..pe32.recovered_executable_data import (
@@ -12,18 +12,16 @@ from ..pe32.recovered_executable_data import (
     RECOVERED_EXECUTABLE_DATA_FORMAT,
     build_recovered_executable_data_contract,
 )
-from .state_machine import (
-    STAGE_A_REFERENCE_CONTRACT_FORMAT,
-    load_stage_a_reference_contract_binding,
-)
+from ..artifacts.formats import STATIC_PROGRAM_CONTRACT_FORMAT
+from ..static_program.codec import load_static_program_contract_binding
 from ..pe32.stage_binary import _parse_stage_a_pe
 from ..util import sha256_bytes, sha256_file, write_json
 from .ir_evidence import (
     _binary_inventory,
     _external_inventory,
     _load_indirect_target_profile,
-    _reference_inventory,
-    _reference_issues,
+    _static_program_inventory,
+    _static_program_issues,
 )
 from .ir_inventory import _control_inventory, _coverage_inventory, _unit_issues
 from .ir_materialization import (
@@ -58,24 +56,13 @@ def export_machine_ir_package(
     state_machine: Path,
     original_pe: Path,
     out: Path,
-    reference_contract: Path | None = None,
+    static_program_contract: Path | None = None,
     indirect_target_profile: Path | None = None,
-    machine_import_profiles: Sequence[Path] = (),
-    external_interface_profiles: Sequence[Path] = (),
-    external_operation_profiles: Sequence[Path] = (),
-    callable_external_profiles: Sequence[Path] = (),
-    internal_function_contract_profiles: Sequence[Path] = (),
     prepared_machine_ir: Path | None = None,
     interprocedural_control: bool = False,
     finite_dataflow_factory: Callable[..., Any] | None = None,
 ) -> MachineIRPackage:
-    """Validate and export a deterministic, byte-free PE32 machine IR package.
-
-    The historical profile arguments remain accepted so older callers can read
-    v1 diagnostics.  They cannot affect this exact extraction artifact; v2
-    interprocedural, external-site, and candidate-authority phases consume them
-    after extraction.
-    """
+    """Validate and export a deterministic, byte-free PE32 machine IR package."""
 
     _ = interprocedural_control
     dataflow_factory = (
@@ -94,49 +81,31 @@ def export_machine_ir_package(
             code="unsupported_binary_model",
         )
 
-    reference_payload: dict[str, Any] | None = None
-    reference_sha256: str | None = None
-    if reference_contract is not None:
-        reference_path = _regular_file(reference_contract, "reference contract")
-        binding = load_stage_a_reference_contract_binding(
-            reference_path, original_pe=original_path
+    static_program_payload: dict[str, Any] | None = None
+    static_program_sha256: str | None = None
+    if static_program_contract is not None:
+        static_program_path = _regular_file(
+            static_program_contract, "static-program contract"
         )
-        reference_sha256 = binding.sha256
-        reference_payload = _json_object(reference_path, "reference contract")
-        if reference_payload.get("format") != STAGE_A_REFERENCE_CONTRACT_FORMAT:
+        binding = load_static_program_contract_binding(
+            static_program_path, original_pe=original_path
+        )
+        static_program_sha256 = binding.sha256
+        static_program_payload = _json_object(
+            static_program_path, "static-program contract"
+        )
+        if static_program_payload.get("format") != STATIC_PROGRAM_CONTRACT_FORMAT:
             raise MachineIRExportError(
-                "reference contract format changed after validation",
-                code="reference_contract_format_mismatch",
+                "static-program contract format changed after validation",
+                code="static_program_contract_format_mismatch",
             )
 
-    reference = _reference_inventory(reference_payload)
+    static_program = _static_program_inventory(static_program_payload)
     target_profile = _load_indirect_target_profile(indirect_target_profile)
-    diagnostic_profile_paths = {
-        "machine_import_profiles": tuple(
-            _regular_file(path, "machine import profile")
-            for path in machine_import_profiles
-        ),
-        "external_interface_profiles": tuple(
-            _regular_file(path, "external interface profile")
-            for path in external_interface_profiles
-        ),
-        "external_operation_profiles": tuple(
-            _regular_file(path, "external operation profile")
-            for path in external_operation_profiles
-        ),
-        "callable_external_profiles": tuple(
-            _regular_file(path, "callable external profile")
-            for path in callable_external_profiles
-        ),
-        "internal_function_contract_profiles": tuple(
-            _regular_file(path, "internal function contract profile")
-            for path in internal_function_contract_profiles
-        ),
-    }
     reusable, reusable_state_sha256 = _load_reusable_prepared_units(
         prepared_machine_ir,
         binary_sha256=binary.sha256,
-        reference_sha256=reference_sha256,
+        static_program_sha256=static_program_sha256,
     )
     if (
         prepared_machine_ir is not None
@@ -159,7 +128,7 @@ def export_machine_ir_package(
         prepared, reused_units = _prepare_units(
             rows,
             binary=binary,
-            reference_sha256=reference_sha256,
+            static_program_sha256=static_program_sha256,
             reusable=reusable,
         )
     prepared_input_units = len(prepared)
@@ -173,8 +142,8 @@ def export_machine_ir_package(
         _materialize_recovered_target_cutpoints(
             binary=binary,
             units=prepared,
-            reference=reference,
-            reference_sha256=reference_sha256,
+            static_program=static_program,
+            static_program_sha256=static_program_sha256,
             finite_dataflow_factory=dataflow_factory,
         )
     )
@@ -190,7 +159,7 @@ def export_machine_ir_package(
         _classify_executable_data_before_control(
             binary=binary,
             units=prepared,
-            reference=reference,
+            static_program=static_program,
             precomputed_static_recoveries=materialized_static_recoveries,
             precomputed_data_ranges=materialized_data_ranges,
             precomputed_static_rounds=target_cutpoint_materialization[
@@ -209,13 +178,13 @@ def export_machine_ir_package(
     coverage, coverage_issues = _coverage_inventory(
         binary,
         prepared,
-        [*reference.get("noncode_ranges", []), *classified_noncode_ranges],
+        [*static_program.get("noncode_ranges", []), *classified_noncode_ranges],
     )
     issues.extend(coverage_issues)
     control, control_issues = _control_inventory(
         binary,
         prepared,
-        reference,
+        static_program,
         executable_classification=executable_classification,
         preclassified_static_recoveries=preclassified_static_recoveries,
         target_profile=target_profile,
@@ -224,7 +193,7 @@ def export_machine_ir_package(
     control["target_cutpoint_materialization"] = target_cutpoint_materialization
     issues.extend(control_issues)
     external = _external_inventory(prepared)
-    issues.extend(_reference_issues(reference_payload))
+    issues.extend(_static_program_issues(static_program_payload))
     issue_payloads = [
         issue.payload()
         for issue in sorted(
@@ -283,12 +252,12 @@ def export_machine_ir_package(
                 "path": original_path.name,
                 "sha256": binary.sha256,
             },
-            "reference_contract": (
+            "static_program_contract": (
                 {
-                    "path": Path(reference_contract).name,
-                    "sha256": reference_sha256,
+                    "path": Path(static_program_contract).name,
+                    "sha256": static_program_sha256,
                 }
-                if reference_contract is not None
+                if static_program_contract is not None
                 else None
             ),
             "indirect_target_profile": (
@@ -304,17 +273,6 @@ def export_machine_ir_package(
                     ),
                 }
             ),
-            **{
-                name: [
-                    {
-                        "path": path.name,
-                        "sha256": sha256_file(path),
-                        "authority": "diagnostic_only",
-                    }
-                    for path in paths
-                ]
-                for name, paths in diagnostic_profile_paths.items()
-            },
             "prepared_machine_ir": (
                 None
                 if prepared_machine_ir is None
@@ -357,7 +315,7 @@ def export_machine_ir_package(
             ]
         ),
         "external": external,
-        "reference_inventory": reference["public"],
+        "static_program_inventory": static_program["public"],
         "source_map": source_map,
         "issues": issue_payloads,
         "counts": {

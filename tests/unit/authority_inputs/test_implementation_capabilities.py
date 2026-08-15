@@ -37,6 +37,10 @@ from spaghetti_extractor.authority_inputs.implementation_capabilities import (
 from spaghetti_extractor.machine_ir.coverage import (
     write_stage_b_fallback_coverage_receipt,
 )
+from spaghetti_extractor.machine_ir.fallback_capability import (
+    FallbackCapabilityAnalysis,
+    FallbackLoweringHashes,
+)
 from spaghetti_extractor.util import sha256_file
 from tests.unit.authority.test_isa_qualification import (
     BINDING,
@@ -58,6 +62,7 @@ class _Fixture:
         unit = _unit()
         unit["source"]["contract_sha256"] = "b" * 64  # type: ignore[index]
         self.unit = unit
+        self.unit["source"]["original"]["size"] = 1  # type: ignore[index]
         self.exact = ExactUnitV3.create(unit, pe_sha256=BINDING.sha256)
 
         self.semantic = root / "semantic-index"
@@ -224,8 +229,94 @@ class _Fixture:
             build_package_identity="fixture-compiler-package",
         )
 
+    def emit_analysis(self, output: Path) -> tuple[dict, Path]:
+        capability = self.root / "fallback-capability-analysis.json"
+        analysis = FallbackCapabilityAnalysis.create(
+            machine_ir_path=self.machine_ir.name,
+            machine_ir_sha256=sha256_file(self.machine_ir),
+            capability_id="machine-ir-fallback-v3",
+            lowering=FallbackLoweringHashes(
+                program_source_sha256="1" * 64,
+                interpreter_source_sha256="2" * 64,
+                runtime_header_sha256="3" * 64,
+                interpreter_header_sha256="4" * 64,
+                interpreter_internal_header_sha256="5" * 64,
+            ),
+            required_unit_ids=(self.exact.unit_id,),
+            lowerable_unit_ids=(self.exact.unit_id,),
+            blockers=(),
+            max_word_nodes_per_transfer=1,
+        )
+        _write_json(capability, analysis.to_payload())
+        return (
+            emit_implementation_capabilities_v3(
+                machine_ir=self.machine_ir,
+                machine_ir_manifest=self.machine_manifest,
+                semantic_index_path=self.semantic,
+                isa_qualification_path=self.isa,
+                interpreter_package=None,
+                fallback_coverage_receipt=None,
+                implementation_files={},
+                capability_id="machine-ir-fallback-v3",
+                output_directory=output,
+                capability_analysis=capability,
+            ),
+            capability,
+        )
+
 
 class ImplementationCapabilitiesV3Tests(unittest.TestCase):
+    def test_non_executable_analysis_projects_checked_lowering_capability(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = _Fixture(
+                root / "fixture",
+                fallback_capability_id="machine-ir-fallback-v3",
+            )
+            manifest, capability = fixture.emit_analysis(root / "output")
+
+            self.assertEqual(manifest["status"], "complete")
+            self.assertEqual(manifest["built_files"], [])
+            self.assertEqual(
+                manifest["package"]["capability_analysis_sha256"],
+                sha256_file(capability),
+            )
+            self.assertEqual(manifest["coverage"]["projected_units"], 1)
+            validate_implementation_capabilities_v3(
+                output_directory=root / "output",
+                expected_implementation_files={},
+            )
+
+    def test_tampered_analysis_identity_fails_before_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = _Fixture(
+                root / "fixture",
+                fallback_capability_id="machine-ir-fallback-v3",
+            )
+            capability = fixture.root / "fallback-capability-analysis.json"
+            _manifest, capability = fixture.emit_analysis(root / "discarded")
+            payload = json.loads(capability.read_text(encoding="utf-8"))
+            payload["lowering"]["program_source_sha256"] = "f" * 64
+            _write_json(capability, payload)
+
+            with self.assertRaisesRegex(
+                ImplementationCapabilitiesV3Error,
+                "capability SHA-256 is stale",
+            ):
+                emit_implementation_capabilities_v3(
+                    machine_ir=fixture.machine_ir,
+                    machine_ir_manifest=fixture.machine_manifest,
+                    semantic_index_path=fixture.semantic,
+                    isa_qualification_path=fixture.isa,
+                    interpreter_package=None,
+                    fallback_coverage_receipt=None,
+                    implementation_files={},
+                    capability_id="machine-ir-fallback-v3",
+                    output_directory=root / "output",
+                    capability_analysis=capability,
+                )
+
     def test_complete_manifest_projects_exact_checked_unit(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

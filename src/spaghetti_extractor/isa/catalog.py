@@ -1037,9 +1037,7 @@ def _parse_entry(value: Any, context: str) -> ISAFormCatalogEntry:
             row,
             f"{context}.effects[{index}]",
             legacy=False,
-            # The in-tree enrichment producer is independently owned and may
-            # transition to canonical v2 locations in a separate change.
-            allow_legacy_v2=True,
+            allow_legacy_v2=False,
         )
         for index, row in enumerate(
             _objects(payload.get("effects"), f"{context}.effects")

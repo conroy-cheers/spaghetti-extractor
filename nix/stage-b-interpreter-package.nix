@@ -4,8 +4,9 @@
   pythonEnv,
   pythonSource,
   machineIr,
+  capabilityAnalysis,
+  finalAuthorityGate,
   namePrefix,
-  allowDeferredPotentialTransfers ? false,
 }:
 
 let
@@ -30,6 +31,19 @@ pkgs.runCommand
     export LC_ALL=C.UTF-8
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${phasePythonSource}/src
+    jq -e '
+      .format == "spaghetti-extractor-final-authority-gate-v3" and
+      .status == "complete" and
+      .authorizing
+    ' ${finalAuthorityGate}/authority-gate.json >/dev/null
+    jq -e --arg machineIrSha256 \
+      "$(sha256sum ${machineIr}/machine-ir.jsonl | cut -d' ' -f1)" '
+      .format == "spaghetti-extractor-fallback-capability-analysis-v1" and
+      .status == "complete" and
+      .machine_ir.sha256 == $machineIrSha256 and
+      .counts.required_units == .counts.lowerable_units and
+      .counts.blockers == 0
+    ' ${capabilityAnalysis}/fallback-capability-analysis.json >/dev/null
     ${pythonEnv}/bin/python3 - \
       ${machineIr}/machine-ir.jsonl "$out" <<'PY'
     import pathlib
@@ -42,7 +56,6 @@ pkgs.runCommand
     write_stage_b_interpreter_package(
         machine_ir=machine_ir,
         out=output,
-        allow_deferred_potential_transfers=${if allowDeferredPotentialTransfers then "True" else "False"},
     )
     PY
     jq -e '
@@ -52,16 +65,23 @@ pkgs.runCommand
       .counts.input_transfers > 0 and
       .counts.transfers + .counts.deferred_transfers == .counts.input_transfers and
       .counts.blocked_transfers == 0 and
-      (if ${if allowDeferredPotentialTransfers then "true" else "false"}
-       then (if .counts.deferred_transfers > 0
-             then .execution_policy == "fail_closed_on_deferred_potential_transfer_v1"
-                  and .semantic_coverage.status == "incomplete"
-             else .execution_policy == "complete_transfer_inventory_v1"
-                  and .semantic_coverage.status == "complete"
-             end)
-       else .execution_policy == "complete_transfer_inventory_v1"
-            and .semantic_coverage.status == "complete"
-            and .counts.deferred_transfers == 0
-       end)
+      .execution_policy == "complete_transfer_inventory_v1" and
+      .semantic_coverage.status == "complete" and
+      .counts.deferred_transfers == 0
     ' "$out/state-machine-interpreter-package.json" >/dev/null
+    test "$(jq -r .lowering.program_source_sha256 \
+      ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
+      "$(sha256sum "$out/state-machine-program.c" | cut -d' ' -f1)"
+    test "$(jq -r .lowering.interpreter_source_sha256 \
+      ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
+      "$(sha256sum "$out/state-machine-interpreter.c" | cut -d' ' -f1)"
+    test "$(jq -r .lowering.runtime_header_sha256 \
+      ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
+      "$(sha256sum "$out/state-machine-runtime.h" | cut -d' ' -f1)"
+    test "$(jq -r .lowering.interpreter_header_sha256 \
+      ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
+      "$(sha256sum "$out/state-machine-interpreter.h" | cut -d' ' -f1)"
+    test "$(jq -r .lowering.interpreter_internal_header_sha256 \
+      ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
+      "$(sha256sum "$out/state-machine-interpreter-internal.h" | cut -d' ' -f1)"
   ''

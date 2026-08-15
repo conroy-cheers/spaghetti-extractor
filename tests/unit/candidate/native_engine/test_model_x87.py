@@ -89,7 +89,7 @@ class NativeEngineX87ModelTests(NativeEngineTestCase):
             unit["x87_micro_ops"][0]["implicit_registers_written"] = ["fpsw"]
             unit["source"]["semantic_export"] = {
                 "format": "stage-a-semantic-export-binding-v1",
-                "reference_contract_sha256": "c" * 64,
+                "static_program_contract_sha256": "c" * 64,
                 "semantic_transfer_sha256": "e" * 64,
             }
             package = root / "package"
@@ -181,7 +181,7 @@ class NativeEngineX87ModelTests(NativeEngineTestCase):
             self.assertEqual((operation.relocation_type, operation.relocation_width), (3, 4))
             payload = plan.payload(state_machine_sha256=sha256_bytes(machine.read_bytes()))
             relocation = payload["x87_operations"][0]["base_relocation"]
-            self.assertEqual(relocation["reference_contract_sha256"], "c" * 64)
+            self.assertEqual(relocation["static_program_contract_sha256"], "c" * 64)
             self.assertEqual(relocation["pe_sha256"], "d" * 64)
             package = root / "package"
             write_stage_b_native_engine_package(

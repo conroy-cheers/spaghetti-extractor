@@ -26,6 +26,8 @@ from .catalog import (
     ISA_FORM_CATALOG_FORMAT,
     ISA_PROFILE_ID,
     ISAFormCatalog,
+    _effect_payload,
+    _parse_effect,
     parse_isa_form_catalog,
 )
 from .conformance import ISAConformanceError
@@ -612,7 +614,18 @@ def resolved_isa_catalog(value: Any) -> ISAFormCatalog:
                 "encoding_id": row["encoding_id"],
                 "instruction_bytes": list(row["instruction_bytes"]),
                 "required_features": list(enrichment["required_features"]),
-                "effects": list(enrichment["effects"]),
+                "effects": [
+                    _effect_payload(
+                        _parse_effect(
+                            effect,
+                            f"resolved enrichment {row['encoding_id']} effect {index}",
+                            legacy=False,
+                            allow_legacy_v2=True,
+                        ),
+                        legacy=False,
+                    )
+                    for index, effect in enumerate(enrichment["effects"])
+                ],
                 "defined_outputs": dict(enrichment["defined_outputs"]),
             }
         )

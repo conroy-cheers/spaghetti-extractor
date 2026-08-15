@@ -165,7 +165,7 @@ def _adapt_native_machine_ir_unit(
             source.get("instruction_bytes_sha256"),
             f"{transfer_id} source-span SHA-256",
         ),
-        "stage_a_export": (
+        "static_program_export": (
             dict(semantic_export) if isinstance(semantic_export, Mapping) else None
         ),
         "_machine_ir": True,

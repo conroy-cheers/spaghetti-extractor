@@ -389,7 +389,7 @@ def _absolute_x87_replay_transfer() -> dict:
     row = _x87_replay_transfer()
     encoded = bytes.fromhex("d90534124000")
     digest = sha256_bytes(encoded)
-    row["stage_a_export"] = {"reference_contract_sha256": "c" * 64}
+    row["static_program_export"] = {"static_program_contract_sha256": "c" * 64}
     row["instruction_bytes_sha256"] = digest
     row["original"] = {
         "rva_start": 0x1420,
@@ -424,13 +424,13 @@ def _absolute_x87_replay_transfer() -> dict:
 def _relocation_evidence(
     relocations: list[dict] | None = None,
     *,
-    reference_contract_sha256: str = "c" * 64,
+    static_program_contract_sha256: str = "c" * 64,
 ) -> dict:
     return {
         "format": "stage-b-pe32-base-relocation-evidence-v1",
         "complete": True,
         "pe_sha256": "d" * 64,
-        "reference_contract_sha256": reference_contract_sha256,
+        "static_program_contract_sha256": static_program_contract_sha256,
         "image_base": 0x400000,
         "relocations": relocations if relocations is not None else [{
             "source_rva": 0x1422,

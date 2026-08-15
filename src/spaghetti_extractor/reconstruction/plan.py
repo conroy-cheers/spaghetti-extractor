@@ -469,26 +469,39 @@ def _plan_control_graph(package: MachineIRInput) -> dict[str, Any]:
         if isinstance(item, Mapping)
     ]
     reachability = manifest_control.get("reachability")
+    if not isinstance(reachability, Mapping):
+        return {
+            "clusters": [],
+            "recovered_indirect_targets": recovered,
+            "summary": {
+                "status": "incomplete",
+                "reachability_status": "missing",
+                "exact_reachable_units": 0,
+                "potential_units": 0,
+                "frontiers": [],
+                "cluster_counts": {
+                    "clusters": 0,
+                    "units": 0,
+                },
+                "issues": [{
+                    "code": "missing_canonical_reachability",
+                    "message": (
+                        "the machine-IR manifest has no canonical rooted "
+                        "reachability artifact"
+                    ),
+                    "next_action": (
+                        "rebuild machine IR through the current rooted-control phase"
+                    ),
+                }],
+            },
+        }
     exact = {
-        str(unit["id"])
-        for unit in units
-        if _unit_reachability(unit) == "reachable"
+        str(unit_id) for unit_id in reachability.get("reachable_units", [])
     }
     potential = {
-        str(unit["id"])
-        for unit in units
-        if _unit_reachability(unit) == "potential"
+        str(unit_id) for unit_id in reachability.get("potential_units", [])
     }
-    if isinstance(reachability, Mapping):
-        exact = {
-            str(unit_id) for unit_id in reachability.get("reachable_units", [])
-        }
-        potential = {
-            str(unit_id) for unit_id in reachability.get("potential_units", [])
-        }
     active = exact | potential
-    if not active:
-        active = {str(unit["id"]) for unit in units}
     roots = []
     for root in manifest_control.get("roots", []):
         if not isinstance(root, Mapping):
@@ -511,18 +524,10 @@ def _plan_control_graph(package: MachineIRInput) -> dict[str, Any]:
         "recovered_indirect_targets": recovered,
         "summary": {
             "status": proposed["status"],
-            "reachability_status": (
-                reachability.get("status")
-                if isinstance(reachability, Mapping)
-                else "legacy_unit_annotations"
-            ),
+            "reachability_status": reachability.get("status"),
             "exact_reachable_units": len(exact),
             "potential_units": len(potential),
-            "frontiers": (
-                copy.deepcopy(reachability.get("frontiers", []))
-                if isinstance(reachability, Mapping)
-                else []
-            ),
+            "frontiers": copy.deepcopy(reachability.get("frontiers", [])),
             "cluster_counts": copy.deepcopy(proposed["counts"]),
             "issues": copy.deepcopy(proposed["issues"]),
         },
@@ -533,7 +538,9 @@ def _unit_reachability(unit: Mapping[str, Any]) -> str:
     value = unit.get("reachability")
     if value in {"reachable", "potential", "unreachable"}:
         return str(value)
-    return "reachable" if bool(unit.get("reachable")) else "unreachable"
+    raise StageAInputError(
+        f"machine-IR unit {unit.get('id')!r} has no canonical reachability state"
+    )
 
 
 def _select_template(

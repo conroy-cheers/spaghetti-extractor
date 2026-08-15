@@ -159,7 +159,9 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
                 "out_interface_relations": [],
             },
         )
-        projected = checked_external_site_contract_from_authority(contract)
+        projected = checked_external_site_contract_from_authority(
+            contract.to_payload()
+        )
         self.assertEqual(projected.identity.symbol, "ExitProcess")
         self.assertEqual(projected.profile_disposition, "terminates")
         self.assertEqual(projected.arguments[0]["name"], "eax")
