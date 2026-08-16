@@ -45,8 +45,11 @@ from .external_site_records import (
     EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3,
     EXTERNAL_SITE_EVIDENCE_CODEC_V3,
     CallbackRequirementV3,
+    CallbackSourceDecisionV3,
     CanonicalExternalSiteRecordV3,
     CanonicalExternalSiteV3,
+    ExternalCallArityV3,
+    ExternalCallbackSourceV3,
     ExternalContractV3,
     ExternalProfileV3,
     _site_identity_payload,
@@ -345,10 +348,39 @@ def _contract_blocker(
         return PrimaryBlockerV3("violated", "external_contract_identity_contradiction")
     abi = expected.event.get("abi_contract")
     if isinstance(abi, Mapping):
-        words = abi.get("argument_words")
-        if isinstance(words, int) and not isinstance(words, bool):
-            if contract.argument_words != words:
+        if contract.arity.kind == "fixed":
+            words = abi.get("argument_words")
+            if isinstance(words, int) and not isinstance(words, bool):
+                if contract.argument_words != words:
+                    return PrimaryBlockerV3(
+                        "violated", "external_contract_abi_contradiction"
+                    )
+        else:
+            if "argument_words" in abi:
                 return PrimaryBlockerV3("violated", "external_contract_abi_contradiction")
+            forwarding = abi.get("raw_caller_stack_suffix_forwarding")
+            if forwarding is not None:
+                if not isinstance(forwarding, Mapping):
+                    return PrimaryBlockerV3(
+                        "violated", "external_contract_abi_contradiction"
+                    )
+                try:
+                    expected_arity = ExternalCallArityV3.parse(
+                        {
+                            "kind": "variadic",
+                            "minimum_words": contract.minimum_argument_words,
+                            "raw_caller_stack_suffix_forwarding": dict(forwarding),
+                        },
+                        label="checked external site arity",
+                    )
+                except ArtifactV3Error:
+                    return PrimaryBlockerV3(
+                        "violated", "external_contract_abi_contradiction"
+                    )
+                if expected_arity != contract.arity:
+                    return PrimaryBlockerV3(
+                        "violated", "external_contract_abi_contradiction"
+                    )
         binding = abi.get("profile_binding")
         if (
             isinstance(binding, Mapping)
@@ -379,13 +411,30 @@ def _contract_blocker(
             "violated", "external_contract_abi_contradiction"
         )
     try:
+        argument_event = expected.event
+        explicit = expected.event.get("arguments")
+        if contract.arity.kind == "variadic" and explicit:
+            if not isinstance(explicit, list) or any(
+                not isinstance(row, Mapping) for row in explicit
+            ):
+                return PrimaryBlockerV3(
+                    "violated", "external_contract_argument_contradiction"
+                )
+            if len(explicit) < contract.minimum_argument_words:
+                return PrimaryBlockerV3(
+                    "violated", "external_contract_argument_contradiction"
+                )
+            argument_event = dict(expected.event)
+            argument_event["arguments"] = list(
+                explicit[: contract.minimum_argument_words]
+            )
         expected_arguments = tuple(
             CanonicalValueV3.of(row)
             for row in recover_external_arguments_v3(
-                expected.event,
+                argument_event,
                 transfer_kind=expected.transfer_kind,
                 abi_template=abi_template,
-                argument_words=contract.argument_words,
+                argument_words=contract.minimum_argument_words,
             )
         )
     except ExternalArgumentRecoveryV3Error as exc:
@@ -424,7 +473,7 @@ def _profile_blocker(
         or profile.identity != contract.identity
         or contract.transfer_kind not in profile.allowed_transfers
         or contract.disposition not in profile.allowed_dispositions
-        or profile.argument_words != contract.argument_words
+        or profile.arity != contract.arity
         or profile.memory_effect != contract.memory_effect
         or profile.world_effect != contract.world_effect
         or profile.callback_effect != contract.callback_effect
@@ -432,6 +481,80 @@ def _profile_blocker(
     ):
         return PrimaryBlockerV3(
             "violated", "external_profile_contract_contradiction"
+        )
+    return None
+
+
+def _exact_u32(expression: Any) -> int | None:
+    if not isinstance(expression, Mapping) or expression.get("op") != "const":
+        return None
+    value = expression.get("value")
+    width = expression.get("width", 32)
+    if (
+        width != 32
+        or not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= 0xFFFF_FFFF
+    ):
+        return None
+    return value
+
+
+def _callback_source_replay_blocker(
+    contract: ExternalContractV3,
+    profile: ExternalProfileV3,
+) -> PrimaryBlockerV3 | None:
+    machine_contract = mapping(
+        profile.machine_contract.to_value(),
+        "external profile machine contract",
+    )
+    if "callback_source" not in machine_contract:
+        if contract.callback_source_decision is not None:
+            return PrimaryBlockerV3(
+                "violated", "external_callback_source_contradiction"
+            )
+        return None
+    try:
+        source = ExternalCallbackSourceV3.parse(
+            machine_contract,
+            argument_words=profile.minimum_argument_words,
+        )
+    except ArtifactV3Error:
+        return PrimaryBlockerV3(
+            "violated", "external_profile_callback_source_malformed"
+        )
+    if source.kind != "argument_word":
+        return PrimaryBlockerV3(
+            "incomplete", "external_callback_source_provenance_missing"
+        )
+    expression = contract.arguments[source.argument_index].to_value()
+    source_word = _exact_u32(expression)
+    if source_word is None:
+        return PrimaryBlockerV3(
+            "incomplete", "external_callback_source_provenance_missing"
+        )
+    sentinel = source_word in source.non_callback_sentinel_words
+    expected = CallbackSourceDecisionV3.create(
+        kind=("non_callback_sentinel" if sentinel else "callback_target"),
+        argument_index=source.argument_index,
+        source_expression=mapping(expression, "callback-source expression"),
+        sentinel_word=source_word if sentinel else None,
+    )
+    if contract.callback_source_decision is None:
+        return PrimaryBlockerV3(
+            "incomplete", "external_callback_source_decision_missing"
+        )
+    if contract.callback_source_decision != expected:
+        return PrimaryBlockerV3(
+            "violated", "external_callback_source_contradiction"
+        )
+    if sentinel and contract.callbacks:
+        return PrimaryBlockerV3(
+            "violated", "external_callback_source_contradiction"
+        )
+    if not sentinel and not contract.callbacks:
+        return PrimaryBlockerV3(
+            "incomplete", "external_callback_requirement_missing"
         )
     return None
 
@@ -599,6 +722,11 @@ def _checked_site(
             else:
                 profile = EXTERNAL_PROFILE_CODEC_V3.read(profile_source).value
                 proposed = _profile_blocker(evidence.contract, profile)
+                if proposed is None:
+                    proposed = _callback_source_replay_blocker(
+                        evidence.contract,
+                        profile,
+                    )
                 blocker = (
                     None
                     if proposed is None

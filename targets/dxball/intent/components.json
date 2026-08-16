@@ -3,7 +3,7 @@
   "program_id": "dxball-pe32-reference-v1",
   "permitted_activation_profiles": [
     "bounded-equivalence-v1",
-    "validation-backed-v1"
+    "portable-component-v2"
   ],
   "components": [
     {
@@ -55,6 +55,25 @@
         "proposal_kind": "singleton"
       },
       "evidence_profile": "structural-draft-v1"
+    },
+    {
+      "id": "directdraw-init",
+      "label": "Window and DirectDraw initialization procedure",
+      "selector": {
+        "entry_rva": 52320,
+        "end_rva": 53254,
+        "proposal_kind": "single_entry_control_closure"
+      },
+      "evidence_profile": "portable-component-v2",
+      "interface_review": "reviews/directdraw-init.json",
+      "source": {
+        "files": [
+          "source/directdraw-init.c"
+        ],
+        "operations": {
+          "initialize": "dxball_directdraw_initialize"
+        }
+      }
     }
   ],
   "groups": [
@@ -104,6 +123,13 @@
       "label": "Five-unit startup group",
       "selections": [
         {"kind": "group", "id": "startup-extended", "activation": "draft"}
+      ]
+    },
+    {
+      "id": "directdraw-init-draft",
+      "label": "DirectDraw initialization draft",
+      "selections": [
+        {"kind": "component", "id": "directdraw-init", "activation": "draft"}
       ]
     }
   ]

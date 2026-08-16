@@ -9,6 +9,8 @@
   semanticIndex,
   transitionSummaries,
   structuralTargets,
+  parametricSummaries ? null,
+  externalProfiles ? null,
   name,
   targetHints ? null,
   targetEvidence ? null,
@@ -57,6 +59,12 @@ pkgs.runCommand name (
   ''}
   ${lib.optionalString (targetEvidence != null) ''
     args+=(--target-evidence ${targetEvidence})
+  ''}
+  ${lib.optionalString (parametricSummaries != null) ''
+    args+=(--parametric-summaries ${parametricSummaries})
+  ''}
+  ${lib.optionalString (externalProfiles != null) ''
+    args+=(--external-profiles ${externalProfiles})
   ''}
   ${pythonEnv}/bin/python3 -m \
     spaghetti_extractor.authority_inputs.indexed_target_evidence \

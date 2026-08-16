@@ -87,7 +87,6 @@ def build_lift_unit_status(
             hash_field="qualification_sha256",
         )
     )
-
     issues: list[dict[str, object]] = []
     issues.extend(_issues(contract_payload, "blockers"))
     if source_payload is None:
@@ -106,7 +105,6 @@ def build_lift_unit_status(
         if qualification_payload.get("lift_unit_id") != lift_unit_id:
             issues.append(_issue("violated", "component_qualification_identity_mismatch", lift_unit_id))
         issues.extend(_issues(qualification_payload, "issues"))
-
     observed = {
         str(contract_payload.get("status")),
         str(adapter_payload.get("status")) if adapter_payload else "missing",

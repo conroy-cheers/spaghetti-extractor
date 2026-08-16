@@ -8,28 +8,29 @@ precise remaining gaps.
 
 The toolkit does not claim a whole-program mathematical equivalence theorem.
 Confidence comes from independently qualified instruction semantics, exact
-static artifact binding, fail-closed analysis, bounded component checks, and
-candidate-only behavioral suites. The original binary is never executed during
-repair iteration.
+static artifact binding, fail-closed analysis, and machine-derived component
+refinement checks. Optional candidate-only behavior suites are veto diagnostics,
+not reconstruction evidence or release authority. The original binary is never
+executed during repair iteration.
 
 ## Workflow
 
 1. Inventory the original PE, executable bytes, imports, relocations, roots,
    code regions, and required ISA forms.
 2. Emit an original-only static-program contract and canonical machine IR.
-3. Recognize libraries and external interfaces, then emit typed v3 evidence
-   packs for exact units, transitions, memory, targets, induction, external
-   sites, callbacks, roots, exceptions, ISA qualification, and fallback
-   capabilities.
-4. Require an authorizing `final-authority-v3` record and a separately checked,
-   exact fallback-coverage receipt before generating an executable candidate.
-5. Generate the complete machine-oriented baseline and propose components.
-6. Replace components with portable C using explicit interface contracts while
-   retaining complete fallback coverage.
-7. Run curated candidate-only behavior tests under headless Wine only after the
-   static gate passes.
-8. Repeat lifting and candidate-only validation without using runtime execution
-   to discover missing original regions.
+3. Recognize libraries and external interfaces, then emit checked structural
+   facts for units, targets, external sites, callbacks, roots, exceptions, and
+   fallback capabilities.
+4. Require `structural-executable-v1`: every runtime transfer is represented,
+   every structural unit has an implementation owner, and the fallback can
+   execute every unlifted unit.
+5. Generate the executable machine-oriented baseline and propose components.
+6. Replace components with portable C through machine-free interface V2,
+   framework-managed state, exact machine bindings, machine-derived semantic
+   refinement, service graphs, and activation receipts.
+7. Require ISA qualification and exact authority for every enabled component.
+8. Optionally run candidate-only behavior tests under headless Wine after static
+   acceptance. A failure vetoes confidence but a pass never authorizes a lift.
 
 Generated analyses are proposals unless a checker explicitly qualifies them.
 Unsupported instructions, ambiguous targets, stale hashes, missing interfaces,
@@ -44,9 +45,12 @@ spaghetti-extractor --help
 spaghetti-extractor project status gnu-hello
 spaghetti-extractor project analyze gnu-hello
 spaghetti-extractor component list gnu-hello
+spaghetti-extractor component status gnu-hello ascii-to-lower --development
 spaghetti-extractor component status gnu-hello ascii-to-lower
 spaghetti-extractor component build gnu-hello ascii-to-lower
 spaghetti-extractor component check gnu-hello ascii-to-lower
+spaghetti-extractor library status gnu-hello
+spaghetti-extractor library inspect gnu-hello --family mingw-w64
 spaghetti-extractor candidate list gnu-hello
 spaghetti-extractor candidate status gnu-hello
 spaghetti-extractor project check gnu-hello
@@ -62,6 +66,17 @@ discovery changes therefore do not invalidate component resolution. The
 producer still validates every complete record before publishing the package.
 Component build and candidate commands remain unavailable until reviewed
 intent and a default configuration are declared together.
+
+Linked-library discovery is ABI-first and independently cached. Immutable
+catalog packs contribute per-function byte, structural, call, and ABI evidence;
+the target-wide constellation solver uses those function matches to identify a
+release and exact ownership island. An operator may adopt a reusable behavior
+pack, but adoption intent is non-authorizing. The checked-island phase rechecks
+identity, canonical crossings, and implementation bindings; candidate generation
+then materializes an ordinary component whose exact unit inventory is rebound by
+the component machine-binding checker. Compile, semantic refinement, services,
+and exclusive ownership must still close before portable source replaces machine
+IR. Unselected application code remains owned by the machine-IR fallback.
 
 Public realizations use an explicit portable builder policy. They prefer a
 CLI-selected inventory, then `SPAGHETTI_EXTRACTOR_BUILDERS_FILE`, the nearest
@@ -139,15 +154,17 @@ spaghetti-extractor candidate build gnu-hello
 spaghetti-extractor candidate test jq
 ```
 
-Regression remains buildable while whole-program authority is incomplete.
-Building one component or group produces a non-authorizing static work package;
-building a configuration produces its runtime package. Acceptance and every
-executable candidate stay behind the explicit final-authority gate. Candidate
-tests exist only when a target declares curated expected-output cases, run only
-the generated candidate, and execute Wine through an isolated headless X
-session. `project status` is deliberately authority-only. `candidate status`
-adds one selected component configuration and its declared candidate-only
-suites. Neither diagnostic report opens a gate.
+Building one component or group produces a non-authorizing development package;
+building a configuration produces its runtime package. Whole-candidate
+generation is gated by structural executability, not by the older formal
+aggregate. Release acceptance is stricter: it requires qualified ISA forms and
+the exact activation or legacy qualification receipt selected by the structural
+plan. Declared candidate tests run only the generated candidate through an
+isolated headless X session after static acceptance, and remain optional veto
+diagnostics.
+`project status` remains diagnostic. `candidate status` adds one selected
+configuration and its declared candidate-only suites; neither status command
+opens a gate.
 
 ## Public Surfaces
 
@@ -160,8 +177,8 @@ suites. Neither diagnostic report opens a gate.
 - `flake.lib.mkTargetSdk`: the stable configured Nix interface for analysis,
   authority, candidate, lifting, validation, and target-bundle construction.
 - [Composable component lifting](docs/components.md): exact leaf/group
-  boundaries, qualification profiles, fallback ownership, and incremental Nix
-  artifacts.
+  boundaries, portable interface V2, deterministic local checks, activation
+  authority, fallback ownership, and incremental Nix artifacts.
 - `targets/`: a separate in-tree consumer flake containing authored validation
   intent and source, never generic Python implementation code.
 

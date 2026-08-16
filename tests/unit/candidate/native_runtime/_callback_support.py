@@ -10,7 +10,10 @@ from spaghetti_extractor.external.contracts import (
     checked_external_site_contract_from_event,
 )
 from spaghetti_extractor.util import sha256_bytes, sha256_file
-from tests.unit.candidate.native_engine._support import _canonical_external_sites
+from tests.unit.candidate.native_engine._support import (
+    _candidate_execution_artifacts,
+    _canonical_external_sites,
+)
 from tests.unit.candidate.native_runtime._support import (
     _CONTRACT_SHA256,
     _INSTRUCTION_SHA256,
@@ -198,26 +201,6 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
                 "sha256": sha256_file(machine_ir),
             },
         },
-        "control": {
-            "reachability": {
-                "status": "complete",
-                "roots": [registration["id"]],
-                "reachable_units": [
-                    registration["id"], continuation["id"], callback["id"]
-                ],
-                "potential_units": [],
-                "confirmed_unreachable_units": [],
-                "frontiers": [],
-            },
-            "internal_call_preservation": {
-                "fixed_point_complete": True,
-                "summaries": [],
-            },
-            "external_interface_provenance": {
-                "resolutions": [],
-                "callback_registrations": [callback_evidence],
-            },
-        },
     }, sort_keys=True), encoding="utf-8")
     interpreter = root / "callback-interpreter"
     engine = root / "callback-engine"
@@ -246,6 +229,9 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
         callback_target_rvas=(0x3000,),
     )
     write_spx_interpreter_package(machine_ir=machine_ir, out=interpreter)
+    execution_authority = _candidate_execution_artifacts(
+        root, units=[registration, continuation, callback]
+    )
     write_spx_native_engine_package(
         machine_ir=machine_ir,
         machine_ir_manifest=manifest,
@@ -254,6 +240,9 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
         preferred_image_base=0x400000,
         import_iat_vas={("user32.dll", "RegisterClassA"): 0x432000},
         canonical_external_sites=canonical_external_sites,
+        root_closure=execution_authority[0],
+        target_certificates=execution_authority[1],
+        parametric_summaries=execution_authority[2],
         out=engine,
     )
     return interpreter, engine, profile

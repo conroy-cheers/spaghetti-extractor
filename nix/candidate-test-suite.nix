@@ -7,7 +7,7 @@
   namePrefix,
   suite,
   candidateBinary,
-  authorityGate,
+  releaseGate,
   runtimeData ? null,
   timeoutSeconds ? 30,
   stripStderrLineRegexes ? [ ],
@@ -66,7 +66,7 @@ let
     inherit pkgs pythonEnv pythonSource suite caseIds timeoutSeconds
       stripStderrLineRegexes;
     namePrefix = "${namePrefix}-${id}";
-    inherit candidateBinary authorityGate;
+    inherit candidateBinary releaseGate;
     candidateCommand = [
       "${runner}/bin/spaghetti-extractor-headless-wine-candidate"
     ];
@@ -78,16 +78,17 @@ let
     __contentAddressed = true;
   } ''
     set -euo pipefail
+    execution_gate=${releaseGate}/release-acceptance.json
     jq -e '
-      .format == "spaghetti-extractor-final-authority-gate-v3" and
-      .status == "complete" and .authorizing
-    ' ${authorityGate}/authority-gate.json >/dev/null
+      .format == "spaghetti-extractor-release-acceptance-v1" and
+      .status == "complete" and .release_accepted and .executable
+    ' "$execution_gate" >/dev/null
     test -f ${suiteResult.aggregate}/candidate-test-report.json
     test -s ${candidateBinary}
     mkdir -p "$out"
     ln -s ${suiteResult.aggregate} "$out/test-results"
     candidate_sha256="$(sha256sum ${candidateBinary} | cut -d ' ' -f 1)"
-    authority_sha256="$(sha256sum ${authorityGate}/authority-gate.json | cut -d ' ' -f 1)"
+    execution_gate_sha256="$(sha256sum "$execution_gate" | cut -d ' ' -f 1)"
     report_sha256="$(sha256sum ${suiteResult.aggregate}/candidate-test-report.json | cut -d ' ' -f 1)"
     suite_sha256="$(sha256sum ${suite} | cut -d ' ' -f 1)"
     jq -n \
@@ -96,7 +97,7 @@ let
       --arg configuration_id ${lib.escapeShellArg configurationId} \
       --arg suite_id ${lib.escapeShellArg suiteId} \
       --arg candidate_sha256 "$candidate_sha256" \
-      --arg authority_gate_sha256 "$authority_sha256" \
+      --arg execution_gate_sha256 "$execution_gate_sha256" \
       --arg suite_sha256 "$suite_sha256" \
       --arg report_sha256 "$report_sha256" \
       --argjson case_ids ${lib.escapeShellArg (builtins.toJSON caseIds)} '
@@ -109,14 +110,14 @@ let
         case_ids: $case_ids,
         bindings: {
           candidate_sha256: $candidate_sha256,
-          authority_gate_sha256: $authority_gate_sha256,
+          execution_gate_sha256: $execution_gate_sha256,
           suite_sha256: $suite_sha256,
           candidate_test_report_sha256: $report_sha256
         },
         policy: {
           candidate_only: true,
           original_binary_executed: false,
-          final_authority_required_before_execution: true,
+          static_release_acceptance_required_before_execution: true,
           headless_wine_required: true,
           divergence_class: "spaghetti-extractor-or-candidate-toolchain-red-flag"
         }

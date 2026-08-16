@@ -610,7 +610,9 @@ def _check_component_runtime(
         policy = _mapping(payload.get("policy"), "component runtime policy")
         policy_ok = (
             policy.get("runtime_package_is_sole_candidate_authority") is True
-            and policy.get("enabled_components_must_be_qualified") is True
+            and policy.get(
+                "enabled_components_must_have_checked_activation_authority"
+            ) is True
             and policy.get("subsumed_members_may_not_fallback") is True
             and policy.get("fallback_on_unimplemented") is False
             and policy.get("original_execution_forbidden") is True

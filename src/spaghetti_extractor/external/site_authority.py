@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 
 from ..artifacts.artifact_set import canonical_sha256_v3
@@ -16,6 +17,7 @@ from ..artifacts.formats import (
     CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA,
     CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
 )
+from ..artifacts.io import open_artifact_reader_v3
 from ..errors import ToolkitInputError
 from .contracts import (
     CheckedExternalSiteContract,
@@ -50,6 +52,62 @@ class CheckedCanonicalExternalSiteRecord:
     sites: tuple[CheckedCanonicalExternalSite, ...]
     primary_blocker: Mapping[str, Any] | None
     payload: Mapping[str, Any]
+
+
+def read_canonical_external_sites(
+    root: Path | str,
+    *,
+    record_ids: tuple[str, ...] | None = None,
+) -> dict[str, CheckedCanonicalExternalSite]:
+    """Read a checked site index from either a leaf set or aggregate bundle.
+
+    ``record_ids`` is the source-unit projection needed by an incremental
+    consumer.  Restricting the read here keeps unrelated authority shards out
+    of component cache identities without weakening validation of selected
+    records.
+    """
+
+    reader = open_artifact_reader_v3(root)
+    if reader.manifest.artifact_kind != CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3:
+        raise CanonicalExternalSiteRecordError(
+            "external-site index requires canonical-external-sites-v3"
+        )
+    if record_ids is None:
+        records = reader.iter_records()
+    else:
+        selected = tuple(sorted(set(record_ids)))
+        records = (
+            record
+            for record_id in selected
+            if (record := reader.find_record(record_id)) is not None
+        )
+
+    result: dict[str, CheckedCanonicalExternalSite] = {}
+    for record in records:
+        parsed = parse_canonical_external_site_record(record.value.to_value())
+        if parsed.record_id != record.record_id:
+            raise CanonicalExternalSiteRecordError(
+                "canonical external-site record ID disagrees with its artifact record"
+            )
+        for site in parsed.sites:
+            if site.site_id in result:
+                raise CanonicalExternalSiteRecordError(
+                    f"canonical external-site ID is duplicated: {site.site_id!r}"
+                )
+            result[site.site_id] = site
+    return {identity: result[identity] for identity in sorted(result)}
+
+
+def read_canonical_external_site_ids(
+    root: Path | str,
+    *,
+    record_ids: tuple[str, ...] | None = None,
+) -> tuple[str, ...]:
+    """Return the canonical IDs in a checked set or aggregate bundle."""
+
+    return tuple(
+        read_canonical_external_sites(root, record_ids=record_ids)
+    )
 
 
 def parse_canonical_external_site_record(
@@ -324,4 +382,6 @@ __all__ = [
     "CheckedCanonicalExternalSite",
     "CheckedCanonicalExternalSiteRecord",
     "parse_canonical_external_site_record",
+    "read_canonical_external_site_ids",
+    "read_canonical_external_sites",
 ]

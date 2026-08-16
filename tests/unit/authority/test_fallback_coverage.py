@@ -138,6 +138,56 @@ class FallbackCoverageV3Tests(unittest.TestCase):
                 self.assertEqual(checked.selected_form_ids, ())
                 self.assertIsNone(checked.capability_id)
 
+    def test_missing_capability_is_deferred_until_isa_qualification(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _exact_path, semantic_path, _closure_path, exact = _base_inputs(root)
+            evidence = _evidence(exact, verdict="incomplete")
+            evidence_path = _write(
+                root / "isa-evidence",
+                ISA_QUALIFICATION_EVIDENCE_ARTIFACT_KIND_V3,
+                (
+                    ISA_QUALIFICATION_EVIDENCE_CODEC_V3.write(
+                        evidence.record_id, evidence
+                    ),
+                ),
+            )
+            isa_path = ISA_QUALIFICATION_PHASE_V3.run(
+                output_directory=root / "isa",
+                inputs={
+                    "isa_evidence": evidence_path,
+                    "semantic_index": semantic_path,
+                },
+                bindings=(BINDING,),
+            ).output_directory
+            capability_path = _write(
+                root / "capabilities",
+                IMPLEMENTATION_CAPABILITIES_ARTIFACT_KIND_V3,
+                (),
+            )
+
+            output = FALLBACK_COVERAGE_PHASE_V3.run(
+                output_directory=root / "fallback",
+                inputs={
+                    "implementation_capabilities": capability_path,
+                    "isa_qualification": isa_path,
+                    "semantic_index": semantic_path,
+                },
+                bindings=(BINDING,),
+            ).output_directory
+            checked = FALLBACK_COVERAGE_CODEC_V3.read(
+                ArtifactSetReaderV3(output).get_record(exact.unit_id)
+            ).value
+
+            self.assertEqual(checked.status, "incomplete")
+            self.assertEqual(
+                checked.primary_blocker.code,
+                "isa_oracle_qualification_incomplete",
+            )
+            self.assertEqual(
+                checked.primary_blocker.input_name, "isa_qualification"
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

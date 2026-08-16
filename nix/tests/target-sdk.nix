@@ -2,6 +2,7 @@
 
 let
   sdk = import ../target-sdk.nix { inherit pkgs; };
+  pe32WorkflowArguments = builtins.functionArgs sdk.workflow.pe32;
   artifact = pkgs.writeText "minimal-sdk-consumer-artifact" "checked\n";
   acceptance = pkgs.writeText "minimal-sdk-acceptance-artifact" "accepted\n";
   authorityDiagnostics = pkgs.writeText "minimal-sdk-authority-diagnostics.json"
@@ -23,10 +24,43 @@ let
       counts.blocked = 0;
       blockers = [ ];
     });
+  structuralReceipt = pkgs.runCommand
+    "minimal-sdk-structural-executable-receipt" { nativeBuildInputs = [ pkgs.python3 ]; } ''
+      mkdir -p "$out"
+      python3 - "$out/structural-executable.json" <<'PY'
+      import hashlib
+      import json
+      import pathlib
+      import sys
+
+      core = {
+          "format": "spaghetti-extractor-structural-executable-v1",
+          "status": "complete",
+          "executable": True,
+          "release_accepted": False,
+          "bindings": {},
+          "families": [{
+              "id": "semantic_index",
+              "status": "complete",
+              "input_sha256": "1" * 64,
+              "record_count": 1,
+              "blocker": None,
+          }],
+      }
+      encoded = json.dumps(
+          core, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+      ).encode("ascii")
+      payload = {**core, "receipt_sha256": hashlib.sha256(encoded).hexdigest()}
+      pathlib.Path(sys.argv[1]).write_text(
+          json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="ascii"
+      )
+      PY
+    '';
   candidate = {
     interpreter = artifact;
     componentRuntime = artifact;
     machineImportProfileBundle = artifact;
+    structuralExecutionGate = artifact;
     fallbackCoverageReceipt = artifact;
     candidateAuthorityReport = artifact;
     candidateAuthorityGate = artifact;
@@ -70,6 +104,13 @@ let
       sourcePackages.example = artifact;
       evidences.example = artifact;
       qualifications.example = artifact;
+      compileReceipts = { };
+      inductionPackages.example = artifact;
+      machineBindingReceipts = { };
+      serviceGraphs = { };
+      ownershipReceipts = { };
+      activationReceipts = { };
+      configurationActivationReceipts = { };
       activationPlans.default = artifact;
       activationPlans.minimal = artifact;
       sourceBundles.default = artifact;
@@ -97,6 +138,7 @@ let
         hasSource = true;
         hasEvidence = true;
         hasQualification = true;
+        hasInduction = true;
       };
       configurationIndex.default = {
         kind = "configuration";
@@ -116,7 +158,16 @@ let
     componentRuntimes.minimal = artifact;
     staticCandidates.default = candidate;
     staticCandidates.minimal = candidate;
+    structuralReceipts.default = structuralReceipt;
+    structuralReceipts.minimal = structuralReceipt;
+    structuralGates.default = structuralReceipt;
+    structuralGates.minimal = structuralReceipt;
     runtimeFrontiers = artifact;
+    staticReleasePolicies.default = { receipt = acceptance; gate = acceptance; };
+    staticReleasePolicies.minimal = { receipt = acceptance; gate = acceptance; };
+    releaseFor = { configurationId }:
+      assert builtins.elem configurationId [ "default" "minimal" ];
+      { receipt = acceptance; gate = acceptance; };
   };
   changedConfigurationStatus = pkgs.runCommand
     "minimal-sdk-configuration-status-changed" { } ''
@@ -217,12 +268,19 @@ let
   };
 in
 assert sdk.format == "spaghetti-extractor-target-sdk-v3";
+assert pe32WorkflowArguments ? componentInductionRoot;
 assert registry.minimal-sdk-consumer.metadata.id == "minimal-sdk-consumer";
 assert registry.minimal-sdk-consumer.defaultConfiguration == "default";
 assert registry.minimal-sdk-consumer.artifacts.input.baseline == artifact;
 assert registry.minimal-sdk-consumer.artifacts.components.runtimes.default == artifact;
+assert registry.minimal-sdk-consumer.artifacts.components.induction-packages.example == artifact;
 assert registry.minimal-sdk-consumer.artifacts.candidate.static.default.candidate == artifact;
 assert registry.minimal-sdk-consumer.operator.components.units.example.workPackage == artifact;
+assert registry.minimal-sdk-consumer.operator.components.units.example.status == artifact;
+assert registry.minimal-sdk-consumer.operator.components.units.example.developmentStatus == artifact;
+assert registry.minimal-sdk-consumer.operator.components.units.example.check == artifact;
+assert registry.minimal-sdk-consumer.operator.components.units.example.developmentCheck == artifact;
+assert registry.minimal-sdk-consumer.operator.components.units.example.inductionPackage == artifact;
 assert registry.minimal-sdk-consumer.operator.components.configurations.default.runtime == artifact;
 assert registry.minimal-sdk-consumer.operator.project.authorityDiagnostics == workflow.authority.diagnostics;
 assert registry.minimal-sdk-consumer.operator.candidate.statuses.default != null;

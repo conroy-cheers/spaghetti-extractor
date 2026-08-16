@@ -513,6 +513,7 @@ SEMANTIC_INDEX_PHASE_V3 = map_units(
     output_artifact_kind=SEMANTIC_INDEX_ARTIFACT_KIND_V3,
     transform=_transform,
     completeness=check_semantic_index_completeness_v3,
+    output_value_codec="plain-json-v1",
 )
 
 

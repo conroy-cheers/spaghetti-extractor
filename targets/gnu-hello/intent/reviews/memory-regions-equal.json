@@ -3,322 +3,71 @@
   "lift_unit_id": "memory-regions-equal",
   "accept_derived_machine_boundary": true,
   "overrides": {
-    "source_abi": "logical-object-c-v1",
-    "parameters": [
-      {
-        "id": "left",
-        "type": "read-only-bytes-v1",
-        "memory_view": {
-          "kind": "indexed-read-view-v1",
+    "portable_interface_ir": {
+      "format": "spaghetti-extractor-component-interface-ir-v2",
+      "id": "memory_regions_equal",
+      "types": [
+        {
+          "id": "bytes",
+          "kind": "bytes",
+          "access": "read",
           "extent_parameter_id": "count",
-          "element_width": 1,
-          "event_refs": [
-            {
-              "family": "external_memory_footprint",
-              "unit_id": "semantic-transfer:original-cutpoint-00008d6f-00008d7f",
-              "event_index": 0,
-              "external_site_id": "external-site-v3:113b3481e724d854f3ba27d44c90758a943de5b69ade25293e7db67512986955",
-              "external_contract_id": "external-contract-v3:bc0d0d30c6723d942da36a4984132ad1fa20683a832f3399fd5e9cc90a7589ef",
-              "footprint_index": 0
-            }
-          ],
-          "access_witness": {
-            "kind": "finite-domain-machine-replay-v1"
-          }
-        },
-        "machine_source": {
-          "kind": "expression",
-          "expression": {
-            "op": "load",
-            "width": 4,
-            "address": {
-              "op": "add32",
-              "args": [
-                {"op": "const", "value": 4, "width": 32},
-                {"op": "reg", "name": "esp", "width": 32}
-              ]
-            }
-          },
-          "evidence": {
-            "unit_id": "semantic-transfer:original-cutpoint-00008d6f-00008d7f",
-            "json_pointer": "/semantics/memory_events/2/value"
-          }
-        }
-      },
-      {
-        "id": "right",
-        "type": "read-only-bytes-v1",
-        "memory_view": {
-          "kind": "indexed-read-view-v1",
-          "extent_parameter_id": "count",
-          "element_width": 1,
-          "event_refs": [
-            {
-              "family": "external_memory_footprint",
-              "unit_id": "semantic-transfer:original-cutpoint-00008d6f-00008d7f",
-              "event_index": 0,
-              "external_site_id": "external-site-v3:113b3481e724d854f3ba27d44c90758a943de5b69ade25293e7db67512986955",
-              "external_contract_id": "external-contract-v3:bc0d0d30c6723d942da36a4984132ad1fa20683a832f3399fd5e9cc90a7589ef",
-              "footprint_index": 1
-            }
-          ],
-          "access_witness": {
-            "kind": "finite-domain-machine-replay-v1"
-          }
-        },
-        "machine_source": {
-          "kind": "expression",
-          "expression": {
-            "op": "load",
-            "width": 4,
-            "address": {
-              "op": "add32",
-              "args": [
-                {"op": "const", "value": 8, "width": 32},
-                {"op": "reg", "name": "esp", "width": 32}
-              ]
-            }
-          },
-          "evidence": {
-            "unit_id": "semantic-transfer:original-cutpoint-00008d60-00008d6f",
-            "json_pointer": "/semantics/register_writes/0/value"
-          }
-        }
-      },
-      {
-        "id": "count",
-        "type": "uint32_t",
-        "machine_source": {
-          "kind": "expression",
-          "expression": {
-            "op": "load",
-            "width": 4,
-            "address": {
-              "op": "add32",
-              "args": [
-                {"op": "const", "value": 12, "width": 32},
-                {"op": "reg", "name": "esp", "width": 32}
-              ]
-            }
-          },
-          "evidence": {
-            "unit_id": "semantic-transfer:original-cutpoint-00008d60-00008d6f",
-            "json_pointer": "/semantics/memory_events/1/value"
-          }
-        }
-      }
-    ],
-    "results": [
-      {
-        "id": "result",
-        "kind": "return",
-        "type": "uint32_t",
-        "machine_source": {
-          "kind": "expression",
-          "expression": {
-            "op": "eq",
-            "args": [
-              {
-                "op": "and32",
-                "args": [
-                  {"op": "reg", "name": "eax", "width": 32},
-                  {"op": "reg", "name": "eax", "width": 32}
-                ]
-              },
-              {"op": "const", "value": 0, "width": 32}
-            ]
-          },
-          "evidence": {
-            "unit_id": "semantic-transfer:original-cutpoint-00008d7f-00008d88",
-            "json_pointer": "/semantics/register_writes/0/value/args/1/args/0/args/1/args/0"
-          }
-        },
-        "effect_refs": [
-          {
-            "family": "register_write",
-            "unit_id": "semantic-transfer:original-cutpoint-00008d7f-00008d88",
-            "index": 0
-          }
-        ]
-      },
-      {
-        "id": "control",
-        "kind": "control",
-        "control": {
-          "unit_id": "semantic-transfer:original-cutpoint-00008d7f-00008d88",
-          "outcome_kind": "return",
-          "return_target": {
-            "op": "load",
-            "width": 4,
-            "address": {
-              "op": "add32",
-              "args": [
-                {"op": "const", "value": 28, "width": 32},
-                {"op": "reg", "name": "esp", "width": 32}
-              ]
-            }
-          }
-        }
-      }
-    ],
-    "objects": [],
-    "adapter_effects": {
-      "inherit_synthesized_except": [
-        {
-          "family": "register_write",
-          "unit_id": "semantic-transfer:original-cutpoint-00008d7f-00008d88",
-          "index": 0
-        }
-      ]
-    },
-    "completion": {
-      "kind": "explicit-machine-state-v1",
-      "state": {
-        "eax": {
-          "op": "or32",
-          "args": [
-            {
-              "op": "and32",
-              "args": [
-                {
-                  "op": "external_result",
-                  "unit_id": "semantic-transfer:original-cutpoint-00008d6f-00008d7f",
-                  "event_index": 0,
-                  "register": "eax"
-                },
-                {"op": "const", "value": 4294967040, "width": 32}
-              ]
-            },
-            {"op": "logical_result", "result_id": "result"}
-          ]
-        },
-        "ebx": {"op": "entry", "name": "ebx"},
-        "ecx": {"op": "const", "value": 0, "width": 32},
-        "edx": {"op": "const", "value": 0, "width": 32},
-        "esi": {"op": "entry", "name": "esi"},
-        "edi": {"op": "entry", "name": "edi"},
-        "ebp": {"op": "entry", "name": "ebp"},
-        "esp": {
-          "op": "add32",
-          "args": [
-            {"op": "entry", "name": "esp"},
-            {"op": "const", "value": 4, "width": 32}
-          ]
-        },
-        "cf": {
-          "op": "ult32",
-          "args": [
-            {"op": "entry", "name": "esp"},
-            {
-              "op": "sub32",
-              "args": [
-                {"op": "entry", "name": "esp"},
-                {"op": "const", "value": 28, "width": 32}
-              ]
-            }
-          ]
-        },
-        "zf": {
-          "op": "eq",
-          "args": [
-            {"op": "entry", "name": "esp"},
-            {"op": "const", "value": 0, "width": 32}
-          ]
-        },
-        "sf": {
-          "op": "msb",
-          "args": [32, {"op": "entry", "name": "esp"}]
-        },
-        "of": {
-          "op": "add_overflow",
-          "args": [
-            32,
-            {
-              "op": "sub32",
-              "args": [
-                {"op": "entry", "name": "esp"},
-                {"op": "const", "value": 28, "width": 32}
-              ]
-            },
-            {"op": "const", "value": 28, "width": 32},
-            {"op": "entry", "name": "esp"}
-          ]
-        },
-        "pf": {
-          "op": "parity",
-          "args": [32, {"op": "entry", "name": "esp"}]
-        },
-        "df": {"op": "entry", "name": "df"}
-      },
-      "memory_writes": [
-        {
-          "address": {
-            "op": "sub32",
-            "args": [
-              {"op": "entry", "name": "esp"},
-              {"op": "const", "value": 20, "width": 32}
-            ]
-          },
-          "width": 4,
-          "value": {
-            "op": "load",
-            "width": 4,
-            "address": {
-              "op": "add32",
-              "args": [
-                {"op": "const", "value": 12, "width": 32},
-                {"op": "entry", "name": "esp"}
-              ]
-            }
-          }
+          "nul_terminated": false
         },
         {
-          "address": {
-            "op": "sub32",
-            "args": [
-              {"op": "entry", "name": "esp"},
-              {"op": "const", "value": 24, "width": 32}
-            ]
-          },
-          "width": 4,
-          "value": {
-            "op": "load",
-            "width": 4,
-            "address": {
-              "op": "add32",
-              "args": [
-                {"op": "const", "value": 8, "width": 32},
-                {"op": "entry", "name": "esp"}
-              ]
-            }
-          }
+          "id": "bool8",
+          "kind": "scalar",
+          "c_type": "uint8_t"
         },
         {
-          "address": {
-            "op": "sub32",
-            "args": [
-              {"op": "entry", "name": "esp"},
-              {"op": "const", "value": 28, "width": 32}
-            ]
-          },
-          "width": 4,
-          "value": {
-            "op": "load",
-            "width": 4,
-            "address": {
-              "op": "add32",
-              "args": [
-                {"op": "const", "value": 4, "width": 32},
-                {"op": "entry", "name": "esp"}
-              ]
-            }
-          }
+          "id": "u32",
+          "kind": "scalar",
+          "c_type": "uint32_t"
         }
       ],
-      "return_target": {
-        "op": "load",
-        "width": 4,
-        "address": {"op": "entry", "name": "esp"}
+      "state": [],
+      "operations": [
+        {
+          "id": "compare",
+          "kind": "operation",
+          "parameters": [
+            { "id": "left", "type_id": "bytes" },
+            { "id": "right", "type_id": "bytes" },
+            { "id": "count", "type_id": "u32" }
+          ],
+          "results": [
+            { "id": "result", "type_id": "bool8" }
+          ],
+          "effect_ids": [],
+          "allowed_service_ids": [
+            "compare_memory"
+          ],
+          "pre_states": [
+            "ready"
+          ],
+          "post_states": [
+            "ready"
+          ]
+        }
+      ],
+      "effects": [],
+      "services": [
+        {
+          "id": "compare_memory",
+          "parameter_type_ids": [
+            "bytes",
+            "bytes",
+            "u32"
+          ],
+          "result_type_id": "u32",
+          "effect_ids": []
+        }
+      ],
+      "protocol": {
+        "states": [
+          "ready"
+        ],
+        "initial_state": "ready"
       }
     }
   }

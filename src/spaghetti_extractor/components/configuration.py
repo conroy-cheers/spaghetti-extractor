@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Mapping
 
 from ..artifacts.formats import (
+    GENERATED_LIBRARY_COMPONENT_V1_FORMAT,
     MACHINE_IR_FORMAT,
 )
 from .formats import (
@@ -17,9 +18,22 @@ from .formats import (
     COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
     COMPONENT_QUALIFICATION_V3_FORMAT,
     COMPONENT_RESOLUTION_V2_FORMAT,
+    COMPONENT_SOURCE_PACKAGE_V3_FORMAT,
+)
+from .activation_receipt import ActivationReceiptError, ActivationReceiptV1
+from .lifecycle_records import (
+    ComponentActivationPlanRecordV3,
+    ComponentLifecycleRecordError,
+    ComponentQualificationRecordV3,
 )
 from ..util import sha256_file, write_json
+from .implementation import read_component_implementation_v3
 from .intent import ComponentIntentError
+from .interface_ir import PortableComponentInterfaceV2
+from .machine_binding import ComponentMachineBindingV1
+from .semantic_contract import ComponentSemanticContractV1
+from .universal_binding import read_component_machine_binding_v3
+from .universal_contract import read_component_contract_v3
 from .source import load_component_source_package
 from .adapter import load_component_adapter_plan
 
@@ -30,16 +44,22 @@ def compose_component_configuration(
     resolution: Path | str | Mapping[str, object],
     configuration_id: str,
     contracts: Mapping[str, Path | str | Mapping[str, object]],
+    portable_interfaces: Mapping[
+        str, Path | str | Mapping[str, object]
+    ] | None = None,
+    machine_bindings: Mapping[str, Path | str | Mapping[str, object]] | None = None,
     implementations: Mapping[str, Path | str] | None,
     qualifications: Mapping[str, Path | str | Mapping[str, object]] | None,
     adapter_plans: Mapping[str, Path | str] | None,
+    activation_receipts: Mapping[str, Path | str | Mapping[str, object]] | None = None,
+    generated_library_components: Mapping[str, Path | str] | None = None,
     out: Path | str,
 ) -> dict[str, object]:
     """Produce the sole v3 implementation-ownership authority.
 
     Draft and unselected units retain machine-IR fallback. An enabled unit is
-    either backed by an exact v3 qualification or is explicitly blocked; it
-    can never silently return to fallback.
+    backed by exact activation authority for its source format or is explicitly
+    blocked; it can never silently return to fallback.
     """
 
     resolution_payload = _load(resolution, "component resolution")
@@ -53,7 +73,11 @@ def compose_component_configuration(
     machine = _load_machine_ir(Path(machine_ir))
     qualification_inputs = qualifications or {}
     adapter_plan_inputs = adapter_plans or {}
+    activation_receipt_inputs = activation_receipts or {}
     implementation_inputs = implementations or {}
+    portable_interface_inputs = portable_interfaces or {}
+    machine_binding_inputs = machine_bindings or {}
+    library_component_inputs = generated_library_components or {}
     issues: list[dict[str, object]] = []
     ownership_by_unit: dict[str, dict[str, object]] = {}
     selection_rows: list[dict[str, object]] = []
@@ -62,16 +86,50 @@ def compose_component_configuration(
         selection = _object(raw_selection, "configuration selection")
         lift_unit_id = _string(selection.get("id"), "selection id")
         expected_units = _string_set(selection.get("unit_ids"), "selection unit ids")
-        contract_value = contracts.get(lift_unit_id)
-        if contract_value is None:
-            raise ComponentIntentError(f"missing contract for selected lift unit {lift_unit_id}")
-        contract = _load_contract(contract_value)
-        contract_unit = _object(contract.get("lift_unit"), "contract lift unit")
-        contract_units = _string_set(contract_unit.get("unit_ids"), "contract unit ids")
-        if contract_unit.get("id") != lift_unit_id or contract_units != expected_units:
-            raise ComponentIntentError(
-                f"component contract membership is stale for {lift_unit_id}"
+        interface_value = portable_interface_inputs.get(lift_unit_id)
+        machine_binding_value = machine_binding_inputs.get(lift_unit_id)
+        portable_v2 = interface_value is not None or machine_binding_value is not None
+        contract: dict[str, object] | None = None
+        contract_unit: Mapping[str, object] | None = None
+        interface: PortableComponentInterfaceV2 | None = None
+        machine_binding: ComponentMachineBindingV1 | None = None
+        contract_sha256 = None
+        machine_binding_sha256 = None
+        if portable_v2:
+            if interface_value is None or machine_binding_value is None:
+                raise ComponentIntentError(
+                    f"portable component {lift_unit_id} requires both interface and "
+                    "machine-binding authority"
+                )
+            interface = _load_portable_interface(interface_value)
+            machine_binding = _load_machine_binding(machine_binding_value)
+            machine_binding_sha256 = machine_binding.binding_sha256
+            if (
+                machine_binding.identity != lift_unit_id
+                or machine_binding.interface_id != interface.identity
+                or machine_binding.interface_sha256 != interface.sha256
+                or machine_binding.machine_ir_sha256 != machine["ir_sha256"]
+                or set(machine_binding.unit_ids) != expected_units
+            ):
+                raise ComponentIntentError(
+                    f"portable component authority is stale for {lift_unit_id}"
+                )
+        else:
+            contract_value = contracts.get(lift_unit_id)
+            if contract_value is None:
+                raise ComponentIntentError(
+                    f"missing contract for selected lift unit {lift_unit_id}"
+                )
+            contract = _load_contract(contract_value)
+            contract_sha256 = contract["contract_sha256"]
+            contract_unit = _object(contract.get("lift_unit"), "contract lift unit")
+            contract_units = _string_set(
+                contract_unit.get("unit_ids"), "contract unit ids"
             )
+            if contract_unit.get("id") != lift_unit_id or contract_units != expected_units:
+                raise ComponentIntentError(
+                    f"component contract membership is stale for {lift_unit_id}"
+                )
         requested = selection.get("activation")
         if requested not in {"draft", "enabled"}:
             raise ComponentIntentError(
@@ -80,9 +138,11 @@ def compose_component_configuration(
         ownership_state = "machine_ir_fallback"
         qualification_sha256 = None
         adapter_plan_sha256 = None
+        activation_receipt_sha256 = None
         implementation_sha256 = None
         if requested == "enabled":
             ownership_state = "blocked"
+            implementation: Mapping[str, object] = {}
             implementation_value = implementation_inputs.get(lift_unit_id)
             if implementation_value is None:
                 _issue(
@@ -98,109 +158,141 @@ def compose_component_configuration(
                     raise ComponentIntentError(
                         f"component source package targets another lift unit: {lift_unit_id}"
                     )
-            qualification_value = qualification_inputs.get(lift_unit_id)
-            adapter_value = adapter_plan_inputs.get(lift_unit_id)
-            adapter = None
-            if adapter_value is None:
-                _issue(
-                    issues,
-                    "incomplete",
-                    "enabled_component_adapter_plan_missing",
-                    lift_unit_id=lift_unit_id,
-                )
-            else:
-                adapter = load_component_adapter_plan(adapter_value)
-                adapter_plan_sha256 = adapter["adapter_plan_sha256"]
-                if adapter.get("status") != "checked":
+            source_format = (
+                implementation.get("format") if implementation_value is not None else None
+            )
+            if source_format == COMPONENT_SOURCE_PACKAGE_V3_FORMAT:
+                if not portable_v2 or interface is None or machine_binding is None:
+                    raise ComponentIntentError(
+                        f"portable V2 source lacks exact authority for {lift_unit_id}"
+                    )
+                activation_value = activation_receipt_inputs.get(lift_unit_id)
+                if activation_value is None:
                     _issue(
                         issues,
-                        "violated" if adapter.get("status") == "violated" else "incomplete",
-                        "enabled_component_adapter_plan_not_checked",
-                        lift_unit_id=lift_unit_id,
-                        observed=adapter.get("status"),
-                    )
-            if qualification_value is None:
-                _issue(
-                    issues,
-                    "incomplete",
-                    "enabled_component_qualification_missing",
-                    lift_unit_id=lift_unit_id,
-                )
-            else:
-                qualification = _load_qualification(qualification_value)
-                qualification_sha256 = qualification["qualification_sha256"]
-                bindings = _object(
-                    qualification.get("bindings"), "component qualification bindings"
-                )
-                activated = (
-                    implementation_sha256 is not None
-                    and contract.get("status") == "checked"
-                    and qualification.get("status") == "qualified"
-                    and qualification.get("lift_unit_id") == lift_unit_id
-                    and qualification.get("evidence_profile")
-                    == contract_unit.get("evidence_profile")
-                    and bindings.get("contract_sha256") == contract.get("contract_sha256")
-                    and bindings.get("implementation_sha256")
-                    == implementation_sha256
-                    and adapter is not None
-                    and adapter.get("status") == "checked"
-                    and bindings.get("adapter_plan_sha256")
-                    == adapter_plan_sha256
-                    and _object(
-                        qualification.get("activation"), "component qualification activation"
-                    ).get("authorized")
-                    is True
-                )
-                if bindings.get("contract_sha256") != contract.get("contract_sha256"):
-                    _issue(
-                        issues,
-                        "violated",
-                        "enabled_component_contract_binding_stale",
+                        "incomplete",
+                        "enabled_component_activation_receipt_missing",
                         lift_unit_id=lift_unit_id,
                     )
-                if implementation_sha256 is not None and bindings.get(
-                    "implementation_sha256"
-                ) != implementation_sha256:
-                    _issue(
-                        issues,
-                        "violated",
-                        "enabled_component_source_binding_stale",
-                        lift_unit_id=lift_unit_id,
-                    )
-                if adapter_plan_sha256 is not None and bindings.get(
-                    "adapter_plan_sha256"
-                ) != adapter_plan_sha256:
-                    _issue(
-                        issues,
-                        "violated",
-                        "enabled_component_adapter_binding_stale",
-                        lift_unit_id=lift_unit_id,
-                    )
-                if qualification.get("lift_unit_id") != lift_unit_id:
-                    _issue(
-                        issues,
-                        "violated",
-                        "enabled_component_qualification_identity_mismatch",
-                        lift_unit_id=lift_unit_id,
-                    )
-                if activated:
-                    ownership_state = "portable_replacement"
                 else:
+                    try:
+                        activation = ActivationReceiptV1.parse(
+                            _load(activation_value, "component activation receipt")
+                        )
+                    except ActivationReceiptError as exc:
+                        raise ComponentIntentError(
+                            f"component activation receipt is invalid: {exc}"
+                        ) from exc
+                    activation_receipt_sha256 = activation.receipt_sha256
+                    expected = {
+                        "interface_sha256": interface.sha256,
+                        "component_machine_binding_sha256": (
+                            machine_binding.binding_sha256
+                        ),
+                        "implementation_sha256": implementation_sha256,
+                    }
+                    mismatched = sorted(
+                        key
+                        for key, value in expected.items()
+                        if value is None or activation.bindings.get(key) != value
+                    )
+                    if activation.component_id != lift_unit_id or mismatched:
+                        _issue(
+                            issues,
+                            "violated",
+                            "enabled_component_activation_binding_stale",
+                            lift_unit_id=lift_unit_id,
+                            mismatched_bindings=mismatched,
+                        )
+                    elif activation.status == "checked" and activation.activation_authorized:
+                        ownership_state = "portable_replacement"
+                    else:
+                        _issue(
+                            issues,
+                            "violated" if activation.status == "violated" else "incomplete",
+                            "enabled_component_activation_not_authorized",
+                            lift_unit_id=lift_unit_id,
+                            observed=activation.status,
+                        )
+            else:
+                if contract is None or contract_unit is None:
+                    raise ComponentIntentError(
+                        f"legacy component {lift_unit_id} lacks a checked contract"
+                    )
+                qualification_value = qualification_inputs.get(lift_unit_id)
+                adapter_value = adapter_plan_inputs.get(lift_unit_id)
+                adapter = None
+                if adapter_value is None:
                     _issue(
                         issues,
-                        (
-                            "violated"
-                            if qualification.get("status") == "violated"
-                            else "incomplete"
-                        ),
-                        (
-                            "enabled_component_qualification_violated"
-                            if qualification.get("status") == "violated"
-                            else "enabled_component_not_qualified"
-                        ),
+                        "incomplete",
+                        "enabled_component_adapter_plan_missing",
                         lift_unit_id=lift_unit_id,
                     )
-            if contract.get("status") != "checked":
+                else:
+                    adapter = load_component_adapter_plan(adapter_value)
+                    adapter_plan_sha256 = adapter["adapter_plan_sha256"]
+                    if adapter.get("status") != "checked":
+                        _issue(
+                            issues,
+                            "violated" if adapter.get("status") == "violated" else "incomplete",
+                            "enabled_component_adapter_plan_not_checked",
+                            lift_unit_id=lift_unit_id,
+                            observed=adapter.get("status"),
+                        )
+                if qualification_value is None:
+                    _issue(
+                        issues,
+                        "incomplete",
+                        "enabled_component_qualification_missing",
+                        lift_unit_id=lift_unit_id,
+                    )
+                else:
+                    qualification = _load_qualification(qualification_value)
+                    qualification_sha256 = qualification["qualification_sha256"]
+                    bindings = _object(
+                        qualification.get("bindings"), "component qualification bindings"
+                    )
+                    activated = (
+                        implementation_sha256 is not None
+                        and contract.get("status") == "checked"
+                        and qualification.get("status") == "qualified"
+                        and qualification.get("lift_unit_id") == lift_unit_id
+                        and qualification.get("evidence_profile")
+                        == contract_unit.get("evidence_profile")
+                        and bindings.get("contract_sha256") == contract.get("contract_sha256")
+                        and bindings.get("implementation_sha256") == implementation_sha256
+                        and adapter is not None
+                        and adapter.get("status") == "checked"
+                        and bindings.get("adapter_plan_sha256") == adapter_plan_sha256
+                        and _object(
+                            qualification.get("activation"),
+                            "component qualification activation",
+                        ).get("authorized")
+                        is True
+                    )
+                    if bindings.get("contract_sha256") != contract.get("contract_sha256"):
+                        _issue(issues, "violated", "enabled_component_contract_binding_stale", lift_unit_id=lift_unit_id)
+                    if implementation_sha256 is not None and bindings.get("implementation_sha256") != implementation_sha256:
+                        _issue(issues, "violated", "enabled_component_source_binding_stale", lift_unit_id=lift_unit_id)
+                    if adapter_plan_sha256 is not None and bindings.get("adapter_plan_sha256") != adapter_plan_sha256:
+                        _issue(issues, "violated", "enabled_component_adapter_binding_stale", lift_unit_id=lift_unit_id)
+                    if qualification.get("lift_unit_id") != lift_unit_id:
+                        _issue(issues, "violated", "enabled_component_qualification_identity_mismatch", lift_unit_id=lift_unit_id)
+                    if activated:
+                        ownership_state = "portable_replacement"
+                    else:
+                        _issue(
+                            issues,
+                            "violated" if qualification.get("status") == "violated" else "incomplete",
+                            "enabled_component_qualification_violated" if qualification.get("status") == "violated" else "enabled_component_not_qualified",
+                            lift_unit_id=lift_unit_id,
+                        )
+            if (
+                source_format != COMPONENT_SOURCE_PACKAGE_V3_FORMAT
+                and contract is not None
+                and contract.get("status") != "checked"
+            ):
                 _issue(
                     issues,
                     "violated" if contract.get("status") == "violated" else "incomplete",
@@ -221,8 +313,10 @@ def compose_component_configuration(
                 "lift_unit_id": lift_unit_id,
                 "requested_activation": requested,
                 "ownership_state": ownership_state,
-                "contract_sha256": contract["contract_sha256"],
+                "contract_sha256": contract_sha256,
+                "machine_binding_sha256": machine_binding_sha256,
                 "qualification_sha256": qualification_sha256,
+                "activation_receipt_sha256": activation_receipt_sha256,
                 "adapter_plan_sha256": adapter_plan_sha256,
                 "implementation_sha256": implementation_sha256,
             }
@@ -234,10 +328,139 @@ def compose_component_configuration(
                 "ownership_state": ownership_state,
                 "unit_ids": sorted(expected_units),
                 "source": copy.deepcopy(selection.get("source")),
-                "contract_sha256": contract["contract_sha256"],
+                "contract_sha256": contract_sha256,
+                "machine_binding_sha256": machine_binding_sha256,
                 "qualification_sha256": qualification_sha256,
+                "activation_receipt_sha256": activation_receipt_sha256,
                 "adapter_plan_sha256": adapter_plan_sha256,
                 "implementation_sha256": implementation_sha256,
+            }
+        )
+
+    for selection_id, raw_root in sorted(library_component_inputs.items()):
+        root = Path(raw_root)
+        manifest = _load(
+            root / "library-component.json", "generated library component"
+        )
+        _self_hash(
+            manifest,
+            format_name=GENERATED_LIBRARY_COMPONENT_V1_FORMAT,
+            field="package_sha256",
+            description="generated library component",
+        )
+        component_id = _string(
+            manifest.get("component_id"), "generated library component id"
+        )
+        unit_ids = _string_set(
+            manifest.get("unit_ids"), "generated library component unit ids"
+        )
+        binding = _load_machine_binding(root / "machine-binding.json")
+        interface = _load_portable_interface(root / "portable-interface.json")
+        source = load_component_source_package(root / "source-package")
+        universal_contract = read_component_contract_v3(
+            root / "component-contract-v3.json"
+        )
+        universal_binding = read_component_machine_binding_v3(
+            root / "machine-binding-v3.json"
+        )
+        universal_implementation = read_component_implementation_v3(
+            root / "implementation-v3.json"
+        )
+        library_issues: list[dict[str, object]] = []
+        if manifest.get("status") != "complete":
+            _issue(
+                library_issues,
+                "incomplete",
+                "generated_library_component_incomplete",
+                lift_unit_id=component_id,
+            )
+        if (
+            binding.identity != component_id
+            or binding.interface_id != interface.identity
+            or binding.interface_sha256 != interface.sha256
+            or binding.machine_ir_sha256 != machine["ir_sha256"]
+            or set(binding.unit_ids) != unit_ids
+            or universal_contract.component_id != component_id
+            or universal_contract.status != "checked"
+            or universal_binding.component_id != component_id
+            or universal_binding.contract_sha256
+            != universal_contract.contract_sha256
+            or universal_binding.machine_ir_sha256 != machine["ir_sha256"]
+            or set(universal_binding.unit_ids) != unit_ids
+            or not universal_binding.authorizing
+            or universal_implementation.component_id != component_id
+            or universal_implementation.contract_sha256
+            != universal_contract.contract_sha256
+            or universal_implementation.kind != "portable_c"
+            or not universal_implementation.authorizing
+        ):
+            _issue(
+                library_issues,
+                "violated",
+                "generated_library_component_authority_stale",
+                lift_unit_id=component_id,
+            )
+        manifest_bindings = _object(
+            manifest.get("bindings"), "generated library component bindings"
+        )
+        if (
+            manifest_bindings.get("interface_sha256") != interface.sha256
+            or manifest_bindings.get("source_package_sha256")
+            != source.get("implementation_sha256")
+            or manifest_bindings.get("universal_contract_sha256")
+            != universal_contract.contract_sha256
+            or manifest_bindings.get("universal_machine_binding_sha256")
+            != universal_binding.binding_sha256
+            or manifest_bindings.get("universal_implementation_sha256")
+            != universal_implementation.implementation_sha256
+        ):
+            _issue(
+                library_issues,
+                "violated",
+                "generated_library_component_manifest_stale",
+                lift_unit_id=component_id,
+            )
+        ownership_state = "blocked" if library_issues else "portable_replacement"
+        issues.extend(library_issues)
+        for unit_id in unit_ids:
+            if unit_id not in machine["units"]:
+                raise ComponentIntentError(
+                    f"generated library component references unknown unit {unit_id}"
+                )
+            if unit_id in ownership_by_unit:
+                raise ComponentIntentError(
+                    f"generated library component overlaps selected unit {unit_id}"
+                )
+            ownership_by_unit[unit_id] = {
+                "lift_unit_id": component_id,
+                "requested_activation": "enabled",
+                "ownership_state": ownership_state,
+                "contract_sha256": universal_contract.contract_sha256,
+                "machine_binding_sha256": universal_binding.binding_sha256,
+                "qualification_sha256": None,
+                "activation_receipt_sha256": universal_implementation.authority_sha256,
+                "adapter_plan_sha256": None,
+                "implementation_sha256": (
+                    universal_implementation.implementation_sha256
+                ),
+            }
+        selection_rows.append(
+            {
+                "kind": "library_component",
+                "id": component_id,
+                "selection_id": selection_id,
+                "requested_activation": "enabled",
+                "ownership_state": ownership_state,
+                "unit_ids": sorted(unit_ids),
+                "source": None,
+                "contract_sha256": universal_contract.contract_sha256,
+                "machine_binding_sha256": universal_binding.binding_sha256,
+                "qualification_sha256": None,
+                "activation_receipt_sha256": universal_implementation.authority_sha256,
+                "adapter_plan_sha256": None,
+                "implementation_sha256": (
+                    universal_implementation.implementation_sha256
+                ),
             }
         )
 
@@ -332,6 +555,10 @@ def compose_component_configuration(
         ),
     }
     result = {**core, "activation_plan_sha256": _canonical_sha256(core)}
+    try:
+        ComponentActivationPlanRecordV3.parse(result)
+    except ComponentLifecycleRecordError as exc:
+        raise ComponentIntentError(f"component activation plan is invalid: {exc}") from exc
     write_json(Path(out), result)
     return result
 
@@ -407,83 +634,40 @@ def _load_contract(value: Path | str | Mapping[str, object]) -> dict[str, object
     return payload
 
 
+def _load_portable_interface(
+    value: Path | str | Mapping[str, object],
+) -> PortableComponentInterfaceV2:
+    payload = _load_local(
+        value, "portable-interface.json", "portable component interface"
+    )
+    try:
+        return PortableComponentInterfaceV2.parse(payload)
+    except ValueError as exc:
+        raise ComponentIntentError(
+            f"portable component interface is invalid: {exc}"
+        ) from exc
+
+
+def _load_machine_binding(
+    value: Path | str | Mapping[str, object],
+) -> ComponentMachineBindingV1:
+    payload = _load_local(
+        value, "machine-binding.json", "component machine binding"
+    )
+    try:
+        return ComponentMachineBindingV1.parse(payload)
+    except ValueError as exc:
+        raise ComponentIntentError(
+            f"component machine binding is invalid: {exc}"
+        ) from exc
+
+
 def _load_qualification(value: Path | str | Mapping[str, object]) -> dict[str, object]:
     payload = _load_local(value, "qualification.json", "component qualification")
-    if payload.get("format") != COMPONENT_QUALIFICATION_V3_FORMAT:
-        raise ComponentIntentError("unsupported component qualification format")
-    _self_hash(
-        payload,
-        format_name=COMPONENT_QUALIFICATION_V3_FORMAT,
-        field="qualification_sha256",
-        description="component qualification",
-    )
-    _exact_keys(
-        payload,
-        {
-            "format",
-            "status",
-            "lift_unit_id",
-            "evidence_profile",
-            "bindings",
-            "assurance",
-            "activation",
-            "issues",
-            "qualification_sha256",
-        },
-        "component qualification",
-    )
-    status = payload.get("status")
-    if status not in {"qualified", "incomplete", "violated"}:
-        raise ComponentIntentError("component qualification status is invalid")
-    activation = _object(payload.get("activation"), "component qualification activation")
-    _exact_keys(
-        activation,
-        {
-            "authorized",
-            "requires_exact_configuration_ownership",
-            "fallback_on_unimplemented",
-        },
-        "component qualification activation",
-    )
-    if (
-        activation.get("authorized") is not (status == "qualified")
-        or activation.get("requires_exact_configuration_ownership") is not True
-        or activation.get("fallback_on_unimplemented") is not False
-    ):
-        raise ComponentIntentError("component qualification activation is inconsistent")
-    bindings = _object(payload.get("bindings"), "component qualification bindings")
-    _exact_keys(
-        bindings,
-        {
-            "contract_sha256",
-            "evidence_sha256",
-            "implementation_sha256",
-            "machine_ir_sha256",
-            "domain_sha256",
-            "adapter_plan_sha256",
-            "source_entry",
-            "tool_id",
-            "tool_version",
-        },
-        "component qualification bindings",
-    )
-    for field in (
-        "contract_sha256",
-        "evidence_sha256",
-        "implementation_sha256",
-        "machine_ir_sha256",
-        "domain_sha256",
-        "adapter_plan_sha256",
-    ):
-        value = bindings.get(field)
-        if not isinstance(value, str) or len(value) != 64:
-            raise ComponentIntentError(
-                f"component qualification binding {field} is invalid"
-            )
-    issues = _array(payload.get("issues"), "component qualification issues")
-    if (status == "qualified") != (not issues):
-        raise ComponentIntentError("component qualification issues are inconsistent")
-    return payload
+    try:
+        return ComponentQualificationRecordV3.parse(payload).to_payload()
+    except ComponentLifecycleRecordError as exc:
+        raise ComponentIntentError(f"component qualification is invalid: {exc}") from exc
 
 
 def _load_local(

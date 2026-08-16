@@ -1,12 +1,12 @@
-{ pkgs }:
+{ pkgs, pythonEnv }:
 let
   fixture = import ./fixture.nix;
-  base = fixture { inherit pkgs; };
-  repeated = fixture { inherit pkgs; };
-  structuralChanged = fixture { inherit pkgs; structuralMutation = true; };
-  edgeChanged = fixture { inherit pkgs; edgeMutation = true; };
-  recordChanged = fixture { inherit pkgs; recordMutation = true; };
-  phaseSourceChanged = fixture { inherit pkgs; phaseSourceMutation = true; };
+  base = fixture { inherit pkgs pythonEnv; };
+  repeated = fixture { inherit pkgs pythonEnv; };
+  structuralChanged = fixture { inherit pkgs pythonEnv; structuralMutation = true; };
+  edgeChanged = fixture { inherit pkgs pythonEnv; edgeMutation = true; };
+  recordChanged = fixture { inherit pkgs pythonEnv; recordMutation = true; };
+  phaseSourceChanged = fixture { inherit pkgs pythonEnv; phaseSourceMutation = true; };
   lib = base.pkgs.lib;
 
   drvPath =

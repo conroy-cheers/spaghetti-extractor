@@ -20,6 +20,7 @@ from spaghetti_extractor.authority.external_site_records import (
     EXTERNAL_PROFILE_ISSUE_CODEC_V3,
     EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3,
     EXTERNAL_SITE_EVIDENCE_CODEC_V3,
+    ExternalCallArityV3,
     ExternalProfileIssueV3,
     ExternalProfileV3,
     external_site_id_v3,
@@ -88,6 +89,59 @@ def _event() -> dict[str, object]:
         },
         "callback_requirements": [],
     }
+
+
+def _variadic_forwarding(minimum_words: int = 1) -> dict[str, object]:
+    payload = ExternalCallArityV3.variadic(minimum_words).to_payload()
+    forwarding = payload["raw_caller_stack_suffix_forwarding"]
+    assert isinstance(forwarding, dict)
+    return forwarding
+
+
+def _variadic_event(*, forwarding: object = ...) -> dict[str, object]:
+    event = _event()
+    event["arguments"] = [_register("eax"), _register("ecx"), _register("edx")]
+    abi = event["abi_contract"]
+    assert isinstance(abi, dict)
+    abi.pop("argument_words")
+    if forwarding is ...:
+        abi["raw_caller_stack_suffix_forwarding"] = _variadic_forwarding()
+    elif forwarding is not None:
+        abi["raw_caller_stack_suffix_forwarding"] = forwarding
+    return event
+
+
+def _variadic_profile() -> ExternalProfileV3:
+    arity = ExternalCallArityV3.variadic(1)
+    return ExternalProfileV3.create(
+        profile_id="fixture-profile",
+        profile_sha256=PROFILE_SHA256,
+        identity={
+            "kind": "import",
+            "dll": "fixture.dll",
+            "symbol": "Update",
+            "ordinal": None,
+        },
+        allowed_transfers=("call",),
+        allowed_dispositions=("returns",),
+        argument_words=None,
+        arity=arity,
+        memory_effect="none",
+        world_effect="none",
+        callback_effect="none",
+        machine_contract={
+            "abi_template": "pe32-cdecl-v1",
+            "arity_contract": arity.to_payload(),
+            "disposition": "returns",
+            "memory_effect": "none",
+            "memory_footprints": [],
+            "world_effect": "none",
+            "callback_effect": "none",
+            "result_register_relations": [],
+            "out_pointer_relations": [],
+            "out_interface_relations": [],
+        },
+    )
 
 
 def _unit(event: dict[str, object]) -> dict[str, object]:
@@ -426,6 +480,109 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
             self.assertEqual(checked.status, "complete")
             self.assertTrue(checked.authorizing)
             self.assertTrue(checked.sites[0].authorizing)
+
+    def test_variadic_site_authorizes_with_exact_raw_suffix_forwarding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (
+                manifest,
+                evidence,
+                output,
+                semantic,
+                transitions,
+                targets,
+                profiles,
+                exact,
+                _event_value,
+            ) = self._generate(
+                root,
+                event=_variadic_event(forwarding=None),
+                profile=_variadic_profile(),
+            )
+            self.assertEqual(manifest.status, "complete")
+            self.assertEqual(evidence.status, "complete")
+            assert evidence.contract is not None
+            self.assertEqual(evidence.contract.arity.kind, "variadic")
+            self.assertIsNone(evidence.contract.argument_words)
+            self.assertEqual(evidence.contract.minimum_argument_words, 1)
+            self.assertEqual(len(evidence.contract.arguments), 1)
+            self.assertEqual(
+                evidence.contract.arity.to_payload()[
+                    "raw_caller_stack_suffix_forwarding"
+                ],
+                _variadic_forwarding(),
+            )
+
+            canonical = CANONICAL_EXTERNAL_SITES_PHASE_V3.run(
+                output_directory=root / "canonical-variadic",
+                inputs={
+                    "external_profiles": profiles,
+                    "external_site_evidence": output,
+                    "semantic_index": semantic,
+                    "target_certificates": targets,
+                    "transition_summaries": transitions,
+                },
+                bindings=(BINDING,),
+            ).output_directory
+            checked = CANONICAL_EXTERNAL_SITE_CODEC_V3.read(
+                ArtifactSetReaderV3(canonical).get_record(exact.unit_id)
+            ).value
+            self.assertEqual(checked.status, "complete")
+            self.assertTrue(checked.authorizing)
+
+    def test_variadic_site_without_raw_suffix_forwarding_is_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            issue = ExternalProfileIssueV3.create(
+                profile_id="fixture-profile",
+                profile_sha256=PROFILE_SHA256,
+                identity={
+                    "kind": "import",
+                    "dll": "fixture.dll",
+                    "symbol": "Update",
+                    "ordinal": None,
+                },
+                status="incomplete",
+                code="external_variadic_forwarding_missing",
+                detail="fixture profile omits exact raw suffix forwarding",
+            )
+            evidence = self._generate(
+                Path(temporary),
+                event=_variadic_event(forwarding=None),
+                profile_issue=issue,
+            )[1]
+            self.assertEqual(evidence.status, "incomplete")
+            self.assertIsNone(evidence.contract)
+            assert evidence.primary_blocker is not None
+            self.assertEqual(
+                evidence.primary_blocker.code,
+                "external_variadic_forwarding_missing",
+            )
+
+    def test_variadic_forwarding_malformed_or_contradictory_is_violated(self) -> None:
+        contradictory = _variadic_forwarding()
+        contradictory["minimum_argument_words"] = 2
+        for label, forwarding, code in (
+            (
+                "malformed",
+                "raw-stack",
+                "external_variadic_forwarding_malformed",
+            ),
+            (
+                "contradictory",
+                contradictory,
+                "external_variadic_forwarding_contradiction",
+            ),
+        ):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as temporary:
+                evidence = self._generate(
+                    Path(temporary),
+                    event=_variadic_event(forwarding=forwarding),
+                    profile=_variadic_profile(),
+                )[1]
+                self.assertEqual(evidence.status, "violated")
+                self.assertIsNone(evidence.contract)
+                assert evidence.primary_blocker is not None
+                self.assertEqual(evidence.primary_blocker.code, code)
 
     def test_profile_issue_remains_the_exact_canonical_blocker(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

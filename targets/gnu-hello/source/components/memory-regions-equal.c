@@ -1,23 +1,11 @@
-#include "spaghetti-component-abi.h"
+#include "portable-component-implementation.h"
 
-#include <stdint.h>
-
-uint32_t gnu_hello_memory_regions_equal(
-    const spx_ro_bytes_v1 *left,
-    const spx_ro_bytes_v1 *right,
+uint8_t gnu_hello_memory_regions_equal(
+    spx_memory_regions_equal_context_v2 *context,
+    const spx_bytes_view_v2 *left,
+    const spx_bytes_view_v2 *right,
     uint32_t count) {
-  uint32_t index;
-
-  for (index = 0U; index < count; ++index) {
-    uint8_t left_byte = 0U;
-    uint8_t right_byte = 0U;
-    if (left->read_u8(left->context, index, &left_byte) != 0U ||
-        right->read_u8(right->context, index, &right_byte) != 0U) {
-      return 0U;
-    }
-    if (left_byte != right_byte) {
-      return 0U;
-    }
-  }
-  return 1U;
+  uint32_t comparison = context->services->compare_memory(
+      context->services->context, left, right, count);
+  return comparison == UINT32_C(0) ? UINT32_C(1) : UINT32_C(0);
 }

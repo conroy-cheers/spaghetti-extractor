@@ -49,7 +49,7 @@ from .model import (
     _Unit,
 )
 
-def _load_machine_package(path: Path) -> _MachinePackage:
+def load_machine_package(path: Path) -> _MachinePackage:
     manifest_path = _machine_manifest_path(path)
     manifest = _read_object(manifest_path, "machine IR manifest")
     if manifest.get("format") != MACHINE_IR_FORMAT:
@@ -93,6 +93,10 @@ def _load_machine_package(path: Path) -> _MachinePackage:
         ir_sha256=sha256_file(ir_path),
         manifest_sha256=sha256_file(manifest_path),
     )
+
+
+# Compatibility for the proposal-only V3 modules while they are migrated.
+_load_machine_package = load_machine_package
 
 
 def _machine_manifest_path(path: Path) -> Path:
@@ -862,6 +866,7 @@ __all__ = [
     "derive_dynamic_library_requirements",
     "index_library_artifacts",
     "infer_library_hypotheses",
+    "load_machine_package",
     "lock_library_catalog",
     "match_linked_islands",
     "plan_library_replacements",

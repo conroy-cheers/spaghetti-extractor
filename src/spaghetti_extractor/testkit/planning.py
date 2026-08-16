@@ -17,6 +17,7 @@ RESOURCE_CLASS_ORDER = {"small": 0, "medium": 1, "large": 2, "oracle": 3}
 CAPABILITY_RESOURCE_CLASS = {
     "benchmark": "large",
     "bochs": "oracle",
+    "cbmc": "medium",
     "compiler": "medium",
     "isa": "large",
     "lean": "large",

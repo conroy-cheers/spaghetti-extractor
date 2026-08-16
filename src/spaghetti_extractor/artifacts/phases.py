@@ -18,6 +18,7 @@ from types import MappingProxyType
 from typing import Any, Generic, Literal, TypeAlias, TypeVar
 
 from .artifact_set import (
+    DEFAULT_VALUE_CODEC,
     ArtifactBindingV3,
     ArtifactDependencyV3,
     ArtifactRecordV3,
@@ -27,6 +28,7 @@ from .artifact_set import (
     InternedExpressionV3,
     RecordDependencyV3,
     canonical_sha256_v3,
+    value_codec_v3,
 )
 from .io import (
     ArtifactInputManifestV3,
@@ -95,7 +97,7 @@ class RecordCodecV3(Generic[T]):
 
     def read(self, record: ArtifactRecordV3) -> TypedRecordV3[T]:
         try:
-            value = self.decode(record.value.to_value())
+            value = self.decode(record.value._checked_value())
         except Exception as exc:
             _phase_fail(
                 "record_schema_mismatch",
@@ -134,9 +136,7 @@ class PhaseContextV3:
     def __init__(self, readers: Mapping[str, ArtifactInputReaderV3]) -> None:
         self._readers = MappingProxyType(dict(readers))
         self._accesses: set[RecordDependencyV3] = set()
-        self._typed_records: dict[
-            tuple[str, str, int], TypedRecordV3[Any]
-        ] = {}
+        self._typed_records: dict[tuple[str, str, int], TypedRecordV3[Any]] = {}
 
     @property
     def input_names(self) -> tuple[str, ...]:
@@ -169,9 +169,7 @@ class PhaseContextV3:
 
         record = self._reader(input_name).find_record(record_id)
         if record is not None:
-            self._accesses.add(
-                RecordDependencyV3(input_name, record.record_id)
-            )
+            self._accesses.add(RecordDependencyV3(input_name, record.record_id))
         return record
 
     def typed_record(
@@ -284,12 +282,8 @@ class PhaseRunResultV3:
     input_artifacts: tuple[ArtifactDependencyV3, ...]
 
 
-CompletenessHookV3 = Callable[
-    [ArtifactSetReaderV3, PhaseContextV3], None
-]
-ScheduleHookV3 = Callable[
-    [DependencySchedulingManifestV3, PhaseContextV3], None
-]
+CompletenessHookV3 = Callable[[ArtifactSetReaderV3, PhaseContextV3], None]
+ScheduleHookV3 = Callable[[DependencySchedulingManifestV3, PhaseContextV3], None]
 UnitTransformV3 = Callable[[PhaseContextV3, ArtifactRecordV3], ArtifactRecordV3]
 SccTransformV3 = Callable[[PhaseContextV3, SccWorkItemV3], ArtifactRecordV3]
 ReduceTransformV3 = Callable[
@@ -313,6 +307,7 @@ class PhaseDefinitionV3:
     completeness: CompletenessHookV3 | None = None
     schedule_validator: ScheduleHookV3 | None = None
     dependency_scope: DependencyScopeV3 = "record"
+    output_value_codec: str = DEFAULT_VALUE_CODEC
 
     def __post_init__(self) -> None:
         if self.form not in {"map_units", "map_sccs", "reduce"}:
@@ -323,7 +318,9 @@ class PhaseDefinitionV3:
             )
         _canonical_names(self.required_inputs, "required_inputs")
         kind_names = tuple(name for name, _kind in self.input_artifact_kinds)
-        if kind_names != self.required_inputs or any(not kind for _name, kind in self.input_artifact_kinds):
+        if kind_names != self.required_inputs or any(
+            not kind for _name, kind in self.input_artifact_kinds
+        ):
             _phase_fail(
                 "incomplete_phase_input_contract",
                 f"phase {self.name!r} input-kind contract differs from required_inputs",
@@ -346,8 +343,7 @@ class PhaseDefinitionV3:
                 not self.schedule_record_inputs
                 or tuple(sorted(set(self.schedule_record_inputs)))
                 != self.schedule_record_inputs
-                or not set(self.schedule_record_inputs)
-                <= set(self.required_inputs)
+                or not set(self.schedule_record_inputs) <= set(self.required_inputs)
             ):
                 _phase_fail(
                     "invalid_schedule_record_inputs",
@@ -402,6 +398,7 @@ class PhaseDefinitionV3:
                 f"{self.form} phase {self.name!r} requests artifact-only dependencies",
                 "use artifact scope only for complete-input reductions; mapped outputs need exact record dependencies",
             )
+        value_codec_v3(self.output_value_codec)
 
     @property
     def definition_sha256(self) -> str:
@@ -420,24 +417,31 @@ class PhaseDefinitionV3:
                     )
                 return f"{type(value).__module__}:{type(value).__qualname__}"
 
-        return canonical_sha256_v3({
-            "name": self.name,
-            "version": self.version,
-            "form": self.form,
-            "output_artifact_kind": self.output_artifact_kind,
-            "required_inputs": list(self.required_inputs),
-            "input_artifact_kinds": [list(row) for row in self.input_artifact_kinds],
-            "source_input": self.source_input,
-            "schedule_record_inputs": list(self.schedule_record_inputs),
-            "unit_aligned_inputs": list(self.unit_aligned_inputs),
-            "scc_aligned_inputs": list(self.scc_aligned_inputs),
-            "has_completeness_hook": self.completeness is not None,
-            "has_schedule_validator": self.schedule_validator is not None,
-            "dependency_scope": self.dependency_scope,
-            "transform_source": implementation_source(self.transform),
-            "completeness_source": implementation_source(self.completeness),
-            "schedule_validator_source": implementation_source(self.schedule_validator),
-        })
+        return canonical_sha256_v3(
+            {
+                "name": self.name,
+                "version": self.version,
+                "form": self.form,
+                "output_artifact_kind": self.output_artifact_kind,
+                "required_inputs": list(self.required_inputs),
+                "input_artifact_kinds": [
+                    list(row) for row in self.input_artifact_kinds
+                ],
+                "source_input": self.source_input,
+                "schedule_record_inputs": list(self.schedule_record_inputs),
+                "unit_aligned_inputs": list(self.unit_aligned_inputs),
+                "scc_aligned_inputs": list(self.scc_aligned_inputs),
+                "has_completeness_hook": self.completeness is not None,
+                "has_schedule_validator": self.schedule_validator is not None,
+                "dependency_scope": self.dependency_scope,
+                "output_value_codec": self.output_value_codec,
+                "transform_source": implementation_source(self.transform),
+                "completeness_source": implementation_source(self.completeness),
+                "schedule_validator_source": implementation_source(
+                    self.schedule_validator
+                ),
+            }
+        )
 
     def run(
         self,
@@ -463,7 +467,7 @@ class PhaseDefinitionV3:
         if provided != expected:
             _phase_fail(
                 "phase_input_mismatch",
-                f"phase {self.name!r} inputs differ: missing={sorted(expected-provided)!r}, unexpected={sorted(provided-expected)!r}",
+                f"phase {self.name!r} inputs differ: missing={sorted(expected - provided)!r}, unexpected={sorted(provided - expected)!r}",
                 "pass exactly the named required_inputs; use a new phase declaration when semantics need another dependency",
             )
         readers = {name: open_artifact_reader_v3(path) for name, path in inputs.items()}
@@ -498,19 +502,15 @@ class PhaseDefinitionV3:
                 if selected_record_ids is None
                 else tuple(selected_record_ids)
             )
-            if (
-                selected_record_ids is not None
-                and expected_output_ids
-                != tuple(sorted(set(expected_output_ids)))
+            if selected_record_ids is not None and expected_output_ids != tuple(
+                sorted(set(expected_output_ids))
             ):
                 _phase_fail(
                     "invalid_selected_record_ids",
                     "selected map-unit record IDs are duplicated or unsorted",
                     "pass the canonical record inventory emitted by the checked structural planner",
                 )
-            records = self._map_unit_records(
-                context, readers[self.source_input]
-            )
+            records = self._map_unit_records(context, readers[self.source_input])
         elif self.form == "map_sccs":
             if selected_record_ids is not None:
                 _phase_fail(
@@ -562,6 +562,7 @@ class PhaseDefinitionV3:
             bindings=output_bindings,
             dependencies=dependencies,
             status=status,
+            value_codec=value_codec_v3(self.output_value_codec),
             **writer_options,
         )
         output_path = Path(output_directory)
@@ -569,13 +570,11 @@ class PhaseDefinitionV3:
         reader = ArtifactSetReaderV3(output_path)
         if expected_output_ids is not None:
             reader.validate_completeness(expected_output_ids)
-        # The transform above is the phase's authoritative checker and the
-        # writer/reader round trip validates canonical storage.  Re-running the
-        # same derivation function does not add an independent trust boundary;
-        # reserve it for explicit audits and corruption tests.
-        if validation_mode == "producer":
-            tuple(reader.iter_records())
-        elif self.completeness is not None:
+        # The transform above is the producer's authoritative semantic check.
+        # Pack hashes bind the exact bytes it emitted; downstream consumers and
+        # explicit replay derivations validate those bytes independently.  Do
+        # not make every producer immediately duplicate that cached audit.
+        if validation_mode == "replay" and self.completeness is not None:
             self.completeness(reader, context)
         return PhaseRunResultV3(manifest, output_path, dependencies)
 
@@ -615,9 +614,7 @@ class PhaseDefinitionV3:
                     "preserve the unit ID; use reduce for intentional changes in output cardinality",
                     location=input_record.record_id,
                 )
-            yield _with_dependencies(
-                output, {*context._take_accesses(), automatic}
-            )
+            yield _with_dependencies(output, {*context._take_accesses(), automatic})
 
     def _map_scc_records(
         self,
@@ -647,32 +644,27 @@ class PhaseDefinitionV3:
                     "repair the pure transform; rerun only this SCC dependency closure",
                     location=scc.scc_id,
                 )
-            if not isinstance(output, ArtifactRecordV3) or output.record_id != scc.scc_id:
+            if (
+                not isinstance(output, ArtifactRecordV3)
+                or output.record_id != scc.scc_id
+            ):
                 _phase_fail(
                     "map_sccs_cardinality_violation",
                     f"SCC {scc.scc_id!r} did not produce one same-ID ArtifactRecordV3",
                     "return exactly one record whose ID is work_item.record_id",
                     location=scc.scc_id,
                 )
-            yield _with_dependencies(
-                output, {*context._take_accesses(), *references}
-            )
+            yield _with_dependencies(output, {*context._take_accesses(), *references})
 
-    def _reduce_records(
-        self, context: PhaseContextV3
-    ) -> Iterator[ArtifactRecordV3]:
+    def _reduce_records(self, context: PhaseContextV3) -> Iterator[ArtifactRecordV3]:
         context._begin_work_item()
         try:
             result = self.transform(context)  # type: ignore[call-arg]
             outputs = (
-                (result,)
-                if isinstance(result, ArtifactRecordV3)
-                else tuple(result)
+                (result,) if isinstance(result, ArtifactRecordV3) else tuple(result)
             )
             accesses = context._take_accesses()
-            dependencies = (
-                () if self.dependency_scope == "artifact" else accesses
-            )
+            dependencies = () if self.dependency_scope == "artifact" else accesses
             for output in outputs:
                 if not isinstance(output, ArtifactRecordV3):
                     _phase_fail(
@@ -769,6 +761,7 @@ def map_units(
     transform: UnitTransformV3,
     completeness: CompletenessHookV3 | None = None,
     unit_aligned_inputs: Iterable[str] = (),
+    output_value_codec: str = DEFAULT_VALUE_CODEC,
 ) -> PhaseDefinitionV3:
     """Define the common one-input-record to one-output-record phase."""
 
@@ -783,6 +776,7 @@ def map_units(
         unit_aligned_inputs=tuple(sorted(set(unit_aligned_inputs))),
         transform=transform,
         completeness=completeness,
+        output_value_codec=output_value_codec,
     )
 
 
@@ -798,6 +792,7 @@ def map_sccs(
     schedule_validator: ScheduleHookV3 | None = None,
     unit_aligned_inputs: Iterable[str] = (),
     scc_aligned_inputs: Iterable[str] = (),
+    output_value_codec: str = DEFAULT_VALUE_CODEC,
 ) -> PhaseDefinitionV3:
     """Define one independently cached output record per dependency SCC."""
 
@@ -814,6 +809,7 @@ def map_sccs(
         scc_aligned_inputs=tuple(sorted(set(scc_aligned_inputs))),
         completeness=completeness,
         schedule_validator=schedule_validator,
+        output_value_codec=output_value_codec,
     )
 
 
@@ -826,6 +822,7 @@ def reduce(
     transform: ReduceTransformV3,
     completeness: CompletenessHookV3,
     dependency_scope: DependencyScopeV3 = "record",
+    output_value_codec: str = DEFAULT_VALUE_CODEC,
 ) -> PhaseDefinitionV3:
     """Define a global reduction with a mandatory independent closure check."""
 
@@ -839,6 +836,7 @@ def reduce(
         transform=transform,
         completeness=completeness,
         dependency_scope=dependency_scope,
+        output_value_codec=output_value_codec,
     )
 
 

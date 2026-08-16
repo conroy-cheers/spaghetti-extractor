@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import gzip
+import os
 import random
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from spaghetti_extractor.artifacts import artifact_set
 from spaghetti_extractor.artifacts.artifact_set import (
     IDENTITY_BUCKETS,
     ArtifactBindingV3,
@@ -18,6 +20,7 @@ from spaghetti_extractor.artifacts.artifact_set import (
     RecordDependencyV3,
     canonical_json_bytes_v3,
     identity_bucket_v3,
+    parse_canonical_json_lines_v3,
 )
 from spaghetti_extractor.artifacts.io import (
     ArtifactBundleReaderV3,
@@ -69,6 +72,69 @@ def _gzip_text(path: Path) -> str:
 
 
 class ArtifactSetV3Tests(unittest.TestCase):
+    def test_native_canonical_encoding_matches_python_reference(self) -> None:
+        if not artifact_set.native_acceleration_available_v3():
+            self.skipTest("native extension is unavailable outside the Nix environment")
+        values = (
+            None,
+            True,
+            -123456789012345678901234567890,
+            "ascii\ncaf\u00e9\U0001f642",
+            {"z": [1, False], "a": {"control": "\u0001"}},
+        )
+        for value in values:
+            with self.subTest(value=value):
+                self.assertEqual(
+                    canonical_json_bytes_v3(value),
+                    artifact_set._python_canonical_json_bytes_v3(value),
+                )
+
+    def test_native_batch_parser_matches_python_reference(self) -> None:
+        values = (
+            {"a": 1, "b": [True, None, "caf\u00e9"]},
+            {"integer": 123456789012345678901234567890},
+            ["\U0001f642", {"control": "\u0001"}],
+        )
+        encoded = b"".join(canonical_json_bytes_v3(value) + b"\n" for value in values)
+        observed = parse_canonical_json_lines_v3(
+            encoded, location="native fixture", maximum_line_bytes=4096
+        )
+        with (
+            mock.patch.object(artifact_set, "_native_artifacts_v3", None),
+            mock.patch.dict(os.environ, {"SPAGHETTI_REQUIRE_NATIVE": "0"}),
+        ):
+            reference = parse_canonical_json_lines_v3(
+                encoded, location="python fixture", maximum_line_bytes=4096
+            )
+        self.assertEqual(observed, reference)
+
+    def test_batch_parser_rejects_noncanonical_and_invalid_lines(self) -> None:
+        cases = (
+            (b'{"b":1,"a":2}\n', "noncanonical_json"),
+            (b'{"a":1,"a":2}\n', "noncanonical_json"),
+            (b'{"a":1.0}\n', "noncanonical_json"),
+            (b"{}\r\n", "noncanonical_json"),
+            (b'{"a":}\n', "invalid_json"),
+        )
+        for encoded, code in cases:
+            with self.subTest(encoded=encoded):
+                with self.assertRaises(ArtifactV3Error) as raised:
+                    parse_canonical_json_lines_v3(
+                        encoded,
+                        location="malformed fixture",
+                        maximum_line_bytes=4096,
+                    )
+                self.assertEqual(raised.exception.code, code)
+
+    def test_required_native_acceleration_fails_closed(self) -> None:
+        with (
+            mock.patch.object(artifact_set, "_native_artifacts_v3", None),
+            mock.patch.dict(os.environ, {"SPAGHETTI_REQUIRE_NATIVE": "1"}),
+        ):
+            with self.assertRaises(ArtifactV3Error) as raised:
+                canonical_json_bytes_v3({"required": True})
+        self.assertEqual(raised.exception.code, "native_acceleration_missing")
+
     def test_bundle_is_a_zero_copy_exact_record_selection(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -114,9 +180,7 @@ class ArtifactSetV3Tests(unittest.TestCase):
             )
             inventory = bundle / "record-ids.json.gz"
             inventory.write_bytes(inventory.read_bytes() + b"corrupt")
-            with self.assertRaisesRegex(
-                ArtifactV3Error, "corrupt_bundle_inventory"
-            ):
+            with self.assertRaisesRegex(ArtifactV3Error, "corrupt_bundle_inventory"):
                 ArtifactBundleReaderV3(bundle)
 
     def test_round_trip_is_canonical_and_deterministic(self) -> None:
@@ -142,9 +206,9 @@ class ArtifactSetV3Tests(unittest.TestCase):
                 [row.record_id for row in ArtifactSetReaderV3(first).iter_records()],
                 [row.record_id for row in ArtifactSetReaderV3(second).iter_records()],
             )
-            self.assertTrue(all(
-                pack.size_bytes <= 4096 for pack in first_manifest.packs
-            ))
+            self.assertTrue(
+                all(pack.size_bytes <= 4096 for pack in first_manifest.packs)
+            )
             self.assertEqual(first_manifest.record_count, len(records))
 
     def test_recursive_value_and_expression_interning_round_trip(self) -> None:
@@ -179,13 +243,14 @@ class ArtifactSetV3Tests(unittest.TestCase):
                 {row.record_id: row.value.to_value() for row in records},
             )
             pack_text = "".join(
-                _gzip_text(output / pack.path)
-                for pack in manifest.packs
+                _gzip_text(output / pack.path) for pack in manifest.packs
             )
             self.assertIn('"entry":"value_node"', pack_text)
             self.assertIn('"entry":"expression"', pack_text)
 
-    def test_duplicate_heavy_transition_shape_compresses_below_twenty_percent(self) -> None:
+    def test_duplicate_heavy_transition_shape_compresses_below_twenty_percent(
+        self,
+    ) -> None:
         # The repeated exact state is representative of the structure that made
         # the current 9,041-summary DX-Ball v2 artifact 310 MiB.  Unique unit
         # identity remains outside the shared subtree.
@@ -195,9 +260,10 @@ class ArtifactSetV3Tests(unittest.TestCase):
                 {"bytes": "90" * 2048, "decoder": "checked", "width": 32},
                 {"bytes": "00" * 2048, "memory": "flat", "width": 32},
             ],
-            "registers": {name: {"kind": "input", "name": name} for name in (
-                "eax", "ebx", "ecx", "edx", "esi", "edi", "esp", "ebp"
-            )},
+            "registers": {
+                name: {"kind": "input", "name": name}
+                for name in ("eax", "ebx", "ecx", "edx", "esi", "edi", "esp", "ebp")
+            },
         }
         count = 768
         values = [
@@ -209,7 +275,9 @@ class ArtifactSetV3Tests(unittest.TestCase):
             }
             for index in range(count)
         ]
-        uninterned_size = sum(len(canonical_json_bytes_v3(value)) + 1 for value in values)
+        uninterned_size = sum(
+            len(canonical_json_bytes_v3(value)) + 1 for value in values
+        )
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "artifact"
             manifest = ArtifactSetWriterV3(
@@ -252,9 +320,7 @@ class ArtifactSetV3Tests(unittest.TestCase):
             pack.write_bytes(pack.read_bytes() + b"corrupt")
             with self.assertRaises(ArtifactV3Error) as raised:
                 reader.get_record("unit:00001")
-            self.assertEqual(
-                raised.exception.code, "artifact_changed_during_read"
-            )
+            self.assertEqual(raised.exception.code, "artifact_changed_during_read")
             self.assertIn("immutable", raised.exception.remediation)
 
     def test_oversized_single_record_has_actionable_failure(self) -> None:
@@ -279,9 +345,9 @@ class ArtifactSetV3Tests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaises(ArtifactV3Error) as raised:
-                ArtifactSetWriterV3(
-                    artifact_kind="facts", bindings=(BINDING,)
-                ).write(Path(temporary) / "artifact", (record,))
+                ArtifactSetWriterV3(artifact_kind="facts", bindings=(BINDING,)).write(
+                    Path(temporary) / "artifact", (record,)
+                )
             self.assertEqual(raised.exception.code, "undeclared_dependency")
             self.assertIn("add those inputs", raised.exception.remediation)
 
@@ -317,16 +383,20 @@ class ArtifactSetV3Tests(unittest.TestCase):
             ),
         )
         parsed = StructuralSchedulingManifestV3.parse_bytes(plan.to_bytes())
-        parsed.validate({
-            "unit:a": (0x1000, 0x1010, ()),
-            "unit:b": (0x1010, 0x1020, ("unit:a",)),
-        })
-        with self.assertRaisesRegex(ArtifactV3Error, "planner_omission"):
-            parsed.validate({
+        parsed.validate(
+            {
                 "unit:a": (0x1000, 0x1010, ()),
                 "unit:b": (0x1010, 0x1020, ("unit:a",)),
-                "unit:c": (0x1020, 0x1030, ()),
-            })
+            }
+        )
+        with self.assertRaisesRegex(ArtifactV3Error, "planner_omission"):
+            parsed.validate(
+                {
+                    "unit:a": (0x1000, 0x1010, ()),
+                    "unit:b": (0x1010, 0x1020, ("unit:a",)),
+                    "unit:c": (0x1020, 0x1030, ()),
+                }
+            )
 
     def test_dependency_plan_checks_exact_sccs_and_record_inventory(self) -> None:
         records = {

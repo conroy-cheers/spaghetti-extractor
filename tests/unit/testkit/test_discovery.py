@@ -189,6 +189,20 @@ SUPPORTED_COMMAND_ROLES = {"example": "expert"}
             self.assertIn("compiler", row.capabilities)
             self.assertIn("compiler", row.fixtures)
 
+    def test_cbmc_lookup_selects_shared_checker_fixture(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            _write(
+                root,
+                "tests/test_refinement.py",
+                'import shutil\nCHECKER = shutil.which("cbmc")\n',
+            )
+
+            row = build_impact_index(root).tests[0]
+
+            self.assertIn("cbmc", row.capabilities)
+            self.assertIn("cbmc", row.fixtures)
+
     def test_unusual_resource_is_declared_once_in_testkit_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = _repository(Path(temporary))

@@ -12,30 +12,31 @@ EVIDENCE_PROFILES = frozenset(
     {
         "structural-draft-v1",
         "bounded-equivalence-v1",
-        "validation-backed-v1",
+        "portable-component-v2",
     }
 )
 EVIDENCE_PROFILE_PRODUCERS = {
     "bounded-equivalence-v1": "exhaustive-finite-domain-v1",
-    "validation-backed-v1": "candidate-only-functional-suite-v1",
 }
 LIFT_UNIT_KINDS = frozenset({"component", "group"})
-SOURCE_ENTRY_ABIS = frozenset({"logical-c-v1", "logical-object-c-v1"})
+SOURCE_ENTRY_ABIS = frozenset(
+    {"logical-c-v1", "logical-object-c-v1", "portable-interface-v1"}
+)
 
 
 @dataclass(frozen=True)
 class SourceInput:
     files: tuple[PurePosixPath, ...]
     shared_inputs: tuple[PurePosixPath, ...] = ()
-    entry_abi: str = "logical-c-v1"
-    entry_symbol: str = ""
+    entry_abi: str | None = None
+    entry_symbol: str | None = None
+    operation_symbols: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
 class ComponentEvidencePlan:
     producer: str
     parameter_domains: tuple[Mapping[str, object], ...] = ()
-    cases: tuple[Mapping[str, object], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -47,6 +48,8 @@ class ComponentIntent:
     interface_review: PurePosixPath | None
     source: SourceInput | None
     verification: ComponentEvidencePlan | None
+    machine_binding: PurePosixPath | None = None
+    induction: PurePosixPath | None = None
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,8 @@ class ComponentGroupIntent:
     interface_review: PurePosixPath | None
     source: SourceInput | None
     verification: ComponentEvidencePlan | None
+    machine_binding: PurePosixPath | None = None
+    induction: PurePosixPath | None = None
 
 
 @dataclass(frozen=True)

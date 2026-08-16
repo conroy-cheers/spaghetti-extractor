@@ -60,7 +60,12 @@ class TargetMetadata:
             raise TargetMetadataError("target input SHA-256 is not canonical")
 
         path_row = _object(root.get("paths"), "target paths")
-        _exact_keys(path_row, {"nix", "components"}, "target paths")
+        _required_optional_keys(
+            path_row,
+            {"nix", "components"},
+            {"libraries"},
+            "target paths",
+        )
         component_path = path_row.get("components")
         path_items = [
             ("nix", _relative_path(path_row["nix"], "target path nix"))
@@ -70,6 +75,14 @@ class TargetMetadata:
                 (
                     "components",
                     _relative_path(component_path, "target path components"),
+                )
+            )
+        library_path = path_row.get("libraries")
+        if library_path is not None:
+            path_items.append(
+                (
+                    "libraries",
+                    _relative_path(library_path, "target path libraries"),
                 )
             )
         paths = tuple(path_items)
@@ -123,6 +136,20 @@ def _exact_keys(
     if set(value) != expected:
         missing = sorted(expected - set(value))
         extra = sorted(set(value) - expected)
+        raise TargetMetadataError(
+            f"{description} has invalid fields: missing={missing}, extra={extra}"
+        )
+
+
+def _required_optional_keys(
+    value: Mapping[str, object],
+    required: set[str],
+    optional: set[str],
+    description: str,
+) -> None:
+    missing = sorted(required - set(value))
+    extra = sorted(set(value) - required - optional)
+    if missing or extra:
         raise TargetMetadataError(
             f"{description} has invalid fields: missing={missing}, extra={extra}"
         )

@@ -27,6 +27,11 @@ from .build_values import (
     _read_json_object,
 )
 from .runtime import plan_spx_native_runtime
+from .policy_gates import (
+    CandidatePolicyError,
+    STRUCTURAL_EXECUTABLE_V1,
+    load_policy_receipt,
+)
 
 
 def _validate_candidate_authority_v3(
@@ -50,6 +55,50 @@ def _validate_candidate_authority_v3(
         )
     except CandidateAuthorityV3Error as exc:
         raise CandidateNativeBuildError(str(exc)) from exc
+
+
+def _validate_structural_execution_v1(
+    *,
+    receipt: Path | str,
+    machine_ir: Path | str,
+    machine_ir_manifest: Path | str,
+) -> dict[str, Any]:
+    """Recheck the execution policy and its exact machine-input bindings."""
+
+    try:
+        parsed = load_policy_receipt(receipt)
+    except CandidatePolicyError as exc:
+        raise CandidateNativeBuildError(str(exc)) from exc
+    if (
+        parsed.format != STRUCTURAL_EXECUTABLE_V1
+        or parsed.status != "complete"
+        or not parsed.executable
+        or parsed.release_accepted
+    ):
+        raise CandidateNativeBuildError(
+            "candidate construction requires a complete structural-executable receipt"
+        )
+    machine_path = _file(machine_ir, "machine IR")
+    manifest_path = _file(machine_ir_manifest, "machine-IR manifest")
+    expected = {
+        "machine_ir_sha256": sha256_file(machine_path),
+        "machine_ir_manifest_sha256": sha256_file(manifest_path),
+    }
+    for name, digest in expected.items():
+        if parsed.bindings.get(name) != digest:
+            raise CandidateNativeBuildError(
+                f"structural-executable receipt binds a different {name}"
+            )
+    receipt_path = _file(receipt, "structural-executable receipt")
+    return {
+        "format": parsed.format,
+        "artifact_sha256": sha256_file(receipt_path),
+        "receipt_sha256": parsed.receipt_sha256,
+        "status": parsed.status,
+        "executable": parsed.executable,
+        "release_accepted": parsed.release_accepted,
+        "bindings": dict(parsed.bindings),
+    }
 
 
 def _validate_candidate_authority_package_bindings(
@@ -99,7 +148,7 @@ def _validate_candidate_authority_package_bindings(
         )
 
 
-def _validate_static_candidate_package_bindings(
+def _validate_structural_candidate_package_bindings(
     *,
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
@@ -143,11 +192,11 @@ def _validate_static_candidate_package_bindings(
         not isinstance(engine_policy, Mapping)
         or not isinstance(runtime_policy, Mapping)
         or not isinstance(runtime_inputs, Mapping)
-        or engine_policy.get("execution_scope") != "complete-static-authority"
-        or runtime_policy.get("execution_scope") != "complete-static-authority"
+        or engine_policy.get("execution_scope") != "structural-executable-v1"
+        or runtime_policy.get("execution_scope") != "structural-executable-v1"
     ):
         raise CandidateNativeBuildError(
-            "native package closure does not require complete static authority"
+            "native package closure does not require structural executability"
         )
 
     interpreter_coverage = interpreter.payload.get("semantic_coverage")
@@ -187,8 +236,8 @@ def _validate_static_candidate_package_bindings(
         )
 
     core = {
-        "format": "spaghetti-extractor-static-candidate-binding-v1",
-        "execution_scope": "complete-static-authority",
+        "format": "spaghetti-extractor-structural-candidate-binding-v1",
+        "execution_scope": "structural-executable-v1",
         "acceptance_authority": "none",
         "machine_ir_sha256": machine_ir_sha256,
         "machine_ir_manifest_sha256": manifest_sha256,
@@ -379,7 +428,18 @@ def _load_region_override_package(value: Path | str) -> _Package:
         _artifact(root, "region_overrides", f"table_{role}", artifacts_raw[role])
         for role in ("header", "source")
     ]
-    seen_paths = {item.relative_path for item in artifacts}
+    seen_artifacts = {item.relative_path: item.sha256 for item in artifacts}
+
+    def add_once(artifact: _Artifact) -> None:
+        observed = seen_artifacts.get(artifact.relative_path)
+        if observed is not None:
+            if observed != artifact.sha256:
+                raise CandidateNativeBuildError(
+                    "region override package binds one path to different content"
+                )
+            return
+        seen_artifacts[artifact.relative_path] = artifact.sha256
+        artifacts.append(artifact)
     seen_symbols: set[str] = set()
     for index, entry in enumerate(entries):
         if not isinstance(entry, Mapping):
@@ -407,12 +467,7 @@ def _load_region_override_package(value: Path | str) -> _Package:
             f"replacement_source_{index:03d}",
             source,
         )
-        if artifact.relative_path in seen_paths:
-            raise CandidateNativeBuildError(
-                "region override package has duplicate source paths"
-            )
-        seen_paths.add(artifact.relative_path)
-        artifacts.append(artifact)
+        add_once(artifact)
         support_sources = entry.get("support_sources", [])
         if not isinstance(support_sources, list):
             raise CandidateNativeBuildError(
@@ -430,12 +485,7 @@ def _load_region_override_package(value: Path | str) -> _Package:
                 f"replacement_support_{index:03d}_{support_index:03d}",
                 support,
             )
-            if support_artifact.relative_path in seen_paths:
-                raise CandidateNativeBuildError(
-                    "region override package has duplicate source paths"
-                )
-            seen_paths.add(support_artifact.relative_path)
-            artifacts.append(support_artifact)
+            add_once(support_artifact)
     return _Package(
         owner="region_overrides",
         root=root,

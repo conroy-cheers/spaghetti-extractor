@@ -25,12 +25,15 @@ from .model import (
 )
 
 
-HEAVY_CAPABILITIES = frozenset({"bochs", "compiler", "isa", "lean", "native", "nix", "wine"})
+HEAVY_CAPABILITIES = frozenset(
+    {"bochs", "cbmc", "compiler", "isa", "lean", "native", "nix", "wine"}
+)
 ALLOWED_DIRECTIVE_KEYS = frozenset(
     {"capabilities", "commands", "dependencies", "fixtures", "resources", "subsystem"}
 )
 HEAVY_COMMANDS = {
     "bochs": "bochs-conformance",
+    "cbmc": "cbmc",
     "cc": "compiler",
     "clang": "compiler",
     "clang-cl": "compiler",
@@ -45,6 +48,7 @@ HEAVY_COMMANDS = {
 }
 CAPABILITY_FIXTURES = {
     "bochs": "bochs-conformance",
+    "cbmc": "cbmc",
     "compiler": "compiler",
     "lean": "lean-isa-runner",
     "nix": "nix",
@@ -289,6 +293,7 @@ def _heavy_tool_diagnostics(tree: ast.Module, *, path: str) -> list[Diagnostic]:
 def _heavy_tool_capabilities(tree: ast.Module) -> set[str]:
     by_fixture = {
         "bochs-conformance": "bochs",
+        "cbmc": "cbmc",
         "compiler": "compiler",
         "headless-wine": "wine",
         "lean-isa-runner": "lean",

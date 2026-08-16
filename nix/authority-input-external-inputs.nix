@@ -71,4 +71,9 @@ assert metadata.binary.identity == binaryIdentity;
     expectedKind = metadata.launch_roots.artifact_kind;
     expectedRecordIds = metadata.launch_roots.record_ids;
   };
+  staticValueOrigins = {
+    artifact = "${derivation}/static-value-origins";
+    expectedKind = metadata.static_value_origins.artifact_kind;
+    expectedRecordIds = metadata.static_value_origins.record_ids;
+  };
 }

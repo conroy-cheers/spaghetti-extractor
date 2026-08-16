@@ -49,10 +49,7 @@ from spaghetti_extractor.candidate.build import (
     compile_spx_interpreter_native_source_bundle,
     prepare_spx_interpreter_native_object_graph,
 )
-from spaghetti_extractor.candidate.engine import (
-    _machine_ir_internal_call_preservation,
-    write_spx_native_engine_package,
-)
+from spaghetti_extractor.candidate.engine import write_spx_native_engine_package
 from spaghetti_extractor.candidate.runtime import (
     CandidateRuntimeError,
     write_spx_native_runtime_package,
@@ -71,6 +68,9 @@ from spaghetti_extractor.components.formats import (
     COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
 )
 from spaghetti_extractor.util import sha256_bytes, sha256_file
+from tests.unit.candidate.native_engine._support import (
+    _candidate_execution_artifacts,
+)
 
 
 PE_OFFSET = 0x80
@@ -222,50 +222,6 @@ class _Packages:
             "coverage": {"counts": {"unknown_bytes": 0}},
             "issues": [],
             "external": {"events": []},
-            "control": {
-                "reachability": {
-                    "status": "complete",
-                    "roots": [unit["id"]],
-                    "reachable_units": [unit["id"]],
-                    "potential_units": [],
-                    "confirmed_unreachable_units": [],
-                    "frontiers": [],
-                },
-                "callback_cutpoint_proposals": [],
-                "internal_call_preservation": {
-                    "format": "spaghetti-extractor-internal-call-preservation-v1",
-                    "status": "complete",
-                    "fixed_point_complete": True,
-                    "summaries": [{
-                        "status": "complete",
-                        "target_unit_id": unit["id"],
-                        "target_rva": 0x1000,
-                        "root_kind": "behavioral_root",
-                        "return_behavior": {
-                            "status": "complete",
-                            "may_return": True,
-                            "may_not_return": False,
-                        },
-                        "return_nodes": 1,
-                        "return_unit_ids": [unit["id"]],
-                        "reached_units": 1,
-                        "stack_cleanup": {
-                            "status": "complete",
-                            "stack_delta": 0,
-                            "return_stack_offset": 4,
-                        },
-                        "preserved_registers": [],
-                        "blocker_codes": [],
-                    }],
-                },
-                "external_interface_provenance": {
-                    "format": "spaghetti-extractor-external-interface-provenance-v1",
-                    "status": "complete",
-                    "resolutions": [],
-                    "issues": [],
-                    "callback_registrations": [],
-                },
-            },
         })
         _write_json(self.profile, {
             "format": "spaghetti-extractor-static-machine-import-profile-v1",
@@ -280,11 +236,17 @@ class _Packages:
             artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
             bindings=(),
         ).write(self.canonical_external_sites, [])
+        execution_authority = _candidate_execution_artifacts(
+            root, units=[unit]
+        )
         write_spx_native_engine_package(
             machine_ir=self.machine_ir,
             machine_ir_manifest=self.machine_ir_manifest,
             entry_rva=0x1000,
             canonical_external_sites=self.canonical_external_sites,
+            root_closure=execution_authority[0],
+            target_certificates=execution_authority[1],
+            parametric_summaries=execution_authority[2],
             out=self.engine,
         )
         write_spx_native_runtime_package(
@@ -435,7 +397,7 @@ class _Packages:
             "bindings": {"machine_ir_sha256": machine_ir_sha256},
             "policy": {
                 "runtime_package_is_sole_candidate_authority": True,
-                "enabled_components_must_be_qualified": True,
+                "enabled_components_must_have_checked_activation_authority": True,
                 "subsumed_members_may_not_fallback": True,
                 "fallback_on_unimplemented": False,
                 "original_execution_forbidden": True,

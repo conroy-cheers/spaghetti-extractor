@@ -601,6 +601,7 @@ MEMORY_VERSIONS_PHASE_V3 = map_sccs(
     schedule_record_inputs=("semantic_index",),
     completeness=check_memory_versions_completeness_v3,
     unit_aligned_inputs=("semantic_index", "transition_summaries"),
+    output_value_codec="plain-json-v1",
 )
 
 

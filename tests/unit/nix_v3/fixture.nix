@@ -1,5 +1,6 @@
 {
   pkgs,
+  pythonEnv,
   structuralMutation ? false,
   structuralMismatch ? false,
   edgeMutation ? false,
@@ -12,7 +13,6 @@
 
 let
   repositoryRoot = ../../..;
-  pythonEnv = pkgs.python3;
   frameworkSource = pkgs.lib.fileset.toSource {
     root = repositoryRoot;
     fileset = pkgs.lib.fileset.unions [
@@ -220,8 +220,7 @@ let
   unitIds = map (name: "unit:${name}") (builtins.attrNames unitValues);
   seedArtifacts = pkgs.lib.mapAttrs mkSeedArtifact unitValues;
   packHelpers = import ../../../nix/authority-graph-v3-packs.nix {
-    inherit pkgs pythonSource;
-    pythonEnv = pkgs.python3;
+    inherit pkgs pythonEnv pythonSource;
   };
   packedBC = packHelpers.mergeArtifactShards {
     name = "authority-graph-v3-fixture-packed-b-c";

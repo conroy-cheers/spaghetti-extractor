@@ -39,6 +39,7 @@ from spaghetti_extractor.candidate.runtime import (
 from spaghetti_extractor.util import sha256_bytes, sha256_file
 from spaghetti_extractor.errors import ToolkitInputError
 from tests.unit.candidate.native_engine._support import (
+    _candidate_execution_artifacts,
     _canonical_external_sites,
     _implementation_manifest,
     _machine_ir_x87_transfer,
@@ -204,52 +205,10 @@ def _packages(
                 fixture_units.append(_as_machine_ir(_transfer(return_rva)))
                 starts.add(return_rva)
     fixture_units = _write_machine_ir(semantic_input, fixture_units)
-    resolutions = []
-    summaries = []
-    by_rva = {
-        int(unit["source"]["original"]["rva_start"]): unit
-        for unit in fixture_units
-    }
-    for unit in fixture_units:
-        for event_index, event in enumerate(unit["semantics"]["external_events"]):
-            if event.get("kind") == "indirect_call" and not event.get("dll"):
-                internal_targets = [
-                    candidate["id"]
-                    for rva, candidate in sorted(by_rva.items())
-                    if rva not in {
-                        int(unit["source"]["original"]["rva_start"]),
-                        event.get("return_rva"),
-                    }
-                ]
-                resolutions.append({
-                    "status": "recovered",
-                    "source_unit_id": unit["id"],
-                    "source_event_index": event_index,
-                    "target_unit_ids": internal_targets,
-                })
-            if event.get("kind") == "internal_call":
-                target_rva = int(event["target_rva"])
-                target = by_rva[target_rva]
-                target_outcome = target["semantics"].get("outcome")
-                summaries.append({
-                    "target_rva": target_rva,
-                    "return_behavior": {
-                        "may_return": not (
-                            isinstance(target_outcome, dict)
-                            and target_outcome.get("kind") == "external_jump"
-                        )
-                    },
-                })
     manifest = root / "machine-ir-manifest.json"
     manifest.write_text(
         json.dumps(
-            _implementation_manifest(
-                semantic_input,
-                roots=[str(fixture_units[0]["id"])],
-                reachable=[str(unit["id"]) for unit in fixture_units],
-                resolutions=resolutions,
-                summaries=summaries,
-            ),
+            _implementation_manifest(semantic_input),
             sort_keys=True,
         ),
         encoding="utf-8",
@@ -342,6 +301,9 @@ def _packages(
             artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
             bindings=(),
         ).write(canonical_external_sites, [])
+    execution_authority = _candidate_execution_artifacts(
+        root, units=fixture_units
+    )
     write_spx_native_engine_package(
         machine_ir=semantic_input,
         machine_ir_manifest=manifest,
@@ -365,9 +327,11 @@ def _packages(
             else None
         ),
         selected_portable_components=selected_portable_components or [],
-        machine_import_profiles=profiles,
         canonical_external_sites=canonical_external_sites,
         out=engine,
+        root_closure=execution_authority[0],
+        target_certificates=execution_authority[1],
+        parametric_summaries=execution_authority[2],
     )
     return interpreter, engine
 

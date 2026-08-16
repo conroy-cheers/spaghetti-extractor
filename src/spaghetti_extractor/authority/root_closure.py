@@ -311,6 +311,7 @@ class LaunchRootClosureV3:
     authorizing: bool
     submitted_root_ids: tuple[str, ...]
     admitted_root_ids: tuple[str, ...]
+    root_unit_ids: tuple[str, ...]
     reachable_unit_ids: tuple[str, ...]
     edges: tuple[RootedControlEdgeV3, ...]
     frontier_ids: tuple[str, ...]
@@ -333,6 +334,7 @@ class LaunchRootClosureV3:
         for values, context in (
             (self.submitted_root_ids, "submitted launch roots"),
             (self.admitted_root_ids, "admitted launch roots"),
+            (self.root_unit_ids, "admitted root unit IDs"),
             (self.reachable_unit_ids, "reachable unit IDs"),
             (self.frontier_ids, "rooted frontier IDs"),
         ):
@@ -347,6 +349,12 @@ class LaunchRootClosureV3:
                 "root_closure_contradiction",
                 "admitted roots are not a subset of submitted roots",
                 "admit only independently checked root records",
+            )
+        if not set(self.root_unit_ids) <= set(self.reachable_unit_ids):
+            fail(
+                "root_closure_contradiction",
+                "admitted root units are not reachable",
+                "seed the checked closure from every admitted root unit",
             )
         if self.edges != tuple(sorted(set(self.edges))):
             fail(
@@ -379,6 +387,7 @@ def _encode_root_closure(value: LaunchRootClosureV3) -> dict[str, Any]:
         "authorizing": value.authorizing,
         "submitted_root_ids": list(value.submitted_root_ids),
         "admitted_root_ids": list(value.admitted_root_ids),
+        "root_unit_ids": list(value.root_unit_ids),
         "reachable_unit_ids": list(value.reachable_unit_ids),
         "edges": [row.to_payload() for row in value.edges],
         "frontier_ids": list(value.frontier_ids),
@@ -397,6 +406,7 @@ def _decode_root_closure(value: Any) -> LaunchRootClosureV3:
             "authorizing",
             "submitted_root_ids",
             "admitted_root_ids",
+            "root_unit_ids",
             "reachable_unit_ids",
             "edges",
             "frontier_ids",
@@ -427,6 +437,9 @@ def _decode_root_closure(value: Any) -> LaunchRootClosureV3:
         ),
         admitted_root_ids=canonical_strings(
             row["admitted_root_ids"], "admitted launch roots"
+        ),
+        root_unit_ids=canonical_strings(
+            row["root_unit_ids"], "admitted root unit IDs"
         ),
         reachable_unit_ids=canonical_strings(
             row["reachable_unit_ids"], "reachable unit IDs"
@@ -738,6 +751,7 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
         authorizing=status == "complete",
         submitted_root_ids=submitted_ids,
         admitted_root_ids=tuple(sorted(row.record_id for row in admitted)),
+        root_unit_ids=tuple(sorted({row.unit_id for row in admitted})),
         reachable_unit_ids=tuple(sorted(reachable)),
         edges=tuple(sorted(edges)),
         frontier_ids=tuple(sorted(frontiers)),

@@ -108,6 +108,7 @@ def _base_inputs(root: Path) -> tuple[Path, Path, Path, ExactUnitV3]:
         authorizing=True,
         submitted_root_ids=("root:entry",),
         admitted_root_ids=("root:entry",),
+        root_unit_ids=(exact.unit_id,),
         reachable_unit_ids=(exact.unit_id,),
         edges=(),
         frontier_ids=(),

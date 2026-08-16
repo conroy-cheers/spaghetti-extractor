@@ -54,9 +54,13 @@ let
     root = repositoryRoot;
     fileset = ../src;
   };
+  nativeExtension = import ./native-extension.nix {
+    inherit pkgs pythonPackages;
+  };
   pythonEnv = pkgs.python3.withPackages (ps: with ps; [
     capstone
     pefile
+    nativeExtension
     unicorn
     z3-solver
   ]);
@@ -66,7 +70,12 @@ let
     pyproject = true;
     src = packageSource;
     build-system = [ pythonPackages.setuptools ];
-    dependencies = with pythonPackages; [ capstone pefile z3-solver ];
+    dependencies = with pythonPackages; [
+      capstone
+      nativeExtension
+      pefile
+      z3-solver
+    ];
     # Nixpkgs exposes the z3 Python module without wheel distribution metadata.
     pythonRemoveDeps = [ "z3-solver" ];
     optional-dependencies.conformance = [ pythonPackages.unicorn ];
@@ -126,6 +135,10 @@ let
       environment.SPAGHETTI_BOCHS_INTEGRATION_RUNNER =
         "${bochsConformance}/bin/spaghetti-bochs-conformance-runner";
     };
+    cbmc = {
+      path = pkgs.cbmc;
+      nativeBuildInputs = [ pkgs.cbmc ];
+    };
     compiler = {
       path = pkgs.pkgsCross.mingw32.stdenv.cc;
       nativeBuildInputs = [
@@ -153,7 +166,7 @@ let
   };
 in
 {
-  inherit repositoryRoot pythonEnv package fixtureCatalog fixtures;
+  inherit repositoryRoot pythonEnv package nativeExtension fixtureCatalog fixtures;
   sources = {
     inherit
       packageSource

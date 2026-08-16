@@ -127,37 +127,6 @@ class ComponentEvidenceTests(unittest.TestCase):
         self.assertEqual(evidence["status"], "satisfied")
         self.assertEqual(evidence["coverage"]["cases"], 16)
 
-    def test_candidate_only_functional_vectors_qualify(self) -> None:
-        self._write_scalar_contract(profile="validation-backed-v1")
-        verification = {
-            "producer": "candidate-only-functional-suite-v1",
-            "cases": [
-                {"id": "zero", "arguments": {"value": 0}, "expected": 0},
-                {"id": "high", "arguments": {"value": 255}, "expected": 255},
-            ],
-        }
-        package = self._source(
-            "uint32_t identity(uint32_t value) { return value; }\n"
-        )
-        adapter = self._adapter(package)
-        evidence = self._evidence(
-            package, adapter, verification, "functional-evidence.json"
-        )
-        self.assertEqual(evidence["status"], "satisfied")
-        self.assertEqual(
-            evidence["method"]["kind"], "candidate_only_functional_suite_v1"
-        )
-        qualification = qualify_lift_unit(
-            contract=self.contract / "contract.json",
-            implementation=package,
-            evidence=evidence,
-            adapter_plan=adapter,
-            machine_ir=self.machine,
-            verification=verification,
-            out=self.root / "functional-qualification.json",
-        )
-        self.assertEqual(qualification["status"], "qualified")
-
     def test_object_view_reads_declared_byte_buffer(self) -> None:
         self._use_object_fixture()
         package = self._object_source(

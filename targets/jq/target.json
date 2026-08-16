@@ -8,7 +8,8 @@
   },
   "paths": {
     "nix": "default.nix",
-    "components": "intent/components.json"
+    "components": "intent/components.json",
+    "libraries": "intent/libraries"
   },
   "workflow": {
     "default_configuration": "operator-whole"

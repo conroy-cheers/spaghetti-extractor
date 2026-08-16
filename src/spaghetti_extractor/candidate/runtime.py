@@ -152,9 +152,9 @@ def plan_spx_native_runtime(
     )
     native_plan = _read_json_object(native_plan_path, "native-engine plan")
     native_policy = _required_object(native.get("policy"), "native-engine policy")
-    if native_policy.get("execution_scope") != "complete-static-authority":
+    if native_policy.get("execution_scope") != "structural-executable-v1":
         raise CandidateRuntimeError(
-            "native-engine package does not require complete static authority"
+            "native-engine package does not require structural executability"
         )
     if native.get("callback_adapter_receipts") != native_plan.get(
         "callback_adapter_receipts"
@@ -362,9 +362,9 @@ def write_spx_native_runtime_package(
         },
         "policy": {
             "architecture": "i686-pe32",
-            "execution_scope": "complete-static-authority",
+            "execution_scope": "structural-executable-v1",
             "freestanding": True,
-            "static_hybrid_closure_receipt_required": True,
+            "structural_execution_receipt_required": True,
             "implementation_dispatch": (
                 "exact-linked-class-per-interpreter-transfer-v1"
             ),

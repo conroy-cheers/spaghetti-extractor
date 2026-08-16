@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -18,8 +20,6 @@ from spaghetti_extractor.build_support.python_module_index import (
     build_python_module_index,
     declared_public_command_roots,
 )
-
-
 TESTKIT = {"commands": ("*",)}
 
 
@@ -48,10 +48,16 @@ OPERATOR_COMMANDS = (
     "component list",
     "component status",
     "component build",
+    "component bind",
     "component check",
+    "library status",
+    "library inspect",
+    "library adopt",
+    "library check",
     "candidate list",
     "candidate status",
     "candidate build",
+    "candidate check",
     "candidate test",
 )
 
@@ -119,7 +125,7 @@ class PublicCliTests(unittest.TestCase):
         namespaces = _subcommands(parser)
         self.assertEqual(
             tuple(namespaces.choices),
-            ("project", "component", "candidate", "expert"),
+            ("project", "component", "library", "candidate", "expert"),
         )
         self.assertEqual(
             tuple(command.name for command in SUPPORTED_COMMANDS),
@@ -261,22 +267,36 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
             "hasComponents": True,
             "defaultConfiguration": "default",
             "components": {
-                "units": {"leaf": {"kind": "component", "label": "Leaf"}},
+                "units": {
+                    "leaf": {
+                        "kind": "component",
+                        "label": "Leaf",
+                        "hasActivationReceipt": True,
+                    }
+                },
                 "configurations": {"default": {"kind": "configuration"}},
             },
             "candidate": {
                 "configurations": ["default"],
                 "testSuites": {"public": {"configurationId": "default"}},
             },
+            "libraries": {"configured": True, "selections": []},
         }
         cases = (
             (["project", "analyze", "jq"], "project.analysis", False),
             (["project", "check", "dxball"], "project.regressionCheck", True),
             (["project", "check", "jq", "--acceptance"], "project.acceptanceCheck", True),
-            (["component", "build", "gnu-hello", "leaf"], 'components.units."leaf".workPackage', False),
+            (["component", "build", "gnu-hello", "leaf"], 'components.units."leaf".build', False),
             (["component", "build", "gnu-hello"], 'components.configurations."default".runtime', False),
             (["component", "check", "gnu-hello", "leaf"], 'components.units."leaf".check', True),
+            (["library", "check", "gnu-hello"], "libraries.check", True),
             (["candidate", "build", "jq"], 'candidate.builds."default"', False),
+            (["candidate", "check", "jq"], 'candidate.checks."default"."hybrid"', True),
+            (
+                ["candidate", "check", "jq", "--mode", "portable"],
+                'candidate.checks."default"."portable"',
+                True,
+            ),
             (["candidate", "test", "jq"], "candidate.allTests", True),
             (["candidate", "test", "jq", "--suite", "public"], 'candidate.tests."public"', True),
         )
@@ -292,6 +312,113 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
                 called_args, called_kwargs = build.call_args
                 self.assertEqual(called_args[1], suffix)
                 self.assertEqual(called_kwargs.get("no_link", False), no_link)
+
+    def test_library_check_accepts_the_public_island_id(self) -> None:
+        island = "library-island-v4:" + "a" * 64
+        index = {
+            "libraries": {"configured": True, "selections": ["a" * 64]},
+        }
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._build", return_value=0
+        ) as build:
+            self.assertEqual(
+                main(["library", "check", "fixture", "--selection", island]),
+                0,
+            )
+        self.assertEqual(
+            build.call_args.args[1], f'libraries.checks."{"a" * 64}"'
+        )
+        self.assertTrue(build.call_args.kwargs["no_link"])
+
+    def test_component_status_reads_the_canonical_checked_status(self) -> None:
+        index = {
+            "hasComponents": True,
+            "defaultConfiguration": "default",
+            "components": {
+                "units": {"leaf": {
+                    "kind": "component",
+                    "label": "Leaf",
+                    "hasActivationReceipt": True,
+                }},
+                "configurations": {"default": {"kind": "configuration"}},
+            },
+        }
+        report = {"status": "ready", "counts": None, "next_action": None}
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._realize_json",
+            return_value=report,
+        ) as realize, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(main(["component", "status", "fixture", "leaf"]), 0)
+            self.assertEqual(
+                realize.call_args.args[1], 'components.units."leaf".status'
+            )
+
+    def test_component_development_status_selects_the_local_progress_leaf(self) -> None:
+        index = {
+            "hasComponents": True,
+            "defaultConfiguration": "default",
+            "components": {
+                "units": {"leaf": {"kind": "component", "label": "Leaf"}},
+                "configurations": {"default": {"kind": "configuration"}},
+            },
+        }
+        report = {"status": "incomplete", "counts": None, "next_action": None}
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), patch(
+            "spaghetti_extractor.commands.workflows._realize_json",
+            return_value=report,
+        ) as realize, contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(
+                main(
+                    [
+                        "component",
+                        "status",
+                        "fixture",
+                        "leaf",
+                        "--development",
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(
+            realize.call_args.args[1],
+            'components.units."leaf".developmentStatus',
+        )
+
+    def test_component_development_status_rejects_configurations(self) -> None:
+        index = {
+            "hasComponents": True,
+            "defaultConfiguration": "default",
+            "components": {
+                "units": {"leaf": {"kind": "component", "label": "Leaf"}},
+                "configurations": {"default": {"kind": "configuration"}},
+            },
+        }
+        with patch(
+            "spaghetti_extractor.commands.workflows._operator_index",
+            return_value=index,
+        ), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(
+                main(
+                    [
+                        "component",
+                        "status",
+                        "fixture",
+                        "--configuration",
+                        "default",
+                        "--development",
+                    ]
+                ),
+                2,
+            )
 
     def test_project_status_reads_authority_only_status(self) -> None:
         report = {
@@ -324,6 +451,96 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         self.assertIn("authority-ready=false", output.getvalue())
         self.assertNotIn("configuration=", output.getvalue())
 
+    def test_library_status_reads_checked_operator_artifact(self) -> None:
+        report = {
+            "status": "incomplete",
+            "adoption_status": "ready",
+            "recognition_status": "incomplete",
+            "counts": {
+                "releases": 2,
+                "islands": 12,
+                "identity_complete": 4,
+                "boundary_complete": 1,
+                "implementation_complete": 1,
+                "ready_adoptions": 1,
+                "adoption_intents": 2,
+            },
+            "selections": [],
+            "primary_blockers": [],
+        }
+        output = io.StringIO()
+        with patch(
+            "spaghetti_extractor.commands.workflows._realize_json",
+            return_value=report,
+        ) as realize, contextlib.redirect_stdout(output):
+            self.assertEqual(main(["library", "status", "gnu-hello"]), 0)
+        self.assertEqual(realize.call_args.args[1], "libraries.status")
+        self.assertEqual(realize.call_args.args[2], "library-status.json")
+        self.assertIn("islands=12", output.getvalue())
+        self.assertIn("adoption=ready", output.getvalue())
+        self.assertIn("recognition=incomplete", output.getvalue())
+        self.assertIn("ready=1/2", output.getvalue())
+
+    def test_library_adoption_is_tracked_idempotent_and_refuses_stale_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            corpus = root / "targets"
+            bundle = corpus / "gnu-hello"
+            bundle.mkdir(parents=True)
+            (bundle / "target.json").write_text(
+                json.dumps(
+                    {
+                        "format": "spaghetti-extractor-target-bundle-v3",
+                        "id": "gnu-hello",
+                        "display_name": "GNU Hello",
+                        "input": {"kind": "pe32", "expected_sha256": "a" * 64},
+                        "paths": {
+                            "nix": "default.nix",
+                            "components": None,
+                            "libraries": "intent/libraries",
+                        },
+                        "workflow": {"default_configuration": None},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            island_id = "library-island-v4:" + "b" * 64
+            report = {
+                "islands": [
+                    {
+                        "id": island_id,
+                        "hypotheses_sha256": "c" * 64,
+                        "recipes": [
+                            {
+                                "recipe_id": "portable-runtime",
+                                "implementation_id": "implementation:" + "d" * 64,
+                            }
+                        ],
+                    }
+                ]
+            }
+            arguments = [
+                "library", "adopt", "gnu-hello",
+                "--target-flake", str(corpus),
+                "--island", island_id,
+                "--recipe", "portable-runtime",
+            ]
+            with patch(
+                "spaghetti_extractor.commands.workflows._realize_json",
+                return_value=report,
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(arguments), 0)
+                self.assertEqual(main(arguments), 0)
+            outputs = list((bundle / "intent" / "libraries").glob("*.json"))
+            self.assertEqual(len(outputs), 1)
+            intent = json.loads(outputs[0].read_text(encoding="utf-8"))
+            self.assertEqual(intent["format"], "spaghetti-extractor-library-adoption-intent-v1")
+            outputs[0].write_text("{}\n", encoding="utf-8")
+            with patch(
+                "spaghetti_extractor.commands.workflows._realize_json",
+                return_value=report,
+            ), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(main(arguments), 2)
     def test_component_list_is_index_only(self) -> None:
         index = {
             "hasComponents": True,
@@ -380,6 +597,7 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         for command in (
             ["component", "build", "fixture"],
             ["candidate", "build", "fixture"],
+            ["candidate", "check", "fixture"],
         ):
             with self.subTest(command=command), patch(
                 "spaghetti_extractor.commands.workflows._operator_index",
@@ -427,13 +645,13 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
             },
         }
         report = {
-            "format": "spaghetti-extractor-candidate-status-v1",
+            "format": "spaghetti-extractor-candidate-status-v2",
             "configuration_id": "minimal",
             "status": "ready",
-            "authority_ready": True,
+            "structural_ready": True,
             "configuration_ready": True,
             "build_ready": True,
-            "authority": {"status": "complete", "authorizing": True},
+            "structural": {"status": "complete", "executable": True},
             "counts": {"primary_frontiers": 0, "dependent_occurrences": 0},
             "primary_frontiers": [],
             "next_action": "build candidate configuration minimal",
@@ -495,7 +713,7 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
         args = build.call_args.args[0]
         self.assertEqual(args.target_flake, "path:/tmp/consumer")
         self.assertEqual(
-            build.call_args.args[1], 'components.units."leaf".workPackage'
+            build.call_args.args[1], 'components.units."leaf".build'
         )
 
     def test_operator_installables_quote_dotted_dynamic_identifiers(self) -> None:

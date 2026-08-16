@@ -26,9 +26,7 @@ from .model import (
 
 _IDENTIFIER = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\Z")
 _C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-_EVIDENCE_PRODUCERS = frozenset(
-    {"exhaustive-finite-domain-v1", "candidate-only-functional-suite-v1"}
-)
+_EVIDENCE_PRODUCERS = frozenset({"exhaustive-finite-domain-v1"})
 _FORBIDDEN_GENERATED_KEYS = frozenset(
     {
         "artifact_sha256",
@@ -162,11 +160,32 @@ def load_component_catalog_intent(
                     f"configuration {configuration.identity} enables "
                     f"{selection.identity} without portable source"
                 )
-            if selection.activation == "enabled" and selected.verification is None:
-                raise ComponentIntentError(
-                    f"configuration {configuration.identity} enables "
-                    f"{selection.identity} without an evidence producer"
+            if selection.activation == "enabled":
+                portable_v2 = (
+                    selected.evidence_profile == "portable-component-v2"
+                    and selected.source is not None
+                    and bool(selected.source.operation_symbols)
                 )
+                if portable_v2:
+                    missing = [
+                        name
+                        for name, value in (
+                            ("interface review", selected.interface_review),
+                            ("machine binding", selected.machine_binding),
+                        )
+                        if value is None
+                    ]
+                    if missing:
+                        raise ComponentIntentError(
+                            f"configuration {configuration.identity} enables "
+                            f"portable V2 component {selection.identity} without "
+                            f"{', '.join(missing)}"
+                        )
+                elif selected.verification is None:
+                    raise ComponentIntentError(
+                        f"configuration {configuration.identity} enables "
+                        f"{selection.identity} without an evidence producer"
+                    )
     return ComponentCatalogIntent(
         program_id=program_id,
         permitted_activation_profiles=permitted,
@@ -193,9 +212,17 @@ def _component(
             "interface_review",
             "source",
             "verification",
+            "machine_binding",
+            "induction",
         },
         f"component {index}",
-        optional={"interface_review", "source", "verification"},
+        optional={
+            "interface_review",
+            "source",
+            "verification",
+            "machine_binding",
+            "induction",
+        },
     )
     result = ComponentIntent(
         identity=_identifier(row.get("id"), f"component {index} id"),
@@ -219,6 +246,18 @@ def _component(
         verification=_verification(
             row.get("verification"), f"component {index} verification"
         ),
+        machine_binding=_optional_path(
+            row.get("machine_binding"),
+            root,
+            f"component {index} machine binding",
+            require_exists=require_references,
+        ),
+        induction=_optional_path(
+            row.get("induction"),
+            root,
+            f"component {index} induction declaration",
+            require_exists=require_references,
+        ),
     )
     _check_evidence_plan(result.evidence_profile, result.verification, f"component {index}")
     return result
@@ -241,9 +280,17 @@ def _group(
             "interface_review",
             "source",
             "verification",
+            "machine_binding",
+            "induction",
         },
         f"group {index}",
-        optional={"interface_review", "source", "verification"},
+        optional={
+            "interface_review",
+            "source",
+            "verification",
+            "machine_binding",
+            "induction",
+        },
     )
     members = tuple(
         _identifier(value, f"group {index} member")
@@ -272,6 +319,18 @@ def _group(
         ),
         verification=_verification(
             row.get("verification"), f"group {index} verification"
+        ),
+        machine_binding=_optional_path(
+            row.get("machine_binding"),
+            root,
+            f"group {index} machine binding",
+            require_exists=require_references,
+        ),
+        induction=_optional_path(
+            row.get("induction"),
+            root,
+            f"group {index} induction declaration",
+            require_exists=require_references,
         ),
     )
     _check_evidence_plan(result.evidence_profile, result.verification, f"group {index}")
@@ -323,9 +382,9 @@ def _source(
     row = _object(value, context)
     _exact_keys(
         row,
-        {"files", "shared_inputs", "entry"},
+        {"files", "shared_inputs", "entry", "operations"},
         context,
-        optional={"shared_inputs"},
+        optional={"shared_inputs", "entry", "operations"},
     )
     files = tuple(
         _path(item, root, f"{context} file", require_exists=require_references)
@@ -344,19 +403,48 @@ def _source(
         raise ComponentIntentError(f"{context} has no files")
     if len(set((*files, *shared))) != len((*files, *shared)):
         raise ComponentIntentError(f"{context} paths are duplicated")
-    entry = _object(row.get("entry"), f"{context} entry")
-    _exact_keys(entry, {"abi", "symbol"}, f"{context} entry")
-    abi = _string(entry.get("abi"), f"{context} entry ABI")
-    if abi not in SOURCE_ENTRY_ABIS:
-        raise ComponentIntentError(f"{context} entry ABI is unsupported: {abi}")
-    symbol = _string(entry.get("symbol"), f"{context} entry symbol")
-    if _C_IDENTIFIER.fullmatch(symbol) is None:
-        raise ComponentIntentError(f"{context} entry symbol is not a C identifier")
+    entry_value = row.get("entry")
+    operations_value = row.get("operations")
+    if (entry_value is None) == (operations_value is None):
+        raise ComponentIntentError(
+            f"{context} requires exactly one of entry or operations"
+        )
+    abi: str | None = None
+    symbol: str | None = None
+    operations: tuple[tuple[str, str], ...] = ()
+    if entry_value is not None:
+        entry = _object(entry_value, f"{context} entry")
+        _exact_keys(entry, {"abi", "symbol"}, f"{context} entry")
+        abi = _string(entry.get("abi"), f"{context} entry ABI")
+        if abi not in SOURCE_ENTRY_ABIS:
+            raise ComponentIntentError(f"{context} entry ABI is unsupported: {abi}")
+        symbol = _string(entry.get("symbol"), f"{context} entry symbol")
+        if _C_IDENTIFIER.fullmatch(symbol) is None:
+            raise ComponentIntentError(f"{context} entry symbol is not a C identifier")
+    else:
+        operation_rows = _object(operations_value, f"{context} operations")
+        if not operation_rows:
+            raise ComponentIntentError(f"{context} operations must not be empty")
+        parsed_operations: list[tuple[str, str]] = []
+        for operation_id, operation_symbol in operation_rows.items():
+            checked_id = _identifier(operation_id, f"{context} operation id")
+            checked_symbol = _string(
+                operation_symbol, f"{context} operation symbol"
+            )
+            if _C_IDENTIFIER.fullmatch(checked_symbol) is None:
+                raise ComponentIntentError(
+                    f"{context} operation symbol is not a C identifier"
+                )
+            parsed_operations.append((checked_id, checked_symbol))
+        operations = tuple(sorted(parsed_operations))
+        if len({value for _identity, value in operations}) != len(operations):
+            raise ComponentIntentError(f"{context} operation symbols are duplicated")
     return SourceInput(
         files=files,
         shared_inputs=shared,
         entry_abi=abi,
         entry_symbol=symbol,
+        operation_symbols=operations,
     )
 
 
@@ -366,9 +454,8 @@ def _verification(value: object, context: str) -> ComponentEvidencePlan | None:
     row = _object(value, context)
     _exact_keys(
         row,
-        {"producer", "parameter_domains", "cases"},
+        {"producer", "parameter_domains"},
         context,
-        optional={"parameter_domains", "cases"},
     )
     producer = _string(row.get("producer"), f"{context} producer")
     if producer not in _EVIDENCE_PRODUCERS:
@@ -457,46 +544,10 @@ def _verification(value: object, context: str) -> ComponentEvidencePlan | None:
     ids = [str(domain["parameter_id"]) for domain in domains]
     if len(ids) != len(set(ids)):
         raise ComponentIntentError(f"{context} parameter domains are duplicated")
-    cases: list[Mapping[str, object]] = []
-    for index, raw in enumerate(_array(row.get("cases", []), f"{context} cases")):
-        case = _object(raw, f"{context} case {index}")
-        _exact_keys(case, {"id", "arguments", "expected"}, f"{context} case {index}")
-        arguments = _object(case.get("arguments"), f"{context} case {index} arguments")
-        expected = case.get("expected")
-        if not isinstance(expected, int) or isinstance(expected, bool):
-            raise ComponentIntentError(
-                f"{context} case {index} expected value must be an integer"
-            )
-        cases.append(
-            {
-                "id": _identifier(case.get("id"), f"{context} case {index} id"),
-                "arguments": {
-                    str(name): _case_argument(
-                        value, f"{context} case {index} argument {name}"
-                    )
-                    for name, value in sorted(arguments.items())
-                },
-                "expected": expected,
-            }
-        )
-    if producer == "candidate-only-functional-suite-v1" and not cases:
-        raise ComponentIntentError(f"{context} functional producer has no cases")
-    case_ids = [str(case["id"]) for case in cases]
-    if len(case_ids) != len(set(case_ids)):
-        raise ComponentIntentError(f"{context} case identifiers are duplicated")
     return ComponentEvidencePlan(
         producer=producer,
         parameter_domains=tuple(domains),
-        cases=tuple(cases),
     )
-
-
-def _case_argument(value: object, context: str) -> object:
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    if isinstance(value, list):
-        return _byte_array(value, context)
-    raise ComponentIntentError(f"{context} must be an integer or byte array")
 
 
 def _byte_array(value: object, context: str) -> list[int]:
@@ -520,7 +571,7 @@ def _check_evidence_plan(
     expected = EVIDENCE_PROFILE_PRODUCERS.get(profile)
     if expected is None:
         raise ComponentIntentError(
-            f"{context} structural-draft profile cannot declare behavioral evidence"
+            f"{context} profile {profile} cannot declare legacy behavioral evidence"
         )
     if plan.producer != expected:
         raise ComponentIntentError(

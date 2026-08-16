@@ -3,297 +3,57 @@
   "lift_unit_id": "last-path-component",
   "accept_derived_machine_boundary": true,
   "overrides": {
-    "source_abi": "logical-object-c-v1",
-    "parameters": [
-      {
-        "id": "value",
-        "type": "nul-terminated-bytes-v1",
-        "memory_view": {
-          "kind": "nul-terminated-read-view-v1",
-          "element_width": 1,
-          "event_refs": [
-            {
-              "family": "memory_event",
-              "unit_id": "semantic-transfer:original-cutpoint-00006687-00006692",
-              "index": 0
-            },
-            {
-              "family": "memory_event",
-              "unit_id": "semantic-transfer:original-cutpoint-0000669a-000066a6",
-              "index": 0
-            },
-            {
-              "family": "memory_event",
-              "unit_id": "semantic-transfer:original-cutpoint-000066a6-000066a9",
-              "index": 0
-            },
-            {
-              "family": "memory_event",
-              "unit_id": "semantic-transfer:original-cutpoint-000066b0-000066bb",
-              "index": 0
-            },
-            {
-              "family": "memory_event",
-              "unit_id": "semantic-transfer:original-cutpoint-0000670a-00006715",
-              "index": 0
-            },
-            {
-              "family": "memory_event",
-              "unit_id": "semantic-transfer:original-cutpoint-00006723-0000672e",
-              "index": 0
-            }
-          ],
-          "access_witness": {
-            "kind": "finite-domain-machine-replay-v1"
-          }
-        },
-        "machine_source": {
-          "kind": "expression",
-          "expression": {
-            "op": "load",
-            "width": 4,
-            "address": {
-              "op": "add32",
-              "args": [
-                {
-                  "op": "const",
-                  "value": 4,
-                  "width": 32
-                },
-                {
-                  "op": "reg",
-                  "name": "esp",
-                  "width": 32
-                }
-              ]
-            }
-          },
-          "evidence": {
-            "unit_id": "semantic-transfer:original-cutpoint-00006680-00006687",
-            "json_pointer": "/semantics/register_writes/0/value"
-          }
-        }
-      }
-    ],
-    "results": [
-      {
-        "id": "result",
-        "kind": "return",
-        "type": "uint32_t",
-        "machine_source": {
-          "kind": "expression",
-          "expression": {
-            "op": "reg",
-            "name": "edx",
-            "width": 32
-          },
-          "evidence": {
-            "unit_id": "semantic-transfer:original-cutpoint-00006730-00006735",
-            "json_pointer": "/semantics/register_writes/0/value"
-          }
-        },
-        "value_relation": {
-          "kind": "offset-into-view-v1",
-          "parameter_id": "value"
-        },
-        "effect_refs": [
-          {
-            "family": "register_write",
-            "unit_id": "semantic-transfer:original-cutpoint-00006730-00006735",
-            "index": 0
-          }
-        ]
-      },
-      {
-        "id": "control",
-        "kind": "control",
-        "control": {
-          "unit_id": "semantic-transfer:original-cutpoint-00006735-0000673a",
-          "outcome_kind": "return",
-          "return_target": {
-            "op": "load",
-            "width": 4,
-            "address": {
-              "op": "reg",
-              "name": "esp",
-              "width": 32
-            }
-          }
-        }
-      }
-    ],
-    "objects": [],
-    "adapter_effects": {
-      "inherit_synthesized_except": [
+    "portable_interface_ir": {
+      "format": "spaghetti-extractor-component-interface-ir-v2",
+      "id": "last_path_component",
+      "types": [
         {
-          "family": "register_write",
-          "unit_id": "semantic-transfer:original-cutpoint-00006730-00006735",
-          "index": 0
-        }
-      ]
-    },
-    "completion": {
-      "kind": "explicit-machine-state-v1",
-      "state": {
-        "eax": {
-          "op": "add32",
-          "args": [
-            {
-              "op": "load",
-              "width": 4,
-              "address": {
-                "op": "add32",
-                "args": [
-                  {
-                    "op": "entry",
-                    "name": "esp"
-                  },
-                  {
-                    "op": "const",
-                    "value": 4,
-                    "width": 32
-                  }
-                ]
-              }
-            },
-            {
-              "op": "logical_result",
-              "result_id": "result"
-            }
-          ]
-        },
-        "ebx": {
-          "op": "entry",
-          "name": "ebx"
-        },
-        "ecx": {
-          "op": "const",
-          "value": 0,
-          "width": 32
-        },
-        "edx": {
-          "op": "const",
-          "value": 0,
-          "width": 32
-        },
-        "esi": {
-          "op": "entry",
-          "name": "esi"
-        },
-        "edi": {
-          "op": "entry",
-          "name": "edi"
-        },
-        "ebp": {
-          "op": "entry",
-          "name": "ebp"
-        },
-        "esp": {
-          "op": "add32",
-          "args": [
-            {
-              "op": "entry",
-              "name": "esp"
-            },
-            {
-              "op": "const",
-              "value": 4,
-              "width": 32
-            }
-          ]
-        },
-        "cf": {
-          "op": "false"
-        },
-        "zf": {
-          "op": "true"
-        },
-        "sf": {
-          "op": "false"
-        },
-        "of": {
-          "op": "false"
-        },
-        "pf": {
-          "op": "true"
-        },
-        "df": {
-          "op": "entry",
-          "name": "df"
-        }
-      },
-      "memory_writes": [
-        {
-          "address": {
-            "op": "sub32",
-            "args": [
-              {
-                "op": "entry",
-                "name": "esp"
-              },
-              {
-                "op": "const",
-                "value": 4,
-                "width": 32
-              }
-            ]
-          },
-          "width": 4,
-          "value": {
-            "op": "entry",
-            "name": "edi"
-          }
+          "id": "cstring",
+          "kind": "bytes",
+          "access": "read",
+          "extent_parameter_id": null,
+          "nul_terminated": true
         },
         {
-          "address": {
-            "op": "sub32",
-            "args": [
-              {
-                "op": "entry",
-                "name": "esp"
-              },
-              {
-                "op": "const",
-                "value": 8,
-                "width": 32
-              }
-            ]
-          },
-          "width": 4,
-          "value": {
-            "op": "entry",
-            "name": "esi"
-          }
-        },
-        {
-          "address": {
-            "op": "sub32",
-            "args": [
-              {
-                "op": "entry",
-                "name": "esp"
-              },
-              {
-                "op": "const",
-                "value": 12,
-                "width": 32
-              }
-            ]
-          },
-          "width": 4,
-          "value": {
-            "op": "entry",
-            "name": "ebx"
-          }
+          "id": "u32",
+          "kind": "scalar",
+          "c_type": "uint32_t"
         }
       ],
-      "return_target": {
-        "op": "load",
-        "width": 4,
-        "address": {
-          "op": "entry",
-          "name": "esp"
+      "state": [],
+      "operations": [
+        {
+          "id": "find",
+          "kind": "operation",
+          "parameters": [
+            {
+              "id": "value",
+              "type_id": "cstring"
+            }
+          ],
+          "results": [
+            {
+              "id": "result",
+              "type_id": "u32"
+            }
+          ],
+          "effect_ids": [],
+          "allowed_service_ids": [],
+          "pre_states": [
+            "ready"
+          ],
+          "post_states": [
+            "ready"
+          ]
         }
+      ],
+      "effects": [],
+      "services": [],
+      "protocol": {
+        "states": [
+          "ready"
+        ],
+        "initial_state": "ready"
       }
     }
   }

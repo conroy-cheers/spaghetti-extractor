@@ -32,11 +32,39 @@ COMPONENT_CONFIGURATION_RESOLUTION_V2_FORMAT = (
 COMPONENT_CONTRACT_PACKAGE_V2_FORMAT = (
     "spaghetti-extractor-component-contract-package-v2"
 )
+COMPONENT_DEVELOPMENT_CONTRACT_V1_FORMAT = (
+    "spaghetti-extractor-component-development-contract-v1"
+)
+COMPONENT_DEVELOPMENT_DECLARATION_V1_FORMAT = (
+    "spaghetti-extractor-component-development-declaration-v1"
+)
 COMPONENT_EXTERNAL_SITE_SLICE_V1_FORMAT = (
     "spaghetti-extractor-component-external-site-slice-v1"
 )
+COMPONENT_INTERFACE_IR_V2_FORMAT = (
+    "spaghetti-extractor-component-interface-ir-v2"
+)
+COMPONENT_CONTRACT_V3_FORMAT = "spaghetti-extractor-component-contract-v3"
+COMPONENT_IMPLEMENTATION_V3_FORMAT = (
+    "spaghetti-extractor-component-implementation-v3"
+)
+COMPONENT_MACHINE_BINDING_V3_FORMAT = (
+    "spaghetti-extractor-component-machine-binding-v3"
+)
+COMPONENT_DEPENDENCY_GRAPH_V3_FORMAT = (
+    "spaghetti-extractor-component-dependency-graph-v3"
+)
+COMPONENT_RELEASE_GATE_V1_FORMAT = (
+    "spaghetti-extractor-component-release-gate-v1"
+)
+COMPONENT_RETIREMENT_REPORT_V1_FORMAT = (
+    "spaghetti-extractor-component-retirement-report-v1"
+)
 COMPONENT_SOURCE_PACKAGE_V2_FORMAT = (
     "spaghetti-extractor-component-source-package-v2"
+)
+COMPONENT_SOURCE_PACKAGE_V3_FORMAT = (
+    "spaghetti-extractor-component-source-package-v3"
 )
 COMPONENT_ADAPTER_PLAN_V1_FORMAT = (
     "spaghetti-extractor-component-adapter-plan-v1"
@@ -63,6 +91,15 @@ COMPONENT_CONFIGURATION_STATUS_V1_FORMAT = (
 COMPONENT_WORK_PACKAGE_V1_FORMAT = (
     "spaghetti-extractor-component-work-package-v1"
 )
+COMPONENT_SEMANTIC_CONTRACT_V1_FORMAT = (
+    "spaghetti-extractor-component-semantic-contract-v1"
+)
+COMPONENT_SOURCE_PROFILE_V1_FORMAT = (
+    "spaghetti-extractor-component-source-profile-v1"
+)
+COMPONENT_REFINEMENT_RECEIPT_V1_FORMAT = (
+    "spaghetti-extractor-component-refinement-receipt-v1"
+)
 PORTABLE_SELECTION_V3_FORMAT = "spaghetti-extractor-portable-selection-v3"
 
 
@@ -70,6 +107,8 @@ __all__ = [
     "COMPONENT_ACTIVATION_PLAN_V3_FORMAT",
     "COMPONENT_ADAPTER_PLAN_V1_FORMAT",
     "COMPONENT_CONFIGURATION_STATUS_V1_FORMAT",
+    "COMPONENT_CONTRACT_V3_FORMAT",
+    "COMPONENT_DEPENDENCY_GRAPH_V3_FORMAT",
     "COMPONENT_DISCOVERY_RESULT_V2_FORMAT",
     "COMPONENT_PROPOSAL_INDEX_V2_FORMAT",
     "COMPONENT_PROPOSAL_PACKAGE_V2_FORMAT",
@@ -80,15 +119,26 @@ __all__ = [
     "COMPONENT_CATALOG_INTENT_V2_FORMAT",
     "COMPONENT_CONFIGURATION_RESOLUTION_V2_FORMAT",
     "COMPONENT_CONTRACT_PACKAGE_V2_FORMAT",
+    "COMPONENT_DEVELOPMENT_CONTRACT_V1_FORMAT",
+    "COMPONENT_DEVELOPMENT_DECLARATION_V1_FORMAT",
     "COMPONENT_EVIDENCE_V3_FORMAT",
     "COMPONENT_EXTERNAL_SITE_SLICE_V1_FORMAT",
+    "COMPONENT_INTERFACE_IR_V2_FORMAT",
+    "COMPONENT_IMPLEMENTATION_V3_FORMAT",
+    "COMPONENT_MACHINE_BINDING_V3_FORMAT",
     "COMPONENT_QUALIFICATION_V3_FORMAT",
     "COMPONENT_RESOLUTION_V2_FORMAT",
     "COMPONENT_RESOLUTION_SLICE_V1_FORMAT",
     "COMPONENT_SOURCE_PACKAGE_V2_FORMAT",
+    "COMPONENT_SOURCE_PACKAGE_V3_FORMAT",
+    "COMPONENT_SEMANTIC_CONTRACT_V1_FORMAT",
+    "COMPONENT_SOURCE_PROFILE_V1_FORMAT",
+    "COMPONENT_REFINEMENT_RECEIPT_V1_FORMAT",
     "COMPONENT_WORK_PACKAGE_V1_FORMAT",
     "COMPONENT_WORK_STATUS_V1_FORMAT",
     "COMPONENT_RUNTIME_COMPLETION_V3_FORMAT",
     "COMPONENT_RUNTIME_PACKAGE_V3_FORMAT",
+    "COMPONENT_RELEASE_GATE_V1_FORMAT",
+    "COMPONENT_RETIREMENT_REPORT_V1_FORMAT",
     "PORTABLE_SELECTION_V3_FORMAT",
 ]

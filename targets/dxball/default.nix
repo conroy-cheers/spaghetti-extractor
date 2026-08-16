@@ -47,6 +47,7 @@ let
     "${sdk.profiles}/pe32-winmm-runtime-v1.json"
   ];
   workflow = sdk.workflow.pe32 {
+    targetId = target.id;
     original = "${original}/DXBall.exe";
     binaryIdentity = "DXBall.exe";
     externalProfile = builtins.head runtimeMachineImportProfiles;
@@ -57,10 +58,12 @@ let
     candidateMachineImportProfiles = [
       "${interfaceProfile}/interface-profile.json"
     ];
+    libraryAdoptionIntentRoot = ./intent/libraries;
     launchProfileTemplate =
       "${sdk.profiles}/pe32-win32-gui-launch-assumptions-v1.json";
     componentIntent = ./intent/components.json;
     componentReviewRoot = ./intent/reviews;
+    componentSourceRoot = ./source;
     namePrefix = "spaghetti-extractor-dxball-1.09";
     maxUnits = 512;
     maxCandidatesPerSeed = 12;
@@ -90,6 +93,7 @@ sdk.target.pe32Bundle {
     inherit archive installer original;
   };
   profiles.interface = interfaceProfile;
+  targetAssets.documentation = [ "intent/libraries/README.md" ];
   checks = {
     component-contract = components.contracts.startup-extended;
   };

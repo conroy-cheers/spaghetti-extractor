@@ -3,7 +3,8 @@
 - [Architecture and assurance](architecture.md): canonical pipeline, trust
   boundaries, statuses, and completion criteria.
 - [Components](components.md): exact ownership, operator-defined groups,
-  derived interfaces, qualification, and fallback-safe activation.
+  portable V2 interfaces, static machine-derived refinement, machine binding, service graphs,
+  activation receipts, and fallback-safe configuration.
 - [External operations](external-operations.md): imports, COM/vtable calls,
   callbacks, resources, and candidate runtime adapters.
 - [ISA qualification](isa-qualification.md): compact Lean semantics and veto

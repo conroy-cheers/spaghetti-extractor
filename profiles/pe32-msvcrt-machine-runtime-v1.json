@@ -149,7 +149,7 @@
       "override": true,
       "abi_template": "pe32-cdecl-v1",
       "arity": {"kind": "fixed", "words": 1},
-      "disposition": "protocol",
+      "disposition": "terminates",
       "callback_behavior": "nested_frames",
       "memory_effect": "relationalState",
       "memory_footprints": [],
@@ -180,7 +180,7 @@
       "import": {"dll": "msvcrt.dll", "symbol": "_cexit"},
       "abi_template": "pe32-cdecl-v1",
       "arity": {"kind": "fixed", "words": 0},
-      "disposition": "protocol",
+      "disposition": "returns",
       "callback_behavior": "nested_frames",
       "memory_effect": "relationalState",
       "memory_footprints": [],
@@ -212,7 +212,7 @@
       "import": {"dll": "msvcrt.dll", "symbol": "_initterm"},
       "abi_template": "pe32-cdecl-v1",
       "arity": {"kind": "fixed", "words": 2},
-      "disposition": "protocol",
+      "disposition": "returns",
       "callback_behavior": "nested_frames",
       "memory_effect": "relationalState",
       "memory_footprints": [],
@@ -312,6 +312,52 @@
       "memory_effect": "relationalState",
       "memory_footprints": [],
       "world_effect": "none"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "realloc"},
+      "override": true,
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "returns",
+      "result_register_relations": [
+        {
+          "register": "eax",
+          "relation": "dynamic_range_base",
+          "size": {"kind": "argument", "argument": 1, "scale": 1},
+          "minimum_size": 0,
+          "required_words": [],
+          "nullable": true
+        }
+      ],
+      "memory_effect": "relationalState",
+      "memory_footprints": [],
+      "world_effect": "dynamicRanges"
+    },
+    {
+      "import": {"dll": "msvcrt.dll", "symbol": "signal"},
+      "abi_template": "pe32-cdecl-v1",
+      "arity": {"kind": "fixed", "words": 2},
+      "disposition": "returns",
+      "result_register_relations": [
+        {"register": "eax", "relation": "related_word"}
+      ],
+      "callback_behavior": "registration",
+      "memory_effect": "none",
+      "memory_footprints": [],
+      "world_effect": "callbackRegistration",
+      "callback_effect": "explicit",
+      "callback_source": {
+        "kind": "argument_word",
+        "argument": 1,
+        "non_callback_sentinel_words": [0, 1]
+      },
+      "callback_lifetime": "until_replaced_or_process_exit",
+      "callback_abi": {
+        "kind": "generic_callback",
+        "argument_words": 1,
+        "stack_cleanup_bytes": 0,
+        "nullable": false
+      }
     },
     {
       "import": {"dll": "msvcrt.dll", "symbol": "setlocale"},

@@ -244,11 +244,23 @@ class NativeInductiveAuthorityTests(unittest.TestCase):
             "indirect-target-evaluation-evidence-v3",
             (),
         )
+        parametric_summaries = _write_artifact(
+            root / "parametric-summaries",
+            "parametric-scc-summaries-v3",
+            (),
+        )
+        external_profiles = _write_artifact(
+            root / "external-profiles",
+            "external-profile-authority-v3",
+            (),
+        )
         target_certificates = INDIRECT_TARGET_CERTIFICATES_PHASE_V3.run(
             output_directory=root / "target-certificates",
             inputs={
+                "external_profiles": external_profiles,
                 "inductive_inputs": inductive_inputs,
                 "memory_versions": memory,
+                "parametric_summaries": parametric_summaries,
                 "semantic_index": semantic,
                 "semantic_index_global": semantic,
                 "structural_targets": targets,

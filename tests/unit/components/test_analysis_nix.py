@@ -57,8 +57,21 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("component_workspace", module)
         self.assertNotIn("identity_authorizes_activation", module)
         self.assertIn("sourcePackages", module)
+        self.assertIn("mkDevelopmentDeclaration", module)
+        self.assertIn("developmentDeclarations", module)
+        development_body = module.split(
+            "mkDevelopmentDeclaration =", 1
+        )[1].split("mkSourcePaths =", 1)[0]
+        self.assertNotIn("proposalInput", development_body)
+        self.assertNotIn("resolutionSlices", development_body)
+        self.assertNotIn("machineIr", development_body)
+        development_package = module.split(
+            "developmentPackages =", 1
+        )[1].split("mkActivationPlan =", 1)[0]
+        self.assertNotIn("resolutionSlices", development_package)
+        self.assertIn('name = "declaration"', development_package)
         self.assertIn("evidences", module)
-        self.assertIn("candidate-only-functional-suite-v1", module)
+        self.assertIn("exhaustive-finite-domain-v1", module)
         self.assertIn("runtimeConfigurations", module)
         self.assertIn("runtimeFor", module)
         self.assertIn("runtimePackages", module)
@@ -97,7 +110,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
             sdk,
         )
         self.assertIn("componentRuntimePackage = components.mkRuntime", sdk)
-        self.assertIn("interpreterPackage = interpreter", sdk)
+        self.assertIn("interpreterPackage = interpreterSupport", sdk)
 
     def test_pe32_bundle_exports_standard_configuration_families(self) -> None:
         sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
@@ -113,10 +126,14 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("target = {\n    bundle =", sdk)
 
     def test_interpreter_package_is_a_generic_content_addressed_phase(self) -> None:
-        module = (ROOT / "nix" / "candidate-interpreter-package.nix").read_text(encoding="utf-8")
+        module = (ROOT / "nix" / "machine-ir-support-package.nix").read_text(encoding="utf-8")
+        gate = (ROOT / "nix" / "candidate-interpreter-package.nix").read_text(encoding="utf-8")
         self.assertIn("machineIr", module)
         self.assertIn("capabilityAnalysis", module)
-        self.assertIn("finalAuthorityGate", module)
+        self.assertNotIn("finalAuthorityGate", module)
+        self.assertIn("supportPackage", gate)
+        self.assertIn("executionGate", gate)
+        self.assertNotIn("finalAuthorityGate", gate)
         self.assertIn("write_spx_interpreter_package", module)
         for digest in (
             "program_source_sha256",
@@ -130,7 +147,7 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("spaghetti-extractor-jq", module.lower())
         self.assertNotIn("wine", module.lower())
 
-    def test_fallback_authority_does_not_use_ifd_or_prebuild_executable_code(self) -> None:
+    def test_fallback_support_does_not_use_ifd_or_prebuild_executable_code(self) -> None:
         workflow = (ROOT / "nix" / "authority-workflow.nix").read_text(
             encoding="utf-8"
         )
@@ -140,7 +157,8 @@ class ComponentAnalysisNixTests(unittest.TestCase):
 
         self.assertIn("fallbackCapabilityAnalysis", workflow)
         self.assertIn("capabilityAnalysis = fallbackCapabilityAnalysis", workflow)
-        self.assertIn("inherit finalAuthorityGate", workflow)
+        self.assertIn("fallbackSupport", workflow)
+        self.assertNotIn("fallbackInterpreter", workflow)
         self.assertNotIn("preImplementationReadiness", workflow)
         self.assertNotIn("authority-preimplementation-readiness.nix", workflow)
         self.assertNotIn("builtins.readFile", workflow[workflow.index(
@@ -381,11 +399,10 @@ class ComponentAnalysisNixTests(unittest.TestCase):
             "nativeEnginePythonSource",
             "nativeRuntimePythonSource",
             "nativeBuildPythonSource",
-            "candidateAuthorityPythonSource",
         ):
             self.assertIn(name, module)
         interpreter = (
-            ROOT / "nix" / "candidate-interpreter-package.nix"
+            ROOT / "nix" / "machine-ir-support-package.nix"
         ).read_text(encoding="utf-8")
         self.assertIn("phasePythonSource", interpreter)
         self.assertIn("__contentAddressed = true;", closure)
@@ -414,29 +431,29 @@ class ComponentAnalysisNixTests(unittest.TestCase):
             ROOT / "nix" / "candidate-test-suite.nix"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("spaghetti-extractor-final-authority-gate-v3", module)
-        self.assertIn(".status == \"complete\" and .authorizing", module)
+        self.assertIn("spaghetti-extractor-release-acceptance-v1", module)
+        self.assertIn(".status == \"complete\"", module)
+        self.assertIn(".release_accepted", module)
+        self.assertIn(".executable", module)
         self.assertIn("xvfb-run -a", module)
         self.assertIn("WINEDEBUG=-all", module)
         self.assertIn("candidate_only: true", module)
         self.assertIn("original_binary_executed: false", module)
 
-    def test_candidate_generation_has_only_v3_authority(self) -> None:
+    def test_candidate_generation_uses_structural_execution_gate(self) -> None:
         module = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
             encoding="utf-8"
         )
 
-        self.assertIn("candidateAuthorityReport", module)
-        self.assertIn("candidateAuthorityGate", module)
-        self.assertIn("build_candidate_authority", module)
-        self.assertIn("require_candidate_authority", module)
-        self.assertIn("final_authority=", module)
+        self.assertIn("structuralExecutionGate", module)
+        self.assertIn("spaghetti-extractor-structural-executable-v1", module)
+        self.assertIn("structural_execution_receipt=", module)
         self.assertNotIn("final_static_hybrid_audit", module)
         self.assertNotIn("authority_bundle", module)
         self.assertNotIn("candidateMode ?", module)
         self.assertNotIn('"structural-diagnostic"', module)
-        self.assertIn("candidate_authority=optional_path", module)
-        self.assertIn('execution_scope == "complete-static-authority"', module)
+        self.assertIn("candidate_authority=None", module)
+        self.assertIn('execution_scope == "structural-executable-v1"', module)
         self.assertNotIn("write_static_hybrid_closure_receipt", module)
         self.assertNotIn("write_final_candidate_authorization", module)
         self.assertNotIn("spaghetti-extractor-final-candidate-generation-authorization-v1", module)
@@ -459,23 +476,14 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("external_site_proposals_v2", external)
         self.assertNotIn("callback_entry_contract_v2", callbacks)
 
-    def test_fallback_coverage_is_v3_and_has_no_v1_authority_dependency(self) -> None:
+    def test_candidate_uses_reusable_machine_ir_support(self) -> None:
         module = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
             encoding="utf-8"
         )
-        start = module.index("fallbackCoverageReceipt =")
-        end = module.index("candidateAuthorityReport =", start)
-        phase = module[start:end]
-        receipt = (
-            ROOT / "nix" / "fallback-coverage-receipt.nix"
-        ).read_text(encoding="utf-8")
-
-        self.assertIn("fallback-coverage-receipt.nix", phase)
-        self.assertIn("spaghetti-extractor-fallback-coverage-receipt-v3", receipt)
-        self.assertIn("structural_units_require_lowering", receipt)
-        self.assertIn("rooted_containment_authority", receipt)
-        self.assertNotIn("static_completeness_report", phase)
-        self.assertNotIn("staticCompletenessReport", phase)
+        self.assertIn("interpreterPackage", module)
+        self.assertIn("structuralExecutionGate", module)
+        self.assertNotIn("fallbackCoverageReceipt", module)
+        self.assertNotIn("candidateAuthorityReport", module)
 
     def test_mutable_memory_authority_uses_native_version_records(self) -> None:
         memory = (
@@ -567,6 +575,33 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertNotIn("callable_external_contract=", candidate)
         self.assertFalse(
             (ROOT / "nix" / "callable-external-runtime-contract.py").exists()
+        )
+
+    def test_component_external_sites_are_pre_isa_and_binding_scoped(self) -> None:
+        authority = (ROOT / "nix" / "authority-workflow.nix").read_text(
+            encoding="utf-8"
+        )
+        components = (ROOT / "nix" / "component-workflow.nix").read_text(
+            encoding="utf-8"
+        )
+        sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
+
+        target_start = authority.index("targetEvidenceExternalArtifacts =")
+        target_end = authority.index("targetEvidenceGraph =", target_start)
+        target_inputs = authority[target_start:target_end]
+        self.assertIn("generatedTargetEvidenceArtifact", target_inputs)
+        self.assertNotIn("generatedISAEvidenceArtifact", target_inputs)
+        self.assertIn(
+            'externalSiteGraph.phases."canonical-external-sites-v3".artifact',
+            authority,
+        )
+        self.assertIn(
+            "&& liftUnitUsesExternalSites liftUnit",
+            components,
+        )
+        self.assertIn(
+            "canonicalExternalSites = authority.componentExternalSites;",
+            sdk,
         )
 
 if __name__ == "__main__":

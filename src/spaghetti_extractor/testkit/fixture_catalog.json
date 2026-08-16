@@ -12,6 +12,14 @@
     },
     {
       "capabilities": [
+        "cbmc"
+      ],
+      "description": "Pinned bounded model checker for portable component refinement",
+      "id": "cbmc",
+      "nix_attribute": "test-fixture-cbmc"
+    },
+    {
+      "capabilities": [
         "compiler"
       ],
       "description": "Pinned PE32 cross-compiler toolchain",

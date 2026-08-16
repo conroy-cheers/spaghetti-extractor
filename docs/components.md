@@ -15,13 +15,13 @@ This is what makes local work possible without a complete understanding of the
 target. Selecting one component does not require lifting its callers, callees,
 or unrelated regions first.
 
-## V3 Lifecycle
+## Canonical Lifecycle
 
-Version 2 is retained only for authored/input wire schemas: catalog intent,
-resolution, boundary review, component contract, and source package. These are
-parsed inputs, not executable authority. Evidence, qualification, configuration
-ownership, portable selection, runtime completion, and candidate authorization
-are native v3 artifacts; no v2 artifact can activate source.
+Artifact version numbers describe individual wire formats, not one global
+component generation. New components use portable interface V2 and source
+package V3. The interface is machine-free; exact machine meaning lives in a
+separate checked binding. Older logical source ABIs remain readable while
+existing targets migrate, but are not the recommended authoring path.
 
 The component DAG produces these independently cached artifacts:
 
@@ -29,21 +29,78 @@ The component DAG produces these independently cached artifacts:
    plus `resolutionSlices.<id>` containing only one component or operator group.
    Contracts consume the slice, so adding or editing an unrelated component
    cannot invalidate an existing contract or its evidence descendants.
-2. `contracts.<id>`: a machine boundary and reviewed logical interface.
-3. `sourcePackages.<id>`: exact portable source bytes plus a supported logical
-   C entry symbol.
-4. `adapterPlans.<id>`: a checked lowering from the reviewed machine boundary
-   to the logical C ABI, plus an explicit completion back to machine state.
-5. `evidences.<id>`: candidate-only exhaustive or functional evidence bound to
-   the contract, source, adapter, machine IR, domain, and producer.
-6. `qualifications.<id>`: a fail-closed activation decision.
-7. `activationPlans.<configuration>`: total, exclusive portable, fallback, or
-   explicitly blocked ownership. An enabled but stale or unqualified component
-   is blocked rather than silently downgraded.
-8. `runtimeConfigurations.<configuration>`: the only input accepted by the
+2. `developmentContracts.<id>`: the operator boundary, source operation map,
+   and reviewed portable interface. This small, nonauthorizing input does not
+   depend on proposal discovery or whole-target analysis.
+3. `contracts.<id>`: a machine boundary, reviewed logical interface, and
+   projected canonical external-site evidence used for activation.
+4. `sourcePackages.<id>`: exact portable source bytes plus one C symbol per
+   interface operation.
+5. `compileReceipts.<id>`: host and PE32 ABI conformance, exact source/interface
+   binding, and a prohibition on component-owned mutable globals.
+6. `machineBindingReceipts.<id>`: exact unit membership and checked projections
+   between machine values/effects and portable operations. For an explicitly
+   selected library island this facet also consumes the structural boundary
+   receipt, requires exact equality of both unit inventories, and binds the
+   receipt hash. The receipt cannot bypass semantic refinement.
+7. `semanticContracts.<id>` and `refinementReceipts.<id>`: machine-derived
+   operation paths and a universal CBMC check over portable source, with service
+   responses treated as unconstrained environment inputs.
+8. `serviceGraphs`: configuration-scoped resolution of every service dependency
+   to another component operation or a canonical external site.
+9. `ownershipReceipts.<id>`: exclusive structural-unit ownership.
+10. `activationReceipts.<id>`: one reducer over interface, compile, machine
+    binding, semantic refinement, service graph, and ownership facets. Missing evidence is
+    `incomplete`; contradictory or stale evidence is `violated`.
+11. `activationPlans.<configuration>`: total, exclusive portable, fallback, or
+    explicitly blocked ownership. An enabled component without an exact checked
+    activation receipt is blocked rather than silently downgraded.
+12. `runtimeConfigurations.<configuration>`: the only input accepted by the
    executable component runtime package.
-9. `runtimePackages.<configuration>`: independently buildable component
-   runtimes, all bound to the workflow's shared machine-IR interpreter.
+13. `runtimePackages.<configuration>`: independently buildable component
+    runtimes, all bound to the workflow's shared machine-IR interpreter.
+
+### Universal Contract Boundary
+
+The lifecycle above feeds one common authority model instead of separate models
+for authored C, recognized libraries, machine IR, and pinned implementations:
+
+```text
+component-contract-v3.json
+  machine-independent types, operations, state, effects, services, callbacks,
+  protocol states, and normalized machine-derived operation semantics
+
+machine-binding-v3.json
+  exact PE, machine-IR, structural units, and operation projections
+
+implementation-v3.json
+  one checked portable-C, machine-IR, pinned-binary, or environment realization
+
+component-dependency-graph-v3.json
+  contract-to-contract service edges, exact callsites, external dependencies,
+  reverse consumers, and SCCs
+```
+
+Consumers depend on provider contract hashes, never provider implementation
+hashes. Replacing a machine-IR implementation with portable C therefore rebuilds
+that implementation, its configuration graph, and release descendants without
+invalidating independently checked consumers. A contract change still
+invalidates consumers because it changes the behavior they are allowed to rely
+on.
+
+Generated library components enter through exactly these files. Library
+constellation, checked-island, and behavior-pack evidence is consumed by the
+library-owned adapter that emits the universal records; configuration and
+runtime code do not interpret recognition-specific receipts. External sites
+remain explicit checked environment dependencies because the operating system
+is not a hidden component implementation.
+
+Every release gate also binds the total activation plan and checks that its
+selected component inventory and ownership kinds exactly match the universal
+dependency graph. `hybrid` permits
+checked machine-IR or pinned ownership for remaining units. `portable` requires
+zero machine-IR fallback units as well as portable implementations for every
+component, so it cannot report success for a partly lifted candidate.
 
 The runtime package is constructed directly by the component DAG. It does not
 construct a candidate or require whole-program acceptance. It
@@ -54,7 +111,26 @@ interpreter derivation is reused by standalone component runtimes and all
 candidates, and the same portable-selection artifact is consumed by fallback
 coverage, native dispatch, candidate authority, and completion checks.
 
-Two logical source ABIs are currently supported. `logical-c-v1` accepts scalar
+### Portable Interface V2
+
+Portable interface V2 defines typed operations, framework-managed instance
+state, protocol states, logical resources, callbacks, effects, and injected
+services. It contains no x86 registers, raw addresses, PE ranges, import IDs, or
+external-site identities. Authored source may not define mutable global state.
+
+The stable component ID and generated C interface namespace are separate. For
+example, component `directdraw-init` uses interface namespace
+`dxball_directdraw_init`. Receipts bind both explicitly instead of requiring an
+operator-facing ID to be a C identifier.
+
+The DX-Ball DirectDraw draft validates independent source work: its V2 interface
+and source compile without executing DX-Ball. It remains nonauthorizing until
+its machine binding, machine-derived refinement, and configuration service
+graph close.
+
+### Legacy Source ABIs
+
+Existing targets may still contain older adapters. `logical-c-v1` accepts scalar
 values and uses a checked machine projection for the surrounding register,
 flag, stack, and control effects. A scalar result may replace either an exact
 register result or the condition selecting a checked finite branch exit.
@@ -72,8 +148,32 @@ writes, and the return target. Evidence checks that completion against concrete
 machine-IR evaluation before qualification, while runtime invokes the portable
 function exactly once and never replays the replaced machine region as fallback.
 
-## Evidence
+`portable-interface-v1` was the first component ABI. Its typed IR defines
+portable scalars, records, bounded byte views, logical resources, callbacks,
+effects, and injected service dependencies. The generated C interface contains
+no x86 registers or raw machine addresses. Service calls are explicit function
+pointers over a context object, so the same component can use deterministic
+mocks in development and checked external adapters after activation. New
+components should use portable interface V2; V1 exists only for migration.
 
+## Static Refinement Loop
+
+Portable source may be authored and compiled from only its reviewed interface.
+This development derivation is intentionally small and nonauthorizing: it does
+not depend on proposal discovery, resolved machine membership, rooted authority,
+or another component's intent.
+
+Activation adds an exact machine binding. The toolkit derives finite symbolic
+paths from canonical machine IR, checks that every bound operation path is
+represented, and generates a CBMC harness relating arbitrary interface inputs
+and arbitrary external-service responses to the exact C operation. A concrete
+or symbolic mismatch is `violated` with its operation/path location. Missing
+semantics or unrepresentable state is `incomplete`. Operator-authored examples
+and expected outputs cannot enter this authority path.
+
+## Legacy Evidence
+
+This section describes the migration path for older logical C adapters.
 `structural-draft-v1` organizes work but never authorizes replacement.
 
 `bounded-equivalence-v1` uses a declared finite input domain. The current
@@ -89,35 +189,17 @@ replacement is a localized evidence failure rather than a crashed build
 orchestrator. Finite-domain evidence proves only the declared bounded domain;
 it is not a universal function theorem.
 
-`validation-backed-v1` uses `candidate-only-functional-suite-v1`. Intent lists
-stable case IDs, exact logical arguments, and expected results. The producer
-compiles and executes only the portable replacement; a mismatch is `violated`
-and identifies the first case and concrete values. This profile makes no claim
-beyond the declared cases and is appropriate when exhaustive machine-IR
-evaluation is impractical. No evidence report may authorize a component unless
-its profile and producer match and all exact contract, source, machine-IR,
-adapter-plan, verification, and source-entry bindings match.
-
-```json
-{
-  "evidence_profile": "validation-backed-v1",
-  "verification": {
-    "producer": "candidate-only-functional-suite-v1",
-    "cases": [
-      {"id": "zero", "arguments": {"value": 0}, "expected": 0}
-    ]
-  }
-}
-```
-
 ## Configuration Safety
 
-- Enabled, checked, qualified components use portable source.
+- Enabled components with exact checked activation authority use portable source.
 - Draft, missing, or incomplete components retain machine-IR fallback.
 - Every unselected structural unit retains machine-IR fallback.
 - Overlapping ownership is rejected.
 - Enabled component members may not fall back individually.
-- Whole-program candidate generation still requires final static analysis authority.
+- Whole-program candidate generation requires structural executability; release
+  acceptance additionally requires ISA qualification and the activation-bound
+  universal component/dependency gate. Candidate-only tests are optional veto
+  diagnostics.
 
 Reviewed interfaces may avoid copying long synthesized effect inventories by
 using `adapter_effects.inherit_synthesized_except`. Each exclusion names one
@@ -151,6 +233,26 @@ candidate = workflow.candidateFor {
 };
 ```
 
+For an authored portable unit, `component build` realizes the independent
+compile receipt. `component status --development` reports the local
+contract/source/evidence progress without pulling activation authority.
+`component status` reports the strongest available canonical activation state,
+and `component check` requires that exact machine-derived activation authority.
+Draft units remain independently compilable; configurations remain authority
+gated.
+
+`candidate check --mode hybrid` requires complete component dependencies while
+allowing checked fallback. `candidate check --mode portable` requires a wholly
+portable activation plan. `candidate build` always consumes the strict hybrid
+check plus the target's static release gate; diagnostic dependency reports
+cannot make a candidate executable.
+
+Pure component activation depends only on its selected machine-IR units and
+checked component artifacts. A component that declares an external-site service
+also depends on the canonical target/ABI evidence for that site. Neither path
+depends on whole-target ISA qualification or final candidate acceptance; those
+remain release-level gates.
+
 `runtime` above is exactly the runtime package consumed by the default-compiler
 candidate. Building it does not pull an executable candidate into its closure.
 `workflow.componentRuntimes` and `workflow.candidates.static` provide the
@@ -161,3 +263,25 @@ every leaf or group, plus runtime/status/check products for each configuration.
 Adding a target should not require generic Python or Nix changes. A reusable
 capability gap must be implemented in the toolkit and covered by a small
 target-independent fixture before a validation target relies on it.
+
+## Library Islands
+
+`library status` and `library inspect` discover ABI-compatible whole-library
+islands. `library adopt --island ... --recipe ...` writes a content-bound V1
+adoption intent for an available reusable behavior pack; `--draft` records an
+operator recipe that still needs static qualification. Discovery, adoption,
+checked-island authority, and generated component construction are separate
+content-addressed phases.
+
+An adopted island becomes executable only when the canonical checker closes
+identity, every crossing boundary, and the selected implementation, then emits
+a complete generated ordinary component. The component runtime consumes that
+package through the same ownership, adapter, semantic-contract, and compilation
+path as an operator-authored component. Unselected or incomplete islands do not
+block the target and retain machine-IR fallback ownership.
+
+Automatic generated-component materialization currently covers stateless,
+nonvariadic scalar ABIs with register or stack arguments and scalar results.
+Stateful services, variadic calls, hidden return storage, out-parameters, and
+externally visible effects fail closed until the behavior pack supplies an
+explicit checked machine-to-portable mapping template.

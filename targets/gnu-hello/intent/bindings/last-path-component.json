@@ -1,0 +1,81 @@
+{
+  "format": "spaghetti-extractor-component-machine-binding-declaration-v2",
+  "id": "last-path-component",
+  "unit_ids": [
+    "semantic-transfer:original-cutpoint-00006680-00006687",
+    "semantic-transfer:original-cutpoint-00006687-00006692",
+    "semantic-transfer:original-cutpoint-00006692-0000669a",
+    "semantic-transfer:original-cutpoint-0000669a-000066a6",
+    "semantic-transfer:original-cutpoint-000066a6-000066a9",
+    "semantic-transfer:original-cutpoint-000066a9-000066ad",
+    "semantic-transfer:original-cutpoint-000066b0-000066bb",
+    "semantic-transfer:original-cutpoint-000066bb-000066bf",
+    "semantic-transfer:original-cutpoint-000066bf-000066c3",
+    "semantic-transfer:original-cutpoint-000066c3-000066cb",
+    "semantic-transfer:original-cutpoint-00006700-0000670a",
+    "semantic-transfer:original-cutpoint-0000670a-00006715",
+    "semantic-transfer:original-cutpoint-00006715-0000671f",
+    "semantic-transfer:original-cutpoint-0000671f-00006723",
+    "semantic-transfer:original-cutpoint-00006723-0000672e",
+    "semantic-transfer:original-cutpoint-0000672e-00006730",
+    "semantic-transfer:original-cutpoint-00006730-00006735",
+    "semantic-transfer:original-cutpoint-00006735-0000673a",
+    "semantic-transfer:rooted-view-000066ad-000066b0"
+  ],
+  "operations": [
+    {
+      "operation_id": "find",
+      "entry_unit_ids": [
+        "semantic-transfer:original-cutpoint-00006680-00006687"
+      ],
+      "exit_unit_ids": [
+        "semantic-transfer:original-cutpoint-00006735-0000673a"
+      ],
+      "parameters": [
+        {
+          "id": "value",
+          "projection": {
+            "kind": "bytes_view",
+            "base": {
+              "kind": "stack",
+              "offset": 4,
+              "width": 32,
+              "at": "entry"
+            },
+            "extent_id": null,
+            "at": "entry"
+          }
+        }
+      ],
+      "results": [
+        {
+          "id": "result",
+          "projection": {
+            "kind": "register",
+            "register": "eax",
+            "width": 32,
+            "at": "exit"
+          },
+          "decoding": {
+            "op": "sub32",
+            "args": [
+              {
+                "op": "projected_value"
+              },
+              {
+                "op": "bytes_address",
+                "name": "value"
+              }
+            ]
+          }
+        }
+      ],
+      "state": [],
+      "preserved_state_ids": [],
+      "effects": [],
+      "callback_operation_ids": [],
+      "continuation_unit_ids": []
+    }
+  ],
+  "services": []
+}

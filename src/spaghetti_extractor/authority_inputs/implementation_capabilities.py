@@ -560,9 +560,16 @@ def emit_implementation_capabilities_v3(
 
     global_status = _status(issues)
     projections: list[ArtifactRecordV3] = []
-    implementation_available = (
-        analysis is not None and global_status == "complete"
-    ) or (bool(built_files) and receipt is not None)
+    # Package availability and per-unit qualification are independent facts.
+    # An incomplete ISA artifact may still contain thousands of checked rows;
+    # suppressing every projection in that case turns the few real ISA
+    # frontiers into one misleading implementation blocker per machine unit.
+    # Contradictory package evidence remains an all-or-nothing veto, while an
+    # incomplete package emits capabilities for only the units admitted to
+    # valid_units above.
+    implementation_available = analysis is not None or (
+        bool(built_files) and receipt is not None
+    )
     if implementation_available and global_status != "violated":
         for unit_id, selected_forms in sorted(valid_units.items()):
             semantic_row = semantic_by_id[unit_id]

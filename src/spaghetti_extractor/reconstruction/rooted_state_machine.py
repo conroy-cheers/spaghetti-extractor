@@ -43,12 +43,15 @@ def close_state_machine_rooted_direct_control(
     instruction_budget: int = 65536,
     iteration_budget: int = 32,
 ) -> dict[str, Any]:
-    """Materialize every missing direct target reachable from binary roots.
+    """Materialize direct-control targets for the complete structural universe.
 
     Conservative full-section decoding may choose a false linear view over a
-    real branch destination. Recursive decoding preserves both views and lets
-    rooted control select the executable one. Indirect exits remain explicit
-    frontiers for provenance analysis in the final machine-IR phase.
+    real branch destination. Recursive decoding preserves both views. Every
+    existing structural unit participates in direct closure so that a target
+    recovered by a later indirect-control phase cannot expose a previously
+    omitted fallthrough or call destination. Behavioral roots remain a
+    separate diagnostic view; indirect exits remain explicit frontiers for
+    provenance analysis in the final machine-IR phase.
     """
 
     state_machine = _regular_file(state_machine, "base state machine")
@@ -108,10 +111,12 @@ def close_state_machine_rooted_direct_control(
         }
         roots = _merge_roots(binary_roots, manifest_roots)
         initial = _rooted_direct_reachability(merged, roots)
-        final = initial
+        structural_initial = _structural_direct_reachability(merged)
+        structural_final = structural_initial
         for round_index in range(iteration_budget):
             seeds = sorted(
-                set(final["missing_target_rvas"]) | pending_decode_seeds
+                set(structural_final["missing_target_rvas"])
+                | pending_decode_seeds
             )
             if not seeds:
                 break
@@ -167,28 +172,29 @@ def close_state_machine_rooted_direct_control(
                 _transfer_start(row) for row in new_rows
             )
             terminating.update(round_terminating)
-            final = _rooted_direct_reachability(merged, roots)
+            structural_final = _structural_direct_reachability(merged)
         else:
-            if final["missing_target_rvas"]:
+            if structural_final["missing_target_rvas"]:
                 issues.append({
                     "code": "rooted_iteration_budget_exhausted",
-                    "message": "rooted direct closure exhausted its iteration budget",
-                    "pending_rvas": final["missing_target_rvas"],
+                    "message": "structural direct closure exhausted its iteration budget",
+                    "pending_rvas": structural_final["missing_target_rvas"],
                 })
     finally:
         binary.pe.close()
 
     merged.sort(key=lambda row: (_transfer_start(row), str(row.get("id"))))
     final = _rooted_direct_reachability(merged, roots)
-    if final["missing_target_rvas"]:
+    structural_final = _structural_direct_reachability(merged)
+    if structural_final["missing_target_rvas"]:
         issues.append({
             "code": "rooted_direct_control_incomplete",
-            "message": "rooted direct targets remain after recursive decode",
-            "pending_rvas": final["missing_target_rvas"],
+            "message": "structural direct targets remain after recursive decode",
+            "pending_rvas": structural_final["missing_target_rvas"],
         })
     status = (
         "complete"
-        if not final["missing_target_rvas"]
+        if not structural_final["missing_target_rvas"]
         and not issues
         else "incomplete"
     )
@@ -217,6 +223,8 @@ def close_state_machine_rooted_direct_control(
         "decode_seeds": manifest_seeds,
         "initial_reachability": initial,
         "final_reachability": final,
+        "structural_initial_reachability": structural_initial,
+        "structural_final_reachability": structural_final,
         "discovery": {
             "format": ROOTED_INSTRUCTION_VIEW_FORMAT,
             "status": "complete" if not issues else "incomplete",
@@ -234,8 +242,10 @@ def close_state_machine_rooted_direct_control(
             "output_transfers": len(merged),
             "initial_reachable_transfers": initial["counts"]["reachable_transfers"],
             "final_reachable_transfers": final["counts"]["reachable_transfers"],
-            "initial_missing_direct_targets": initial["counts"]["missing_direct_targets"],
-            "remaining_missing_direct_targets": final["counts"]["missing_direct_targets"],
+            "initial_missing_direct_targets": structural_initial["counts"]["missing_direct_targets"],
+            "remaining_missing_direct_targets": structural_final["counts"]["missing_direct_targets"],
+            "initial_behavioral_missing_direct_targets": initial["counts"]["missing_direct_targets"],
+            "remaining_behavioral_missing_direct_targets": final["counts"]["missing_direct_targets"],
             "indirect_frontiers": final["counts"]["indirect_frontiers"],
             "closure_rounds": len(rounds),
             "terminating_transfers": len(terminating),
@@ -249,6 +259,7 @@ def close_state_machine_rooted_direct_control(
             "semantic_binding_required_downstream": True,
             "indirect_control_is_not_silently_closed": True,
             "control_manifest_is_proposal_only": True,
+            "structural_direct_closure_is_root_independent": True,
         },
     }
     report = Path(report)
@@ -346,6 +357,20 @@ def _rooted_direct_reachability(
             "direct_edges": edges,
         },
     }
+
+
+def _structural_direct_reachability(
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Close direct control from every structural unit independently of roots."""
+
+    return _rooted_direct_reachability(
+        rows,
+        [
+            {"kind": "structural_unit", "rva": _transfer_start(row)}
+            for row in rows
+        ],
+    )
 
 
 def _binary_roots(binary: Any) -> list[dict[str, Any]]:

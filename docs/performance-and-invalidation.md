@@ -48,6 +48,55 @@ even when invoked with `--no-build`; the option suppresses requested check
 realization, not evaluator dependencies. After preparation, `--no-build` is a
 pure warm graph check and all content-derived paths substitute normally.
 
+Library recognition has an orthogonal content-addressed chain:
+
+```text
+immutable artifact pack -> catalog signature shards
+target machine IR -> target signature packs
+catalog index + target signatures -> sparse constellation hypotheses
+adoption intent + canonical boundaries -> checked whole-island receipt
+checked island + reusable behavior pack -> generated ordinary component
+generated component + runtime ownership -> candidate component package
+```
+
+Generated and authored components then converge on the same CA subgraph:
+
+```text
+interface + normalized semantics -> universal contract
+exact machine projection          -> universal machine binding
+source/IR/library authority       -> selected implementation
+contracts + service graph         -> dependency SCC graph
+dependency graph + activation     -> hybrid and portable release gates
+```
+
+Contract and implementation identities are deliberately separate. Editing
+portable source cannot invalidate a consumer whose required interface did not
+change. Editing an interface invalidates only its binding, implementation,
+dependent contract edges, and release descendants. The total activation-plan
+hash is included only at the release-gate layer, where fallback ownership is a
+whole-configuration property.
+
+Catalog lookup is inverted by ABI partition, fixed anchors, normalized hashes,
+and structural features. It scales with target features plus sparse hits, not
+catalog functions multiplied by executable-section bytes. Adding a pack does
+not rebuild target signatures; changing an adoption does not rerun extraction or
+matching. Native retrieval emits proposals only, and checked Python authority
+revalidates selected witnesses from canonical pack records.
+
+The Nix implementation uses separate phase-specific Python closures for catalog
+ingestion, target signatures, catalog search, constellation solving,
+checked-island authority, and generated-component construction. A catalog
+change therefore does not invalidate target signatures; a target-unit change
+does not rebuild the catalog; and an adoption change rebuilds only its authority
+receipt, generated component, and downstream candidate ownership closure. On
+the GNU Hello benchmark, a recognition-only
+rebuild with machine IR available measured 27.394 seconds. A cold end-to-end
+realization after source-closure changes, including the original MinGW build,
+PE inventory, rooted state machine, and machine IR, measured 115.195 seconds;
+the immediately repeated library-status realization measured 0.051 seconds.
+The warm result is the important interactive invariant. Clean prerequisite and
+scheduling cost remains a separate optimization target.
+
 ## Artifact DAG
 
 The v3 authority graph has two checked planning boundaries:
@@ -75,6 +124,25 @@ number. Adding one unit therefore cannot reshuffle unrelated packs. A local
 candidate edit must invalidate its exact byte/unit evidence, one transition
 pack, affected dependency SCCs, and composition descendants. Static extraction,
 independent SCCs, shared Lean kernels, and emulator fixtures remain substitutable.
+
+## Native Acceleration Boundary
+
+The supported Python package includes a Nix-built PyO3 extension for measured
+CPU-bound artifact kernels. Native calls are deliberately coarse grained: the
+canonical reader validates and converts one complete bounded NDJSON pack in a
+single call. Python retains typed schemas, dependency tracking, completeness,
+diagnostics, and verdict production, so a native result cannot turn missing or
+contradictory evidence into acceptance.
+
+Every native operation has a Python reference implementation and differential
+tests for valid, malformed, noncanonical, oversized, and Unicode inputs.
+Authority derivations require the pinned native API and fail closed when it is
+missing. Developer use may fall back to the reference implementation for
+diagnosis. Further modules, such as graph fixed-point kernels, are justified
+only when profiling shows that kernel remains dominant after choosing the right
+algorithm and data representation. Fine-grained per-record or per-edge PyO3
+calls are prohibited because they move overhead across the FFI boundary rather
+than removing it.
 
 ## Budgets
 
@@ -114,6 +182,13 @@ host. Times are wall-clock unless the row names aggregate shard execution.
 | DX-Ball final authority, clean / warm | 174.39 s / 0.09 s |
 | Generic full-suite peak shard RSS | 163,416 KiB |
 
+The first native artifact migration reduced the GNU Hello parametric proposal
+phase from 85.25 seconds to 7.06 seconds and the checked-summary producer from
+79.5 seconds to 7.26 seconds. The proposal retained its exact 7,934 records and
+artifact identity. The summary output likewise retained its artifact identity;
+an independent storage replay takes 0.86 seconds. These are phase-level results,
+not a claim that every target-analysis phase is now native or equally fast.
+
 Machine-consumed JSON is emitted in canonical compact form. On the GNU Hello
 analysis artifacts this reduced the exact static-program contract from 70.2 MiB to
 30.5 MiB, ABI callsites from 57.1 MiB to 25.5 MiB, the machine-IR manifest from
@@ -141,6 +216,13 @@ after introducing the boundary rebuilt its closure in 51.36 seconds; the
 immediate unchanged invocation took 0.295 seconds. The corresponding selected
 inputs are 21,860 bytes for jq and 3,172 bytes for DX-Ball.
 
+Component status has a second authority boundary. Pure component development
+and activation leaves do not depend on canonical external sites, ISA
+qualification, implementation capability coverage, or final authority. Only a
+component whose authored binding declares an `external_site` service consumes
+the pre-ISA canonical external-site graph. Whole-target ISA qualification and
+release authority are evaluated only by candidate release products.
+
 Framework-owned planning for the 9,041-unit DX-Ball structural universe takes
 about 1.70 seconds and 73 MiB RSS. The controlled Nix mutation fixture verifies
 that changing one unit changes one transition pack, two dependent SCC and
@@ -149,7 +231,7 @@ generic suite now runs 1,889 tests, up from the 1,664-case pre-migration
 inventory; 364 generated corruption cases exercise authority-family failures.
 
 GNU Hello, jq, and DX-Ball retain exact structural universes of 7,882, 4,516,
-and 9,041 units respectively. Their current final-authority results remain
+and 9,041 units respectively. Their stronger formal-analysis aggregates remain
 truthfully `incomplete`: Hello and jq stop at callback frontier
 `original-cutpoint-00001040-0000104d`, while DX-Ball stops at
 `original-cutpoint-000010cb-000010d0`. The migration did not hide or relabel

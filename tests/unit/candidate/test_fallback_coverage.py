@@ -385,29 +385,17 @@ class FallbackCoverageTests(unittest.TestCase):
                 with self.assertRaises(FallbackCoverageReceiptError):
                     fixture.validate_coverage()
 
-    def test_generic_nix_dag_requires_final_authorization_before_generation(self) -> None:
+    def test_generic_nix_dag_uses_structural_execution_before_generation(self) -> None:
         module = (ROOT / "nix" / "candidate-hybrid.nix").read_text(
             encoding="utf-8"
         )
-        coverage_module = (
-            ROOT / "nix" / "fallback-coverage-receipt.nix"
-        ).read_text(encoding="utf-8")
         self.assertNotIn("dxball", module.lower())
-        for name in (
-            "fallbackCoverageReceipt",
-            "candidateAuthorityReport",
-            "candidateAuthorityGate",
-            "build_candidate_authority",
-            "require_candidate_authority",
-        ):
-            self.assertIn(name, module)
-        self.assertIn(
-            "import ./fallback-coverage-receipt.nix", module
-        )
-        self.assertNotIn("write_spx_fallback_coverage_receipt", module)
-        self.assertIn("write_spx_fallback_coverage_receipt", coverage_module)
+        self.assertIn("structuralExecutionGate", module)
+        self.assertIn("spaghetti-extractor-structural-executable-v1", module)
+        for name in ("candidateAuthorityReport", "candidateAuthorityGate"):
+            self.assertNotIn(name, module)
         authorization_reference = (
-            "${candidateAuthorityGate}/candidate-authority.json"
+            "${structuralExecutionGate}/structural-executable.json"
         )
         native_start = module.index('nativeEngine = pkgs.runCommand')
         native_end = module.index('nativeRuntime = pkgs.runCommand', native_start)

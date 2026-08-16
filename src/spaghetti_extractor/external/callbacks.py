@@ -13,6 +13,7 @@ class CallbackSource:
     kind: str
     argument_index: int
     pointee_offset: int = 0
+    non_callback_sentinel_words: tuple[int, ...] = ()
 
     def as_json(self) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -21,6 +22,10 @@ class CallbackSource:
         }
         if self.kind == "argument_pointee":
             result["offset"] = self.pointee_offset
+        if self.non_callback_sentinel_words:
+            result["non_callback_sentinel_words"] = list(
+                self.non_callback_sentinel_words
+            )
         return result
 
     def stack_argument_offset(self, argument_base_offset: int) -> int:
@@ -111,8 +116,10 @@ def parse_callback_source(
     if not isinstance(raw_source, Mapping):
         raise ToolkitInputError(f"{context} has no exact callback_source")
     kind = raw_source.get("kind")
+    sentinel_field = "non_callback_sentinel_words"
+    allowed_common = {"kind", "argument", sentinel_field}
     if kind == "argument_word":
-        if set(raw_source) != {"kind", "argument"}:
+        if set(raw_source) - allowed_common:
             raise ToolkitInputError(
                 f"{context} argument-word callback source has unknown fields"
             )
@@ -138,12 +145,34 @@ def parse_callback_source(
         f"{context} callback argument",
         maximum=argument_words - 1,
     )
+    raw_sentinels = raw_source.get(sentinel_field, [])
+    if not isinstance(raw_sentinels, list):
+        raise ToolkitInputError(
+            f"{context} callback sentinel words must be a list"
+        )
+    sentinel_words = tuple(
+        _bounded_u32(
+            value,
+            f"{context} callback sentinel word {index}",
+            maximum=0xFFFF_FFFF,
+        )
+        for index, value in enumerate(raw_sentinels)
+    )
+    if sentinel_words != tuple(sorted(set(sentinel_words))):
+        raise ToolkitInputError(
+            f"{context} callback sentinel words must be sorted and unique"
+        )
     parse_nested_native_callback_behavior(
         contract,
         registration_argument_words=argument_words,
         context=context,
     )
-    return CallbackSource(str(kind), argument_index, pointee_offset)
+    return CallbackSource(
+        str(kind),
+        argument_index,
+        pointee_offset,
+        sentinel_words,
+    )
 
 
 def parse_callback_abi(

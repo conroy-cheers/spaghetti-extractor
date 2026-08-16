@@ -24,16 +24,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypeAlias
 
+try:
+    import spaghetti_extractor_native as _native_artifacts_v3
+except ImportError:
+    _native_artifacts_v3 = None
+
 
 ARTIFACT_SET_V3_FORMAT = "spaghetti-extractor-artifact-set-v3"
 ARTIFACT_PACK_V3_FORMAT = "spaghetti-extractor-artifact-pack-v3"
 ARTIFACT_BUNDLE_V3_FORMAT = "spaghetti-extractor-artifact-bundle-v3"
-STRUCTURAL_SCHEDULE_V3_FORMAT = (
-    "spaghetti-extractor-structural-schedule-v3"
-)
-DEPENDENCY_SCHEDULE_V3_FORMAT = (
-    "spaghetti-extractor-dependency-schedule-v3"
-)
+STRUCTURAL_SCHEDULE_V3_FORMAT = "spaghetti-extractor-structural-schedule-v3"
+DEPENDENCY_SCHEDULE_V3_FORMAT = "spaghetti-extractor-dependency-schedule-v3"
 SCHEMA_VERSION = 3
 IDENTITY_BUCKETS = 64
 MAX_PACK_BYTES = 8 * 1024 * 1024
@@ -82,9 +83,7 @@ def _fail(
     *,
     location: str | None = None,
 ) -> None:
-    raise ArtifactV3Error(
-        code, message, remediation=remediation, location=location
-    )
+    raise ArtifactV3Error(code, message, remediation=remediation, location=location)
 
 
 def _json_value(value: Any, *, context: str = "JSON value") -> JsonValue:
@@ -140,8 +139,37 @@ def _json_value(value: Any, *, context: str = "JSON value") -> JsonValue:
     )
 
 
-def canonical_json_bytes_v3(value: Any) -> bytes:
+def _python_canonical_json_bytes_v3(value: Any) -> bytes:
     return _dump_canonical_json_v3(_json_value(value))
+
+
+def native_acceleration_available_v3() -> bool:
+    return (
+        _native_artifacts_v3 is not None
+        and _native_artifacts_v3.NATIVE_API_VERSION == 1
+    )
+
+
+def require_native_acceleration_v3() -> None:
+    if native_acceleration_available_v3():
+        return
+    _fail(
+        "native_acceleration_missing",
+        "the Nix authority workflow requires the pinned native extension",
+        "run through the supported Nix environment or rebuild spaghetti-extractor-native",
+    )
+
+
+def canonical_json_bytes_v3(value: Any) -> bytes:
+    if native_acceleration_available_v3():
+        try:
+            return bytes(_native_artifacts_v3.canonical_json_bytes(value))
+        except (OverflowError, TypeError):
+            # Generic Mapping adapters remain supported off the hot path.
+            pass
+    elif os.environ.get("SPAGHETTI_REQUIRE_NATIVE") == "1":
+        require_native_acceleration_v3()
+    return _python_canonical_json_bytes_v3(value)
 
 
 def _dump_canonical_json_v3(value: Any) -> bytes:
@@ -155,6 +183,13 @@ def _dump_canonical_json_v3(value: Any) -> bytes:
 
 
 def canonical_sha256_v3(value: Any) -> str:
+    if native_acceleration_available_v3():
+        try:
+            return str(_native_artifacts_v3.canonical_sha256(value))
+        except (OverflowError, TypeError):
+            pass
+    elif os.environ.get("SPAGHETTI_REQUIRE_NATIVE") == "1":
+        require_native_acceleration_v3()
     return hashlib.sha256(canonical_json_bytes_v3(value)).hexdigest()
 
 
@@ -214,6 +249,71 @@ def parse_canonical_json_v3(data: bytes, *, location: str) -> JsonValue:
     return value
 
 
+def parse_canonical_json_lines_v3(
+    data: bytes, *, location: str, maximum_line_bytes: int
+) -> tuple[JsonValue, ...]:
+    """Parse a complete canonical NDJSON buffer in one native batch."""
+
+    if native_acceleration_available_v3():
+        try:
+            rows = _native_artifacts_v3.parse_canonical_json_lines(
+                data, maximum_line_bytes
+            )
+        except ValueError as exc:
+            raw = str(exc)
+            code, separator, detail = raw.partition(":")
+            if not separator or code not in {
+                "invalid_json",
+                "noncanonical_json",
+                "oversized_pack_entry",
+            }:
+                code = "invalid_json"
+                detail = raw
+            _fail(
+                code,
+                f"artifact NDJSON is invalid: {detail.strip()}",
+                "regenerate it with ArtifactSetWriterV3",
+                location=location,
+            )
+        if not isinstance(rows, list):
+            _fail(
+                "native_parser_contract_broken",
+                "native canonical parser did not return a row array",
+                "rebuild the pinned spaghetti-extractor-native package",
+                location=location,
+            )
+        return tuple(rows)
+    if os.environ.get("SPAGHETTI_REQUIRE_NATIVE") == "1":
+        require_native_acceleration_v3()
+    if not data or not data.endswith(b"\n"):
+        _fail(
+            "noncanonical_json",
+            "canonical NDJSON does not end in one LF",
+            "regenerate it with ArtifactSetWriterV3",
+            location=location,
+        )
+    result: list[JsonValue] = []
+    for line_number, raw in enumerate(data.splitlines(keepends=True), 1):
+        if len(raw) > maximum_line_bytes + 1:
+            _fail(
+                "oversized_pack_entry",
+                "one NDJSON entry exceeds the pack limit",
+                "split the record into smaller semantic facts",
+                location=f"{location}:{line_number}",
+            )
+        if not raw.endswith(b"\n") or raw.endswith(b"\r\n"):
+            _fail(
+                "noncanonical_json",
+                "pack line does not end in one LF",
+                "write packs with ArtifactSetWriterV3",
+                location=f"{location}:{line_number}",
+            )
+        result.append(
+            parse_canonical_json_v3(raw[:-1], location=f"{location}:{line_number}")
+        )
+    return tuple(result)
+
+
 def _digest(value: Any, context: str) -> str:
     if not isinstance(value, str) or _DIGEST_RE.fullmatch(value) is None:
         _fail(
@@ -239,7 +339,10 @@ def _text(value: Any, context: str, *, maximum: int = 1024) -> str:
         not isinstance(value, str)
         or not value
         or len(value) > maximum
-        or any(ord(character) < 0x20 for character in value)
+        or (
+            not value.isprintable()
+            and any(ord(character) < 0x20 for character in value)
+        )
     ):
         _fail(
             "invalid_text",
@@ -249,9 +352,7 @@ def _text(value: Any, context: str, *, maximum: int = 1024) -> str:
     return value
 
 
-def _strict_object(
-    value: Any, fields: set[str], context: str
-) -> Mapping[str, Any]:
+def _strict_object(value: Any, fields: set[str], context: str) -> Mapping[str, Any]:
     if not isinstance(value, Mapping) or set(value) != fields:
         _fail(
             "noncanonical_fields",
@@ -288,7 +389,10 @@ def identity_bucket_v3(identity: str) -> int:
     """Return the stable 64-way bucket for an identity."""
 
     _text(identity, "record identity")
-    return int.from_bytes(hashlib.sha256(identity.encode("utf-8")).digest(), "big") % IDENTITY_BUCKETS
+    return (
+        int.from_bytes(hashlib.sha256(identity.encode("utf-8")).digest(), "big")
+        % IDENTITY_BUCKETS
+    )
 
 
 @dataclass(frozen=True, order=True)
@@ -310,6 +414,16 @@ class CanonicalValueV3:
         result = object.__new__(cls)
         object.__setattr__(result, "data", data)
         return result
+
+    def _checked_value(self) -> JsonValue:
+        """Return a fresh tree for one checked schema decode.
+
+        ``PhaseContextV3`` caches the resulting typed record.  Retaining this
+        additional JSON tree on every source envelope roughly doubles the live
+        artifact-pack graph and can exceed bounded Nix shard memory.
+        """
+
+        return json.loads(self.data.decode("ascii"))
 
     def to_value(self) -> JsonValue:
         return json.loads(self.data.decode("ascii"))
@@ -339,7 +453,10 @@ class InternedExpressionV3:
         return {"$expr": self.expression_id}
 
     def to_payload(self) -> dict[str, JsonValue]:
-        return {"id": self.expression_id, "value": self.value.to_value()}
+        return {
+            "id": self.expression_id,
+            "value": self.value._checked_value(),
+        }
 
 
 @dataclass(frozen=True)
@@ -363,6 +480,32 @@ class ValueCodecV3(Protocol):
         *,
         used_nodes: set[str] | None = None,
     ) -> CanonicalValueV3: ...
+
+
+class PlainJsonCodecV3:
+    """Store canonical values directly when pack-local interning is wasteful."""
+
+    @property
+    def identity(self) -> str:
+        return "plain-json-v1"
+
+    def encode(self, value: CanonicalValueV3) -> EncodedValueV3:
+        return EncodedValueV3(value._checked_value(), ())
+
+    def decode(
+        self,
+        root: JsonValue,
+        nodes: Mapping[str, JsonValue],
+        *,
+        used_nodes: set[str] | None = None,
+    ) -> CanonicalValueV3:
+        if nodes:
+            _fail(
+                "invalid_plain_json_value",
+                "plain JSON value unexpectedly references interned nodes",
+                "regenerate the artifact with the declared value codec",
+            )
+        return CanonicalValueV3.of(root)
 
 
 class RecursiveJsonCodecV3:
@@ -402,9 +545,7 @@ class RecursiveJsonCodecV3:
                 if current not in self._node_cache:
                     return False
                 observed.add(current)
-                pending.extend(
-                    _encoded_node_references(self._node_cache[current])
-                )
+                pending.extend(_encoded_node_references(self._node_cache[current]))
             return True
 
         def add_cached_closure(node_id: str) -> None:
@@ -436,7 +577,11 @@ class RecursiveJsonCodecV3:
                     key: visit(child) for key, child in sorted(item.items())
                 }
                 encoded: JsonValue = (
-                    {"$v3_object": [[key, value] for key, value in encoded_object.items()]}
+                    {
+                        "$v3_object": [
+                            [key, value] for key, value in encoded_object.items()
+                        ]
+                    }
                     if "$v3_ref" in encoded_object or "$v3_object" in encoded_object
                     else encoded_object
                 )
@@ -451,7 +596,7 @@ class RecursiveJsonCodecV3:
                 self._node_cache.popitem(last=False)
             return {"$v3_ref": node_id}
 
-        root = visit(value.to_value(), force_inline=True)
+        root = visit(value._checked_value(), force_inline=True)
         return EncodedValueV3(root, tuple(sorted(nodes.items())))
 
     def decode(
@@ -477,10 +622,18 @@ class RecursiveJsonCodecV3:
                 for pair in items:
                     pair_items = _strict_sequence(pair, "inline object pair")
                     if len(pair_items) != 2 or not isinstance(pair_items[0], str):
-                        _fail("invalid_encoded_value", "escaped object item is not [key, value]", "regenerate it with RecursiveJsonCodecV3")
+                        _fail(
+                            "invalid_encoded_value",
+                            "escaped object item is not [key, value]",
+                            "regenerate it with RecursiveJsonCodecV3",
+                        )
                     key = pair_items[0]
                     if previous_key is not None and key <= previous_key:
-                        _fail("noncanonical_encoded_value", "escaped object keys are duplicated or unsorted", "regenerate it with RecursiveJsonCodecV3")
+                        _fail(
+                            "noncanonical_encoded_value",
+                            "escaped object keys are duplicated or unsorted",
+                            "regenerate it with RecursiveJsonCodecV3",
+                        )
                     result[key] = visit(pair_items[1])
                     previous_key = key
                 return result
@@ -536,12 +689,14 @@ def _encoded_node_references(value: JsonValue) -> set[str]:
 
 
 def value_codec_v3(identity: str) -> ValueCodecV3:
+    if identity == "plain-json-v1":
+        return PlainJsonCodecV3()
     match = re.fullmatch(r"recursive-json-v1:min-([0-9]+)", identity)
     if match is None:
         _fail(
             "unsupported_value_codec",
             f"artifact requires unregistered value codec {identity!r}",
-            "register the codec with the reader or regenerate using RecursiveJsonCodecV3",
+            "register the codec with the reader or regenerate with a supported codec",
         )
     return RecursiveJsonCodecV3(int(match.group(1)))
 
@@ -608,7 +763,11 @@ class ArtifactRecordV3:
                 "construct the record with ArtifactRecordV3.create",
             )
         declared = {row.expression_id for row in self.expressions}
-        referenced = _collect_expression_refs(self.value.to_value())
+        referenced = (
+            set()
+            if not declared and b'"$expr"' not in self.value.data
+            else _collect_expression_refs(self.value._checked_value())
+        )
         if declared != referenced:
             _fail(
                 "expression_inventory_mismatch",
@@ -727,7 +886,11 @@ class ArtifactPackV3:
                 f"pack path {self.path!r} is not {expected_path!r}",
                 "let ArtifactSetWriterV3 choose deterministic pack paths",
             )
-        if self.record_count <= 0 or self.size_bytes <= 0 or self.decoded_size_bytes <= 0:
+        if (
+            self.record_count <= 0
+            or self.size_bytes <= 0
+            or self.decoded_size_bytes <= 0
+        ):
             _fail(
                 "empty_pack",
                 "artifact packs must contain at least one record",
@@ -761,8 +924,16 @@ class ArtifactPackV3:
     @classmethod
     def parse(cls, value: Any) -> "ArtifactPackV3":
         fields = {
-            "bucket", "part", "path", "record_count", "size_bytes", "sha256",
-            "decoded_size_bytes", "decoded_sha256", "first_record_id", "last_record_id",
+            "bucket",
+            "part",
+            "path",
+            "record_count",
+            "size_bytes",
+            "sha256",
+            "decoded_size_bytes",
+            "decoded_sha256",
+            "first_record_id",
+            "last_record_id",
         }
         row = _strict_object(value, fields, "artifact pack descriptor")
         try:
@@ -873,16 +1044,18 @@ class ArtifactSetManifestV3:
         previous_part: dict[int, int] = {}
         for pack in self.packs:
             expected = previous_part.get(pack.bucket, -1) + 1
-            if pack.part != expected or pack.size_bytes > self.max_pack_bytes or pack.decoded_size_bytes > self.max_pack_bytes:
+            if (
+                pack.part != expected
+                or pack.size_bytes > self.max_pack_bytes
+                or pack.decoded_size_bytes > self.max_pack_bytes
+            ):
                 _fail(
                     "invalid_pack_inventory",
                     "pack parts are non-contiguous or exceed the declared limit",
                     "repack with ArtifactSetWriterV3",
                 )
             previous_part[pack.bucket] = pack.part
-        expected_id = "artifact-set-v3:" + canonical_sha256_v3(
-            self.identity_payload()
-        )
+        expected_id = "artifact-set-v3:" + canonical_sha256_v3(self.identity_payload())
         if self.artifact_id != expected_id:
             _fail(
                 "stale_artifact_id",
@@ -963,10 +1136,14 @@ class ArtifactSetManifestV3:
             "dependencies": [row.to_payload() for row in fields["dependencies"]],
             "packs": [row.to_payload() for row in fields["packs"]],
         }
-        return cls(artifact_id="artifact-set-v3:" + canonical_sha256_v3(identity), **fields)
+        return cls(
+            artifact_id="artifact-set-v3:" + canonical_sha256_v3(identity), **fields
+        )
 
     @classmethod
-    def parse_bytes(cls, data: bytes, *, location: str = "manifest.json") -> "ArtifactSetManifestV3":
+    def parse_bytes(
+        cls, data: bytes, *, location: str = "manifest.json"
+    ) -> "ArtifactSetManifestV3":
         if len(data) > MAX_ARTIFACT_MANIFEST_BYTES:
             _fail(
                 "oversized_artifact_manifest",
@@ -976,14 +1153,25 @@ class ArtifactSetManifestV3:
             )
         value = parse_canonical_json_v3(data, location=location)
         fields = {
-            "format", "schema_version", "artifact_kind", "artifact_id", "status",
-            "bucket_count", "max_pack_bytes", "record_count", "bindings",
-            "dependencies", "packs",
+            "format",
+            "schema_version",
+            "artifact_kind",
+            "artifact_id",
+            "status",
+            "bucket_count",
+            "max_pack_bytes",
+            "record_count",
+            "bindings",
+            "dependencies",
+            "packs",
             "value_codec",
             "pack_compression",
         }
         row = _strict_object(value, fields, "artifact manifest")
-        if row["format"] != ARTIFACT_SET_V3_FORMAT or row["schema_version"] != SCHEMA_VERSION:
+        if (
+            row["format"] != ARTIFACT_SET_V3_FORMAT
+            or row["schema_version"] != SCHEMA_VERSION
+        ):
             _fail(
                 "wrong_artifact_format",
                 "manifest is not an artifact-set-v3 document",
@@ -1000,9 +1188,20 @@ class ArtifactSetManifestV3:
                 record_count=int(row["record_count"]),
                 value_codec=str(row["value_codec"]),
                 pack_compression=str(row["pack_compression"]),
-                bindings=tuple(ArtifactBindingV3.parse(item) for item in _strict_sequence(row["bindings"], "manifest bindings")),
-                dependencies=tuple(ArtifactDependencyV3.parse(item) for item in _strict_sequence(row["dependencies"], "manifest dependencies")),
-                packs=tuple(ArtifactPackV3.parse(item) for item in _strict_sequence(row["packs"], "manifest packs")),
+                bindings=tuple(
+                    ArtifactBindingV3.parse(item)
+                    for item in _strict_sequence(row["bindings"], "manifest bindings")
+                ),
+                dependencies=tuple(
+                    ArtifactDependencyV3.parse(item)
+                    for item in _strict_sequence(
+                        row["dependencies"], "manifest dependencies"
+                    )
+                ),
+                packs=tuple(
+                    ArtifactPackV3.parse(item)
+                    for item in _strict_sequence(row["packs"], "manifest packs")
+                ),
             )
         except (TypeError, ValueError) as exc:
             if isinstance(exc, ArtifactV3Error):
@@ -1017,7 +1216,7 @@ class ArtifactSetManifestV3:
 
 def _record_value_payload(record: ArtifactRecordV3) -> dict[str, JsonValue]:
     return {
-        "value": record.value.to_value(),
+        "value": record.value._checked_value(),
         "expression_ids": [row.expression_id for row in record.expressions],
         "dependencies": [row.to_payload() for row in record.dependencies],
     }
@@ -1033,17 +1232,22 @@ def _pack_header(
     part: int,
     record_ids: Sequence[str],
 ) -> bytes:
-    return canonical_json_bytes_v3({
-        "entry": "header",
-        "format": ARTIFACT_PACK_V3_FORMAT,
-        "schema_version": SCHEMA_VERSION,
-        "artifact_kind": artifact_kind,
-        "bucket": bucket,
-        "part": part,
-        "record_count": len(record_ids),
-        "first_record_id": record_ids[0],
-        "last_record_id": record_ids[-1],
-    }) + b"\n"
+    return (
+        canonical_json_bytes_v3(
+            {
+                "entry": "header",
+                "format": ARTIFACT_PACK_V3_FORMAT,
+                "schema_version": SCHEMA_VERSION,
+                "artifact_kind": artifact_kind,
+                "bucket": bucket,
+                "part": part,
+                "record_count": len(record_ids),
+                "first_record_id": record_ids[0],
+                "last_record_id": record_ids[-1],
+            }
+        )
+        + b"\n"
+    )
 
 
 class ArtifactSetWriterV3:
@@ -1065,7 +1269,9 @@ class ArtifactSetWriterV3:
         self.status = status
         if status not in _STATUSES:
             _fail(
-                "invalid_status", f"status {status!r} is invalid", "use complete, incomplete, or violated"
+                "invalid_status",
+                f"status {status!r} is invalid",
+                "use complete, incomplete, or violated",
             )
         if not 256 <= max_pack_bytes <= MAX_PACK_BYTES:
             _fail(
@@ -1074,7 +1280,9 @@ class ArtifactSetWriterV3:
                 "use the default limit or a bounded smaller test value",
             )
         self.max_pack_bytes = max_pack_bytes
-        self.value_codec = RecursiveJsonCodecV3() if value_codec is None else value_codec
+        self.value_codec = (
+            RecursiveJsonCodecV3() if value_codec is None else value_codec
+        )
         _text(self.value_codec.identity, "value codec identity", maximum=128)
         if len({row.name for row in self.dependencies}) != len(self.dependencies):
             _fail(
@@ -1094,7 +1302,9 @@ class ArtifactSetWriterV3:
                 "choose a fresh output path so stale packs cannot survive",
             )
         destination.parent.mkdir(parents=True, exist_ok=True)
-        staging = Path(tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent))
+        staging = Path(
+            tempfile.mkdtemp(prefix=f".{destination.name}.", dir=destination.parent)
+        )
         database_path = staging / ".records.sqlite"
         try:
             count = self._spool(database_path, records)
@@ -1118,9 +1328,7 @@ class ArtifactSetWriterV3:
             shutil.rmtree(staging, ignore_errors=True)
             raise
 
-    def _spool(
-        self, database_path: Path, records: Iterable[ArtifactRecordV3]
-    ) -> int:
+    def _spool(self, database_path: Path, records: Iterable[ArtifactRecordV3]) -> int:
         connection = sqlite3.connect(database_path)
         try:
             connection.execute(
@@ -1134,7 +1342,10 @@ class ArtifactSetWriterV3:
                         f"writer received {type(item).__name__} instead of ArtifactRecordV3",
                         "return ArtifactRecordV3.create(...) from the phase transform",
                     )
-                undeclared = sorted({row.input_name for row in item.dependencies} - {row.name for row in self.dependencies})
+                undeclared = sorted(
+                    {row.input_name for row in item.dependencies}
+                    - {row.name for row in self.dependencies}
+                )
                 if undeclared:
                     _fail(
                         "undeclared_dependency",
@@ -1148,8 +1359,12 @@ class ArtifactSetWriterV3:
                             item.record_id,
                             identity_bucket_v3(item.record_id),
                             item.value.data,
-                            canonical_json_bytes_v3([row.to_payload() for row in item.dependencies]),
-                            canonical_json_bytes_v3([row.to_payload() for row in item.expressions]),
+                            canonical_json_bytes_v3(
+                                [row.to_payload() for row in item.dependencies]
+                            ),
+                            canonical_json_bytes_v3(
+                                [row.to_payload() for row in item.expressions]
+                            ),
                         ),
                     )
                 except sqlite3.IntegrityError as exc:
@@ -1164,7 +1379,9 @@ class ArtifactSetWriterV3:
         finally:
             connection.close()
 
-    def _write_packs(self, root: Path, database_path: Path) -> tuple[ArtifactPackV3, ...]:
+    def _write_packs(
+        self, root: Path, database_path: Path
+    ) -> tuple[ArtifactPackV3, ...]:
         packs_directory = root / "packs"
         packs_directory.mkdir()
         result: list[ArtifactPackV3] = []
@@ -1176,13 +1393,23 @@ class ArtifactSetWriterV3:
                     (bucket,),
                 )
                 part = 0
-                state = _PackBuildState(self.artifact_kind, bucket, part, self.value_codec)
+                state = _PackBuildState(
+                    self.artifact_kind, bucket, part, self.value_codec
+                )
                 for row in cursor:
                     record = ArtifactRecordV3(
                         record_id=str(row[0]),
                         value=CanonicalValueV3(bytes(row[1])),
-                        dependencies=tuple(RecordDependencyV3.parse(item) for item in json.loads(bytes(row[2]).decode("ascii"))),
-                        expressions=tuple(InternedExpressionV3(str(item["id"]), CanonicalValueV3.of(item["value"])) for item in json.loads(bytes(row[3]).decode("ascii"))),
+                        dependencies=tuple(
+                            RecordDependencyV3.parse(item)
+                            for item in json.loads(bytes(row[2]).decode("ascii"))
+                        ),
+                        expressions=tuple(
+                            InternedExpressionV3(
+                                str(item["id"]), CanonicalValueV3.of(item["value"])
+                            )
+                            for item in json.loads(bytes(row[3]).decode("ascii"))
+                        ),
                     )
                     if not state.can_add(record, self.max_pack_bytes):
                         if not state.record_ids:
@@ -1193,7 +1420,9 @@ class ArtifactSetWriterV3:
                             )
                         result.append(state.flush(packs_directory, self.max_pack_bytes))
                         part += 1
-                        state = _PackBuildState(self.artifact_kind, bucket, part, self.value_codec)
+                        state = _PackBuildState(
+                            self.artifact_kind, bucket, part, self.value_codec
+                        )
                         if not state.can_add(record, self.max_pack_bytes):
                             _fail(
                                 "oversized_record",
@@ -1209,7 +1438,9 @@ class ArtifactSetWriterV3:
 
 
 class _PackBuildState:
-    def __init__(self, artifact_kind: str, bucket: int, part: int, value_codec: ValueCodecV3) -> None:
+    def __init__(
+        self, artifact_kind: str, bucket: int, part: int, value_codec: ValueCodecV3
+    ) -> None:
         self.artifact_kind = artifact_kind
         self.bucket = bucket
         self.part = part
@@ -1227,41 +1458,70 @@ class _PackBuildState:
         value_node_ids: set[str] = set()
         for expression in record.expressions:
             if expression.expression_id not in self.expression_ids:
-                lines.append(canonical_json_bytes_v3({
-                    "entry": "expression",
-                    "id": expression.expression_id,
-                    "value": expression.value.to_value(),
-                }) + b"\n")
+                lines.append(
+                    canonical_json_bytes_v3(
+                        {
+                            "entry": "expression",
+                            "id": expression.expression_id,
+                            "value": expression.value._checked_value(),
+                        }
+                    )
+                    + b"\n"
+                )
         value_id = _record_value_id(record)
         if value_id not in self.value_ids:
             encoded = self.value_codec.encode(record.value)
             for node_id, node in encoded.nodes:
                 if node_id not in self.value_node_ids:
                     value_node_ids.add(node_id)
-                    lines.append(canonical_json_bytes_v3({
-                        "entry": "value_node",
-                        "id": node_id,
-                        "encoded": node,
-                    }) + b"\n")
-            lines.append(canonical_json_bytes_v3({
-                "entry": "record_value",
-                "id": value_id,
-                "value": encoded.root,
-                "expression_ids": [row.expression_id for row in record.expressions],
-                "dependencies": [row.to_payload() for row in record.dependencies],
-            }) + b"\n")
-        lines.append(canonical_json_bytes_v3({
-            "entry": "record",
-            "id": record.record_id,
-            "value_id": value_id,
-        }) + b"\n")
+                    lines.append(
+                        canonical_json_bytes_v3(
+                            {
+                                "entry": "value_node",
+                                "id": node_id,
+                                "encoded": node,
+                            }
+                        )
+                        + b"\n"
+                    )
+            lines.append(
+                canonical_json_bytes_v3(
+                    {
+                        "entry": "record_value",
+                        "id": value_id,
+                        "value": encoded.root,
+                        "expression_ids": [
+                            row.expression_id for row in record.expressions
+                        ],
+                        "dependencies": [
+                            row.to_payload() for row in record.dependencies
+                        ],
+                    }
+                )
+                + b"\n"
+            )
+        lines.append(
+            canonical_json_bytes_v3(
+                {
+                    "entry": "record",
+                    "id": record.record_id,
+                    "value_id": value_id,
+                }
+            )
+            + b"\n"
+        )
         return lines, value_node_ids
 
     def can_add(self, record: ArtifactRecordV3, maximum: int) -> bool:
         additions, value_node_ids = self._new_lines(record)
         self._pending = (record.record_id, additions, value_node_ids)
         ids = [*self.record_ids, record.record_id]
-        return len(_pack_header(self.artifact_kind, self.bucket, self.part, ids)) + self.body_size + sum(map(len, additions)) <= maximum
+        return (
+            len(_pack_header(self.artifact_kind, self.bucket, self.part, ids))
+            + self.body_size
+            + sum(map(len, additions))
+            <= maximum
+        )
 
     def add(self, record: ArtifactRecordV3) -> None:
         if self._pending is not None and self._pending[0] == record.record_id:

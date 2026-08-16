@@ -19,6 +19,8 @@ from .inductive import (
 )
 from .isa_qualification import ISA_QUALIFICATION_PHASE_V3
 from .memory_versions import MEMORY_VERSIONS_PHASE_V3
+from .parametric_summary_checker import PARAMETRIC_SCC_SUMMARIES_PHASE_V3
+from .parametric_unit_facts import PARAMETRIC_UNIT_FACTS_PHASE_V3
 from .root_closure import LAUNCH_ROOT_CLOSURE_PHASE_V3
 from .semantic_index import SEMANTIC_INDEX_PHASE_V3
 from .structural_targets import STRUCTURAL_TARGETS_PHASE_V3
@@ -38,6 +40,8 @@ REQUIRED_AUTHORITY_PHASE_NAMES_V3 = frozenset(
         "inductive-authority-v3",
         "indirect-target-certificates-v3",
         "memory-versions-v3",
+        "parametric-scc-summaries-v3",
+        "parametric-unit-facts-v3",
         "launch-root-closure-v3",
         "isa-qualification-v3",
         "structural-target-proposals-v3",
@@ -124,6 +128,8 @@ AUTHORITY_PHASE_REGISTRY_V3 = AuthorityPhaseRegistryV3.create(
         TRANSITION_SUMMARIES_PHASE_V3,
         MEMORY_VERSIONS_PHASE_V3,
         STRUCTURAL_TARGETS_PHASE_V3,
+        PARAMETRIC_UNIT_FACTS_PHASE_V3,
+        PARAMETRIC_SCC_SUMMARIES_PHASE_V3,
         INDIRECT_TARGET_CERTIFICATES_PHASE_V3,
         INDUCTIVE_AUTHORITY_PHASE_V3,
         CANONICAL_EXTERNAL_SITES_PHASE_V3,

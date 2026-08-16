@@ -34,14 +34,10 @@ BINDING = ArtifactBindingV3("binary", "pe32", "fixture.exe", "a" * 64)
 
 def _input(root: Path, name: str, count: int = 4) -> Path:
     output = root / name
-    ArtifactSetWriterV3(
-        artifact_kind="machine-ir", bindings=(BINDING,)
-    ).write(
+    ArtifactSetWriterV3(artifact_kind="machine-ir", bindings=(BINDING,)).write(
         output,
         (
-            ArtifactRecordV3.create(
-                f"unit:{index}", {"value": index, "kind": name}
-            )
+            ArtifactRecordV3.create(f"unit:{index}", {"value": index, "kind": name})
             for index in range(count)
         ),
     )
@@ -49,6 +45,28 @@ def _input(root: Path, name: str, count: int = 4) -> Path:
 
 
 class PhaseFrameworkV3Tests(unittest.TestCase):
+    def test_phase_declares_its_output_value_codec(self) -> None:
+        phase = map_units(
+            name="plain-output",
+            version="1",
+            source_input="units",
+            input_artifact_kinds={"units": "machine-ir"},
+            output_artifact_kind="facts",
+            transform=lambda _context, source: ArtifactRecordV3.create(
+                source.record_id, source.value.to_value()
+            ),
+            output_value_codec="plain-json-v1",
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result = phase.run(
+                output_directory=root / "output",
+                inputs={"units": _input(root, "units", 1)},
+                bindings=(BINDING,),
+            )
+
+            self.assertEqual(result.manifest.value_codec, "plain-json-v1")
+
     def test_phase_consumes_bundle_through_the_standard_input_api(self) -> None:
         phase = map_units(
             name="bundle-input",
@@ -64,17 +82,11 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
             root = Path(temporary)
             first = _input(root, "first", 2)
             second = root / "second"
-            ArtifactSetWriterV3(
-                artifact_kind="machine-ir", bindings=(BINDING,)
-            ).write(
+            ArtifactSetWriterV3(artifact_kind="machine-ir", bindings=(BINDING,)).write(
                 second,
                 (
-                    ArtifactRecordV3.create(
-                        "unit:2", {"value": 2, "kind": "second"}
-                    ),
-                    ArtifactRecordV3.create(
-                        "unit:3", {"value": 3, "kind": "second"}
-                    ),
+                    ArtifactRecordV3.create("unit:2", {"value": 2, "kind": "second"}),
+                    ArtifactRecordV3.create("unit:3", {"value": 3, "kind": "second"}),
                 ),
             )
             bundle = root / "bundle"
@@ -92,7 +104,9 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
             self.assertEqual(
                 sorted(
                     row.record_id
-                    for row in ArtifactSetReaderV3(result.output_directory).iter_records()
+                    for row in ArtifactSetReaderV3(
+                        result.output_directory
+                    ).iter_records()
                 ),
                 ["unit:1", "unit:2"],
             )
@@ -147,7 +161,8 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
             input_artifact_kinds={"units": "machine-ir"},
             output_artifact_kind="facts",
             transform=lambda context, source: (
-                context.record("secret", source.record_id), source
+                context.record("secret", source.record_id),
+                source,
             )[1],
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -279,9 +294,7 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
 
         def transform(context, source):
             shared = context.typed_record("shared", "unit:0", codec)
-            return ArtifactRecordV3.create(
-                source.record_id, {"shared": shared.value}
-            )
+            return ArtifactRecordV3.create(source.record_id, {"shared": shared.value})
 
         phase = map_units(
             name="typed-input-cache",
@@ -304,9 +317,7 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
                 },
                 bindings=(BINDING,),
             )
-            records = tuple(
-                ArtifactSetReaderV3(result.output_directory).iter_records()
-            )
+            records = tuple(ArtifactSetReaderV3(result.output_directory).iter_records())
             self.assertEqual(decode_count, 1)
             self.assertEqual(len(records), 4)
             for record in records:
@@ -323,9 +334,7 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
 
         def transform(context, source):
             typed = context.typed_record("units", source, codec)
-            return ArtifactRecordV3.create(
-                source.record_id, {"value": typed.value + 1}
-            )
+            return ArtifactRecordV3.create(source.record_id, {"value": typed.value + 1})
 
         phase = map_units(
             name="typed-selected-source",
@@ -354,7 +363,10 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
 
     def test_map_sccs_auto_binds_planned_records(self) -> None:
         def transform(context, work_item):
-            values = [record.value.to_value()["value"] for record in work_item.records(context)]
+            values = [
+                record.value.to_value()["value"]
+                for record in work_item.records(context)
+            ]
             return ArtifactRecordV3.create(
                 work_item.record_id,
                 {"members": list(work_item.scc.members), "sum": sum(values)},
@@ -393,9 +405,7 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
             )
             records = list(ArtifactSetReaderV3(result.output_directory).iter_records())
             self.assertEqual(len(records), 2)
-            self.assertEqual(
-                sorted(len(row.dependencies) for row in records), [1, 2]
-            )
+            self.assertEqual(sorted(len(row.dependencies) for row in records), [1, 2])
 
     def test_map_sccs_rejects_phase_records_in_structural_schedule(self) -> None:
         phase = map_sccs(
@@ -418,9 +428,7 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
                 (
                     DependencyNodePlanV3.create(
                         "unit:0",
-                        records=(
-                            RecordDependencyV3("evidence", "unit:0"),
-                        ),
+                        records=(RecordDependencyV3("evidence", "unit:0"),),
                     ),
                 ),
             )
@@ -452,7 +460,12 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
             output_artifact_kind="total",
             transform=lambda context: ArtifactRecordV3.create(
                 "total",
-                {"total": sum(row.value.to_value()["value"] for row in context.records("units"))},
+                {
+                    "total": sum(
+                        row.value.to_value()["value"]
+                        for row in context.records("units")
+                    )
+                },
             ),
             completeness=completeness,
         )
@@ -468,7 +481,7 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
             self.assertEqual(record.value.to_value(), {"total": 10})
             self.assertEqual(len(record.dependencies), 5)
 
-    def test_producer_validation_checks_storage_without_replaying_transform(self) -> None:
+    def test_producer_defers_storage_replay_to_independent_reader(self) -> None:
         checks: list[str] = []
 
         def completeness(_reader, _context):
@@ -504,9 +517,7 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
         def transform(context):
             values = tuple(context.records("units"))
             return tuple(
-                ArtifactRecordV3.create(
-                    f"summary:{index}", {"records": len(values)}
-                )
+                ArtifactRecordV3.create(f"summary:{index}", {"records": len(values)})
                 for index in range(2)
             )
 
@@ -528,9 +539,7 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
                 inputs={"units": _input(root, "units", 3)},
                 bindings=(BINDING,),
             )
-            records = tuple(
-                ArtifactSetReaderV3(result.output_directory).iter_records()
-            )
+            records = tuple(ArtifactSetReaderV3(result.output_directory).iter_records())
             self.assertEqual(len(records), 2)
             self.assertEqual(
                 {tuple(record.dependencies) for record in records},
@@ -538,7 +547,9 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
             )
             self.assertEqual(len(records[0].dependencies), 3)
 
-    def test_artifact_scoped_reduce_uses_manifest_authority_without_record_bloat(self) -> None:
+    def test_artifact_scoped_reduce_uses_manifest_authority_without_record_bloat(
+        self,
+    ) -> None:
         def transform(context):
             count = sum(1 for _record in context.records("units"))
             return ArtifactRecordV3.create("summary", {"count": count})
@@ -564,9 +575,7 @@ class PhaseFrameworkV3Tests(unittest.TestCase):
                 inputs={"units": _input(root, "units", 4)},
                 bindings=(BINDING,),
             )
-            record = next(
-                ArtifactSetReaderV3(result.output_directory).iter_records()
-            )
+            record = next(ArtifactSetReaderV3(result.output_directory).iter_records())
             self.assertEqual(record.dependencies, ())
             self.assertEqual(len(result.manifest.dependencies), 1)
 

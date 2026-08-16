@@ -963,6 +963,7 @@ TRANSITION_SUMMARIES_PHASE_V3 = map_units(
     output_artifact_kind=TRANSITION_SUMMARIES_ARTIFACT_KIND_V3,
     transform=_transform_transition_summary,
     completeness=check_transition_summaries_completeness_v3,
+    output_value_codec="plain-json-v1",
 )
 
 

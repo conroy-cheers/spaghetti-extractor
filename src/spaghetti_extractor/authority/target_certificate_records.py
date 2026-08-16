@@ -57,9 +57,23 @@ INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3 = (
 )
 
 _EVALUATION_METHODS = frozenset(
-    {"exact_constant", "inductive_finite_values", "checked_indexed_pe_table"}
+    {
+        "exact_constant",
+        "inductive_finite_values",
+        "checked_indexed_pe_table",
+        "checked_pe_static_value",
+        "checked_parametric_summary",
+    }
 )
 _INDEXED_PE_TABLE_CERTIFICATE_KIND_V3 = "checked-indexed-pe-table-v3"
+_PE_STATIC_VALUE_CERTIFICATE_KIND_V3 = "checked-pe-static-value-v3"
+_PARAMETRIC_TARGET_CERTIFICATE_KIND_V3 = "checked-parametric-target-fact-v3"
+_PARAMETRIC_MEMORY_RECORD_NOT_APPLICABLE_V3 = (
+    "not-applicable:checked-parametric-summary"
+)
+_PE_STATIC_MEMORY_RECORD_NOT_APPLICABLE_V3 = (
+    "not-applicable:checked-pe-static-value"
+)
 
 
 def _canonical_values(values: Iterable[CanonicalValueV3]) -> tuple[CanonicalValueV3, ...]:
@@ -100,7 +114,7 @@ class TargetEvaluationEvidenceV3:
             fail(
                 "record_schema_mismatch",
                 f"target evidence has unsupported method {self.evaluation_method!r}",
-                "use exact_constant or inductive_finite_values",
+                "use one of the checked finite-target evaluation methods",
             )
         text(self.memory_record_id, "target-evaluation memory record ID")
         optional_text(self.inductive_fact_id, "target-evaluation invariant fact ID")
@@ -116,14 +130,21 @@ class TargetEvaluationEvidenceV3:
                 "finite target evidence has no invariant fact",
                 "bind the exact finite cutpoint fact",
             )
-        if self.evaluation_method == "checked_indexed_pe_table":
+        if self.evaluation_method in {
+            "checked_indexed_pe_table",
+            "checked_pe_static_value",
+            "checked_parametric_summary",
+        }:
             if self.inductive_fact_id is not None:
                 fail(
                     "record_schema_mismatch",
-                    "indexed PE-table evidence references an invariant fact",
-                    "carry the checked table proof in evaluation_certificate",
+                    "checked target evidence references an invariant fact",
+                    "carry the checked proof in evaluation_certificate",
                 )
-            if self.external_targets:
+            if (
+                self.evaluation_method == "checked_indexed_pe_table"
+                and self.external_targets
+            ):
                 fail(
                     "record_schema_mismatch",
                     "indexed PE-table evidence contains external targets",
@@ -132,14 +153,34 @@ class TargetEvaluationEvidenceV3:
             if self.evaluation_certificate is None:
                 fail(
                     "record_schema_mismatch",
-                    "indexed PE-table evidence has no checked certificate",
-                    "include the exact table, selector, and target bindings",
+                    "checked target evidence has no evaluation certificate",
+                    "include the exact checker-specific certificate payload",
+                )
+            if (
+                self.evaluation_method == "checked_parametric_summary"
+                and self.memory_record_id
+                != _PARAMETRIC_MEMORY_RECORD_NOT_APPLICABLE_V3
+            ):
+                fail(
+                    "record_schema_mismatch",
+                    "parametric-summary target evidence overloads a memory record ID",
+                    "use the explicit not-applicable memory binding",
+                )
+            if (
+                self.evaluation_method == "checked_pe_static_value"
+                and self.memory_record_id
+                != _PE_STATIC_MEMORY_RECORD_NOT_APPLICABLE_V3
+            ):
+                fail(
+                    "record_schema_mismatch",
+                    "static-PE target evidence overloads a memory record ID",
+                    "use the explicit static-PE not-applicable memory binding",
                 )
         elif self.evaluation_certificate is not None:
             fail(
                 "record_schema_mismatch",
-                "non-indexed target evidence contains an indexed certificate",
-                "clear evaluation_certificate or use checked_indexed_pe_table",
+                "unchecked target evidence contains a checked certificate",
+                "clear evaluation_certificate or use a checked evaluation method",
             )
         if self.target_unit_ids != tuple(sorted(set(self.target_unit_ids))):
             fail(

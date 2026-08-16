@@ -62,7 +62,8 @@ from .build_validation import (
     _load_region_override_package,
     _validate_candidate_authority_package_bindings,
     _validate_candidate_authority_v3,
-    _validate_static_candidate_package_bindings,
+    _validate_structural_execution_v1,
+    _validate_structural_candidate_package_bindings,
     _validate_package_closure,
     _validate_region_override_closure,
 )
@@ -446,6 +447,7 @@ def build_spx_interpreter_native_candidate(
     native_runtime_package: Path | str,
     candidate_authority: Path | str | None,
     final_authority: Path | str | None,
+    structural_execution_receipt: Path | str | None = None,
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
     fallback_coverage_receipt: Path | str | None,
@@ -467,23 +469,35 @@ def build_spx_interpreter_native_candidate(
             "payload entry symbol is not a C identifier"
         )
 
-    if any(value is None for value in (
-        candidate_authority,
-        final_authority,
-        fallback_coverage_receipt,
-        component_runtime_package,
-    )):
+    if component_runtime_package is None:
         raise CandidateNativeBuildError(
-            "static-closed candidates require complete v3 authority inputs"
+            "structural candidates require component-runtime inputs"
         )
-    receipt: CandidateAuthorityV3Receipt = _validate_candidate_authority_v3(
-        receipt=candidate_authority,
-        final_authority=final_authority,
-        machine_ir=machine_ir,
-        machine_ir_manifest=machine_ir_manifest,
-        fallback_coverage_receipt=fallback_coverage_receipt,
-        component_runtime_package=component_runtime_package,
-    )
+    structural_policy_binding: dict[str, Any] | None = None
+    receipt: CandidateAuthorityV3Receipt | None = None
+    if structural_execution_receipt is not None:
+        structural_policy_binding = _validate_structural_execution_v1(
+            receipt=structural_execution_receipt,
+            machine_ir=machine_ir,
+            machine_ir_manifest=machine_ir_manifest,
+        )
+    elif candidate_authority is not None and final_authority is not None:
+        if fallback_coverage_receipt is None:
+            raise CandidateNativeBuildError(
+                "legacy candidate authority requires fallback-coverage evidence"
+            )
+        receipt = _validate_candidate_authority_v3(
+            receipt=candidate_authority,
+            final_authority=final_authority,
+            machine_ir=machine_ir,
+            machine_ir_manifest=machine_ir_manifest,
+            fallback_coverage_receipt=fallback_coverage_receipt,
+            component_runtime_package=component_runtime_package,
+        )
+    else:
+        raise CandidateNativeBuildError(
+            "candidate construction requires structural-executable-v1"
+        )
 
     interpreter = _load_package(
         interpreter_package,
@@ -507,8 +521,9 @@ def build_spx_interpreter_native_candidate(
         require_roles=True,
     )
     runtime_plan = _validate_package_closure(interpreter, engine, runtime)
-    _validate_candidate_authority_package_bindings(receipt, interpreter, engine)
-    structural_binding = _validate_static_candidate_package_bindings(
+    if receipt is not None:
+        _validate_candidate_authority_package_bindings(receipt, interpreter, engine)
+    structural_binding = _validate_structural_candidate_package_bindings(
         machine_ir=machine_ir,
         machine_ir_manifest=machine_ir_manifest,
         interpreter=interpreter,
@@ -847,23 +862,35 @@ def build_spx_interpreter_native_candidate(
         raise CandidateNativeBuildError(
             "compiler runtime changed during compilation"
         )
-    assert candidate_authority is not None
-    assert final_authority is not None
-    assert fallback_coverage_receipt is not None
     assert component_runtime_package is not None
-    repeated_receipt = _validate_candidate_authority_v3(
-        receipt=candidate_authority,
-        final_authority=final_authority,
-        machine_ir=machine_ir,
-        machine_ir_manifest=machine_ir_manifest,
-        fallback_coverage_receipt=fallback_coverage_receipt,
-        component_runtime_package=component_runtime_package,
-    )
-    if repeated_receipt != receipt:
-        raise CandidateNativeBuildError(
-            "v3 candidate-authority inputs changed during compilation"
+    if structural_execution_receipt is not None:
+        repeated_policy = _validate_structural_execution_v1(
+            receipt=structural_execution_receipt,
+            machine_ir=machine_ir,
+            machine_ir_manifest=machine_ir_manifest,
         )
-    repeated_structural_binding = _validate_static_candidate_package_bindings(
+        if repeated_policy != structural_policy_binding:
+            raise CandidateNativeBuildError(
+                "structural-executable inputs changed during compilation"
+            )
+    else:
+        assert candidate_authority is not None
+        assert final_authority is not None
+        assert fallback_coverage_receipt is not None
+        assert receipt is not None
+        repeated_receipt = _validate_candidate_authority_v3(
+            receipt=candidate_authority,
+            final_authority=final_authority,
+            machine_ir=machine_ir,
+            machine_ir_manifest=machine_ir_manifest,
+            fallback_coverage_receipt=fallback_coverage_receipt,
+            component_runtime_package=component_runtime_package,
+        )
+        if repeated_receipt != receipt:
+            raise CandidateNativeBuildError(
+                "v3 candidate-authority inputs changed during compilation"
+            )
+    repeated_structural_binding = _validate_structural_candidate_package_bindings(
         machine_ir=machine_ir,
         machine_ir_manifest=machine_ir_manifest,
         interpreter=interpreter,
@@ -892,9 +919,12 @@ def build_spx_interpreter_native_candidate(
         "acceptance_authority": "none",
         "assurance": "candidate static and behavioral validation required",
         "inputs": {
-            "candidate_authority": _candidate_authority_manifest_binding(
-                candidate_authority, receipt
+            "candidate_authority": (
+                None
+                if candidate_authority is None or receipt is None
+                else _candidate_authority_manifest_binding(candidate_authority, receipt)
             ),
+            "structural_executable": structural_policy_binding,
             "execution_scope": structural_binding,
             "interpreter_package": interpreter.binding(),
             "native_engine_package": engine.binding(),
@@ -938,7 +968,11 @@ def build_spx_interpreter_native_candidate(
         },
         "policy": {
             "architecture": "i686-pe32",
-            "candidate_class": "release-static-closed",
+            "candidate_class": (
+                "structural-executable-hybrid"
+                if structural_policy_binding is not None
+                else "release-static-closed"
+            ),
             "entry_symbol": entry_symbol,
             "image_base": contract.identity.preferred_base,
             "payload_rva": selected_rva,

@@ -31,6 +31,9 @@ from ..authority.external_site_records import (
     EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3,
     EXTERNAL_SITE_EVIDENCE_CODEC_V3,
     CallbackRequirementV3,
+    CallbackSourceDecisionV3,
+    ExternalCallArityV3,
+    ExternalCallbackSourceV3,
     ExternalContractV3,
     ExternalProfileIssueV3,
     ExternalProfileV3,
@@ -84,6 +87,16 @@ _EFFECT_INVENTORIES = (
 
 class StandardExternalSiteEvidenceV3Error(ValueError):
     """The exact inputs cannot be reconciled into one evidence artifact."""
+
+
+@dataclass(frozen=True)
+class ExternalCallbackDerivationContextV3:
+    """Late, exact inputs available to callback-requirement derivation."""
+
+    source_unit_id: str
+    source_event_index: int
+    ordered_events: tuple[CanonicalValueV3, ...]
+    semantic_units_by_rva: tuple[tuple[int, int, str], ...]
 
 
 @dataclass(frozen=True)
@@ -243,15 +256,39 @@ def _abi_template(
     return str(values[0]), None
 
 
+def derive_exact_callback_requirement_rows_v3(
+    event: Mapping[str, Any],
+    *,
+    context: ExternalCallbackDerivationContextV3,
+) -> list[Any] | None:
+    """Return exact requirements, leaving late semantic derivation fail-closed.
+
+    The context deliberately carries ordered events and the complete semantic
+    RVA map.  Future local-store or registration-pattern derivation belongs
+    here, after full profiles are available.  Any derived row must also gain a
+    corresponding replay in the canonical external-site checker before this
+    function may return it as authorizing evidence.
+    """
+
+    del context
+    raw = event.get("callback_requirements")
+    return raw if isinstance(raw, list) else None
+
+
 def _callbacks(
-    event: Mapping[str, Any], *, site_id: str, callback_effect: str
+    event: Mapping[str, Any],
+    *,
+    site_id: str,
+    callback_effect: str,
+    derivation_context: ExternalCallbackDerivationContextV3,
 ) -> tuple[tuple[CallbackRequirementV3, ...], PrimaryBlockerV3 | None]:
-    raw, blocker = _required_list(
-        event, "callback_requirements", prefix="external"
+    raw = derive_exact_callback_requirement_rows_v3(
+        event, context=derivation_context
     )
-    if blocker is not None:
-        return (), blocker
-    assert raw is not None
+    if raw is None:
+        return (), PrimaryBlockerV3(
+            "incomplete", "external_callback_requirements_missing"
+        )
     callbacks: list[CallbackRequirementV3] = []
     try:
         for ordinal, value in enumerate(raw):
@@ -299,6 +336,111 @@ def _callbacks(
             "incomplete", "external_callback_requirement_missing"
         )
     return result, None
+
+
+def _exact_u32(expression: Any) -> int | None:
+    if not isinstance(expression, Mapping) or expression.get("op") != "const":
+        return None
+    value = expression.get("value")
+    width = expression.get("width", 32)
+    if (
+        width != 32
+        or not isinstance(value, int)
+        or isinstance(value, bool)
+        or not 0 <= value <= 0xFFFF_FFFF
+    ):
+        return None
+    return value
+
+
+def _callback_source_evidence(
+    event: Mapping[str, Any],
+    *,
+    site_id: str,
+    callback_effect: str,
+    profile_machine: Mapping[str, Any],
+    arguments: tuple[dict[str, Any], ...],
+    arity: ExternalCallArityV3,
+    derivation_context: ExternalCallbackDerivationContextV3,
+) -> tuple[
+    tuple[CallbackRequirementV3, ...],
+    CallbackSourceDecisionV3 | None,
+    PrimaryBlockerV3 | None,
+]:
+    if callback_effect == "none":
+        if event.get("callback_requirements") not in (None, []):
+            return (), None, PrimaryBlockerV3(
+                "violated", "external_callback_effect_contradiction"
+            )
+        return (), None, None
+
+    if "callback_source" not in profile_machine:
+        callbacks, blocker = _callbacks(
+            event,
+            site_id=site_id,
+            callback_effect=callback_effect,
+            derivation_context=derivation_context,
+        )
+        return callbacks, None, blocker
+
+    try:
+        source = ExternalCallbackSourceV3.parse(
+            profile_machine,
+            argument_words=arity.minimum_words,
+        )
+    except AnalysisV3Error:
+        return (), None, PrimaryBlockerV3(
+            "violated", "external_profile_callback_source_malformed"
+        )
+    if source.kind != "argument_word":
+        return (), None, PrimaryBlockerV3(
+            "incomplete", "external_callback_source_provenance_missing"
+        )
+    expression = arguments[source.argument_index]
+    source_word = _exact_u32(expression)
+    if source_word is None:
+        return (), None, PrimaryBlockerV3(
+            "incomplete", "external_callback_source_provenance_missing"
+        )
+
+    if source_word in source.non_callback_sentinel_words:
+        raw_requirements = event.get("callback_requirements")
+        if raw_requirements is not None and not isinstance(raw_requirements, list):
+            return (), None, PrimaryBlockerV3(
+                "violated", "external_callback_requirement_malformed"
+            )
+        if raw_requirements:
+            return (), None, PrimaryBlockerV3(
+                "violated", "external_callback_source_contradiction"
+            )
+        return (
+            (),
+            CallbackSourceDecisionV3.create(
+                kind="non_callback_sentinel",
+                argument_index=source.argument_index,
+                source_expression=expression,
+                sentinel_word=source_word,
+            ),
+            None,
+        )
+
+    callbacks, blocker = _callbacks(
+        event,
+        site_id=site_id,
+        callback_effect=callback_effect,
+        derivation_context=derivation_context,
+    )
+    if blocker is not None:
+        return (), None, blocker
+    return (
+        callbacks,
+        CallbackSourceDecisionV3.create(
+            kind="callback_target",
+            argument_index=source.argument_index,
+            source_expression=expression,
+        ),
+        None,
+    )
 
 
 def _load_profiles(
@@ -444,6 +586,113 @@ def _select_profile(
     return profile, None, dependency
 
 
+def _site_arity(
+    profile: ExternalProfileV3,
+    abi: Mapping[str, Any],
+) -> tuple[ExternalCallArityV3 | None, tuple[PrimaryBlockerV3, ...]]:
+    if profile.arity.kind == "fixed":
+        words_raw = (
+            profile.arity.words
+            if "argument_words" not in abi
+            else abi.get("argument_words")
+        )
+        if (
+            not isinstance(words_raw, int)
+            or isinstance(words_raw, bool)
+            or not 0 <= words_raw <= 256
+        ):
+            return None, (
+                PrimaryBlockerV3("violated", "external_argument_words_malformed"),
+            )
+        arity = ExternalCallArityV3.fixed(words_raw)
+        if arity != profile.arity:
+            return None, (
+                PrimaryBlockerV3(
+                    "violated", "external_profile_contract_contradiction"
+                ),
+            )
+        return arity, ()
+
+    if "argument_words" in abi:
+        return None, (
+            PrimaryBlockerV3(
+                "violated", "external_variadic_exact_arity_contradiction"
+            ),
+        )
+    raw_forwarding = abi.get("raw_caller_stack_suffix_forwarding")
+    if raw_forwarding is None:
+        return profile.arity, ()
+    if not isinstance(raw_forwarding, Mapping):
+        return None, (
+            PrimaryBlockerV3(
+                "violated", "external_variadic_forwarding_malformed"
+            ),
+        )
+    try:
+        arity = ExternalCallArityV3.parse(
+            {
+                "kind": "variadic",
+                "minimum_words": profile.minimum_argument_words,
+                "raw_caller_stack_suffix_forwarding": dict(raw_forwarding),
+            },
+            label="external site arity",
+        )
+    except AnalysisV3Error:
+        return None, (
+            PrimaryBlockerV3(
+                "violated", "external_variadic_forwarding_contradiction"
+            ),
+        )
+    if arity != profile.arity:
+        return None, (
+            PrimaryBlockerV3(
+                "violated", "external_profile_contract_contradiction"
+            ),
+        )
+    return arity, ()
+
+
+def _recover_arguments_for_arity(
+    event: Mapping[str, Any],
+    *,
+    transfer_kind: str,
+    abi_template: str,
+    arity: ExternalCallArityV3,
+) -> tuple[dict[str, Any], ...]:
+    if arity.kind == "fixed":
+        return recover_external_arguments_v3(
+            event,
+            transfer_kind=transfer_kind,
+            abi_template=abi_template,
+            argument_words=arity.words,
+        )
+    explicit = event.get("arguments")
+    if explicit:
+        if not isinstance(explicit, list) or any(
+            not isinstance(value, Mapping) for value in explicit
+        ):
+            raise ExternalArgumentRecoveryV3Error(
+                "violated",
+                "external_arguments_malformed",
+                "explicit variadic prefix arguments are malformed",
+            )
+        if len(explicit) < arity.minimum_words:
+            raise ExternalArgumentRecoveryV3Error(
+                "violated",
+                "external_argument_inventory_contradiction",
+                "explicit variadic arguments omit a required prefix word",
+            )
+        prefix_event = dict(event)
+        prefix_event["arguments"] = list(explicit[: arity.minimum_words])
+        event = prefix_event
+    return recover_external_arguments_v3(
+        event,
+        transfer_kind=transfer_kind,
+        abi_template=abi_template,
+        argument_words=arity.minimum_words,
+    )
+
+
 def _contract(
     *,
     event: Mapping[str, Any],
@@ -453,6 +702,7 @@ def _contract(
     transfer_kind: str,
     profiles: _ProfileIndex,
     profile_reader: ArtifactInputReaderV3,
+    callback_derivation_context: ExternalCallbackDerivationContextV3,
 ) -> tuple[
     ExternalContractV3 | None,
     PrimaryBlockerV3 | None,
@@ -510,36 +760,17 @@ def _contract(
             PrimaryBlockerV3("violated", "external_profile_contract_contradiction")
         )
 
-    words_raw = (
-        profile.argument_words
-        if "argument_words" not in abi and profile is not None
-        else abi.get("argument_words")
-    )
-    if words_raw is None:
-        words: int | None = None
-        blockers.append(
-            PrimaryBlockerV3("incomplete", "external_argument_words_missing")
-        )
-    elif (
-        not isinstance(words_raw, int)
-        or isinstance(words_raw, bool)
-        or not 0 <= words_raw <= 256
-    ):
-        words = None
-        blockers.append(
-            PrimaryBlockerV3("violated", "external_argument_words_malformed")
-        )
-    else:
-        words = words_raw
+    arity, arity_blockers = _site_arity(profile, abi)
+    blockers.extend(arity_blockers)
 
     arguments: tuple[dict[str, Any], ...] | None = None
-    if words is not None and isinstance(profile_template, str):
+    if arity is not None and isinstance(profile_template, str):
         try:
-            arguments = recover_external_arguments_v3(
+            arguments = _recover_arguments_for_arity(
                 event,
                 transfer_kind=transfer_kind,
                 abi_template=profile_template,
-                argument_words=words,
+                arity=arity,
             )
         except ExternalArgumentRecoveryV3Error as exc:
             blockers.append(PrimaryBlockerV3(exc.status, exc.code))
@@ -629,15 +860,23 @@ def _contract(
                 )
 
     callbacks: tuple[CallbackRequirementV3, ...] = ()
-    if callback_effect is not None:
-        if callback_effect == "none" and "callback_requirements" not in event:
-            callbacks = ()
-        else:
-            callbacks, blocker = _callbacks(
-                event, site_id=site_id, callback_effect=callback_effect
-            )
-            if blocker is not None:
-                blockers.append(blocker)
+    callback_source_decision: CallbackSourceDecisionV3 | None = None
+    if (
+        callback_effect is not None
+        and arguments is not None
+        and arity is not None
+    ):
+        callbacks, callback_source_decision, blocker = _callback_source_evidence(
+            event,
+            site_id=site_id,
+            callback_effect=callback_effect,
+            profile_machine=profile_machine,
+            arguments=arguments,
+            arity=arity,
+            derivation_context=callback_derivation_context,
+        )
+        if blocker is not None:
+            blockers.append(blocker)
 
     if profile is not None:
         contradictions = (
@@ -646,7 +885,7 @@ def _contract(
                 disposition is not None
                 and disposition not in profile.allowed_dispositions
             )
-            or (words is not None and words != profile.argument_words)
+            or (arity is not None and arity != profile.arity)
             or (
                 memory_effect is not None
                 and memory_effect != profile.memory_effect
@@ -674,7 +913,7 @@ def _contract(
     if primary is not None:
         return None, primary, profile_dependency
     assert profile is not None
-    assert words is not None
+    assert arity is not None
     assert arguments is not None
     assert disposition is not None
     assert memory_effect is not None
@@ -687,7 +926,7 @@ def _contract(
             disposition=disposition,
             profile_id=profile.profile_id,
             profile_sha256=profile.profile_sha256,
-            argument_words=words,
+            argument_words=arity.exact_words,
             arguments=arguments,
             memory_effect=memory_effect,
             world_effect=world_effect,
@@ -697,6 +936,8 @@ def _contract(
                 "external profile machine contract",
             ),
             callbacks=callbacks,
+            arity=arity,
+            callback_source_decision=callback_source_decision,
         ),
         None,
         profile_dependency,
@@ -715,6 +956,7 @@ def _site_record(
     profile_reader: ArtifactInputReaderV3,
     dependencies: Sequence[RecordDependencyV3],
     inherited_blockers: Sequence[PrimaryBlockerV3],
+    callback_derivation_context: ExternalCallbackDerivationContextV3,
 ) -> ArtifactRecordV3:
     event_sha256 = canonical_sha256_v3(event)
     target_sha256 = canonical_sha256_v3(target)
@@ -742,6 +984,7 @@ def _site_record(
             transfer_kind=transfer_kind,
             profiles=profiles,
             profile_reader=profile_reader,
+            callback_derivation_context=callback_derivation_context,
         )
         blockers = list(inherited_blockers)
         if contract_blocker is not None:
@@ -882,10 +1125,20 @@ def generate_standard_external_site_evidence_v3(
     transition_status = _input_status_blocker(
         transitions, code="transition_summary_artifact_not_complete"
     )
-    for semantic_source in sorted(
-        semantic.iter_records(), key=lambda row: row.record_id
-    ):
-        exact = SEMANTIC_INDEX_CODEC_V3.read(semantic_source).value
+    semantic_sources = tuple(
+        sorted(semantic.iter_records(), key=lambda row: row.record_id)
+    )
+    semantic_records = tuple(
+        SEMANTIC_INDEX_CODEC_V3.read(source).value
+        for source in semantic_sources
+    )
+    semantic_units_by_rva = tuple(
+        sorted(
+            (row.rva_start, row.rva_end, row.record_id)
+            for row in semantic_records
+        )
+    )
+    for exact in semantic_records:
         summary_source = transitions.find_record(exact.record_id)
         if summary_source is None:
             raise StandardExternalSiteEvidenceV3Error(
@@ -921,6 +1174,14 @@ def generate_standard_external_site_evidence_v3(
             RecordDependencyV3("transition_summaries", exact.record_id),
         )
         for event_index, event in enumerate(_external_events(summary)):
+            callback_derivation_context = ExternalCallbackDerivationContextV3(
+                source_unit_id=exact.record_id,
+                source_event_index=event_index,
+                ordered_events=tuple(
+                    row.exact_record for row in summary.ordered_events
+                ),
+                semantic_units_by_rva=semantic_units_by_rva,
+            )
             kind = event.get("kind")
             alternatives: tuple[tuple[int, Mapping[str, Any]], ...]
             dependencies = base_dependencies
@@ -959,6 +1220,7 @@ def generate_standard_external_site_evidence_v3(
                     profile_reader=profiles_reader,
                     dependencies=dependencies,
                     inherited_blockers=unit_blockers,
+                    callback_derivation_context=callback_derivation_context,
                 )
                 if record.record_id in seen_sites:
                     raise StandardExternalSiteEvidenceV3Error(
@@ -1011,7 +1273,9 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "ExternalCallbackDerivationContextV3",
     "StandardExternalSiteEvidenceV3Error",
+    "derive_exact_callback_requirement_rows_v3",
     "generate_standard_external_site_evidence_v3",
     "main",
 ]

@@ -33,7 +33,7 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
     {
         "name": "component status",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "show checked status for one component unit or configuration",
+        "help": "show checked component refinement and activation status",
     },
     {
         "name": "component build",
@@ -41,9 +41,34 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "build one unit work package or configuration runtime",
     },
     {
+        "name": "component bind",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "check one portable interface against its exact machine binding",
+    },
+    {
         "name": "component check",
         "group": "spaghetti_extractor.commands.workflows",
-        "help": "require one component unit or configuration to be ready",
+        "help": "require the component's checked machine-derived authority",
+    },
+    {
+        "name": "library status",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "show checked library constellation matches and lifting payoff",
+    },
+    {
+        "name": "library inspect",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "inspect one library hypothesis, family, or target RVA",
+    },
+    {
+        "name": "library adopt",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "record a content-bound linked-library island adoption intent",
+    },
+    {
+        "name": "library check",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "require complete identity, boundary, and implementation evidence",
     },
     {
         "name": "candidate list",
@@ -59,6 +84,11 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "name": "candidate build",
         "group": "spaghetti_extractor.commands.workflows",
         "help": "build the target's default static candidate",
+    },
+    {
+        "name": "candidate check",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "require hybrid closure or portable-only component readiness",
     },
     {
         "name": "candidate test",
@@ -211,10 +241,16 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "component list": "operator",
     "component status": "operator",
     "component build": "operator",
+    "component bind": "operator",
     "component check": "operator",
+    "library status": "operator",
+    "library inspect": "operator",
+    "library adopt": "operator",
+    "library check": "operator",
     "candidate list": "operator",
     "candidate status": "operator",
     "candidate build": "operator",
+    "candidate check": "operator",
     "candidate test": "operator",
     "expert static-inventory-binary": "proposal",
     "expert static-export-roots": "proposal",

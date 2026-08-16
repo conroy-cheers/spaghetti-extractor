@@ -1,18 +1,16 @@
-"""Combined authority and component readiness for one candidate configuration."""
+"""Structural and component readiness for one candidate configuration."""
 
 from __future__ import annotations
 
-import copy
 from pathlib import Path
 from typing import Mapping
 
+from ..artifacts.formats import STRUCTURAL_EXECUTABLE_FORMAT
 from ..components.formats import COMPONENT_CONFIGURATION_STATUS_V1_FORMAT
 from ..util import write_json
-from .project_status import PROJECT_STATUS_FORMAT
 from .status_common import (
     StatusArtifactError,
     canonical_sha256,
-    checked_bool,
     checked_count,
     checked_status,
     copied_rows,
@@ -21,31 +19,27 @@ from .status_common import (
 )
 
 
-CANDIDATE_STATUS_FORMAT = "spaghetti-extractor-candidate-status-v1"
+CANDIDATE_STATUS_FORMAT = "spaghetti-extractor-candidate-status-v2"
 
 
 def build_candidate_status(
     *,
     target_id: str,
     configuration_id: str,
-    project_status: Path | str,
+    structural_receipt: Path | str,
     configuration_status: Path | str,
     candidate_test_suites: Mapping[str, object],
-    require_candidate_test_suite: bool = False,
     out: Path | str,
 ) -> dict[str, object]:
-    """Combine checked authority and one exact component configuration."""
+    """Combine the real execution gate and one exact component configuration."""
 
     if not target_id or not configuration_id:
         raise StatusArtifactError("target and configuration IDs must be nonempty")
-    project = load_object(project_status, "project status")
+    structural = load_object(structural_receipt, "structural execution receipt")
     configuration = load_object(
         configuration_status, "component configuration status"
     )
-    if project.get("format") != PROJECT_STATUS_FORMAT:
-        raise StatusArtifactError("project status format is unsupported")
-    if project.get("target_id") != target_id:
-        raise StatusArtifactError("project status binds another target")
+    _check_structural_receipt(structural)
     if configuration.get("configuration_id") != configuration_id:
         raise StatusArtifactError("component configuration status binds another ID")
     if configuration.get("format") != COMPONENT_CONFIGURATION_STATUS_V1_FORMAT:
@@ -53,24 +47,16 @@ def build_candidate_status(
             "component configuration status format is unsupported"
         )
 
-    project_state = checked_status(
-        project.get("status"), "project status", allow_complete=False
-    )
+    structural_state = str(structural.get("status"))
     configuration_state = checked_status(
         configuration.get("status"),
         "component configuration status",
         allow_complete=False,
     )
-    authority_ready = checked_bool(
-        project.get("authority_ready"), "project authority-ready field"
-    )
-    if authority_ready != (project_state == "ready"):
-        raise StatusArtifactError("project authority readiness is inconsistent")
+    structural_ready = structural_state == "complete"
     configuration_ready = configuration_state == "ready"
-    build_ready = authority_ready and configuration_ready
-    authority_frontiers = copied_rows(
-        project.get("primary_frontiers", []), "project primary frontiers"
-    )
+    build_ready = structural_ready and configuration_ready
+    structural_frontiers = _structural_frontiers(structural)
     component_frontiers = _configuration_frontiers(
         configuration, configuration_id
     )
@@ -80,33 +66,15 @@ def build_candidate_status(
     if configuration_ready and blocked_count != 0:
         raise StatusArtifactError("ready component configuration has blockers")
     suites = _suite_rows(candidate_test_suites, configuration_id)
-    test_frontiers = []
-    if require_candidate_test_suite and not suites:
-        test_frontiers.append(
-            {
-                "status": "incomplete",
-                "family": "candidate-testing",
-                "code": "candidate_test_suite_missing",
-                "record_id": f"candidate-tests:{configuration_id}:missing",
-                "dependent_occurrences": 0,
-                "source_location": None,
-                "next_action": (
-                    "declare a candidate-only test suite for the default "
-                    f"configuration {configuration_id}"
-                ),
-                "details": {"configuration_id": configuration_id},
-            }
-        )
-    frontiers = authority_frontiers + component_frontiers + test_frontiers
+    frontiers = structural_frontiers + component_frontiers
     frontiers.sort(key=frontier_key)
 
-    violated = project_state == "violated" or configuration_state == "violated"
-    acceptance_preconditions_ready = build_ready and not test_frontiers
+    violated = configuration_state == "violated"
     status = (
         "violated"
         if violated
         else "ready"
-        if acceptance_preconditions_ready
+        if build_ready
         else "incomplete"
     )
     candidate_state = (
@@ -114,14 +82,12 @@ def build_candidate_status(
         if build_ready
         else "blocked_by_violation"
         if violated
-        else "blocked_by_authority"
-        if not authority_ready
+        else "blocked_by_static_closure"
+        if not structural_ready
         else "blocked_by_component_configuration"
     )
-    dependent_occurrences = checked_count(
-        project.get("counts"), "dependent_occurrences", "project"
-    ) + sum(
-        int(row.get("dependent_occurrences", 0)) for row in component_frontiers
+    dependent_occurrences = sum(
+        int(row.get("dependent_occurrences", 0)) for row in frontiers
     )
     core: dict[str, object] = {
         "format": CANDIDATE_STATUS_FORMAT,
@@ -129,19 +95,22 @@ def build_candidate_status(
         "configuration_id": configuration_id,
         "status": status,
         "authorizing": False,
-        "authority_ready": authority_ready,
+        "structural_ready": structural_ready,
         "configuration_ready": configuration_ready,
         "build_ready": build_ready,
-        "authority": copy.deepcopy(project.get("authority", {})),
+        "structural": {
+            "status": structural_state,
+            "executable": structural.get("executable"),
+            "families": structural.get("families"),
+        },
         "component_configuration": {
             "status": configuration_state,
-            "counts": copy.deepcopy(configuration.get("counts", {})),
+            "counts": dict(configuration.get("counts", {})),
         },
         "candidate": {
             "status": candidate_state,
-            "acceptance_preconditions_ready": acceptance_preconditions_ready,
+            "structural_execution_ready": build_ready,
             "declared_test_suites": suites,
-            "candidate_authority_checked": False,
             "runtime_executed": False,
         },
         "counts": {
@@ -151,14 +120,95 @@ def build_candidate_status(
         },
         "primary_frontiers": frontiers,
         "next_action": (
-            copy.deepcopy(frontiers[0].get("next_action"))
+            frontiers[0].get("next_action")
             if frontiers
             else f"build candidate configuration {configuration_id}"
         ),
-        "policy": copy.deepcopy(project.get("policy", {})),
+        "policy": {
+            "diagnostic_only": True,
+            "candidate_gate_bypassed": False,
+            "candidate_tests_authorize": False,
+            "original_binary_executed": False,
+        },
     }
     result = {**core, "candidate_status_sha256": canonical_sha256(core)}
     write_json(Path(out), result)
+    return result
+
+
+def _check_structural_receipt(value: Mapping[str, object]) -> None:
+    if value.get("format") != STRUCTURAL_EXECUTABLE_FORMAT:
+        raise StatusArtifactError("structural execution receipt format is unsupported")
+    status = value.get("status")
+    executable = value.get("executable")
+    if status not in {"complete", "incomplete"} or executable is not (
+        status == "complete"
+    ):
+        raise StatusArtifactError("structural execution receipt state is inconsistent")
+    if value.get("release_accepted") is not False:
+        raise StatusArtifactError("structural receipt cannot authorize release")
+    expected = value.get("receipt_sha256")
+    if not isinstance(expected, str) or len(expected) != 64:
+        raise StatusArtifactError("structural execution receipt digest is invalid")
+    core = dict(value)
+    core.pop("receipt_sha256")
+    if canonical_sha256(core) != expected:
+        raise StatusArtifactError("structural execution receipt digest is stale")
+    families = value.get("families")
+    if not isinstance(families, list) or not families:
+        raise StatusArtifactError("structural execution receipt has no families")
+    identities: list[str] = []
+    for row in families:
+        if not isinstance(row, Mapping):
+            raise StatusArtifactError("structural execution family is not an object")
+        identity = row.get("id")
+        family_status = row.get("status")
+        count = row.get("record_count")
+        blocker = row.get("blocker")
+        digest = row.get("input_sha256")
+        if not isinstance(identity, str) or not identity:
+            raise StatusArtifactError("structural execution family ID is invalid")
+        if family_status not in {"complete", "incomplete"}:
+            raise StatusArtifactError("structural execution family status is invalid")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise StatusArtifactError("structural execution family count is invalid")
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise StatusArtifactError("structural execution family digest is invalid")
+        if (family_status == "complete") is not (blocker is None):
+            raise StatusArtifactError("structural execution family blocker is inconsistent")
+        identities.append(identity)
+    if identities != sorted(identities) or len(identities) != len(set(identities)):
+        raise StatusArtifactError("structural execution families are not canonical")
+    if (status == "complete") is not all(
+        row.get("status") == "complete" for row in families
+    ):
+        raise StatusArtifactError("structural execution family states contradict status")
+
+
+def _structural_frontiers(
+    value: Mapping[str, object],
+) -> list[dict[str, object]]:
+    result: list[dict[str, object]] = []
+    for row in value.get("families", []):
+        if not isinstance(row, Mapping) or row.get("status") == "complete":
+            continue
+        identity = str(row.get("id"))
+        result.append(
+            {
+                "status": "incomplete",
+                "family": "structural-execution",
+                "code": f"{identity}_incomplete",
+                "record_id": f"structural:{identity}",
+                # The policy receipt records the family inventory size, not the
+                # number of incomplete records. Do not inflate progress counts
+                # by treating every checked record as a dependent blocker.
+                "dependent_occurrences": 0,
+                "source_location": None,
+                "next_action": row.get("blocker")
+                or f"complete structural execution family {identity}",
+                "details": dict(row),
+            }
+        )
     return result
 
 
@@ -188,7 +238,7 @@ def _configuration_frontiers(
                 or row.get("message")
                 or row.get("remediation")
                 or f"repair component configuration {configuration_id}",
-                "details": copy.deepcopy(row),
+                "details": dict(row),
             }
         )
     return result
@@ -211,7 +261,7 @@ def _suite_rows(
             not isinstance(case_id, str) for case_id in case_ids
         ):
             raise StatusArtifactError("candidate test case IDs must be strings")
-        rows.append({"id": identity, "case_ids": copy.deepcopy(case_ids)})
+        rows.append({"id": identity, "case_ids": list(case_ids)})
     return rows
 
 

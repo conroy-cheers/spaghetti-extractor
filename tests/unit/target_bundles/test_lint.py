@@ -111,6 +111,26 @@ class TargetBundleLintTests(unittest.TestCase):
                     out=root / "lint.json",
                 )
 
+    def test_accepts_explicit_machine_binding_and_induction_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            _write_metadata(root)
+            (root / "intent").mkdir()
+            (root / "intent/binding.json").write_text("{}\n", encoding="ascii")
+            (root / "intent/induction.json").write_text("{}\n", encoding="ascii")
+            result = lint_target_bundle(
+                target_root=root,
+                target_id="fixture",
+                declared_assets=(
+                    _asset("target.json"),
+                    _asset("default.nix", "module"),
+                    _asset("intent/binding.json", "component_machine_binding"),
+                    _asset("intent/induction.json", "component_induction"),
+                ),
+                out=root.parent / f"{root.name}-lint.json",
+            )
+            self.assertEqual(result["status"], "checked")
+
     def test_rejects_malformed_or_mismatched_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

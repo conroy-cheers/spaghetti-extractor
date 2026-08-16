@@ -40,9 +40,14 @@ pkgs.runCommand "${namePrefix}-component-runtime-package-v3" {
     ${machineIr} \
     ${componentConfiguration.activationPlan}/activation-plan.json \
     ${lib.escapeShellArg (builtins.toJSON (paths componentConfiguration.contracts))} \
+    ${lib.escapeShellArg (builtins.toJSON (paths (componentConfiguration.portableInterfaces or { })))} \
+    ${lib.escapeShellArg (builtins.toJSON (paths (componentConfiguration.semanticContracts or { })))} \
     ${lib.escapeShellArg (builtins.toJSON (paths componentConfiguration.implementations))} \
     ${lib.escapeShellArg (builtins.toJSON (paths componentConfiguration.qualifications))} \
     ${lib.escapeShellArg (builtins.toJSON (paths componentConfiguration.adapterPlans))} \
+    ${lib.escapeShellArg (builtins.toJSON (paths (componentConfiguration.activationReceipts or { })))} \
+    ${lib.escapeShellArg (builtins.toJSON (paths (componentConfiguration.machineBindings or { })))} \
+    ${lib.escapeShellArg (builtins.toJSON (paths (componentConfiguration.libraryComponents or { })))} \
     ${interpreterPackage} \
     "$out" <<'PY'
   import json
@@ -57,11 +62,16 @@ pkgs.runCommand "${namePrefix}-component-runtime-package-v3" {
       machine_ir=pathlib.Path(sys.argv[1]),
       activation_plan=pathlib.Path(sys.argv[2]),
       contracts={key: pathlib.Path(value) for key, value in json.loads(sys.argv[3]).items()},
-      implementations={key: pathlib.Path(value) for key, value in json.loads(sys.argv[4]).items()},
-      qualifications={key: pathlib.Path(value) for key, value in json.loads(sys.argv[5]).items()},
-      adapter_plans={key: pathlib.Path(value) for key, value in json.loads(sys.argv[6]).items()},
-      interpreter_package=pathlib.Path(sys.argv[7]),
-      out_dir=pathlib.Path(sys.argv[8]),
+      portable_interfaces={key: pathlib.Path(value) for key, value in json.loads(sys.argv[4]).items()},
+      semantic_contracts={key: pathlib.Path(value) for key, value in json.loads(sys.argv[5]).items()},
+      implementations={key: pathlib.Path(value) for key, value in json.loads(sys.argv[6]).items()},
+      qualifications={key: pathlib.Path(value) for key, value in json.loads(sys.argv[7]).items()},
+      adapter_plans={key: pathlib.Path(value) for key, value in json.loads(sys.argv[8]).items()},
+      activation_receipts={key: pathlib.Path(value) for key, value in json.loads(sys.argv[9]).items()},
+      machine_bindings={key: pathlib.Path(value) for key, value in json.loads(sys.argv[10]).items()},
+      library_components={key: pathlib.Path(value) for key, value in json.loads(sys.argv[11]).items()},
+      interpreter_package=pathlib.Path(sys.argv[12]),
+      out_dir=pathlib.Path(sys.argv[13]),
   )
   PY
   jq -e '

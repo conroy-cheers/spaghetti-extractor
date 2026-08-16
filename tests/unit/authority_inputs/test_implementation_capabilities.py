@@ -13,6 +13,7 @@ from spaghetti_extractor.authority.fallback_coverage import (
     IMPLEMENTATION_CAPABILITY_CODEC_V3,
 )
 from spaghetti_extractor.authority.isa_qualification import (
+    ISA_QUALIFICATION_ARTIFACT_KIND_V3,
     ISA_QUALIFICATION_EVIDENCE_ARTIFACT_KIND_V3,
     ISA_QUALIFICATION_EVIDENCE_CODEC_V3,
     ISA_QUALIFICATION_PHASE_V3,
@@ -282,6 +283,36 @@ class ImplementationCapabilitiesV3Tests(unittest.TestCase):
             validate_implementation_capabilities_v3(
                 output_directory=root / "output",
                 expected_implementation_files={},
+            )
+
+    def test_incomplete_isa_inventory_preserves_valid_unit_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fixture = _Fixture(
+                root / "fixture",
+                fallback_capability_id="machine-ir-fallback-v3",
+            )
+            checked_isa = ArtifactSetReaderV3(fixture.isa)
+            incomplete_isa = root / "incomplete-isa"
+            ArtifactSetWriterV3(
+                artifact_kind=ISA_QUALIFICATION_ARTIFACT_KIND_V3,
+                bindings=checked_isa.manifest.bindings,
+                dependencies=checked_isa.manifest.dependencies,
+                status="incomplete",
+            ).write(incomplete_isa, checked_isa.iter_records())
+            fixture.isa = incomplete_isa
+
+            manifest, _capability = fixture.emit_analysis(root / "output")
+
+            self.assertEqual(manifest["status"], "incomplete")
+            self.assertEqual(manifest["coverage"]["required_units"], 1)
+            self.assertEqual(manifest["coverage"]["projected_units"], 1)
+            self.assertEqual(manifest["coverage"]["unprojected_unit_ids"], [])
+            self.assertEqual(
+                ArtifactSetReaderV3(
+                    root / "output/implementation-capabilities"
+                ).manifest.record_count,
+                1,
             )
 
     def test_tampered_analysis_identity_fails_before_projection(self) -> None:

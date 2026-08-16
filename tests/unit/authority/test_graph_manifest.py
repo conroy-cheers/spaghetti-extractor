@@ -25,6 +25,8 @@ class AuthorityGraphManifestV3Tests(unittest.TestCase):
                 "isa_evidence": "isa-qualification-evidence-v3",
                 "launch_roots": "launch-root-evidence-v3",
                 "machine_ir": "machine-ir-v3-input",
+                "parametric_proposals": "interprocedural-summary-proposals-v3",
+                "static_value_origins": "pe32-static-value-origins-v3",
                 "target_evidence": "indirect-target-evaluation-evidence-v3",
                 "target_hints": "target-hints-v3",
             },
@@ -36,7 +38,9 @@ class AuthorityGraphManifestV3Tests(unittest.TestCase):
         )
         self.assertEqual(transitions["form"], "map_units")
         self.assertEqual(transitions["source_input"], "exact_units")
-        self.assertTrue(transitions["phase_reference"].endswith(":TRANSITION_SUMMARIES_PHASE_V3"))
+        self.assertTrue(
+            transitions["phase_reference"].endswith(":TRANSITION_SUMMARIES_PHASE_V3")
+        )
         semantic_index = phases["semantic-index-v3"]
         self.assertEqual(
             semantic_index["inputs"]["exact_units"],
@@ -44,6 +48,27 @@ class AuthorityGraphManifestV3Tests(unittest.TestCase):
         )
         self.assertEqual(semantic_index["form"], "map_units")
         self.assertEqual(semantic_index["source_input"], "exact_units")
+        unit_facts = phases["parametric-unit-facts-v3"]
+        self.assertEqual(unit_facts["form"], "map_units")
+        self.assertEqual(unit_facts["source_input"], "semantic_index")
+        self.assertEqual(
+            unit_facts["inputs"],
+            {
+                "semantic_index": {"source": "phase", "id": "semantic-index-v3"},
+                "transition_summaries": {
+                    "source": "phase",
+                    "id": "transition-summaries-v3",
+                },
+            },
+        )
+        self.assertEqual(unit_facts["unit_aligned_inputs"], ["transition_summaries"])
+        parametric = phases["parametric-scc-summaries-v3"]
+        self.assertEqual(
+            parametric["inputs"]["unit_facts"],
+            {"source": "phase", "id": "parametric-unit-facts-v3"},
+        )
+        self.assertNotIn("semantic_index", parametric["inputs"])
+        self.assertNotIn("transition_summaries", parametric["inputs"])
         self.assertEqual(
             phases["launch-root-closure-v3"]["inputs"]["semantic_index"],
             {"source": "phase", "id": "semantic-index-v3"},

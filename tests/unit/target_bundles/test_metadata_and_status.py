@@ -18,6 +18,7 @@ from spaghetti_extractor.target_bundles.project_status import (
     StatusArtifactError,
     build_project_status,
 )
+from spaghetti_extractor.target_bundles.status_common import canonical_sha256
 from spaghetti_extractor.target_bundles.runtime_frontiers import (
     RUNTIME_FRONTIER_REPORT_FORMAT,
     build_runtime_frontier_report,
@@ -252,40 +253,45 @@ class CandidateStatusTests(unittest.TestCase):
     def _build(
         self,
         *,
-        authority_status: str = "complete",
-        authority_authorizing: bool = True,
+        structural_status: str = "complete",
         configuration_status: str = "ready",
         blockers: list[dict[str, object]] | None = None,
         suites: dict[str, object] | None = None,
-        project_target_id: str = "fixture",
         configuration_binding: str = "default",
-        require_candidate_test_suite: bool = False,
     ) -> dict[str, object]:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            authority_path = root / "authority.json"
-            project_path = root / "project.json"
+            structural_path = root / "structural.json"
             configuration_path = root / "configuration.json"
             output = root / "candidate.json"
-            authority_path.write_text(
+            structural_core = {
+                "format": "spaghetti-extractor-structural-executable-v1",
+                "status": structural_status,
+                "executable": structural_status == "complete",
+                "release_accepted": False,
+                "bindings": {},
+                "families": [
+                    {
+                        "id": "semantic_index",
+                        "status": structural_status,
+                        "input_sha256": "1" * 64,
+                        "record_count": 3,
+                        "blocker": (
+                            None
+                            if structural_status == "complete"
+                            else "one semantic unit is not executable"
+                        ),
+                    }
+                ],
+            }
+            structural_path.write_text(
                 json.dumps(
                     {
-                        "format": "spaghetti-extractor-authority-diagnostics-v3",
-                        "status": authority_status,
-                        "authorizing": authority_authorizing,
-                        "counts": {
-                            "primary_frontiers": 0,
-                            "dependent_occurrences": 0,
-                        },
-                        "primary_frontiers": [],
+                        **structural_core,
+                        "receipt_sha256": canonical_sha256(structural_core),
                     }
                 ),
                 encoding="ascii",
-            )
-            build_project_status(
-                target_id=project_target_id,
-                authority_diagnostics=authority_path,
-                out=project_path,
             )
             configuration_path.write_text(
                 json.dumps(
@@ -304,10 +310,9 @@ class CandidateStatusTests(unittest.TestCase):
             return build_candidate_status(
                 target_id="fixture",
                 configuration_id="default",
-                project_status=project_path,
+                structural_receipt=structural_path,
                 configuration_status=configuration_path,
                 candidate_test_suites=suites or {},
-                require_candidate_test_suite=require_candidate_test_suite,
                 out=output,
             )
 
@@ -319,29 +324,28 @@ class CandidateStatusTests(unittest.TestCase):
         )
         self.assertEqual(result["format"], CANDIDATE_STATUS_FORMAT)
         self.assertEqual(result["status"], "ready")
-        self.assertTrue(result["authority_ready"])
+        self.assertTrue(result["structural_ready"])
         self.assertTrue(result["configuration_ready"])
         self.assertTrue(result["build_ready"])
         self.assertEqual(result["candidate"]["status"], "ready_to_build")
         self.assertEqual(result["counts"]["candidate_test_suites"], 1)
 
-    def test_missing_required_suite_blocks_acceptance_but_not_build(self) -> None:
-        result = self._build(require_candidate_test_suite=True)
-        self.assertEqual(result["status"], "incomplete")
+    def test_missing_suite_does_not_block_static_build(self) -> None:
+        result = self._build()
+        self.assertEqual(result["status"], "ready")
         self.assertTrue(result["build_ready"])
-        self.assertFalse(
-            result["candidate"]["acceptance_preconditions_ready"]
+        self.assertEqual(result["counts"]["candidate_test_suites"], 0)
+        self.assertFalse(result["policy"]["candidate_tests_authorize"])
+
+    def test_structural_and_configuration_blockers_are_distinct(self) -> None:
+        structural = self._build(structural_status="incomplete")
+        self.assertEqual(
+            structural["candidate"]["status"], "blocked_by_static_closure"
         )
         self.assertEqual(
-            result["primary_frontiers"][0]["code"],
-            "candidate_test_suite_missing",
+            structural["primary_frontiers"][0]["code"],
+            "semantic_index_incomplete",
         )
-
-    def test_authority_and_configuration_blockers_are_distinct(self) -> None:
-        authority = self._build(
-            authority_status="incomplete", authority_authorizing=False
-        )
-        self.assertEqual(authority["candidate"]["status"], "blocked_by_authority")
         component = self._build(
             configuration_status="incomplete",
             blockers=[{"code": "source_missing", "detail": "write source"}],
@@ -356,8 +360,7 @@ class CandidateStatusTests(unittest.TestCase):
 
     def test_violation_wins_over_incompleteness(self) -> None:
         result = self._build(
-            authority_status="incomplete",
-            authority_authorizing=False,
+            structural_status="incomplete",
             configuration_status="violated",
             blockers=[{"status": "violated", "code": "evidence_corrupt"}],
         )
@@ -375,9 +378,7 @@ class CandidateStatusTests(unittest.TestCase):
                 }
             )
 
-    def test_wrong_target_and_configuration_bindings_are_rejected(self) -> None:
-        with self.assertRaisesRegex(StatusArtifactError, "another target"):
-            self._build(project_target_id="other")
+    def test_wrong_configuration_binding_is_rejected(self) -> None:
         with self.assertRaisesRegex(StatusArtifactError, "another ID"):
             self._build(configuration_binding="other")
 

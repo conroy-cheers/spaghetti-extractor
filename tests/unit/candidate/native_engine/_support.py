@@ -30,6 +30,31 @@ from spaghetti_extractor.authority.external_site_records import (
     ExternalContractV3,
     external_site_id_v3,
 )
+from spaghetti_extractor.authority._schema import stable_id
+from spaghetti_extractor.authority.authority_common import PrimaryBlockerV3
+from spaghetti_extractor.authority.parametric_summary_records import (
+    PARAMETRIC_SCC_SUMMARIES_ARTIFACT_KIND_V3,
+    PARAMETRIC_SCC_SUMMARY_CODEC_V3,
+    CallEffectV3,
+    ParametricIndirectExitV3,
+    ParametricSccSummaryV3,
+    ReturnBehaviorV3,
+    ValueFactV3,
+    ValueOriginV3,
+    parametric_scc_id_v3,
+)
+from spaghetti_extractor.authority.root_closure import (
+    LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3,
+    LAUNCH_ROOT_CLOSURE_CODEC_V3,
+    LaunchRootClosureV3,
+    RootedControlEdgeV3,
+)
+from spaghetti_extractor.authority.target_certificate_records import (
+    INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3,
+    INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
+    IndirectTargetCertificateUnitV3,
+    IndirectTargetCertificateV3,
+)
 from spaghetti_extractor.errors import ToolkitInputError
 from spaghetti_extractor.candidate.engine import (
     plan_spx_native_engine,
@@ -137,13 +162,6 @@ def _machine_ir_transfer(
 
 def _implementation_manifest(
     machine_ir: Path,
-    *,
-    roots: list[str],
-    reachable: list[str],
-    potential: list[str] | None = None,
-    unreachable: list[str] | None = None,
-    resolutions: list[dict] | None = None,
-    summaries: list[dict] | None = None,
 ) -> dict:
     return {
         "format": "spaghetti-extractor-machine-ir-v2",
@@ -151,24 +169,6 @@ def _implementation_manifest(
             "machine_ir": {
                 "format": "spaghetti-extractor-machine-ir-v2",
                 "sha256": sha256_bytes(machine_ir.read_bytes()),
-            },
-        },
-        "control": {
-            "reachability": {
-                "status": "complete" if not potential else "incomplete",
-                "roots": roots,
-                "reachable_units": reachable,
-                "potential_units": potential or [],
-                "confirmed_unreachable_units": unreachable or [],
-                "frontiers": [],
-            },
-            "internal_call_preservation": {
-                "fixed_point_complete": True,
-                "summaries": summaries or [],
-            },
-            "external_interface_provenance": {
-                "resolutions": resolutions or [],
-                "callback_registrations": [],
             },
         },
     }
@@ -279,6 +279,299 @@ def _canonical_external_sites(
         )],
     )
     return output
+
+
+def _candidate_execution_artifacts(
+    root: Path,
+    *,
+    units: list[dict],
+    roots: list[str] | None = None,
+    reachable: list[str] | None = None,
+    complete: bool = True,
+) -> tuple[Path, Path, Path]:
+    """Write minimal checked execution artifacts for candidate unit tests."""
+
+    unit_ids = tuple(sorted(str(row["id"]) for row in units))
+    root_ids = tuple(sorted(unit_ids[:1] if roots is None else roots))
+    reachable_ids = tuple(sorted(unit_ids if reachable is None else reachable))
+    def original(row: dict) -> dict:
+        source = row.get("source")
+        return source["original"] if isinstance(source, dict) else row["original"]
+
+    by_rva = {
+        int(original(row)["rva_start"]): str(row["id"]) for row in units
+    }
+    edges: set[RootedControlEdgeV3] = set()
+    indirect_rows: dict[str, list[tuple[dict, tuple[str, ...], str]]] = {}
+    call_rows: dict[str, list[CallEffectV3]] = {}
+    for unit in units:
+        source_id = str(unit["id"])
+        if source_id not in reachable_ids:
+            continue
+        control = unit.get("control")
+        for target_rva in (
+            control.get("direct_targets", []) if isinstance(control, dict) else []
+        ):
+            target_id = by_rva.get(int(target_rva))
+            if target_id in reachable_ids:
+                edges.add(
+                    RootedControlEdgeV3.create(
+                        source_id, target_id, "direct", source_id
+                    )
+                )
+        semantics = unit.get("semantics")
+        events = (
+            semantics.get("external_events", [])
+            if isinstance(semantics, dict)
+            else unit.get("ordered_events", [])
+        )
+        for event_index, event in enumerate(
+            row
+            for row in events
+            if isinstance(row, dict) and row.get("family", "external") == "external"
+        ):
+            kind = event.get("kind")
+            if kind == "internal_call":
+                target_id = by_rva.get(int(event["target_rva"]))
+                if target_id is None:
+                    continue
+                edges.add(
+                    RootedControlEdgeV3.create(
+                        source_id, target_id, "internal_call", source_id
+                    )
+                )
+                call_rows.setdefault(source_id, []).append(
+                    CallEffectV3(
+                        stable_id(
+                            "fixture-parametric-call",
+                            {
+                                "source_unit_id": source_id,
+                                "event_index": event_index,
+                                "target_unit_id": target_id,
+                            },
+                        ),
+                        source_id,
+                        event_index,
+                        "direct_internal",
+                        (target_id,),
+                        None,
+                        (),
+                        None,
+                        (),
+                    )
+                )
+            if kind != "indirect_call" or event.get("dll"):
+                continue
+            return_id = by_rva.get(int(event.get("return_rva", -1)))
+            target_ids = tuple(
+                sorted(
+                    unit_id
+                    for unit_id in reachable_ids
+                    if unit_id not in {source_id, return_id}
+                )
+            )
+            if not target_ids:
+                continue
+            exit_id = f"fixture-indirect:{source_id}:{event_index}"
+            indirect_rows.setdefault(source_id, []).append(
+                (event, target_ids, exit_id)
+            )
+    target_records = []
+    for unit in units:
+        unit_id = str(unit["id"])
+        certificates = []
+        unit_sha256 = canonical_sha256_v3(unit)
+        source_rva = int(original(unit)["rva_start"])
+        for event, target_ids, exit_id in indirect_rows.get(unit_id, []):
+            expression = event.get("target", {"op": "fixture-indirect"})
+            expression_value = CanonicalValueV3.of(expression)
+            expression_sha256 = canonical_sha256_v3(expression)
+            binding = {
+                "exit_id": exit_id,
+                "source_unit_id": unit_id,
+                "source_unit_sha256": unit_sha256,
+                "source_rva": source_rva,
+                "source_event_index": int(exit_id.rsplit(":", 1)[1]),
+                "transfer_kind": "indirect_call",
+                "target_expression": expression,
+                "target_expression_sha256": expression_sha256,
+            }
+            certificate_id = (
+                "indirect-target-certificate:"
+                + canonical_sha256_v3(binding)[:24]
+            )
+            decision = {
+                "id": certificate_id,
+                **binding,
+                "status": "complete",
+                "authorizing": True,
+                "target_unit_ids": list(target_ids),
+                "external_targets": [],
+                "evaluation_method": "checked_parametric_summary",
+                "evidence_sha256": canonical_sha256_v3(
+                    {"fixture": exit_id, "targets": list(target_ids)}
+                ),
+                "dependencies": [],
+                "primary_blocker": None,
+            }
+            certificate = IndirectTargetCertificateV3(
+                certificate_id=certificate_id,
+                exit_id=exit_id,
+                source_unit_id=unit_id,
+                source_unit_sha256=unit_sha256,
+                source_rva=source_rva,
+                source_event_index=binding["source_event_index"],
+                transfer_kind="indirect_call",
+                target_expression=expression_value,
+                target_expression_sha256=expression_sha256,
+                status="complete",
+                authorizing=True,
+                target_unit_ids=target_ids,
+                external_targets=(),
+                evaluation_method="checked_parametric_summary",
+                evidence_sha256=decision["evidence_sha256"],
+                dependencies=(),
+                primary_blocker=None,
+                certificate_sha256=canonical_sha256_v3(decision),
+            )
+            certificates.append(certificate)
+            for target_id in target_ids:
+                edges.add(
+                    RootedControlEdgeV3.create(
+                        unit_id,
+                        target_id,
+                        "recovered_indirect",
+                        certificate_id,
+                    )
+                )
+        if certificates:
+            target_unit = IndirectTargetCertificateUnitV3(
+                record_id=unit_id,
+                source_unit_id=unit_id,
+                unit_sha256=unit_sha256,
+                status="complete",
+                authorizing=True,
+                certificates=tuple(sorted(certificates, key=lambda row: row.exit_id)),
+                dependencies=(),
+                primary_blocker=None,
+            )
+            target_records.append(
+                INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.write(
+                    unit_id, target_unit
+                )
+            )
+    target_path = root / "target-certificates"
+    ArtifactSetWriterV3(
+        artifact_kind=INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
+        bindings=(),
+    ).write(target_path, target_records)
+
+    submitted = tuple(f"fixture-root:{unit_id}" for unit_id in root_ids)
+    closure_id = stable_id(
+        "launch-root-closure-v3",
+        {"submitted_root_ids": list(submitted), "dependency_records": []},
+    )
+    closure = LaunchRootClosureV3(
+        record_id=closure_id,
+        status="complete" if complete else "incomplete",
+        authorizing=complete,
+        submitted_root_ids=submitted,
+        admitted_root_ids=submitted,
+        root_unit_ids=root_ids,
+        reachable_unit_ids=reachable_ids,
+        edges=tuple(sorted(edges)),
+        frontier_ids=() if complete else ("fixture-frontier",),
+        primary_blocker=(
+            None
+            if complete
+            else PrimaryBlockerV3("incomplete", "fixture_reachability_incomplete")
+        ),
+        dependencies=(),
+    )
+    root_path = root / "root-closure"
+    ArtifactSetWriterV3(
+        artifact_kind=LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3, bindings=()
+    ).write(root_path, (LAUNCH_ROOT_CLOSURE_CODEC_V3.write(closure_id, closure),))
+
+    summaries = []
+    for unit in units:
+        unit_id = str(unit["id"])
+        semantics = unit.get("semantics")
+        outcome = (
+            semantics.get("outcome", {})
+            if isinstance(semantics, dict)
+            else unit.get("outcome", {})
+        )
+        returns = isinstance(outcome, dict) and outcome.get("kind") == "return"
+        scc_id = parametric_scc_id_v3((unit_id,), ())
+        value_facts = []
+        indirect_exits = []
+        for event, target_ids, exit_id in indirect_rows.get(unit_id, []):
+            fact_id = f"fixture-fact:{exit_id}"
+            value_facts.append(
+                ValueFactV3(
+                    fact_id,
+                    "finite",
+                    tuple(
+                        sorted(
+                            ValueOriginV3("static_code_target", target_id, 0)
+                            for target_id in target_ids
+                        )
+                    ),
+                )
+            )
+            indirect_exits.append(
+                ParametricIndirectExitV3(
+                    exit_id,
+                    unit_id,
+                    canonical_sha256_v3(
+                        event.get("target", {"op": "fixture-indirect"})
+                    ),
+                    fact_id,
+                    target_ids,
+                    (),
+                )
+            )
+        summaries.append(
+            PARAMETRIC_SCC_SUMMARY_CODEC_V3.write(
+                scc_id,
+                ParametricSccSummaryV3(
+                    record_id=scc_id,
+                    scc_id=scc_id,
+                    status="complete",
+                    authorizing=True,
+                    proposal_id="fixture-proposal",
+                    member_unit_ids=(unit_id,),
+                    recursive=False,
+                    checked_base_path_unit_ids=(),
+                    value_facts=tuple(value_facts),
+                    register_relations=(),
+                    stack_accesses=(),
+                    stack_cleanup_bytes=0 if returns else None,
+                    return_address_preserved=returns,
+                    memory_effects=(),
+                    call_effects=tuple(call_rows.get(unit_id, ())),
+                    returns=(
+                        ReturnBehaviorV3(
+                            unit_id,
+                            returns,
+                            not returns,
+                            0 if returns else None,
+                            returns,
+                        ),
+                    ),
+                    indirect_exits=tuple(indirect_exits),
+                    primary_blocker=None,
+                    dependencies=(),
+                ),
+            )
+        )
+    summary_path = root / "parametric-summaries"
+    ArtifactSetWriterV3(
+        artifact_kind=PARAMETRIC_SCC_SUMMARIES_ARTIFACT_KIND_V3,
+        bindings=(),
+    ).write(summary_path, summaries)
+    return root_path, target_path, summary_path
 
 
 def _machine_ir_x87_transfer(
@@ -565,7 +858,7 @@ class NativeEngineTestCase(unittest.TestCase):
         roots: list[str] | None = None,
         reachable: list[str] | None = None,
         potential: list[str] | None = None,
-    ) -> tuple[Path, Path, Path]:
+    ) -> tuple[Path, Path, Path, dict[str, Path]]:
         machine_ir = root / "machine-ir.jsonl"
         machine_ir.write_text(
             "".join(json.dumps(row, sort_keys=True) + "\n" for row in units),
@@ -575,12 +868,7 @@ class NativeEngineTestCase(unittest.TestCase):
         manifest = root / "machine-ir-manifest.json"
         manifest.write_text(
             json.dumps(
-                _implementation_manifest(
-                    machine_ir,
-                    roots=unit_ids[:1] if roots is None else roots,
-                    reachable=unit_ids if reachable is None else reachable,
-                    potential=potential,
-                ),
+                _implementation_manifest(machine_ir),
                 sort_keys=True,
             ),
             encoding="utf-8",
@@ -590,7 +878,18 @@ class NativeEngineTestCase(unittest.TestCase):
             artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
             bindings=(),
         ).write(sites, [])
-        return machine_ir, manifest, sites
+        authority = _candidate_execution_artifacts(
+            root,
+            units=units,
+            roots=roots,
+            reachable=reachable,
+            complete=not potential,
+        )
+        return machine_ir, manifest, sites, {
+            "root_closure": authority[0],
+            "target_certificates": authority[1],
+            "parametric_summaries": authority[2],
+        }
 
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

@@ -149,6 +149,11 @@ def _resolve_component_catalog(
             ),
             "source": _source_payload(component.source),
             "verification": _verification_payload(component.verification),
+            "machine_binding": (
+                None
+                if component.machine_binding is None
+                else component.machine_binding.as_posix()
+            ),
         }
     resolved_groups = _resolve_groups(catalog, resolved_components)
     configurations = [
@@ -212,6 +217,11 @@ def _resolve_groups(
             ),
             "source": _source_payload(group.source),
             "verification": _verification_payload(group.verification),
+            "machine_binding": (
+                None
+                if group.machine_binding is None
+                else group.machine_binding.as_posix()
+            ),
         }
         result[identity] = row
         return row
@@ -272,14 +282,18 @@ def _resolve_configuration(
 def _source_payload(value: object) -> dict[str, object] | None:
     if value is None:
         return None
-    return {
+    payload = {
         "files": [path.as_posix() for path in value.files],
         "shared_inputs": [path.as_posix() for path in value.shared_inputs],
-        "entry": {
+    }
+    if value.operation_symbols:
+        payload["operations"] = dict(value.operation_symbols)
+    else:
+        payload["entry"] = {
             "abi": value.entry_abi,
             "symbol": value.entry_symbol,
-        },
-    }
+        }
+    return payload
 
 
 def _verification_payload(value: object) -> dict[str, object] | None:
@@ -288,7 +302,6 @@ def _verification_payload(value: object) -> dict[str, object] | None:
     return {
         "producer": value.producer,
         "parameter_domains": [copy.deepcopy(dict(row)) for row in value.parameter_domains],
-        "cases": [copy.deepcopy(dict(row)) for row in value.cases],
     }
 
 

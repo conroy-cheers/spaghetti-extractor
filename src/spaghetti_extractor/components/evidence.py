@@ -17,6 +17,7 @@ from ..external.contracts import (
 )
 from ..util import sha256_file, write_json
 from .adapter import load_component_adapter_plan
+from .compiler import ComponentCompileError, compile_component_library
 from .formats import (
     COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
     COMPONENT_EVIDENCE_V3_FORMAT,
@@ -203,10 +204,7 @@ def produce_component_evidence(
                 )
             )
     producer = verification_payload.get("producer")
-    if producer not in {
-        "exhaustive-finite-domain-v1",
-        "candidate-only-functional-suite-v1",
-    }:
+    if producer != "exhaustive-finite-domain-v1":
         issues.append(
             _issue(
                 "incomplete",
@@ -224,68 +222,54 @@ def produce_component_evidence(
             raise _UnsupportedSemantics("prerequisite contract or producer is not usable")
         library_path = Path(out).with_suffix(".component.so")
         adapter_header = _adapter_header_path(Path(adapter_plan), adapter)
-        _compile_source_package(
+        compile_component_library(
             package=Path(implementation),
             source=source,
             compiler=Path(compiler),
             output=library_path,
-            logical_abi_header=adapter_header,
+            forced_header=adapter_header,
         )
         width = _ctype_width(_string(result.get("type"), "logical result type"))
         mask = (1 << width) - 1
-        if producer == "exhaustive-finite-domain-v1":
-            domains = _parameter_domains(
-                verification_payload, parameters, source_abi=source_abi
+        domains = _parameter_domains(
+            verification_payload, parameters, source_abi=source_abi
+        )
+        case_count = 1
+        for domain in domains:
+            case_count *= len(domain)
+        if case_count > 1_000_000:
+            raise _UnsupportedSemantics(
+                f"declared finite domain contains {case_count} cases"
             )
-            case_count = 1
-            for domain in domains:
-                case_count *= len(domain)
-            if case_count > 1_000_000:
-                raise _UnsupportedSemantics(
-                    f"declared finite domain contains {case_count} cases"
-                )
-            vectors = (
-                (
-                    f"domain-{index}",
-                    dict(zip((row["id"] for row in parameters), values, strict=True)),
-                    None,
-                )
-                for index, values in enumerate(itertools.product(*domains))
+        vectors = (
+            (
+                f"domain-{index}",
+                dict(zip((row["id"] for row in parameters), values, strict=True)),
+                None,
             )
-            machine = _MachineProgram(
-                Path(machine_ir),
-                tuple(lift_unit["unit_ids"]),
-                entry_ids=(
-                    _adapter_entry_ids(adapter)
-                    if source_abi == LOGICAL_OBJECT_C_V1
-                    else ()
-                ),
-                external_contracts=parse_adapter_external_contracts(adapter),
-            )
-        else:
-            vectors = iter(
-                _functional_cases(
-                    verification_payload, parameters, source_abi=source_abi
-                )
-            )
-            machine = None
-        for case_id, arguments, declared_expected in vectors:
+            for index, values in enumerate(itertools.product(*domains))
+        )
+        machine = _MachineProgram(
+            Path(machine_ir),
+            tuple(lift_unit["unit_ids"]),
+            entry_ids=(
+                _adapter_entry_ids(adapter)
+                if source_abi == LOGICAL_OBJECT_C_V1
+                else ()
+            ),
+            external_contracts=parse_adapter_external_contracts(adapter),
+        )
+        for case_id, arguments, _declared_expected in vectors:
             active_case = {"case_index": cases, "case_id": case_id}
             _validate_memory_views(parameters, arguments, source_abi=source_abi)
-            machine_evaluation = (
-                machine.evaluate(interface, arguments, source_abi=source_abi)
-                if machine is not None
-                else None
+            machine_evaluation = machine.evaluate(
+                interface, arguments, source_abi=source_abi
             )
-            expected = (
-                _normalize_machine_result(
-                    result,
-                    parameters,
-                    arguments,
-                    machine_evaluation,
-                )
-                if machine_evaluation is not None
-                else int(declared_expected)
+            expected = _normalize_machine_result(
+                result,
+                parameters,
+                arguments,
+                machine_evaluation,
             )
             if candidate is None:
                 candidate = CandidateEvidenceRunner(
@@ -340,7 +324,6 @@ def produce_component_evidence(
                 producer == "exhaustive-finite-domain-v1"
                 and source_abi == LOGICAL_OBJECT_C_V1
             ):
-                assert machine_evaluation is not None
                 observed_boundary = evaluate_adapter_completion(
                     adapter,
                     state_fields=_STATE_FIELDS,
@@ -390,7 +373,7 @@ def produce_component_evidence(
                     detail=str(exc),
                 )
             )
-    except (OSError, subprocess.SubprocessError) as exc:
+    except (OSError, subprocess.SubprocessError, ComponentCompileError) as exc:
         issues.append(
             _issue(
                 "incomplete",
@@ -445,47 +428,6 @@ def produce_component_evidence(
     result_payload = {**core, "evidence_sha256": _canonical_sha256(core)}
     write_json(Path(out), result_payload)
     return result_payload
-
-
-def _compile_source_package(
-    *,
-    package: Path,
-    source: Mapping[str, object],
-    compiler: Path,
-    output: Path,
-    logical_abi_header: Path,
-) -> None:
-    source_root = package / "sources"
-    translation_units = [
-        source_root / str(row["path"])
-        for row in source["files"]  # type: ignore[index]
-        if isinstance(row, Mapping) and str(row.get("path", "")).endswith(".c")
-    ]
-    if not translation_units:
-        raise _UnsupportedSemantics("source package has no C translation unit")
-    command = [
-        str(compiler),
-        "-shared",
-        "-fPIC",
-        "-O1",
-        "-fno-inline",
-        "-std=c11",
-        "-Wall",
-        "-Werror",
-        "-I",
-        str(source_root),
-        "-I",
-        str(logical_abi_header.parent),
-        "-include",
-        str(logical_abi_header),
-        "-o",
-        str(output),
-        *(str(path) for path in translation_units),
-    ]
-    completed = subprocess.run(command, text=True, capture_output=True, check=False)
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout).strip()
-        raise OSError(f"portable component compiler failed: {detail[:2000]}")
 
 
 def _logical_signature(
@@ -636,52 +578,6 @@ def _parameter_domains(
     return result
 
 
-def _functional_cases(
-    verification: Mapping[str, object],
-    parameters: Sequence[Mapping[str, object]],
-    *,
-    source_abi: str,
-) -> list[tuple[str, dict[str, object], int]]:
-    expected_ids = [str(row.get("id")) for row in parameters]
-    parameters_by_id = {str(row.get("id")): row for row in parameters}
-    result: list[tuple[str, dict[str, object], int]] = []
-    seen: set[str] = set()
-    for index, raw in enumerate(_array(verification.get("cases", []), "verification cases")):
-        row = _object(raw, f"verification case {index}")
-        identity = _string(row.get("id"), f"verification case {index} id")
-        if identity in seen:
-            raise _UnsupportedSemantics("functional case identifiers are duplicated")
-        seen.add(identity)
-        arguments = _object(row.get("arguments"), f"verification case {identity} arguments")
-        if set(arguments) != set(expected_ids):
-            raise _UnsupportedSemantics(
-                f"functional case {identity} arguments do not cover the logical parameters"
-            )
-        expected = row.get("expected")
-        if not isinstance(expected, int) or isinstance(expected, bool):
-            raise _UnsupportedSemantics(
-                f"functional case {identity} expected value must be an integer"
-            )
-        result.append(
-            (
-                identity,
-                {
-                    name: _normalize_argument(
-                        parameters_by_id[name],
-                        arguments[name],
-                        f"functional case {identity} parameter {name}",
-                        source_abi=source_abi,
-                    )
-                    for name in expected_ids
-                },
-                expected,
-            )
-        )
-    if not result:
-        raise _UnsupportedSemantics("candidate-only functional suite has no cases")
-    return result
-
-
 def _normalize_argument(
     parameter: Mapping[str, object],
     value: object,
@@ -782,14 +678,21 @@ def _method(producer: object, status: str) -> dict[str, object]:
             "kind": "exhaustive_finite_domain_v1",
             "complete_for_declared_domain": status != "incomplete",
             "candidate_only": True,
+            "semantic_reference": "canonical-machine-ir-v2",
+            "reference_backend": "bounded-python-machine-ir-evaluator-v3",
+            "candidate_backend": "compiled-portable-c",
+            "independent_isa_qualification": "required-at-candidate-gate-v3",
+            "universal_equivalence_claimed": False,
         }
-    if producer == "candidate-only-functional-suite-v1":
-        return {
-            "kind": "candidate_only_functional_suite_v1",
-            "complete_for_declared_cases": status != "incomplete",
-            "candidate_only": True,
-        }
-    return {"kind": "unsupported", "candidate_only": True}
+    return {
+        "kind": "unsupported",
+        "candidate_only": True,
+        "semantic_reference": "none",
+        "reference_backend": "none",
+        "candidate_backend": "compiled-portable-c",
+        "independent_isa_qualification": "required-at-candidate-gate-v3",
+        "universal_equivalence_claimed": False,
+    }
 
 
 def _boundary_mismatches(

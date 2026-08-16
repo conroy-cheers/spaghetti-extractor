@@ -56,7 +56,9 @@
         touch "$out"
       '';
       architectureBoundaryCheck = pkgs.runCommand
-        "spaghetti-extractor-retired-architecture-boundary" { } ''
+        "spaghetti-extractor-retired-architecture-boundary"
+        { nativeBuildInputs = [ pkgs.ripgrep ]; }
+        ''
           set -euo pipefail
           test ! -e ${testSource}/src/spaghetti_extractor/reference_contract
           test ! -e ${testSource}/src/spaghetti_extractor/candidate/modes.py
@@ -72,6 +74,16 @@
             exit 1
           fi
           if rg -n \
+              -g '!checks.nix' \
+              -e 'owned_by_interprocedural_v2_phase' \
+              -e 'awaiting_interprocedural_v2' \
+              -e 'spaghetti-extractor-interprocedural-analysis-v2' \
+              ${testSource}/src ${testSource}/nix; then
+            echo "retired extraction-owned interprocedural authority reintroduced" >&2
+            exit 1
+          fi
+          if rg -n \
+              -g '!checks.nix' \
               -e 'Stage [AB]' -e 'STAGE_[AB]' -e 'stage_[ab]_' \
               -e 'stage-[ab]-' -e 'spaghetti-extractor-spaghetti-extractor' \
               ${testSource}/src ${testSource}/nix ${testSource}/docs \
@@ -90,6 +102,7 @@
       };
       authorityGraphV3Check = import ../../tests/unit/nix_v3/check.nix {
         inherit pkgs;
+        inherit (context) pythonEnv;
       };
       artifactSeedV3Check = import ../tests/artifact-seed-v3.nix {
         inherit pkgs;

@@ -11,7 +11,7 @@
   timeoutSeconds ? 30,
   stripStderrLineRegexes ? [ ],
   nativeBuildInputs ? [ ],
-  authorityGate ? null,
+  releaseGate ? null,
 }:
 
 let
@@ -45,11 +45,11 @@ let
         export LC_ALL=C.UTF-8
         export SOURCE_DATE_EPOCH=1
         export PYTHONPATH=${phasePythonSource}/src
-        ${lib.optionalString (authorityGate != null) ''
+        ${lib.optionalString (releaseGate != null) ''
           ${pkgs.jq}/bin/jq -e '
-            .format == "spaghetti-extractor-final-authority-gate-v3" and
-            .status == "complete" and .authorizing
-          ' ${authorityGate}/authority-gate.json >/dev/null
+            .format == "spaghetti-extractor-release-acceptance-v1" and
+            .status == "complete" and .release_accepted and .executable
+          ' ${releaseGate}/release-acceptance.json >/dev/null
         ''}
         mkdir -p "$out"
         ${pythonEnv}/bin/python3 - \
@@ -127,7 +127,7 @@ assert builtins.isString namePrefix && namePrefix != "";
 assert builtins.isList caseIds && builtins.length caseIds > 0;
 assert builtins.all (id: builtins.isString id && id != "") caseIds;
 assert builtins.isList candidateCommand && builtins.length candidateCommand > 0;
-assert authorityGate == null || lib.isDerivation authorityGate;
+assert releaseGate == null || lib.isDerivation releaseGate;
 assert builtins.all
   (case: builtins.isAttrs case && case ? id && builtins.isString case.id && case.id != "")
   cases;

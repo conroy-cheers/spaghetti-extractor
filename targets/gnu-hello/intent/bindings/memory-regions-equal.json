@@ -1,0 +1,85 @@
+{
+  "format": "spaghetti-extractor-component-machine-binding-declaration-v2",
+  "id": "memory-regions-equal",
+  "unit_ids": [
+    "semantic-transfer:original-cutpoint-00008d60-00008d6f",
+    "semantic-transfer:original-cutpoint-00008d6f-00008d7f",
+    "semantic-transfer:original-cutpoint-00008d7f-00008d88"
+  ],
+  "operations": [
+    {
+      "operation_id": "compare",
+      "entry_unit_ids": [
+        "semantic-transfer:original-cutpoint-00008d60-00008d6f"
+      ],
+      "exit_unit_ids": [
+        "semantic-transfer:original-cutpoint-00008d7f-00008d88"
+      ],
+      "parameters": [
+        {
+          "id": "count",
+          "projection": {
+            "kind": "stack",
+            "offset": 12,
+            "width": 32,
+            "at": "entry"
+          }
+        },
+        {
+          "id": "left",
+          "projection": {
+            "kind": "bytes_view",
+            "base": {
+              "kind": "stack",
+              "offset": 4,
+              "width": 32,
+              "at": "entry"
+            },
+            "extent_id": "count",
+            "at": "entry"
+          }
+        },
+        {
+          "id": "right",
+          "projection": {
+            "kind": "bytes_view",
+            "base": {
+              "kind": "stack",
+              "offset": 8,
+              "width": 32,
+              "at": "entry"
+            },
+            "extent_id": "count",
+            "at": "entry"
+          }
+        }
+      ],
+      "results": [
+        {
+          "id": "result",
+          "projection": {
+            "kind": "register",
+            "register": "eax",
+            "width": 8,
+            "at": "exit"
+          }
+        }
+      ],
+      "state": [],
+      "preserved_state_ids": [],
+      "effects": [],
+      "callback_operation_ids": [],
+      "continuation_unit_ids": []
+    }
+  ],
+  "services": [
+    {
+      "service_id": "compare_memory",
+      "provider": {
+        "kind": "external_site",
+        "site_id": "external-site-v3:113b3481e724d854f3ba27d44c90758a943de5b69ade25293e7db67512986955"
+      },
+      "mediation": "direct"
+    }
+  ]
+}

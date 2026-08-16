@@ -13,6 +13,7 @@ from .formats import (
     COMPONENT_EVIDENCE_V3_FORMAT,
     COMPONENT_QUALIFICATION_V3_FORMAT,
 )
+from .lifecycle_records import ComponentQualificationRecordV3
 from ..util import sha256_file, write_json
 from .intent import ComponentIntentError
 from .model import EVIDENCE_PROFILE_PRODUCERS
@@ -110,16 +111,19 @@ def qualify_lift_unit(
             "exhaustive_finite_domain_v1",
             "complete_for_declared_domain",
         ),
-        "candidate-only-functional-suite-v1": (
-            "candidate_only_functional_suite_v1",
-            "complete_for_declared_cases",
-        ),
     }
     required_method = method_requirements.get(expected_producer)
     method_complete = (
         required_method is not None
         and method.get("kind") == required_method[0]
         and method.get(required_method[1]) is True
+        and method.get("candidate_backend") == "compiled-portable-c"
+        and method.get("independent_isa_qualification")
+        == "required-at-candidate-gate-v3"
+        and method.get("universal_equivalence_claimed") is False
+        and method.get("semantic_reference") == "canonical-machine-ir-v2"
+        and method.get("reference_backend")
+        == "bounded-python-machine-ir-evaluator-v3"
     )
     if (
         verification.get("producer") != expected_producer
@@ -146,11 +150,7 @@ def qualify_lift_unit(
         if issues
         else "qualified"
     )
-    assurance_kind = (
-        "exhaustive_over_declared_finite_domain"
-        if expected_producer == "exhaustive-finite-domain-v1"
-        else "candidate_only_declared_functional_cases"
-    )
+    assurance_kind = "exhaustive_over_declared_finite_domain"
     core = {
         "format": COMPONENT_QUALIFICATION_V3_FORMAT,
         "status": status,
@@ -165,15 +165,16 @@ def qualify_lift_unit(
         },
         "assurance": {
             "kind": assurance_kind,
+            "semantic_reference": method.get("semantic_reference"),
+            "reference_backend": method.get("reference_backend"),
+            "candidate_backend": method.get("candidate_backend"),
+            "isa_qualification": method.get("independent_isa_qualification"),
             "universal_equivalence_claimed": False,
             "declared_domain_equivalence": (
                 status == "qualified"
                 and expected_producer == "exhaustive-finite-domain-v1"
             ),
-            "declared_cases_satisfied": (
-                status == "qualified"
-                and expected_producer == "candidate-only-functional-suite-v1"
-            ),
+            "declared_cases_satisfied": False,
             "original_binary_executed": False,
         },
         "activation": {
@@ -183,7 +184,14 @@ def qualify_lift_unit(
         },
         "issues": sorted(issues, key=lambda row: (str(row["status"]), str(row["code"]))),
     }
-    result = {**core, "qualification_sha256": _canonical_sha256(core)}
+    result = ComponentQualificationRecordV3.create(
+        status=status,
+        lift_unit_id=lift_unit_id,
+        evidence_profile=str(lift_unit.get("evidence_profile")),
+        bindings=core["bindings"],
+        assurance=core["assurance"],
+        issues=core["issues"],
+    ).to_payload()
     write_json(Path(out), result)
     return result
 

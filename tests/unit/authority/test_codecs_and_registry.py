@@ -12,12 +12,30 @@ from spaghetti_extractor.authority.registry import (
     AuthorityPhaseRegistryV3,
 )
 from spaghetti_extractor.artifacts.artifact_set import (
+    ArtifactV3Error,
     CanonicalValueV3,
+    PlainJsonCodecV3,
     canonical_sha256_v3,
+    value_codec_v3,
 )
 
 
 class AnalysisV3CodecAndRegistryTests(unittest.TestCase):
+    def test_plain_json_codec_round_trips_without_interned_nodes(self) -> None:
+        value = CanonicalValueV3.of(
+            {"large": [{"unit": index, "register": "eax"} for index in range(32)]}
+        )
+        codec = PlainJsonCodecV3()
+        encoded = codec.encode(value)
+
+        self.assertEqual(encoded.nodes, ())
+        self.assertEqual(codec.decode(encoded.root, {}), value)
+        self.assertIsInstance(value_codec_v3(codec.identity), PlainJsonCodecV3)
+
+        with self.assertRaises(ArtifactV3Error) as raised:
+            codec.decode(encoded.root, {"value-node:stale": {}})
+        self.assertEqual(raised.exception.code, "invalid_plain_json_value")
+
     def test_exact_unit_codec_rejects_stale_record_identity(self) -> None:
         unit = {
             "id": "unit:one",
@@ -60,8 +78,10 @@ class AnalysisV3CodecAndRegistryTests(unittest.TestCase):
                 "inductive-authority-v3",
                 "isa-qualification-v3",
                 "launch-root-closure-v3",
-                "memory-versions-v3",
-                "semantic-index-v3",
+            "memory-versions-v3",
+            "parametric-scc-summaries-v3",
+            "parametric-unit-facts-v3",
+            "semantic-index-v3",
                 "structural-target-proposals-v3",
                 "transition-summaries-v3",
             ),

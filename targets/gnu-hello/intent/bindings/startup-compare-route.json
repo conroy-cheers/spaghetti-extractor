@@ -1,0 +1,50 @@
+{
+  "format": "spaghetti-extractor-component-machine-binding-declaration-v2",
+  "id": "startup-compare-route",
+  "unit_ids": [
+    "semantic-transfer:original-cutpoint-00001038-00001040"
+  ],
+  "operations": [
+    {
+      "operation_id": "compare",
+      "entry_unit_ids": [
+        "semantic-transfer:original-cutpoint-00001038-00001040"
+      ],
+      "exit_unit_ids": [
+        "semantic-transfer:original-cutpoint-00001038-00001040"
+      ],
+      "parameters": [
+        {
+          "id": "left",
+          "projection": {
+            "kind": "register",
+            "register": "ebx",
+            "width": 32,
+            "at": "entry"
+          }
+        },
+        {
+          "id": "right",
+          "projection": {
+            "kind": "register",
+            "register": "eax",
+            "width": 32,
+            "at": "entry"
+          }
+        }
+      ],
+      "results": [
+        {
+          "id": "route",
+          "projection": {"kind": "control_condition", "at": "exit"}
+        }
+      ],
+      "state": [],
+      "preserved_state_ids": [],
+      "effects": [],
+      "callback_operation_ids": [],
+      "continuation_unit_ids": []
+    }
+  ],
+  "services": []
+}

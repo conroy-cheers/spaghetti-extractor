@@ -78,9 +78,12 @@ let
       assert builtins.isString input.expected_sha256
         && builtins.stringLength input.expected_sha256 == 64
         && builtins.match "[0-9a-f]*" input.expected_sha256 != null;
-      assert exactAttrs paths [ "components" "nix" ];
+      assert exactAttrs paths [ "components" "nix" ]
+        || exactAttrs paths [ "components" "libraries" "nix" ];
       assert relativePath paths.nix;
       assert paths.components == null || relativePath paths.components;
+      assert !(paths ? libraries) || paths.libraries == null
+        || relativePath paths.libraries;
       assert exactAttrs workflow [ "default_configuration" ];
       assert workflow.default_configuration == null
         || identifier workflow.default_configuration;
@@ -140,6 +143,7 @@ let
   mkPe32Workflow = {
     original,
     binaryIdentity,
+    targetId ? binaryIdentity,
     externalProfile,
     machineImportProfiles ? [ externalProfile ],
     launchProfileTemplate,
@@ -147,13 +151,34 @@ let
     componentIntent ? null,
     componentReviewRoot ? null,
     componentSourceRoot ? null,
+    componentBindingRoot ? null,
+    componentInductionRoot ? null,
     externalInterfaceProfiles ? [ ],
     candidateMachineImportProfiles ? [ ],
+    libraryCatalogIndexes ? [ ],
+    libraryAbiCatalogs ? [ ],
+    libraryCatalogLock ? null,
+    libraryImplementations ? { },
+    libraryAdoptionIntentRoot ? null,
     maxUnits ? 512,
     maxCandidatesPerSeed ? 12,
   }:
     let
       hasComponents = componentIntent != null;
+      libraryCatalogConfigured =
+        libraryCatalogIndexes != [ ] || libraryAbiCatalogs != [ ]
+        || libraryCatalogLock != null;
+      libraryAdoptionIntents =
+        if libraryAdoptionIntentRoot == null then { } else
+        let
+          entries = builtins.readDir libraryAdoptionIntentRoot;
+          filenames = builtins.filter
+            (name: entries.${name} == "regular" && lib.hasSuffix ".json" name)
+            (builtins.attrNames entries);
+        in builtins.listToAttrs (map (filename: {
+          name = lib.removeSuffix ".json" filename;
+          value = libraryAdoptionIntentRoot + "/${filename}";
+        }) filenames);
       analysis = analysisComponent {
         inherit original externalProfile externalInterfaceProfiles namePrefix;
         additionalMachineImportProfiles = builtins.tail machineImportProfiles;
@@ -165,21 +190,89 @@ let
         binary = original;
         inherit binaryIdentity machineImportProfiles launchProfileTemplate;
       };
-      interpreter = assert lib.assertMsg (authority.fallbackInterpreter != null)
-        "PE32 workflows require the standard machine-IR interpreter";
-        authority.fallbackInterpreter;
+      linkedLibraries = callWith ./linked-libraries.nix analysisCommon {
+        inherit original namePrefix targetId;
+        machineIr = analysis.machineIr;
+        catalogIndexes = libraryCatalogIndexes;
+        abiCatalogs = libraryAbiCatalogs;
+        catalogLock = libraryCatalogLock;
+        implementations = libraryImplementations;
+        adoptionIntents = libraryAdoptionIntents;
+        canonicalExternalSites =
+          authority.graph.phases."canonical-external-sites-v3".artifact;
+        targetCertificates =
+          authority.graph.phases."indirect-target-certificates-v3".artifact;
+      };
+      libraryOperator = import ./library-status.nix {
+        inherit pkgs;
+        pythonEnv = context.pythonEnv;
+        pythonSource = context.sources.fullSource;
+        targetId = binaryIdentity;
+        namePrefix = "${namePrefix}-libraries";
+        releaseHypotheses = linkedLibraries.releaseHypotheses;
+        catalogSearchIndex = linkedLibraries.catalogSearchIndex;
+        adoptionIntents = linkedLibraries.adoptionIntents;
+        checkedIslands = linkedLibraries.checkedIslands;
+        generatedComponents = linkedLibraries.generatedComponents;
+        implementations = linkedLibraries.implementations;
+      };
+      interpreterSupport = assert lib.assertMsg (authority.fallbackSupport != null)
+        "PE32 workflows require reusable machine-IR support";
+        authority.fallbackSupport;
       components = if !hasComponents then null else componentWorkflow {
           machineIr = analysis.machineIr;
           reconstructionPlan = analysis.reconstructionPlan;
           componentProposals = analysis.componentProposals;
-          canonicalExternalSites =
-            authority.graph.outputs."canonical-external-sites-v3";
+          canonicalExternalSites = authority.componentExternalSites;
           intent = componentIntent;
           reviewRoot = componentReviewRoot;
           sourceRoot = componentSourceRoot;
+          bindingRoot = componentBindingRoot;
+          inductionRoot = componentInductionRoot;
           inherit namePrefix;
-          interpreterPackage = interpreter;
+          interpreterPackage = interpreterSupport;
+          generatedLibraryComponents = linkedLibraries.generatedComponents;
         };
+      configurationIds = if hasComponents
+        then builtins.attrNames components.runtimeConfigurations else [ ];
+      structuralArtifacts = {
+        callbacks = authority.graph.phases."callback-authority-v3".artifact;
+        exceptional_transitions =
+          authority.graph.phases."exceptional-transitions-v3".artifact;
+        external_sites =
+          authority.graph.phases."canonical-external-sites-v3".artifact;
+        inductive_authority =
+          authority.graph.phases."inductive-authority-v3".artifact;
+        parametric_summaries =
+          authority.graph.phases."parametric-scc-summaries-v3".artifact;
+        root_closure = authority.graph.phases."launch-root-closure-v3".artifact;
+        semantic_index = authority.graph.phases."semantic-index-v3".artifact;
+        target_certificates =
+          authority.graph.phases."indirect-target-certificates-v3".artifact;
+      };
+      structuralReceipts = builtins.listToAttrs (map (configurationId: {
+        name = configurationId;
+        value = import ./candidate-policy-receipt.nix {
+          inherit pkgs structuralArtifacts;
+          pythonEnv = context.pythonEnv;
+          namePrefix = "${namePrefix}-${configurationId}";
+          machineIr = "${analysis.machineIr}/machine-ir.jsonl";
+          machineIrManifest = "${analysis.machineIr}/machine-ir-manifest.json";
+          fallbackCapabilityAnalysis = authority.fallbackCapabilityAnalysis;
+          activationPlan = components.activationPlans.${configurationId};
+        };
+      }) configurationIds);
+      structuralGates = lib.mapAttrs (configurationId: receipt:
+        import ./candidate-policy-gate.nix {
+          inherit pkgs receipt;
+          namePrefix = "${namePrefix}-${configurationId}";
+        }) structuralReceipts;
+      interpreters = lib.mapAttrs (configurationId: executionGate:
+        import ./candidate-interpreter-package.nix {
+          inherit pkgs executionGate;
+          supportPackage = interpreterSupport;
+          namePrefix = "${namePrefix}-${configurationId}-standard-fallback";
+        }) structuralGates;
       candidateFor = {
         configurationId,
         extraMachineImportProfiles ? [ ],
@@ -195,7 +288,8 @@ let
           ++ extraMachineImportProfiles;
         namePrefix = "${namePrefix}-${configurationId}";
         inherit compiler;
-        interpreterPackage = interpreter;
+        structuralExecutionGate = structuralGates.${configurationId};
+        interpreterPackage = interpreters.${configurationId};
         componentRuntimePackage = components.mkRuntime {
           inherit configurationId;
           runtimeCompiler = compiler;
@@ -205,11 +299,30 @@ let
         authorityDiagnostics = authority.diagnostics;
         namePrefix = "${namePrefix}-runtime";
       };
-      configurationIds = if hasComponents
-        then builtins.attrNames components.runtimeConfigurations else [ ];
       staticCandidates = builtins.listToAttrs (map (configurationId: {
         name = configurationId;
         value = candidateFor { inherit configurationId; };
+      }) configurationIds);
+      releaseFor = { configurationId }:
+        let
+          receipt = import ./candidate-release-receipt.nix {
+            inherit pkgs;
+            pythonEnv = context.pythonEnv;
+            namePrefix = "${namePrefix}-${configurationId}";
+            structuralReceipt = structuralReceipts.${configurationId};
+            isaQualification = authority.graph.phases."isa-qualification-v3".artifact;
+            candidateBinary =
+              "${staticCandidates.${configurationId}.candidate}/candidate.exe";
+            componentReleaseGate = components.hybridGates.${configurationId};
+          };
+          gate = import ./candidate-release-gate.nix {
+            inherit pkgs receipt;
+            namePrefix = "${namePrefix}-${configurationId}";
+          };
+        in { inherit receipt gate; };
+      staticReleasePolicies = builtins.listToAttrs (map (configurationId: {
+        name = configurationId;
+        value = releaseFor { inherit configurationId; };
       }) configurationIds);
       candidateTestFor = {
         id,
@@ -223,11 +336,12 @@ let
           stripStderrLineRegexes;
         namePrefix = "${namePrefix}-${configurationId}";
         candidateBinary = "${staticCandidates.${configurationId}.candidate}/candidate.exe";
-        authorityGate = authority.finalAuthorityGate;
+        releaseGate = staticReleasePolicies.${configurationId}.gate;
       };
     in {
-      inherit analysis authority components interpreter candidateFor
-        candidateTestFor configurationIds staticCandidates runtimeFrontiers
+      inherit analysis authority linkedLibraries libraryOperator libraryCatalogConfigured components interpreterSupport interpreters
+        structuralArtifacts structuralReceipts structuralGates candidateFor
+        candidateTestFor releaseFor staticReleasePolicies configurationIds staticCandidates runtimeFrontiers
         hasComponents;
       originalBinary = original;
       inherit binaryIdentity;
@@ -239,8 +353,7 @@ let
     };
   projectCandidate = candidate: lib.filterAttrs (_name: value: value != null) {
     inherit (candidate) interpreter componentRuntime machineImportProfileBundle
-      fallbackCoverageReceipt candidateAuthorityReport candidateAuthorityGate
-      nativeEngine nativeRuntime candidate;
+      structuralExecutionGate nativeEngine nativeRuntime candidate;
     nativeObjects = candidate.nativeObjects.package;
   };
   mkPe32Bundle = {
@@ -278,6 +391,19 @@ let
       componentAssets = if !hasComponents then [ ] else map (asset: asset // {
         path = relativeTargetPath asset.path;
       }) workflow.components.assetInventory;
+      libraryIntentAssets =
+        if !(metadata.paths ? libraries) then [ ] else
+        let
+          root = targetRoot + "/${metadata.paths.libraries}";
+          entries = if builtins.pathExists root then builtins.readDir root else { };
+          filenames = builtins.filter
+            (name: entries.${name} == "regular" && lib.hasSuffix ".json" name)
+            (builtins.attrNames entries);
+        in map (filename: {
+          path = "${metadata.paths.libraries}/${filename}";
+          role = "library_adoption_intent";
+          owner = "linked-libraries";
+        }) filenames;
       candidateTestAssets = lib.mapAttrsToList (id: test: {
         path = relativeTargetPath test.suite;
         role = "candidate_test";
@@ -290,7 +416,7 @@ let
         inherit path role;
         owner = "target-bundle";
       }) (targetAssets.${role} or [ ])) manualAssetRoles;
-      declaredAssets = metadataAssets ++ componentAssets
+      declaredAssets = metadataAssets ++ componentAssets ++ libraryIntentAssets
         ++ candidateTestAssets ++ manualAssets;
       ownership = targetBundleLint {
         inherit targetRoot declaredAssets;
@@ -349,6 +475,16 @@ let
           phases = lib.mapAttrs (_: phase: phase.derivation)
             workflow.authority.graph.phases;
         };
+        libraries = lib.filterAttrs (_: value: value != null) {
+          artifact-index = workflow.linkedLibraries.artifactIndex;
+          catalog-lock = workflow.linkedLibraries.generatedCatalogLock;
+          catalog-search-index = workflow.linkedLibraries.catalogSearchIndex;
+          target-signature-graph = workflow.linkedLibraries.targetSignatureGraph;
+          release-hypotheses = workflow.linkedLibraries.releaseHypotheses;
+          checked-islands = workflow.linkedLibraries.checkedIslands;
+          generated-components = workflow.linkedLibraries.generatedComponents;
+          status = workflow.libraryOperator.status;
+        };
         components = {
           proposals = workflow.analysis.componentProposals;
         } // lib.optionalAttrs hasComponents {
@@ -357,6 +493,28 @@ let
           source-packages = workflow.components.sourcePackages;
           evidence = workflow.components.evidences;
           qualifications = workflow.components.qualifications;
+          compile-receipts = workflow.components.compileReceipts or { };
+          source-profiles = workflow.components.sourceProfiles or { };
+          machine-bindings = workflow.components.machineBindingReceipts or { };
+          semantic-contracts = workflow.components.semanticContracts or { };
+          universal-contracts = workflow.components.universalContracts or { };
+          universal-machine-bindings =
+            workflow.components.universalMachineBindings or { };
+          machine-implementations =
+            workflow.components.machineImplementations or { };
+          dependency-graphs = workflow.components.dependencyGraphs or { };
+          hybrid-gates = workflow.components.hybridGates or { };
+          portable-gates = workflow.components.portableGates or { };
+          retirement-reports = workflow.components.retirementReports or { };
+          induction-packages = workflow.components.inductionPackages or { };
+          induction-draft-certificates =
+            workflow.components.inductionDraftCertificates or { };
+          induction-source-receipts =
+            workflow.components.inductionSourceReceipts or { };
+          semantic-refinements = workflow.components.refinementReceipts or { };
+          service-graphs = workflow.components.serviceGraphs or { };
+          ownership-receipts = workflow.components.ownershipReceipts or { };
+          activation-receipts = workflow.components.activationReceipts or { };
           statuses = workflow.components.statusReports;
           work-packages = workflow.components.workPackages;
           configurations = workflow.components.activationPlans;
@@ -374,6 +532,8 @@ let
           static = lib.mapAttrs (_: candidate: projectCandidate candidate)
             workflow.staticCandidates;
           tests = lib.mapAttrs (_: test: test.aggregate) candidateTests;
+          release-receipts = releaseReceipts;
+          release-gates = releaseGates;
         };
       } // lib.optionalAttrs (builtins.attrNames extraArtifacts != [ ]) {
         target = extraArtifacts;
@@ -393,26 +553,16 @@ let
           echo "run project analyze, inspect component proposals, then configure a default component configuration" >&2
           exit 1
         '';
-      defaultCandidateTests = lib.filterAttrs
-        (_: test: test.configurationId == defaultConfiguration) candidateTests;
-      candidateTestsRequired = pkgs.runCommand
-        "spaghetti-extractor-${metadata.id}-candidate-tests-required"
-        { __contentAddressed = true; } ''
-          echo "target ${metadata.id} has no candidate-only test suite for default configuration ${defaultConfiguration}" >&2
-          exit 1
-        '';
-      standardAcceptanceChecks = {
-        final-authority = workflow.authority.finalAuthorityGate;
-      } // (if hasComponents then {
+      releasePolicies = if !hasComponents then { } else workflow.staticReleasePolicies;
+      releaseReceipts = lib.mapAttrs (_: policy: policy.receipt) releasePolicies;
+      releaseGates = lib.mapAttrs (_: policy: policy.gate) releasePolicies;
+      standardAcceptanceChecks = if hasComponents then {
+        release-acceptance = releaseGates.${defaultConfiguration};
         default-static-candidate =
           workflow.staticCandidates.${defaultConfiguration}.candidate;
       } else {
         component-intent = componentIntentRequired;
-      } // (if defaultCandidateTests == { } then {
-        candidate-tests = candidateTestsRequired;
-      } else lib.mapAttrs' (id: test:
-        lib.nameValuePair "candidate-test-${id}" test.aggregate)
-        defaultCandidateTests));
+      };
       bundle = mkBundleRecord {
         inherit targetRoot apps;
         artifacts = standardArtifacts;
@@ -427,14 +577,45 @@ let
         } ] ++ lib.mapAttrsToList
           (name: path: { inherit name path; }) standardArtifacts.analysis);
       componentUnits = if !hasComponents then { } else lib.mapAttrs (id: _index: {
+        build = workflow.components.workPackages.${id};
         workPackage = workflow.components.workPackages.${id};
         status = workflow.components.statusReports.${id};
         check = workflow.components.checkGates.${id};
+        developmentStatus = workflow.components.statusReports.${id};
+        developmentCheck = workflow.components.checkGates.${id};
+      } // lib.optionalAttrs (builtins.hasAttr id (workflow.components.compileReceipts or { })) {
+        build = (workflow.components.compileReceipts or { }).${id};
+        compileReceipt = (workflow.components.compileReceipts or { }).${id};
+      } // lib.optionalAttrs (builtins.hasAttr id (workflow.components.activationReceipts or { })) {
+        status = (workflow.components.activationStatusReports or { }).${id};
+        check = (workflow.components.activationCheckGates or { }).${id};
+        activationStatus = (workflow.components.activationStatusReports or { }).${id};
+        activationReceipt = (workflow.components.activationReceipts or { }).${id};
+        activationCheck = (workflow.components.activationCheckGates or { }).${id};
+      } // lib.optionalAttrs (builtins.hasAttr id (workflow.components.machineBindingReceipts or { })) {
+        machineBinding = (workflow.components.machineBindingReceipts or { }).${id};
+        contract = (workflow.components.universalContracts or { }).${id};
+        universalMachineBinding =
+          (workflow.components.universalMachineBindings or { }).${id};
+        machineImplementation =
+          (workflow.components.machineImplementations or { }).${id};
+      } // lib.optionalAttrs (builtins.hasAttr id (workflow.components.inductionPackages or { })) {
+        inductionPackage = (workflow.components.inductionPackages or { }).${id};
+        inductionDraftCertificate =
+          (workflow.components.inductionDraftCertificates or { }).${id};
+        inductionSourceReceipt =
+          (workflow.components.inductionSourceReceipts or { }).${id};
+        inductiveRefinement =
+          (workflow.components.inductionRefinementArtifacts or { }).${id};
       }) workflow.components.liftUnitIndex;
       componentConfigurations = if !hasComponents then { } else lib.mapAttrs (id: _index: {
         runtime = workflow.componentRuntimes.${id};
         status = workflow.components.configurationStatusReports.${id};
         check = workflow.components.configurationCheckGates.${id};
+        dependencies = workflow.components.dependencyGraphs.${id};
+        retirement = workflow.components.retirementReports.${id};
+        portableCheck = workflow.components.portableCheckGates.${id};
+        hybridCheck = workflow.components.hybridCheckGates.${id};
       }) workflow.components.configurationIndex;
       candidateTestAggregate =
         if candidateTests == { } then null else
@@ -501,7 +682,7 @@ let
           configurationTestIndex = candidateTestIndexFor configurationId;
         in
         pkgs.runCommand
-          "spaghetti-extractor-${metadata.id}-${configurationId}-candidate-status-v1"
+          "spaghetti-extractor-${metadata.id}-${configurationId}-candidate-status-v2"
           {
             nativeBuildInputs = [ context.pythonEnv pkgs.jq ];
             preferLocalBuild = false;
@@ -516,12 +697,11 @@ let
             export PYTHONPATH=${candidateStatusPythonSource}/src
             mkdir -p "$out"
             ${context.pythonEnv}/bin/python3 - \
-              ${projectStatus}/project-status.json \
+              ${workflow.structuralReceipts.${configurationId}}/structural-executable.json \
               ${configurationStatus}/status.json \
               ${lib.escapeShellArg metadata.id} \
               ${lib.escapeShellArg configurationId} \
               ${lib.escapeShellArg (builtins.toJSON configurationTestIndex)} \
-              ${if configurationId == defaultConfiguration then "1" else "0"} \
               "$out/candidate-status.json" <<'PY'
             import json
             import pathlib
@@ -529,21 +709,21 @@ let
             from spaghetti_extractor.target_bundles.candidate_status import build_candidate_status
 
             build_candidate_status(
-                project_status=pathlib.Path(sys.argv[1]),
+                structural_receipt=pathlib.Path(sys.argv[1]),
                 configuration_status=pathlib.Path(sys.argv[2]),
                 target_id=sys.argv[3],
                 configuration_id=sys.argv[4],
                 candidate_test_suites=json.loads(sys.argv[5]),
-                require_candidate_test_suite=sys.argv[6] == "1",
-                out=pathlib.Path(sys.argv[7]),
+                out=pathlib.Path(sys.argv[6]),
             )
             PY
             jq -e '
-              .format == "spaghetti-extractor-candidate-status-v1" and
+              .format == "spaghetti-extractor-candidate-status-v2" and
               (.status == "ready" or .status == "incomplete" or .status == "violated") and
               (.authorizing | not) and
               .policy.diagnostic_only and
               (.policy.candidate_gate_bypassed | not) and
+              (.policy.candidate_tests_authorize | not) and
               (.policy.original_binary_executed | not)
             ' "$out/candidate-status.json" >/dev/null
           '';
@@ -554,9 +734,16 @@ let
       checkedCandidateBuilds = lib.mapAttrs (configurationId: candidate:
         pkgs.runCommand
           "spaghetti-extractor-${metadata.id}-${configurationId}-checked-candidate"
-          { __contentAddressed = true; } ''
+          {
+            nativeBuildInputs = [ pkgs.jq ];
+            __contentAddressed = true;
+          } ''
             set -euo pipefail
             test -s ${targetInputIdentity}/target-input-identity.json
+            jq -e '.ready and .status == "ready" and .mode == "hybrid"' \
+              ${workflow.components.hybridCheckGates.${configurationId}}/component-hybrid-release-gate-v1.json \
+              >/dev/null
+            test -s ${releaseGates.${configurationId}}/release-acceptance.json
             mkdir -p "$out"
             cp -rs ${candidate.candidate}/. "$out/"
             ln -s ${targetInputIdentity}/target-input-identity.json \
@@ -580,6 +767,10 @@ let
           configurations = configurationIds;
           testSuites = candidateTestIndex;
         };
+        libraries = {
+          configured = workflow.libraryCatalogConfigured;
+          selections = builtins.attrNames workflow.linkedLibraries.checks;
+        };
       };
       operator = {
         index = operatorIndex;
@@ -596,11 +787,29 @@ let
           units = componentUnits;
           configurations = componentConfigurations;
         };
+        libraries = {
+          status = workflow.libraryOperator.status;
+          check = workflow.libraryOperator.check;
+          checks = workflow.linkedLibraries.checks;
+          catalogSearchIndex = workflow.linkedLibraries.catalogSearchIndex;
+          targetSignatureGraph = workflow.linkedLibraries.targetSignatureGraph;
+          releaseHypotheses = workflow.linkedLibraries.releaseHypotheses;
+          checkedIslands = workflow.linkedLibraries.checkedIslands;
+          generatedComponents = workflow.linkedLibraries.generatedComponents;
+        };
         candidate = {
           builds = checkedCandidateBuilds;
+          checks = lib.mapAttrs (configurationId: _configuration: {
+            hybrid = workflow.components.hybridCheckGates.${configurationId};
+            portable = workflow.components.portableCheckGates.${configurationId};
+          }) workflow.components.configurationIndex;
           statuses = candidateStatusReports;
           tests = checkedCandidateTests;
           allTests = candidateTestAggregate;
+          releaseReceipts = releaseReceipts;
+          releaseChecks = releaseGates;
+          structuralReceipts = workflow.structuralReceipts;
+          structuralChecks = workflow.structuralGates;
         };
       };
     in
@@ -628,6 +837,10 @@ let
             then workflow.componentRuntimes.${defaultConfiguration} else null;
           staticCandidate = if hasComponents
             then workflow.staticCandidates.${defaultConfiguration} else null;
+          releaseReceipt = if hasComponents
+            then releaseReceipts.${defaultConfiguration} else null;
+          releaseCheck = if hasComponents
+            then releaseGates.${defaultConfiguration} else null;
           runtimeFrontiers = workflow.runtimeFrontiers;
         };
       };
@@ -651,6 +864,8 @@ in
     testSuite = candidateTestSuite;
   };
   lifting = {
+    behaviorPack = callWith ./library-behavior-pack.nix candidateCommon;
+    catalogPack = callWith ./library-catalog-pack.nix analysisCommon;
     linkedLibraries = callWith ./linked-libraries.nix analysisCommon;
     components = componentWorkflow;
   };

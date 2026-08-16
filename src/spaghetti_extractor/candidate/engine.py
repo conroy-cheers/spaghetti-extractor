@@ -10,13 +10,6 @@ from ..artifacts.formats import NATIVE_ENGINE_PACKAGE_FORMAT, NATIVE_ENGINE_PLAN
 from ..external.callbacks import CallbackABI, CallbackSource
 from ..external.contracts import (
     CheckedExternalSiteContract,
-    CheckedExternalSiteContractError,
-    ExternalSiteIdentity,
-    checked_external_site_contract_from_event,
-)
-from ..external.machine_import_profiles import (
-    MachineImportIdentity,
-    load_machine_import_profile_set,
 )
 from ..external.runtime_projection import load_authoritative_external_sites
 from ..pe32.recovered_executable_data import (
@@ -32,7 +25,6 @@ from .engine_analysis import (
     _exact_u32_expression,
     _external_runtime_semantics,
     _forward_expression_from_prior_writes,
-    _machine_ir_callback_registration,
     _machine_ir_event_evidence,
     _machine_ir_manifest_payload,
     _machine_ir_register_import_sites,
@@ -44,12 +36,9 @@ from .engine_components import (
     _build_callback_adapter_receipts,
     _build_implementation_dispatch_receipt,
     _callback_storage_origin_is_safe,
-    _machine_ir_callback_registrations,
-    _machine_ir_external_interface_methods,
-    _machine_ir_internal_call_preservation,
-    _machine_ir_internal_indirect_sites,
     _previous_callback_storage_writes,
 )
+from .authority.execution import load_candidate_execution_authority_v3
 from .engine_model import (
     NativeCallbackAdapter,
     NativeCallbackPassthrough,
@@ -101,7 +90,9 @@ def plan_spx_native_engine(
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
     canonical_external_sites: Path | str,
-    machine_import_profiles: Iterable[Path | str] = (),
+    root_closure: Path | str,
+    target_certificates: Path | str,
+    parametric_summaries: Path | str,
     fixed_image_base: int | None = None,
     preferred_image_base: int | None = None,
     initial_zero_ranges: Iterable[tuple[int, int]] = (),
@@ -133,9 +124,6 @@ def plan_spx_native_engine(
     )
     semantic_input_sha256 = sha256_file(input_path)
     selected_portable_components = tuple(selected_portable_components)
-    selected_import_contracts = load_machine_import_profile_set(
-        tuple(machine_import_profiles)
-    ).by_identity()
     callback_targets = tuple(callback_targets)
     machine_ir_mode = True
     machine_ir_manifest_payload = _machine_ir_manifest_payload(
@@ -147,6 +135,11 @@ def plan_spx_native_engine(
         canonical_external_sites
     )
     authoritative_external_sites = authoritative_external_index.by_event()
+    execution_authority = load_candidate_execution_authority_v3(
+        root_closure=Path(root_closure),
+        target_certificates=Path(target_certificates),
+        parametric_summaries=Path(parametric_summaries),
+    )
     consumed_authoritative_site_ids: set[str] = set()
     recovered_data_ranges: tuple[RecoveredExecutableDataRange, ...] = ()
     if recovered_executable_data is not None:
@@ -178,26 +171,7 @@ def plan_spx_native_engine(
                 "recovered executable-data image base differs from native inputs"
             )
         recovered_data_ranges = recovered_data.ranges
-    internal_call_preserved_registers = (
-        _machine_ir_internal_call_preservation(machine_ir_manifest_payload)
-        if machine_ir_mode
-        else {}
-    )
-    callback_registration_evidence = (
-        _machine_ir_callback_registrations(machine_ir_manifest_payload)
-        if machine_ir_mode
-        else {}
-    )
-    external_interface_methods = (
-        _machine_ir_external_interface_methods(machine_ir_manifest_payload)
-        if machine_ir_mode
-        else {}
-    )
-    internal_indirect_sites = (
-        _machine_ir_internal_indirect_sites(machine_ir_manifest_payload)
-        if machine_ir_mode
-        else frozenset()
-    )
+    internal_indirect_sites = execution_authority.internal_indirect_sites
     rows = [
         _adapt_native_machine_ir_unit(row, index)
         for index, row in enumerate(raw_rows)
@@ -232,7 +206,7 @@ def plan_spx_native_engine(
         _machine_ir_register_import_sites(
             rows,
             import_iat_vas=import_iat_vas,
-            internal_call_preserved_registers=internal_call_preserved_registers,
+            call_preserved_registers=execution_authority.call_preservation_by_site,
             allow_diagnostic_abi_hypotheses=False,
         )
         if machine_ir_mode
@@ -472,11 +446,7 @@ def plan_spx_native_engine(
                 ) = _machine_ir_event_evidence(
                     event, transfer_id=transfer_id, event_index=event_index
                 )
-                callback_registration = _machine_ir_callback_registration(
-                    event, transfer_id=transfer_id, event_index=event_index
-                )
-            else:
-                callback_registration = None
+            callback_registration = None
             iat_va: int | None = None
             target_resolution_evidence: dict[str, Any] | None = None
             if dynamic_target:
@@ -614,54 +584,7 @@ def plan_spx_native_engine(
                     ))
                     event_index += 1
                     continue
-            protocol_target = external_interface_methods.get(
-                (transfer_id, event_index)
-            )
-            selected_import_contract = None
-            resolved_machine_contract: dict[str, Any] | None = None
-            if dll is not None:
-                selected_import_contract = selected_import_contracts.get(
-                    MachineImportIdentity(
-                        dll=dll.lower(),
-                        kind="symbol" if isinstance(symbol, str) else "ordinal",
-                        value=(symbol if isinstance(symbol, str) else int(ordinal)),
-                    )
-                )
-                if selected_import_contract is not None:
-                    resolved_machine_contract = dict(
-                        selected_import_contract.contract
-                    )
-                    resolved_machine_contract["profile_binding"] = {
-                        "profile_id": selected_import_contract.profile_id,
-                        "profile_sha256": selected_import_contract.profile_sha256,
-                        "entry_key": selected_import_contract.entry_key,
-                        "entry_index": selected_import_contract.entry_index,
-                    }
             checked_external_contract: CheckedExternalSiteContract | None = None
-            checked_external_contract_error: str | None = None
-            external_identity: ExternalSiteIdentity | None = None
-            try:
-                if protocol_target is not None:
-                    raw_protocol = protocol_target.get("external_protocol")
-                    if not isinstance(raw_protocol, Mapping):
-                        raise CheckedExternalSiteContractError(
-                            "resolved external target has no protocol identity"
-                        )
-                    external_identity = ExternalSiteIdentity.interface(
-                        raw_protocol,
-                        context=f"{transfer_id} external event {event_index}",
-                    )
-                elif dll is not None:
-                    external_identity = ExternalSiteIdentity.imported(
-                        {
-                            "dll": dll,
-                            "symbol": symbol,
-                            "ordinal": ordinal,
-                        },
-                        context=f"{transfer_id} external event {event_index}",
-                    )
-            except CheckedExternalSiteContractError as exc:
-                checked_external_contract_error = str(exc)
 
             authority_sites = authoritative_external_sites.get(
                 (transfer_id, event_index), ()
@@ -704,7 +627,6 @@ def plan_spx_native_engine(
                         site.site_id for site in authority_sites
                     )
                     checked_external_contract = next(iter(contracts_by_payload.values()))
-                    external_identity = checked_external_contract.identity
                     target_resolution_evidence = {
                         "kind": "canonical-external-sites-v3",
                         "artifact_id": authoritative_external_index.artifact_id,
@@ -713,108 +635,13 @@ def plan_spx_native_engine(
                         "target_sha256s": [site.target_sha256 for site in authority_sites],
                     }
 
-            if (
-                checked_external_contract is None
-                and external_identity is not None
-                and not checked_external_contracts_required
-                and (
-                checked_external_contracts_required
-                or protocol_target is not None
-                or isinstance(event.get("abi_contract"), Mapping)
-                or resolved_machine_contract is not None
-                )
-            ):
-                try:
-                    callback_evidence = callback_registration_evidence.get(
-                        (transfer_id, event_index)
-                    )
-                    checked_external_contract = (
-                        checked_external_site_contract_from_event(
-                            event=event,
-                            identity=external_identity,
-                            transfer_kind=(
-                                "jump" if disposition == "tail_jump" else "call"
-                            ),
-                            disposition=disposition,
-                            protocol_target=protocol_target,
-                            callback_evidence=callback_evidence,
-                            resolved_machine_contract=resolved_machine_contract,
-                            context=(
-                                f"{transfer_id} external event {event_index}"
-                            ),
-                        )
-                    )
-                except CheckedExternalSiteContractError as exc:
-                    checked_external_contract_error = str(exc)
-                    if checked_external_contracts_required:
-                        blockers.append(_blocker(
-                            "external_site_contract_incomplete",
-                            transfer_id=transfer_id,
-                            event_index=event_index,
-                            instruction_rva=instruction_rva,
-                            detail=str(exc),
-                            next_action=(
-                                "emit one exact fixed-arity machine contract including "
-                                "argument/stack inventory and all result, memory, world, "
-                                "and callback effects"
-                            ),
-                        ))
             if checked_external_contract is not None:
                 checked_registration = _checked_contract_callback_registration(
                     checked_external_contract,
                     context=f"{transfer_id} external event {event_index}",
                 )
-                if (
-                    callback_registration is not None
-                    and checked_registration is not None
-                    and callback_registration != checked_registration
-                ):
-                    raise ToolkitInputError(
-                        f"{transfer_id} external event {event_index} callback "
-                        "metadata disagrees with its checked site contract"
-                    )
                 if checked_registration is not None:
                     callback_registration = checked_registration
-                    adapter = checked_external_contract.callback_adapter
-                    assert adapter is not None
-                    proposal_callback_evidence = {
-                        "format": "spaghetti-extractor-callback-registration-provenance-v1",
-                        "record_kind": "callback_registration",
-                        "status": "complete",
-                        "unit_id": transfer_id,
-                        "event_index": event_index,
-                        "instruction_rva": instruction_rva,
-                        "callback_source": checked_registration[0].as_json(),
-                        "callback_abi": checked_registration[2].as_json(),
-                        "callback_lifetime": adapter.lifetime,
-                        "callback_behavior": adapter.behavior,
-                        "target_rvas": list(adapter.target_rvas),
-                        "failure": None,
-                    }
-                    prior_callback_evidence = callback_registration_evidence.get(
-                        (transfer_id, event_index)
-                    )
-                    if (
-                        prior_callback_evidence is not None
-                        and (
-                            prior_callback_evidence.get("status") != "complete"
-                            or prior_callback_evidence.get("instruction_rva")
-                            != instruction_rva
-                            or prior_callback_evidence.get("callback_source")
-                            != proposal_callback_evidence["callback_source"]
-                            or prior_callback_evidence.get("callback_abi")
-                            != proposal_callback_evidence["callback_abi"]
-                            or prior_callback_evidence.get("target_rvas")
-                            != proposal_callback_evidence["target_rvas"]
-                        )
-                    ):
-                        raise ToolkitInputError(
-                            f"{transfer_id} external event {event_index} checked "
-                            "callback evidence is contradictory"
-                        )
-                    callback_registration_evidence[
-                        (transfer_id, event_index)
-                    ] = proposal_callback_evidence
             elif checked_external_contracts_required:
                 blockers.append(_blocker(
                     "canonical_external_site_authority_missing",
@@ -874,24 +701,9 @@ def plan_spx_native_engine(
                     if callback_registration is not None
                     else False
                 ),
-                external_protocol=(
-                    protocol_target.get("external_protocol")
-                    if protocol_target is not None
-                    else None
-                ),
-                interface_argument_words=(
-                    protocol_target.get("argument_words")
-                    if protocol_target is not None
-                    else None
-                ),
-                out_interface_relations=(
-                    tuple(
-                        dict(value)
-                        for value in protocol_target.get("out_interfaces", [])
-                    )
-                    if protocol_target is not None
-                    else ()
-                ),
+                external_protocol=None,
+                interface_argument_words=None,
+                out_interface_relations=(),
                 checked_external_contract=checked_external_contract,
                 checked_external_contract_required=(
                     checked_external_contracts_required
@@ -996,62 +808,18 @@ def plan_spx_native_engine(
         nullable = callback_abi.nullable
         transfer_rva = callback_site_transfer_rvas[site.instruction_rva]
         candidate_expressions: list[tuple[str, Any]] = []
-        checked_evidence = callback_registration_evidence.get(
-            (site.transfer_id, site.event_index)
+        callback_adapter = (
+            site.checked_external_contract.callback_adapter
+            if site.checked_external_contract is not None
+            else None
         )
-        if checked_evidence is not None:
-            if (
-                checked_evidence.get("instruction_rva") != site.instruction_rva
-                or checked_evidence.get("callback_source")
-                != source_spec.as_json()
-                or checked_evidence.get("callback_abi")
-                != callback_abi.as_json()
-            ):
-                blockers.append(_blocker(
-                    "callback_provenance_evidence_mismatch",
-                    transfer_id=site.transfer_id,
-                    instruction_rva=site.instruction_rva,
-                    expected={
-                        "callback_source": source_spec.as_json(),
-                        "callback_abi": callback_abi.as_json(),
-                    },
-                    observed=dict(checked_evidence),
-                    next_action=(
-                        "regenerate callback provenance from the exact machine-IR "
-                        "call contract"
-                    ),
-                ))
-                continue
-            if checked_evidence.get("status") != "complete":
-                blockers.append(_blocker(
-                    "callback_target_provenance_incomplete",
-                    transfer_id=site.transfer_id,
-                    instruction_rva=site.instruction_rva,
-                    observed=checked_evidence.get("failure"),
-                    next_action=(
-                        "recover the callback source to a bounded finite set of "
-                        "canonical code targets"
-                    ),
-                ))
-                continue
-            target_rvas = checked_evidence.get("target_rvas")
+        if callback_adapter is not None:
+            target_rvas = callback_adapter.target_rvas
             callback_image_base = (
                 relocation_evidence.image_base
                 if relocation_evidence is not None
                 else fixed_image_base
             )
-            if (
-                not isinstance(target_rvas, list)
-                or any(
-                    not isinstance(rva, int)
-                    or isinstance(rva, bool)
-                    or not 0 <= rva <= 0xFFFFFFFF
-                    for rva in target_rvas
-                )
-            ):
-                raise ToolkitInputError(
-                    f"{site.transfer_id} callback target inventory is malformed"
-                )
             if callback_image_base is None:
                 blockers.append(_blocker(
                     "callback_image_binding_missing",
@@ -1328,7 +1096,7 @@ def plan_spx_native_engine(
     implementation_dispatch_receipt, implementation_blockers = (
         _build_implementation_dispatch_receipt(
             semantic_input_sha256=semantic_input_sha256,
-            machine_ir_manifest_payload=machine_ir_manifest_payload,
+            execution_authority=execution_authority,
             machine_ir_manifest_sha256=(
                 sha256_file(machine_ir_manifest)
             ),

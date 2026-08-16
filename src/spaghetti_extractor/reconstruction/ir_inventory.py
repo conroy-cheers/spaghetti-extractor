@@ -228,7 +228,7 @@ def _exact_only_control_inventory(
             exit_record["closure"] = (
                 "explicit_trusted_target_profile_without_inventory"
                 if target_profile is not None
-                else "awaiting_interprocedural_v2"
+                else "awaiting_parametric_scc_summary_v3"
             )
             failure = recovery.get("failure")
             failure = (
@@ -249,7 +249,7 @@ def _exact_only_control_inventory(
                     + _recovery_failure_message(failure)
                 ),
                 next_action=(
-                    "run the dependency-aware v2 interprocedural phase; "
+                    "run the checked root-independent parametric SCC summary phase; "
                     "machine-IR extraction does not authorize target recovery"
                 ),
                 location=_location_from_unit(source, "control.indirect_target"),
@@ -293,7 +293,7 @@ def _exact_only_control_inventory(
     call_summaries = {
         "status": "incomplete",
         "summaries": [],
-        "reason": "owned_by_interprocedural_v2_phase",
+        "reason": "owned_by_parametric_scc_summary_authority_v3",
     }
     for unit in units:
         if str(unit["id"]) not in exact_reachable:
@@ -340,7 +340,7 @@ def _exact_only_control_inventory(
         "rejected_tainted_slots": [],
         "callback_registrations": [],
         "issues": [{
-            "code": "owned_by_interprocedural_v2_phase",
+            "code": "owned_by_parametric_scc_summary_authority_v3",
         }],
     }
     control = {
@@ -367,18 +367,22 @@ def _exact_only_control_inventory(
             "status": "incomplete",
             "resolutions": [],
             "callback_registrations": [],
-            "issues": [{"code": "owned_by_interprocedural_v2_phase"}],
+            "issues": [
+                {"code": "owned_by_parametric_scc_summary_authority_v3"}
+            ],
         },
         "internal_call_preservation": call_summaries,
         "exceptional_control": exceptional,
         "callback_cutpoint_proposals": list(callback_root_proposals),
         "analysis_fixed_point": {
-            "format": "spaghetti-extractor-interprocedural-analysis-v2",
+            "format": "spaghetti-extractor-parametric-summary-handoff-v3",
             "status": "incomplete",
             "rounds": 0,
             "cold_replay_validated": False,
             "global_slot_promotion": False,
-            "failure_reasons": ["owned_by_interprocedural_v2_phase"],
+            "failure_reasons": [
+                "owned_by_parametric_scc_summary_authority_v3"
+            ],
             "static_jump_table_rounds": static_rounds,
             "static_jump_table_converged": static_converged,
         },

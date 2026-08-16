@@ -1,0 +1,165 @@
+{
+  "format": "spaghetti-extractor-inductive-component-declaration-v1",
+  "source": {
+    "operation_id": "length",
+    "state": [
+      {
+        "id": "length",
+        "type_id": "u32"
+      }
+    ],
+    "phase_ids": [
+      "scan"
+    ],
+    "completion_ids": [
+      "return"
+    ],
+    "symbols": {
+      "wrapper": "gnu_hello_bounded_string_length",
+      "initialize": "gnu_hello_bounded_string_length_initialize",
+      "step": "gnu_hello_bounded_string_length_step",
+      "finish": "gnu_hello_bounded_string_length_finish"
+    },
+    "cutpoints": [
+      {
+        "unit_id": "semantic-transfer:original-cutpoint-00013cfb-00013d00",
+        "phase_id": "scan",
+        "values": [
+          {
+            "kind": "parameter",
+            "id": "buffer",
+            "mode": "machine_codec",
+            "projection": {
+              "kind": "register",
+              "register": "ebx",
+              "width": 32,
+              "at": "entry"
+            },
+            "encoding": {
+              "op": "bytes_address",
+              "name": "buffer"
+            },
+            "decoding": null
+          },
+          {
+            "kind": "parameter",
+            "id": "maximum",
+            "mode": "machine_codec",
+            "projection": {
+              "kind": "register",
+              "register": "ecx",
+              "width": 32,
+              "at": "entry"
+            },
+            "encoding": {
+              "op": "parameter",
+              "name": "maximum"
+            },
+            "decoding": null
+          },
+          {
+            "kind": "source_state",
+            "id": "length",
+            "mode": "machine_codec",
+            "projection": {
+              "kind": "register",
+              "register": "edx",
+              "width": 32,
+              "at": "entry"
+            },
+            "encoding": {
+              "op": "state_input",
+              "name": "length"
+            },
+            "decoding": {
+              "op": "projected_value"
+            }
+          }
+        ],
+        "derived": [
+          {
+            "id": "cursor",
+            "projection": {
+              "kind": "register",
+              "register": "eax",
+              "width": 32,
+              "at": "entry"
+            },
+            "expression": {
+              "op": "add32",
+              "args": [
+                {
+                  "op": "bytes_address",
+                  "name": "buffer"
+                },
+                {
+                  "op": "state_input",
+                  "name": "length"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    ],
+    "completion_routes": [
+      {
+        "source": {
+          "kind": "cutpoint",
+          "id": "semantic-transfer:original-cutpoint-00013cfb-00013d00"
+        },
+        "target_exit_unit_id": "semantic-transfer:original-cutpoint-00013d07-00013d08",
+        "completion_id": "return"
+      },
+      {
+        "source": {
+          "kind": "operation_entry",
+          "id": "semantic-transfer:original-cutpoint-00013cd0-00013cdb"
+        },
+        "target_exit_unit_id": "semantic-transfer:original-cutpoint-00013d07-00013d08",
+        "completion_id": "return"
+      }
+    ]
+  },
+  "proof": {
+    "invariants": [
+      {
+        "id": "invariant:length-below-maximum",
+        "owner_cutpoint_id": "semantic-transfer:original-cutpoint-00013cfb-00013d00",
+        "expression": {
+          "op": "ult32",
+          "args": [
+            {
+              "op": "loop_variable",
+              "name": "length"
+            },
+            {
+              "op": "parameter",
+              "name": "maximum"
+            }
+          ]
+        }
+      }
+    ],
+    "measures": [
+      {
+        "id": "measure:remaining",
+        "owner_cutpoint_id": "semantic-transfer:original-cutpoint-00013cfb-00013d00",
+        "variable_id": "length",
+        "expression": {
+          "op": "sub32",
+          "args": [
+            {
+              "op": "parameter",
+              "name": "maximum"
+            },
+            {
+              "op": "loop_variable",
+              "name": "length"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

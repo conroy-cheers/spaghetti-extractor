@@ -12,6 +12,7 @@
       packages = {
         default = context.package;
         spaghetti-extractor = context.package;
+        spaghetti-extractor-native = context.nativeExtension;
         testkit-test-runner = context.packages.testkitTestRunner;
         testkit-developer = context.packages.testkitDeveloper;
         xed-isa-catalog = xedIsaCatalog;
@@ -20,6 +21,7 @@
       legacyPackages = {
         default = context.package;
         spaghetti-extractor = context.package;
+        spaghetti-extractor-native = context.nativeExtension;
         testkit-test-runner = context.packages.testkitTestRunner;
         testkit-developer = context.packages.testkitDeveloper;
         isa-kernel = context.kernels.isaConformanceKernel;
@@ -55,6 +57,7 @@
         packages = [
           context.package
           context.pythonEnv
+          context.nativeExtension
           pkgs.lean4
           pkgs.z3
           pkgs.cbmc

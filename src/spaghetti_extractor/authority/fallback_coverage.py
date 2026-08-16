@@ -432,18 +432,9 @@ def _derive_fallback_record(
                 isa_dependency.record_id,
             )
         )
-    if capability_source is None:
-        blockers.append(
-            PrimaryBlockerV3(
-                "incomplete",
-                "implementation_capability_missing",
-                capability_dependency.input_name,
-                capability_dependency.record_id,
-            )
-        )
-
     selected_form_ids: tuple[str, ...] = ()
     isa = None
+    isa_authorizes_capability = False
     if isa_source is not None:
         isa = ISA_QUALIFICATION_CODEC_V3.read(isa_source).value
         if (
@@ -477,6 +468,21 @@ def _derive_fallback_record(
             selected_form_ids = tuple(
                 sorted({row.form_id for row in isa.selections})
             )
+            isa_authorizes_capability = True
+
+    # Implementation capabilities are bound to the selected ISA forms.  Until
+    # qualification authorizes those forms there is no well-defined capability
+    # record to request, so report only the ISA prerequisite.  Once qualified,
+    # missing implementation evidence remains a mandatory local blocker.
+    if isa_authorizes_capability and capability_source is None:
+        blockers.append(
+            PrimaryBlockerV3(
+                "incomplete",
+                "implementation_capability_missing",
+                capability_dependency.input_name,
+                capability_dependency.record_id,
+            )
+        )
 
     capability = None
     if capability_source is not None:

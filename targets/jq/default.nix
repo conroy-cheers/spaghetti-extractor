@@ -45,6 +45,7 @@ let
   originalPe = "${original}/bin/jq.exe";
   profileSource = sdk.profiles;
   workflow = sdk.workflow.pe32 {
+    targetId = target.id;
     original = originalPe;
     binaryIdentity = "jq.exe";
     externalProfile =
@@ -56,6 +57,7 @@ let
       "${profileSource}/pe32-win32-console-launch-assumptions-v1.json";
     componentIntent = ./intent/components.json;
     componentReviewRoot = ./intent/reviews;
+    libraryAdoptionIntentRoot = ./intent/libraries;
     namePrefix = "spaghetti-extractor-jq-1.8.1";
   };
   components = workflow.components;
@@ -72,6 +74,7 @@ sdk.target.pe32Bundle {
   targetRoot = ./.;
   inherit workflow candidateTests;
   inputs.original = original;
+  targetAssets.documentation = [ "intent/libraries/README.md" ];
   checks = {
     component-contract = components.contracts.operator-whole;
   };

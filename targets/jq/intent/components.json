@@ -2,8 +2,7 @@
   "format": "spaghetti-extractor-component-catalog-intent-v2",
   "program_id": "jq-pe32-frontend-reference-v1",
   "permitted_activation_profiles": [
-    "bounded-equivalence-v1",
-    "validation-backed-v1"
+    "bounded-equivalence-v1"
   ],
   "components": [
     {

@@ -20,12 +20,13 @@ class StrictNativeEngineTests(NativeEngineTestCase):
             root = Path(temporary)
             unit = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="ret")
             unit["semantics"]["outcome"] = {"kind": "return"}
-            machine_ir, manifest, sites = self._strict_inputs(root, [unit])
+            machine_ir, manifest, sites, authority = self._strict_inputs(root, [unit])
             plan = plan_spx_native_engine(
                 machine_ir=machine_ir,
                 machine_ir_manifest=manifest,
                 canonical_external_sites=sites,
                 entry_rva=0x1000,
+                **authority,
             )
             self.assertEqual(plan.status, "ready", plan.blockers)
             payload = plan.payload(state_machine_sha256=sha256_bytes(machine_ir.read_bytes()))
@@ -39,31 +40,29 @@ class StrictNativeEngineTests(NativeEngineTestCase):
             root = Path(temporary)
             entry = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="nop")
             potential = _machine_ir_transfer(rva=0x2000, size=1, mnemonic="ret")
-            machine_ir, manifest, sites = self._strict_inputs(
+            machine_ir, manifest, sites, authority = self._strict_inputs(
                 root,
                 [entry, potential],
                 roots=[entry["id"]],
                 reachable=[entry["id"]],
                 potential=[potential["id"]],
             )
-            plan = plan_spx_native_engine(
-                machine_ir=machine_ir,
-                machine_ir_manifest=manifest,
-                canonical_external_sites=sites,
-                entry_rva=0x1000,
-            )
-            self.assertEqual(plan.status, "incomplete")
-            self.assertIn(
-                "implementation_reachability_incomplete",
-                {row["category"] for row in plan.blockers},
-            )
-            with self.assertRaisesRegex(ToolkitInputError, "incomplete"):
+            with self.assertRaisesRegex(ValueError, "complete frontier-free"):
+                plan_spx_native_engine(
+                    machine_ir=machine_ir,
+                    machine_ir_manifest=manifest,
+                    canonical_external_sites=sites,
+                    entry_rva=0x1000,
+                    **authority,
+                )
+            with self.assertRaisesRegex(ValueError, "complete frontier-free"):
                 write_spx_native_engine_package(
                     machine_ir=machine_ir,
                     machine_ir_manifest=manifest,
                     canonical_external_sites=sites,
                     entry_rva=0x1000,
                     out=root / "package",
+                    **authority,
                 )
             self.assertFalse((root / "package").exists())
 
@@ -71,7 +70,7 @@ class StrictNativeEngineTests(NativeEngineTestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             unit = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="ret")
-            machine_ir, manifest, sites = self._strict_inputs(root, [unit])
+            machine_ir, manifest, sites, authority = self._strict_inputs(root, [unit])
             payload = json.loads(manifest.read_text(encoding="utf-8"))
             payload["artifacts"]["machine_ir"]["sha256"] = "0" * 64
             manifest.write_text(json.dumps(payload), encoding="utf-8")
@@ -81,6 +80,7 @@ class StrictNativeEngineTests(NativeEngineTestCase):
                     machine_ir_manifest=manifest,
                     canonical_external_sites=sites,
                     entry_rva=0x1000,
+                    **authority,
                 )
 
     def test_package_is_deterministic_and_strictly_scoped(self) -> None:
@@ -88,13 +88,14 @@ class StrictNativeEngineTests(NativeEngineTestCase):
             root = Path(temporary)
             unit = _machine_ir_transfer(rva=0x1000, size=1, mnemonic="ret")
             unit["semantics"]["outcome"] = {"kind": "return"}
-            machine_ir, manifest, sites = self._strict_inputs(root, [unit])
+            machine_ir, manifest, sites, authority = self._strict_inputs(root, [unit])
             first = write_spx_native_engine_package(
                 machine_ir=machine_ir,
                 machine_ir_manifest=manifest,
                 canonical_external_sites=sites,
                 entry_rva=0x1000,
                 out=root / "first",
+                **authority,
             )
             second = write_spx_native_engine_package(
                 machine_ir=machine_ir,
@@ -102,11 +103,12 @@ class StrictNativeEngineTests(NativeEngineTestCase):
                 canonical_external_sites=sites,
                 entry_rva=0x1000,
                 out=root / "second",
+                **authority,
             )
             self.assertEqual(first, second)
             self.assertEqual(
                 first["policy"]["execution_scope"],
-                "complete-static-authority",
+                "structural-executable-v1",
             )
 
 

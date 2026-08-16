@@ -6,6 +6,7 @@ from typing import Any, Iterable, Mapping
 
 from ..external.callbacks import parse_callback_abi, parse_callback_source
 from ..errors import ToolkitInputError
+from .authority.execution import CandidateExecutionAuthorityV3
 from .engine_analysis import (
     _direct_outcome_targets,
     _exact_u32_expression,
@@ -19,7 +20,6 @@ from .engine_model import (
     NativeImplementationDispatchReceipt,
     NativeImplementationEntry,
     NativeImplementationTarget,
-    _PE32_CALLEE_PRESERVED_REGISTERS,
     _canonical_sha256,
 )
 from .engine_x87 import _blocker, _required_string, _required_u32
@@ -28,7 +28,7 @@ from .engine_x87 import _blocker, _required_string, _required_u32
 def _build_implementation_dispatch_receipt(
     *,
     semantic_input_sha256: str,
-    machine_ir_manifest_payload: Mapping[str, Any] | None,
+    execution_authority: CandidateExecutionAuthorityV3,
     machine_ir_manifest_sha256: str | None,
     inventory_source_rows: Iterable[Mapping[str, Any]],
     source_rows: Iterable[Mapping[str, Any]],
@@ -72,97 +72,29 @@ def _build_implementation_dispatch_receipt(
     selections = _portable_component_selections(
         selected_portable_components, transfer_by_id=transfer_by_id
     )
-    roots: tuple[str, ...] = ()
-    reachable_unit_ids: tuple[str, ...] = ()
+    roots = execution_authority.root_unit_ids
+    reachable_unit_ids = execution_authority.reachable_unit_ids
     potential_unit_ids: tuple[str, ...] = ()
-    confirmed_unreachable_unit_ids: tuple[str, ...] = ()
+    confirmed_unreachable_unit_ids = tuple(
+        sorted(inventory_ids - set(reachable_unit_ids))
+    )
     reachability_frontiers: tuple[dict[str, Any], ...] = ()
-    reachability_status = "not_bound"
-    reachability_classes = {unit_id: "unbound" for unit_id in transfer_by_id}
-    receipt_blockers: list[dict[str, Any]] = []
-    reachability: Mapping[str, Any] | None = None
-    if machine_ir_manifest_payload is not None:
-        control = machine_ir_manifest_payload.get("control")
-        candidate = control.get("reachability") if isinstance(control, Mapping) else None
-        if isinstance(candidate, Mapping):
-            reachability = candidate
-
-    if reachability is not None:
-        inventories: dict[str, tuple[str, ...]] = {}
-        for field in (
-            "roots",
-            "reachable_units",
-            "potential_units",
-            "confirmed_unreachable_units",
-        ):
-            raw_values = reachability.get(field)
-            if not isinstance(raw_values, list) or any(
-                not isinstance(value, str) or not value for value in raw_values
-            ):
-                raise ToolkitInputError(
-                    f"machine-IR reachability {field} is malformed"
-                )
-            if len(set(raw_values)) != len(raw_values):
-                raise ToolkitInputError(
-                    f"machine-IR reachability {field} contains duplicates"
-                )
-            inventories[field] = tuple(sorted(raw_values))
-        roots = inventories["roots"]
-        reachable_unit_ids = inventories["reachable_units"]
-        potential_unit_ids = inventories["potential_units"]
-        confirmed_unreachable_unit_ids = inventories[
-            "confirmed_unreachable_units"
-        ]
-        reachable = set(reachable_unit_ids)
-        potential = set(potential_unit_ids)
-        unreachable = set(confirmed_unreachable_unit_ids)
-        known = inventory_ids
-        if (
-            not roots
-            or not set(roots) <= reachable
-            or reachable & potential
-            or reachable & unreachable
-            or potential & unreachable
-            or reachable | potential | unreachable != known
-        ):
-            raise ToolkitInputError(
-                "machine-IR reachability does not exactly partition its unit inventory"
-            )
-        for unit_id in reachable:
-            reachability_classes[unit_id] = (
-                "root" if unit_id in roots else "reachable"
-            )
-        for unit_id in potential:
-            reachability_classes[unit_id] = "potential"
-        for unit_id in unreachable:
-            reachability_classes[unit_id] = "confirmed_unreachable"
-        frontiers = reachability.get("frontiers")
-        if not isinstance(frontiers, list):
-            raise ToolkitInputError("machine-IR reachability frontiers are malformed")
-        if any(not isinstance(frontier, Mapping) for frontier in frontiers):
-            raise ToolkitInputError(
-                "machine-IR reachability frontier inventory is malformed"
-            )
-        reachability_frontiers = tuple(
-            dict(frontier) for frontier in frontiers
+    reachability_status = "complete"
+    reachability_classes = {
+        unit_id: (
+            "root"
+            if unit_id in roots
+            else "reachable"
+            if unit_id in set(reachable_unit_ids)
+            else "confirmed_unreachable"
         )
-        if (
-            reachability.get("status") == "complete"
-            and not frontiers
-            and not potential
-        ):
-            reachability_status = "complete"
-        else:
-            reachability_status = "incomplete"
-            receipt_blockers.append(_blocker(
-                "implementation_reachability_incomplete",
-                observed_status=reachability.get("status"),
-                potential_units=len(potential),
-                frontiers=len(frontiers),
-                next_action=(
-                    "close the prerequisite rooted static reachability receipt"
-                ),
-            ))
+        for unit_id in transfer_by_id
+    }
+    receipt_blockers: list[dict[str, Any]] = []
+    if set(reachable_unit_ids) - inventory_ids:
+        raise ToolkitInputError(
+            "checked rooted authority references units absent from machine IR"
+        )
 
     entries = tuple(
         NativeImplementationEntry(
@@ -276,217 +208,85 @@ def _build_implementation_dispatch_receipt(
             target_rva=resolved_rva,
         ))
 
-    if reachability_status == "complete":
-        control = machine_ir_manifest_payload.get("control")
-        assert isinstance(control, Mapping)
-        provenance = control.get("external_interface_provenance")
-        if not isinstance(provenance, Mapping):
-            raise ToolkitInputError(
-                "machine-IR manifest has no external-interface provenance"
+    for edge in execution_authority.edges:
+        if edge.edge_kind == "recovered_indirect":
+            continue
+        add_target(
+            kind=(
+                "internal_call"
+                if edge.edge_kind == "internal_call"
+                else "direct_control"
+            ),
+            source_unit_id=edge.source_unit_id,
+            source_event_index=None,
+            target_unit_id=edge.target_unit_id,
+        )
+    for dispatch in execution_authority.indirect_dispatches:
+        for target_unit_id in dispatch.target_unit_ids:
+            add_target(
+                kind="indirect_internal",
+                source_unit_id=dispatch.source_unit_id,
+                source_event_index=dispatch.source_event_index,
+                target_unit_id=target_unit_id,
             )
-        raw_resolutions = provenance.get("resolutions")
-        if not isinstance(raw_resolutions, list):
-            raise ToolkitInputError("machine-IR indirect resolutions are malformed")
-        resolutions: dict[tuple[str, int | None], Mapping[str, Any]] = {}
-        for index, raw in enumerate(raw_resolutions):
-            if not isinstance(raw, Mapping):
-                raise ToolkitInputError(
-                    f"machine-IR indirect resolution {index} is malformed"
-                )
-            source_unit_id = _required_string(
-                raw.get("source_unit_id"),
-                f"machine-IR indirect resolution {index} source unit",
-            )
-            event_index = raw.get("source_event_index")
-            if event_index is not None and (
-                isinstance(event_index, bool) or not isinstance(event_index, int)
-            ):
-                raise ToolkitInputError(
-                    "machine-IR indirect resolution event index is malformed"
-                )
-            key = (source_unit_id, event_index)
-            if key in resolutions:
-                raise ToolkitInputError("duplicate machine-IR indirect resolution")
-            resolutions[key] = raw
 
-        site_by_event = {
-            (site.transfer_id, site.event_index): site
-            for site in external_sites
-        }
-        summaries = control.get("internal_call_preservation")
-        summaries = summaries.get("summaries") if isinstance(summaries, Mapping) else None
-        if not isinstance(summaries, list):
+    site_by_event = {
+        (site.transfer_id, site.event_index): site for site in external_sites
+    }
+    for source_unit_id in reachable_unit_ids:
+        unit = source_by_id[source_unit_id]
+        semantics = unit.get("semantics")
+        if not isinstance(semantics, Mapping):
+            raise ToolkitInputError(f"{source_unit_id} semantics are malformed")
+        events = semantics.get("external_events")
+        if not isinstance(events, list):
             raise ToolkitInputError(
-                "machine-IR manifest has no internal-call summary inventory"
+                f"{source_unit_id} external event inventory is malformed"
             )
-        summary_by_target_rva: dict[int, Mapping[str, Any]] = {}
-        for index, raw in enumerate(summaries):
-            if not isinstance(raw, Mapping):
+        summary = execution_authority.summary_for_unit(source_unit_id)
+        for event_index, event in enumerate(events):
+            if not isinstance(event, Mapping):
                 raise ToolkitInputError(
-                    f"internal-call summary {index} is malformed"
+                    f"{source_unit_id} external event {event_index} is malformed"
                 )
-            target_rva = raw.get("target_rva")
-            if isinstance(target_rva, int) and not isinstance(target_rva, bool):
-                if target_rva in summary_by_target_rva:
-                    raise ToolkitInputError("duplicate internal-call target summary")
-                summary_by_target_rva[target_rva] = raw
-
-        for source_unit_id in reachable_unit_ids:
-            unit = source_by_id[source_unit_id]
-            unit_control = unit.get("control")
-            if not isinstance(unit_control, Mapping):
-                raise ToolkitInputError(
-                    f"{source_unit_id} has no checked control inventory"
-                )
-            direct_targets = unit_control.get("direct_targets")
-            if not isinstance(direct_targets, list):
-                raise ToolkitInputError(
-                    f"{source_unit_id} direct target inventory is malformed"
-                )
-            if len(set(direct_targets)) != len(direct_targets):
-                raise ToolkitInputError(
-                    f"{source_unit_id} direct target inventory contains duplicates"
-                )
-            for target_rva in direct_targets:
-                add_target(
-                    kind="direct_control",
-                    source_unit_id=source_unit_id,
-                    source_event_index=None,
-                    target_rva=_required_u32(
-                        target_rva, f"{source_unit_id} direct target RVA"
-                    ),
-                )
-            semantics = unit.get("semantics")
-            if not isinstance(semantics, Mapping):
-                raise ToolkitInputError(f"{source_unit_id} semantics are malformed")
-            events = semantics.get("external_events")
-            if not isinstance(events, list):
-                raise ToolkitInputError(
-                    f"{source_unit_id} external event inventory is malformed"
-                )
-            for event_index, event in enumerate(events):
-                if not isinstance(event, Mapping):
-                    raise ToolkitInputError(
-                        f"{source_unit_id} external event {event_index} is malformed"
-                    )
-                kind = event.get("kind")
-                if kind == "internal_call":
-                    target_rva = _required_u32(
-                        event.get("target_rva"),
-                        f"{source_unit_id} internal-call target RVA",
-                    )
-                    add_target(
-                        kind="internal_call",
-                        source_unit_id=source_unit_id,
-                        source_event_index=event_index,
-                        target_rva=target_rva,
-                    )
-                    summary = summary_by_target_rva.get(target_rva)
-                    return_behavior = (
-                        summary.get("return_behavior")
-                        if isinstance(summary, Mapping)
-                        else None
-                    )
-                    may_return = (
-                        return_behavior.get("may_return")
-                        if isinstance(return_behavior, Mapping)
-                        else None
-                    )
-                    if may_return is True:
-                        add_target(
-                            kind="call_continuation",
-                            source_unit_id=source_unit_id,
-                            source_event_index=event_index,
-                            target_rva=_required_u32(
-                                event.get("return_rva"),
-                                f"{source_unit_id} return continuation RVA",
-                            ),
-                        )
-                    elif may_return is not False:
-                        receipt_blockers.append(_blocker(
-                            "call_continuation_summary_missing",
-                            source_unit_id=source_unit_id,
-                            source_event_index=event_index,
-                            target_rva=target_rva,
-                            next_action=(
-                                "complete the prerequisite internal-call return summary"
-                            ),
-                        ))
-                elif kind in {"external_call", "indirect_call"}:
-                    site = site_by_event.get((source_unit_id, event_index))
-                    if site is not None and site.disposition == "returns_here":
-                        add_target(
-                            kind="call_continuation",
-                            source_unit_id=source_unit_id,
-                            source_event_index=event_index,
-                            target_rva=_required_u32(
-                                event.get("return_rva"),
-                                f"{source_unit_id} return continuation RVA",
-                            ),
-                        )
-                if kind != "indirect_call":
-                    continue
-                resolution = resolutions.get((source_unit_id, event_index))
-                if resolution is None or resolution.get("status") != "recovered":
+            kind = event.get("kind")
+            if kind == "internal_call":
+                call = summary.call_effect(source_unit_id, event_index)
+                if call is None or call.kind not in {
+                    "direct_internal",
+                    "finite_internal",
+                }:
                     receipt_blockers.append(_blocker(
-                        "reachable_indirect_implementation_targets_missing",
+                        "checked_internal_call_summary_missing",
                         source_unit_id=source_unit_id,
                         source_event_index=event_index,
-                        next_action=(
-                            "close the prerequisite finite indirect-target inventory"
-                        ),
+                        next_action="check the exact call effect in its parametric SCC",
                     ))
                     continue
-                target_unit_ids = resolution.get("target_unit_ids")
-                if not isinstance(target_unit_ids, list) or any(
-                    not isinstance(value, str) for value in target_unit_ids
-                ):
-                    raise ToolkitInputError(
-                        "machine-IR indirect internal targets are malformed"
-                    )
-                if len(set(target_unit_ids)) != len(target_unit_ids):
-                    raise ToolkitInputError(
-                        "machine-IR indirect internal targets contain duplicates"
-                    )
-                for target_unit_id in target_unit_ids:
+                return_rva = _required_u32(
+                    event.get("return_rva"),
+                    f"{source_unit_id} return continuation RVA",
+                )
+                return_unit_id = transfer_id_by_rva.get(return_rva)
+                if return_unit_id in reachable:
                     add_target(
-                        kind="indirect_internal",
+                        kind="call_continuation",
                         source_unit_id=source_unit_id,
                         source_event_index=event_index,
-                        target_unit_id=target_unit_id,
+                        target_unit_id=return_unit_id,
                     )
-
-            outcome = semantics.get("outcome")
-            if isinstance(outcome, Mapping) and outcome.get("kind") == "indirect_jump":
-                resolution = resolutions.get((source_unit_id, None))
-                if resolution is None or resolution.get("status") != "recovered":
-                    receipt_blockers.append(_blocker(
-                        "reachable_indirect_implementation_targets_missing",
+            elif kind in {"external_call", "indirect_call"}:
+                site = site_by_event.get((source_unit_id, event_index))
+                if site is not None and site.disposition == "returns_here":
+                    add_target(
+                        kind="call_continuation",
                         source_unit_id=source_unit_id,
-                        source_event_index=None,
-                        next_action=(
-                            "close the prerequisite finite indirect-target inventory"
+                        source_event_index=event_index,
+                        target_rva=_required_u32(
+                            event.get("return_rva"),
+                            f"{source_unit_id} return continuation RVA",
                         ),
-                    ))
-                else:
-                    target_unit_ids = resolution.get("target_unit_ids")
-                    if not isinstance(target_unit_ids, list) or any(
-                        not isinstance(value, str) for value in target_unit_ids
-                    ):
-                        raise ToolkitInputError(
-                            "machine-IR indirect jump targets are malformed"
-                        )
-                    if len(set(target_unit_ids)) != len(target_unit_ids):
-                        raise ToolkitInputError(
-                            "machine-IR indirect jump targets contain duplicates"
-                        )
-                    for target_unit_id in target_unit_ids:
-                        add_target(
-                            kind="indirect_internal",
-                            source_unit_id=source_unit_id,
-                            source_event_index=None,
-                            target_unit_id=target_unit_id,
-                        )
+                    )
 
     for unit_id in roots:
         selection = selections.get(unit_id)
@@ -550,263 +350,6 @@ def _build_implementation_dispatch_receipt(
         blockers=blockers_tuple,
     )
     return receipt, blockers_tuple
-
-
-def _machine_ir_internal_indirect_sites(
-    machine_ir_manifest_payload: Mapping[str, Any],
-) -> frozenset[tuple[str, int]]:
-    """Return indirect call sites proven to target only machine-IR units."""
-
-    control = machine_ir_manifest_payload.get("control")
-    provenance = (
-        control.get("external_interface_provenance")
-        if isinstance(control, Mapping)
-        else None
-    )
-    resolutions = (
-        provenance.get("resolutions")
-        if isinstance(provenance, Mapping)
-        else None
-    )
-    if not isinstance(resolutions, list):
-        return frozenset()
-    result: set[tuple[str, int]] = set()
-    for raw in resolutions:
-        if not isinstance(raw, Mapping) or raw.get("status") != "recovered":
-            continue
-        unit_id = raw.get("source_unit_id")
-        event_index = raw.get("source_event_index")
-        targets = raw.get("target_unit_ids")
-        if (
-            isinstance(unit_id, str)
-            and isinstance(event_index, int)
-            and not isinstance(event_index, bool)
-            and isinstance(targets, list)
-            and targets
-            and all(isinstance(target, str) and target for target in targets)
-        ):
-            result.add((unit_id, event_index))
-    return frozenset(result)
-
-
-def _machine_ir_internal_call_preservation(
-    payload: Mapping[str, Any] | None,
-) -> dict[int, frozenset[str]]:
-    """Load complete preservation summaries from a hash-bound manifest."""
-
-    if payload is None:
-        return {}
-    control = payload.get("control")
-    summaries = (
-        control.get("internal_call_preservation")
-        if isinstance(control, Mapping)
-        else None
-    )
-    if not isinstance(summaries, Mapping):
-        raise ToolkitInputError(
-            "machine-IR manifest has no internal-call preservation inventory"
-        )
-    rows = summaries.get("summaries")
-    if not isinstance(rows, list):
-        raise ToolkitInputError("internal-call preservation summaries must be a list")
-    result: dict[int, frozenset[str]] = {}
-    for index, raw in enumerate(rows):
-        if not isinstance(raw, Mapping):
-            raise ToolkitInputError(
-                f"internal-call preservation summary {index} is malformed"
-            )
-        if raw.get("status") != "complete":
-            continue
-        target_rva = _required_u32(
-            raw.get("target_rva"),
-            f"internal-call preservation summary {index} target RVA",
-        )
-        registers = raw.get("preserved_registers")
-        if not isinstance(registers, list) or any(
-            not isinstance(register, str)
-            or register not in _PE32_CALLEE_PRESERVED_REGISTERS
-            for register in registers
-        ):
-            raise ToolkitInputError(
-                f"internal-call preservation summary {index} has invalid registers"
-            )
-        preserved = frozenset(registers)
-        if target_rva in result and result[target_rva] != preserved:
-            raise ToolkitInputError(
-                f"internal-call preservation target {target_rva:#x} is ambiguous"
-            )
-        result[target_rva] = preserved
-    return result
-
-
-def _machine_ir_callback_registrations(
-    payload: Mapping[str, Any] | None,
-) -> dict[tuple[str, int], Mapping[str, Any]]:
-    if payload is None:
-        return {}
-    control = payload.get("control")
-    provenance = (
-        control.get("external_interface_provenance")
-        if isinstance(control, Mapping)
-        else None
-    )
-    rows = (
-        provenance.get("callback_registrations")
-        if isinstance(provenance, Mapping)
-        else None
-    )
-    if rows is None:
-        return {}
-    if not isinstance(rows, list):
-        raise ToolkitInputError("callback-registration provenance must be a list")
-    result: dict[tuple[str, int], Mapping[str, Any]] = {}
-    for index, row in enumerate(rows):
-        if (
-            not isinstance(row, Mapping)
-            or row.get("format")
-            != "spaghetti-extractor-callback-registration-provenance-v1"
-            or row.get("record_kind") != "callback_registration"
-            or not isinstance(row.get("unit_id"), str)
-            or not isinstance(row.get("event_index"), int)
-            or isinstance(row.get("event_index"), bool)
-        ):
-            raise ToolkitInputError(
-                f"callback-registration provenance {index} is malformed"
-            )
-        key = (str(row["unit_id"]), int(row["event_index"]))
-        if key in result and result[key] != row:
-            raise ToolkitInputError(
-                f"callback-registration provenance for {key!r} is ambiguous"
-            )
-        result[key] = row
-    return result
-
-
-def _machine_ir_external_interface_methods(
-    payload: Mapping[str, Any] | None,
-) -> dict[tuple[str, int], Mapping[str, Any]]:
-    """Load uniquely recovered external call protocols from the bound manifest."""
-
-    if payload is None:
-        return {}
-    control = payload.get("control")
-    provenance = (
-        control.get("external_interface_provenance")
-        if isinstance(control, Mapping)
-        else None
-    )
-    rows = provenance.get("resolutions") if isinstance(provenance, Mapping) else None
-    if rows is None:
-        return {}
-    if not isinstance(rows, list):
-        raise ToolkitInputError("external-interface resolutions must be a list")
-    result: dict[tuple[str, int], Mapping[str, Any]] = {}
-    for index, raw in enumerate(rows):
-        if not isinstance(raw, Mapping) or raw.get("status") != "recovered":
-            continue
-        unit_id = raw.get("source_unit_id")
-        event_index = raw.get("source_event_index")
-        targets = raw.get("external_targets")
-        if (
-            not isinstance(unit_id, str)
-            or not isinstance(event_index, int)
-            or isinstance(event_index, bool)
-            or not isinstance(targets, list)
-            or len(targets) != 1
-            or not isinstance(targets[0], Mapping)
-        ):
-            continue
-        target = targets[0]
-        protocol = target.get("external_protocol")
-        if protocol is None:
-            continue
-        argument_words = target.get("argument_words")
-        outputs = target.get("out_interfaces", [])
-        protocol_kind = (
-            protocol.get("kind") if isinstance(protocol, Mapping) else None
-        )
-        callback_abi = (
-            protocol.get("callback_abi")
-            if protocol_kind == "pe32-previous-callback"
-            else None
-        )
-        resolved_contract = (
-            protocol.get("machine_contract")
-            if protocol_kind == "pe32-resolved-export"
-            and isinstance(protocol, Mapping)
-            else None
-        )
-        resolved_target = (
-            protocol.get("target")
-            if protocol_kind == "pe32-resolved-export"
-            and isinstance(protocol, Mapping)
-            else None
-        )
-        if (
-            not isinstance(protocol, Mapping)
-            or protocol_kind
-            not in {
-                "pe32-interface-method",
-                "pe32-previous-callback",
-                "pe32-resolved-export",
-            }
-            or not isinstance(argument_words, int)
-            or isinstance(argument_words, bool)
-            or not 0 <= argument_words <= 256
-            or not isinstance(outputs, list)
-            or any(not isinstance(output, Mapping) for output in outputs)
-            or (
-                protocol_kind == "pe32-previous-callback"
-                and (
-                    not isinstance(callback_abi, Mapping)
-                    or callback_abi.get("kind") != "generic_callback"
-                    or callback_abi.get("argument_words") != argument_words
-                    or callback_abi.get("stack_cleanup_bytes")
-                    != argument_words * 4
-                    or not isinstance(callback_abi.get("nullable"), bool)
-                    or outputs
-                )
-            )
-            or (
-                protocol_kind == "pe32-resolved-export"
-                and (
-                    protocol.get("transfer_kind") != "call"
-                    or not isinstance(resolved_target, Mapping)
-                    or not isinstance(resolved_contract, Mapping)
-                    or resolved_contract.get("import") != resolved_target
-                    or not isinstance(resolved_contract.get("arity"), Mapping)
-                    or resolved_contract["arity"].get("kind") != "fixed"
-                    or resolved_contract["arity"].get("words") != argument_words
-                    or not isinstance(resolved_contract.get("effect_model"), Mapping)
-                    or resolved_contract["effect_model"].get("kind")
-                    != "exact_native_dll_callthrough_v1"
-                    or resolved_contract["effect_model"].get("prerequisites")
-                    != {
-                        "same_pinned_dll_implementation": True,
-                        "exact_machine_arguments": True,
-                        "candidate_address_space_used_directly": True,
-                    }
-                    or resolved_contract.get("memory_effect") != "nativeCallthrough"
-                    or resolved_contract.get("world_effect") != "nativeCallthrough"
-                    or resolved_contract.get("callback_effect") != "none"
-                    or not isinstance(target.get("abi"), Mapping)
-                    or target["abi"].get("template")
-                    != resolved_contract.get("abi_template")
-                    or outputs
-                )
-            )
-        ):
-            raise ToolkitInputError(
-                f"recovered external protocol resolution {index} is malformed"
-            )
-        key = (unit_id, event_index)
-        value = dict(target)
-        if key in result and result[key] != value:
-            raise ToolkitInputError(
-                f"external-interface resolution for {key!r} is ambiguous"
-            )
-        result[key] = value
-    return result
 
 
 def _build_callback_adapter_receipts(

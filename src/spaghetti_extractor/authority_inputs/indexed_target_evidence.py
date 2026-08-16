@@ -32,6 +32,17 @@ from ..authority.semantic_index import (
     IndirectExitOccurrenceV3,
     SemanticIndexRecordV3,
 )
+from ..authority.external_site_records import (
+    EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
+    EXTERNAL_PROFILE_CODEC_V3,
+    EXTERNAL_PROFILE_RECORD_V3_SCHEMA,
+    ExternalProfileV3,
+)
+from ..authority.parametric_summary_records import (
+    PARAMETRIC_SCC_SUMMARIES_ARTIFACT_KIND_V3,
+    PARAMETRIC_SCC_SUMMARY_CODEC_V3,
+    ParametricSccSummaryV3,
+)
 from ..authority.structural_targets import (
     STRUCTURAL_TARGETS_ARTIFACT_KIND_V3,
     STRUCTURAL_TARGET_UNIT_CODEC_V3,
@@ -41,6 +52,8 @@ from ..authority.target_certificate_records import (
     TARGET_EVALUATION_EVIDENCE_ARTIFACT_KIND_V3,
     TARGET_EVALUATION_EVIDENCE_CODEC_V3,
     TargetEvaluationEvidenceV3,
+    _PE_STATIC_MEMORY_RECORD_NOT_APPLICABLE_V3,
+    _PARAMETRIC_MEMORY_RECORD_NOT_APPLICABLE_V3,
 )
 from ..authority.transition_records import (
     TRANSITION_SUMMARIES_ARTIFACT_KIND_V3,
@@ -52,6 +65,7 @@ from ..artifacts.artifact_set import (
     ArtifactDependencyV3,
     ArtifactRecordV3,
     ArtifactSetWriterV3,
+    CanonicalValueV3,
     canonical_json_bytes_v3,
     canonical_sha256_v3,
 )
@@ -76,606 +90,26 @@ _MAX_GUARD_BACKTRACK_DEPTH = 32
 _MAX_GUARD_BACKTRACK_PATHS = 128
 
 
-class IndexedTargetEvidenceV3Error(ValueError):
-    """The provider itself was invoked with an unusable input boundary."""
-
-
-@dataclass(frozen=True)
-class _Issue:
-    status: str
-    code: str
-    detail: str
-
-    def to_payload(self) -> dict[str, str]:
-        return {"status": self.status, "code": self.code, "detail": self.detail}
-
-
-@dataclass(frozen=True)
-class _TableShape:
-    table_va: int
-    selector: Any
-    expression_form: str
-
-
-@dataclass(frozen=True)
-class _BoundProof:
-    upper_exclusive: int
-    support_unit_ids: tuple[str, ...]
-    support_summary_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class _Section:
-    name: str
-    rva_start: int
-    virtual_size: int
-    raw_offset: int
-    raw_size: int
-    characteristics: int
-
-    @property
-    def rva_end(self) -> int:
-        return self.rva_start + max(self.virtual_size, self.raw_size)
-
-    @property
-    def readable(self) -> bool:
-        return bool(self.characteristics & _IMAGE_SCN_MEM_READ)
-
-    @property
-    def writable(self) -> bool:
-        return bool(self.characteristics & _IMAGE_SCN_MEM_WRITE)
-
-    @property
-    def executable(self) -> bool:
-        return bool(self.characteristics & _IMAGE_SCN_MEM_EXECUTE)
-
-    def contains_raw(self, rva: int, size: int) -> bool:
-        offset = rva - self.rva_start
-        return 0 <= offset and 0 <= size and offset + size <= self.raw_size
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _binary_binding(reader: ArtifactInputReaderV3, label: str) -> ArtifactBindingV3:
-    rows = tuple(
-        row
-        for row in reader.manifest.bindings
-        if row.name == "binary" and row.kind == "pe32"
-    )
-    if len(rows) != 1:
-        raise IndexedTargetEvidenceV3Error(
-            f"{label} must have exactly one binary/pe32 binding"
-        )
-    return rows[0]
-
-
-def _dependency(name: str, reader: ArtifactInputReaderV3) -> ArtifactDependencyV3:
-    return ArtifactDependencyV3(
-        name=name,
-        artifact_kind=reader.manifest.artifact_kind,
-        artifact_id=reader.manifest.artifact_id,
-        manifest_sha256=reader.manifest_sha256,
-    )
-
-
-def _read_json(path: Path, label: str) -> Mapping[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise IndexedTargetEvidenceV3Error(f"cannot read {label} {path}: {exc}") from exc
-    if not isinstance(value, Mapping):
-        raise IndexedTargetEvidenceV3Error(f"{label} must be a JSON object")
-    return value
-
-
-def _manifest_machine_ir_sha256(manifest: Mapping[str, Any]) -> str | None:
-    artifacts = manifest.get("artifacts")
-    if not isinstance(artifacts, Mapping):
-        return None
-    machine_ir = artifacts.get("machine_ir")
-    if not isinstance(machine_ir, Mapping):
-        return None
-    value = machine_ir.get("sha256")
-    return value if isinstance(value, str) else None
-
-
-def _read_machine_ir(path: Path) -> dict[str, Mapping[str, Any]]:
-    result: dict[str, Mapping[str, Any]] = {}
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise IndexedTargetEvidenceV3Error(
-            f"cannot read machine IR {path}: {exc}"
-        ) from exc
-    for line_number, line in enumerate(lines, 1):
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise IndexedTargetEvidenceV3Error(
-                f"machine IR line {line_number} is invalid JSON: {exc}"
-            ) from exc
-        if not isinstance(value, Mapping) or value.get("record_kind") != "unit":
-            continue
-        unit_id = value.get("id")
-        if not isinstance(unit_id, str) or not unit_id:
-            raise IndexedTargetEvidenceV3Error(
-                f"machine IR line {line_number} has no exact unit ID"
-            )
-        if unit_id in result:
-            raise IndexedTargetEvidenceV3Error(
-                f"machine IR repeats exact unit ID {unit_id!r}"
-            )
-        result[unit_id] = value
-    if not result:
-        raise IndexedTargetEvidenceV3Error("machine IR contains no unit records")
-    return result
-
-
-def _binary_operands(value: Any, operators: set[str]) -> tuple[Any, Any] | None:
-    if not isinstance(value, Mapping) or str(value.get("op", "")).lower() not in operators:
-        return None
-    args = value.get("args")
-    if isinstance(args, list) and len(args) == 2:
-        return args[0], args[1]
-    if "left" in value and "right" in value:
-        return value["left"], value["right"]
-    return None
-
-
-def _constant(value: Any) -> int | None:
-    if not isinstance(value, Mapping):
-        return None
-    if str(value.get("op", "")).lower() not in {"const", "constant"}:
-        return None
-    raw = value.get("value")
-    if not isinstance(raw, int) or isinstance(raw, bool) or not 0 <= raw < 1 << 32:
-        return None
-    return raw
-
-
-def _normalize_expression(value: Any) -> Any | None:
-    """Normalize only the bounded expression fragment checked by this provider."""
-
-    if not isinstance(value, Mapping):
-        return None
-    op = str(value.get("op", "")).lower()
-    constant = _constant(value)
-    if constant is not None:
-        return {"op": "const", "value": constant, "width": 32}
-    if op in {"reg", "register", "input_reg"}:
-        name = value.get("name", value.get("reg"))
-        if not isinstance(name, str):
-            return None
-        name = name.lower()
-        low_bytes = {"al": "eax", "bl": "ebx", "cl": "ecx", "dl": "edx"}
-        if name in low_bytes:
-            return {
-                "op": "and32",
-                "args": [
-                    {"op": "reg", "name": low_bytes[name], "width": 32},
-                    {"op": "const", "value": 0xFF, "width": 32},
-                ],
-            }
-        return {"op": "reg", "name": name, "width": 32}
-    if op in {"and", "and32", "bit_and"}:
-        operands = _binary_operands(value, {"and", "and32", "bit_and"})
-        if operands is None:
-            return None
-        left = _normalize_expression(operands[0])
-        right = _normalize_expression(operands[1])
-        if left is None or right is None:
-            return None
-        ordered = sorted((left, right), key=canonical_sha256_v3)
-        return {"op": "and32", "args": ordered}
-    if op in {"add", "add32", "mul", "mul32", "multiply", "sub", "sub32"}:
-        operands = _binary_operands(
-            value,
-            {"add", "add32", "mul", "mul32", "multiply", "sub", "sub32"},
-        )
-        if operands is None:
-            return None
-        left = _normalize_expression(operands[0])
-        right = _normalize_expression(operands[1])
-        if left is None or right is None:
-            return None
-        normalized_op = {
-            "add": "add32",
-            "add32": "add32",
-            "mul": "mul32",
-            "mul32": "mul32",
-            "multiply": "mul32",
-            "sub": "sub32",
-            "sub32": "sub32",
-        }[op]
-        args = (
-            sorted((left, right), key=canonical_sha256_v3)
-            if normalized_op in {"add32", "mul32"}
-            else [left, right]
-        )
-        return {"op": normalized_op, "args": args}
-    if op in {"load", "read8", "read32"}:
-        address = _normalize_expression(value.get("address"))
-        width = value.get("width")
-        if width is None:
-            width = 1 if op == "read8" else 4 if op == "read32" else None
-        if address is None or width not in {1, 2, 4}:
-            return None
-        return {"op": "load", "width": width, "address": address}
-    if op in {"zero_extend", "zext", "truncate", "trunc"}:
-        inner = value.get("value", value.get("source"))
-        normalized = _normalize_expression(inner)
-        width = value.get("from_width", value.get("width_bits", value.get("width")))
-        if normalized is None or width not in {8, 32, None}:
-            return None
-        if width == 8 and normalized.get("op") == "reg":
-            return {
-                "op": "and32",
-                "args": [
-                    normalized,
-                    {"op": "const", "value": 0xFF, "width": 32},
-                ],
-            }
-        return normalized
-    return None
-
-
-def _substitute_summary_outputs(
-    expression: Any, summary: TransitionSummaryRecordV3
-) -> Any:
-    outputs = {
-        (row.category, row.destination.lower()): row.value.to_value()
-        for row in summary.outputs
-        if row.category in {"register", "flag"}
-    }
-
-    def substitute(value: Any) -> Any:
-        if not isinstance(value, Mapping):
-            return value
-        op = str(value.get("op", "")).lower()
-        if op in {"reg", "register", "input_reg"}:
-            name = value.get("name", value.get("reg"))
-            key = ("register", name.lower()) if isinstance(name, str) else None
-            if key is not None and key in outputs:
-                return outputs[key]
-            return dict(value)
-        if op in {"flag", "input_flag"}:
-            name = value.get("name", value.get("flag"))
-            key = ("flag", name.lower()) if isinstance(name, str) else None
-            if key is not None and key in outputs:
-                return outputs[key]
-            return dict(value)
-        return {
-            key: (
-                [substitute(row) for row in item]
-                if isinstance(item, list)
-                else substitute(item)
-                if isinstance(item, Mapping)
-                else item
-            )
-            for key, item in value.items()
-        }
-
-    substituted = substitute(expression)
-    return _normalize_expression(substituted) or substituted
-
-
-def _table_shape(expression: Any) -> _TableShape | None:
-    if not isinstance(expression, Mapping) or str(expression.get("op", "")).lower() not in {
-        "load",
-        "read32",
-    }:
-        return None
-    if expression.get("op") == "load":
-        if expression.get("width") not in {4, None}:
-            return None
-        if expression.get("width") is None and expression.get("width_bits") != 32:
-            return None
-    address = expression.get("address")
-    add = _binary_operands(address, {"add", "add32"})
-    if add is None:
-        return None
-    for base_value, scaled_value in (add, (add[1], add[0])):
-        base = _constant(base_value)
-        if base is None:
-            continue
-        multiply = _binary_operands(scaled_value, {"mul", "mul32", "multiply"})
-        if multiply is not None:
-            for selector_value, scale_value in (multiply, (multiply[1], multiply[0])):
-                if _constant(scale_value) == 4:
-                    selector = _normalize_expression(selector_value)
-                    if selector is not None:
-                        return _TableShape(base, selector, "multiply_4")
-        if isinstance(scaled_value, Mapping) and str(scaled_value.get("op", "")).lower() in {
-            "shl",
-            "shl32",
-            "shift_left",
-        }:
-            amount = scaled_value.get("amount", scaled_value.get("right"))
-            amount_value = amount if isinstance(amount, int) else _constant(amount)
-            selector_value = scaled_value.get("value", scaled_value.get("left"))
-            selector = _normalize_expression(selector_value)
-            if amount_value == 2 and selector is not None:
-                return _TableShape(base, selector, "shift_left_2")
-    return None
-
-
-def _condition_bound(condition: Any, selector: Any) -> int | None:
-    if not isinstance(condition, Mapping):
-        return None
-    op = str(condition.get("op", "")).lower()
-    operands = _binary_operands(
-        condition,
-        {
-            "ult",
-            "ult32",
-            "unsigned_less",
-            "unsigned_lt",
-            "ule",
-            "ule32",
-            "unsigned_less_equal",
-            "unsigned_le",
-        },
-    )
-    if operands is not None and _normalize_expression(operands[0]) == selector:
-        bound = _constant(operands[1])
-        if bound is not None:
-            if op in {"ule", "ule32", "unsigned_less_equal", "unsigned_le"}:
-                if bound == 0xFFFFFFFF:
-                    return None
-                bound += 1
-            return bound if 0 < bound <= _MAX_TABLE_ENTRIES else None
-    above_bound = _complemented_unsigned_above_bound(condition, selector)
-    if above_bound is not None:
-        return above_bound
-    return _enumerated_condition_bound(condition, selector)
-
-
-def _not_operand(value: Any) -> Any | None:
-    if not isinstance(value, Mapping) or str(value.get("op", "")).lower() != "not":
-        return None
-    args = value.get("args")
-    return args[0] if isinstance(args, list) and len(args) == 1 else None
-
-
-def _zero_comparison_bound(value: Any, selector: Any) -> int | None:
-    operands = _binary_operands(value, {"eq"})
-    if operands is None:
-        return None
-    expression = None
-    for candidate, zero in (operands, (operands[1], operands[0])):
-        if _constant(zero) == 0:
-            expression = candidate
-            break
-    if expression is None:
-        return None
-    normalized = _normalize_expression(expression)
-    if isinstance(normalized, Mapping) and normalized.get("op") == "and32":
-        args = normalized.get("args")
-        if isinstance(args, list) and len(args) == 2:
-            nonconstants = [row for row in args if _constant(row) is None]
-            if len(nonconstants) == 1:
-                normalized = nonconstants[0]
-    if not isinstance(normalized, Mapping) or normalized.get("op") != "sub32":
-        return None
-    args = normalized.get("args")
-    if (
-        not isinstance(args, list)
-        or len(args) != 2
-        or args[0] != selector
-    ):
-        return None
-    return _constant(args[1])
-
-
-def _unsigned_less_bound(value: Any, selector: Any) -> int | None:
-    operands = _binary_operands(
-        value, {"ult", "ult32", "unsigned_less", "unsigned_lt"}
-    )
-    if operands is None or _normalize_expression(operands[0]) != selector:
-        return None
-    return _constant(operands[1])
-
-
-def _complemented_unsigned_above_bound(
-    condition: Any, selector: Any
-) -> int | None:
-    """Recognize the normalized x86 ``not (CF=0 and ZF=0)`` guard.
-
-    The direct edge into a jump table after ``cmp selector, N; ja fallback``
-    is the complement of unsigned-above.  Exact flag semantics expands that
-    compact source condition into a Boolean formula; recognizing the formula
-    here is independent of instruction spelling and still checks both CF and
-    ZF terms against the same selector and bound.
-    """
-
-    inner = _not_operand(condition)
-    operands = (
-        None
-        if inner is None
-        else _binary_operands(inner, {"and_bool"})
-    )
-    if operands is None:
-        return None
-    zero_bounds: list[int] = []
-    less_bounds: list[int] = []
-    for operand in operands:
-        negated = _not_operand(operand)
-        if negated is None:
-            return None
-        zero_bound = _zero_comparison_bound(negated, selector)
-        less_bound = _unsigned_less_bound(negated, selector)
-        if zero_bound is not None:
-            zero_bounds.append(zero_bound)
-        elif less_bound is not None:
-            less_bounds.append(less_bound)
-        else:
-            return None
-    if len(zero_bounds) != 1 or len(less_bounds) != 1:
-        return None
-    if zero_bounds[0] != less_bounds[0] or zero_bounds[0] == 0xFFFFFFFF:
-        return None
-    result = zero_bounds[0] + 1
-    return result if 0 < result <= _MAX_TABLE_ENTRIES else None
-
-
-def _selector_domain(selector: Any) -> tuple[int, ...] | None:
-    if not isinstance(selector, Mapping) or selector.get("op") != "and32":
-        return None
-    args = selector.get("args")
-    if not isinstance(args, list) or len(args) != 2:
-        return None
-    mask = next((_constant(row) for row in args if _constant(row) is not None), None)
-    if mask is None or mask >= _MAX_TABLE_ENTRIES:
-        return None
-    return tuple(value for value in range(mask + 1) if value & ~mask == 0)
-
-
-def _evaluate_guard_expression(value: Any, selector: Any, selected: int) -> Any | None:
-    if _normalize_expression(value) == selector:
-        return selected
-    constant = _constant(value)
-    if constant is not None:
-        return constant
-    if not isinstance(value, Mapping):
-        return value if isinstance(value, bool) else None
-    op = str(value.get("op", "")).lower()
-    args = value.get("args")
-    if op == "not" and isinstance(args, list) and len(args) == 1:
-        inner = _evaluate_guard_expression(args[0], selector, selected)
-        return not inner if isinstance(inner, bool) else None
-    binary = _binary_operands(
-        value,
-        {
-            "add",
-            "add32",
-            "sub",
-            "sub32",
-            "and",
-            "and32",
-            "bit_and",
-            "or32",
-            "xor32",
-            "eq",
-            "neq",
-            "ult",
-            "ult32",
-            "unsigned_less",
-            "unsigned_lt",
-            "ule",
-            "ule32",
-            "unsigned_less_equal",
-            "unsigned_le",
-            "and_bool",
-            "or_bool",
-        },
-    )
-    if binary is None:
-        return None
-    left = _evaluate_guard_expression(binary[0], selector, selected)
-    right = _evaluate_guard_expression(binary[1], selector, selected)
-    if op in {"and_bool", "or_bool"}:
-        if not isinstance(left, bool) or not isinstance(right, bool):
-            return None
-        return left and right if op == "and_bool" else left or right
-    if (
-        not isinstance(left, int)
-        or isinstance(left, bool)
-        or not isinstance(right, int)
-        or isinstance(right, bool)
-    ):
-        return None
-    left &= 0xFFFFFFFF
-    right &= 0xFFFFFFFF
-    if op in {"add", "add32"}:
-        return (left + right) & 0xFFFFFFFF
-    if op in {"sub", "sub32"}:
-        return (left - right) & 0xFFFFFFFF
-    if op in {"and", "and32", "bit_and"}:
-        return left & right
-    if op == "or32":
-        return left | right
-    if op == "xor32":
-        return left ^ right
-    if op == "eq":
-        return left == right
-    if op == "neq":
-        return left != right
-    if op in {"ult", "ult32", "unsigned_less", "unsigned_lt"}:
-        return left < right
-    if op in {"ule", "ule32", "unsigned_less_equal", "unsigned_le"}:
-        return left <= right
-    return None
-
-
-def _enumerated_condition_bound(condition: Any, selector: Any) -> int | None:
-    domain = _selector_domain(selector)
-    if domain is None:
-        return None
-    accepted: list[int] = []
-    for selected in domain:
-        result = _evaluate_guard_expression(condition, selector, selected)
-        if not isinstance(result, bool):
-            return None
-        if result:
-            accepted.append(selected)
-    if not accepted:
-        return None
-    bound = max(accepted) + 1
-    if bound > _MAX_TABLE_ENTRIES or accepted != list(range(bound)):
-        return None
-    return bound
-
-
-def _section_for_rva(sections: Iterable[_Section], rva: int) -> _Section | None:
-    rows = tuple(section for section in sections if section.rva_start <= rva < section.rva_end)
-    return rows[0] if len(rows) == 1 else None
-
-
-def _parse_pe(path: Path) -> tuple[bytes, int, tuple[_Section, ...]]:
-    try:
-        data = path.read_bytes()
-        pe = pefile.PE(data=data, fast_load=True)
-    except (OSError, pefile.PEFormatError) as exc:
-        raise IndexedTargetEvidenceV3Error(f"cannot parse exact PE {path}: {exc}") from exc
-    file_header = pe.FILE_HEADER
-    optional_header = pe.OPTIONAL_HEADER
-    if (
-        file_header is None
-        or optional_header is None
-        or getattr(file_header, "Machine", None) != 0x14C
-        or getattr(optional_header, "Magic", None) != 0x10B
-    ):
-        raise IndexedTargetEvidenceV3Error("indexed table provider requires x86 PE32")
-    sections = tuple(
-        _Section(
-            section.Name.rstrip(b"\0").decode("ascii", errors="replace"),
-            int(section.VirtualAddress),
-            int(section.Misc_VirtualSize),
-            int(section.PointerToRawData),
-            int(section.SizeOfRawData),
-            int(section.Characteristics),
-        )
-        for section in pe.sections
-    )
-    return data, int(getattr(optional_header, "ImageBase")), sections
-
-
-def _read_exact_rva(data: bytes, section: _Section, rva: int, size: int) -> bytes | None:
-    if not section.contains_raw(rva, size):
-        return None
-    start = section.raw_offset + rva - section.rva_start
-    end = start + size
-    if not 0 <= start <= end <= len(data):
-        return None
-    return data[start:end]
+from .indexed_target_analysis import (
+    IndexedTargetEvidenceV3Error,
+    _BoundProof,
+    _ImportSlot,
+    _Issue,
+    _Section,
+    _binary_binding,
+    _condition_bound,
+    _constant,
+    _dependency,
+    _manifest_machine_ir_sha256,
+    _parse_pe,
+    _read_exact_rva,
+    _read_json,
+    _read_machine_ir,
+    _section_for_rva,
+    _sha256_file,
+    _substitute_summary_outputs,
+    _table_shape,
+)
 
 
 def _artifact_index(reader: ArtifactInputReaderV3, codec: Any) -> dict[str, Any]:
@@ -927,6 +361,313 @@ def _relevant_write_issue(
     return None
 
 
+def _absolute_dword_load(value: Any) -> int | None:
+    if not isinstance(value, Mapping) or value.get("op") != "load":
+        return None
+    if value.get("width") != 4:
+        return None
+    return _constant(value.get("address"))
+
+
+def _external_target_for_import(slot: _ImportSlot) -> CanonicalValueV3:
+    return CanonicalValueV3.of(
+        {
+            "import": {
+                "dll": slot.dll,
+                "symbol": slot.symbol,
+                "ordinal": slot.ordinal,
+                "thunk_rva": slot.slot_rva,
+            },
+            "iat_slot_va": slot.slot_va,
+        }
+    )
+
+
+def _static_target_inventory_issue(
+    *,
+    proposal: StructuralTargetProposalV3 | None,
+    semantic: SemanticIndexRecordV3,
+    occurrence: IndirectExitOccurrenceV3,
+    target_unit_ids: tuple[str, ...],
+    external_targets: tuple[CanonicalValueV3, ...],
+) -> _Issue | None:
+    if proposal is None:
+        return _Issue(
+            "violated",
+            "static_target_structural_inventory_missing",
+            "structural target inventory omits the exact indirect exit",
+        )
+    if (
+        proposal.source_unit_id != semantic.record_id
+        or proposal.source_rva != semantic.rva_start
+        or proposal.source_event_index != occurrence.event_index
+        or proposal.transfer_kind != occurrence.transfer_kind
+    ):
+        return _Issue(
+            "violated",
+            "static_target_structural_binding_contradiction",
+            "structural target proposal is bound to another exit",
+        )
+    if proposal.status == "violated":
+        return _Issue(
+            "violated",
+            "static_target_structural_proposal_violated",
+            "structural target proposal reports contradictory evidence",
+        )
+    if proposal.status != "recovered":
+        return None
+    proposed_external = tuple(
+        sorted(
+            (_external_target_identity(row) for row in proposal.external_targets),
+            key=lambda row: row.data,
+        )
+    )
+    exact_external = tuple(
+        sorted(
+            (_external_target_identity(row) for row in external_targets),
+            key=lambda row: row.data,
+        )
+    )
+    if proposal.target_unit_ids != target_unit_ids or proposed_external != exact_external:
+        return _Issue(
+            "violated",
+            "static_target_structural_inventory_contradiction",
+            "recovered structural targets differ from exact static targets",
+        )
+    return None
+
+
+def _static_value_proof_for_exit(
+    *,
+    occurrence: IndirectExitOccurrenceV3,
+    semantic: SemanticIndexRecordV3,
+    proposal: StructuralTargetProposalV3 | None,
+    semantics: Mapping[str, SemanticIndexRecordV3],
+    profiles: Mapping[str, ExternalProfileV3],
+    prior: TargetEvaluationEvidenceV3 | None,
+    image_base: int,
+    sections: tuple[_Section, ...],
+    imports: tuple[_ImportSlot, ...],
+) -> tuple[TargetEvaluationEvidenceV3 | None, dict[str, Any] | None]:
+    """Prove exact code VAs and loader-bound IAT slot loads.
+
+    The import case intentionally does not inspect the on-disk thunk value.
+    Its value is supplied by the PE loader; the checked fact is the slot's
+    unique import identity under the declared launch/IAT assumption.
+    """
+
+    expression = occurrence.target_expression.to_value()
+    base_report: dict[str, Any] = {
+        "exit_id": occurrence.exit_id,
+        "source_unit_id": semantic.record_id,
+        "source_rva": semantic.rva_start,
+        "source_event_index": occurrence.event_index,
+        "transfer_kind": occurrence.transfer_kind,
+        "target_expression_sha256": canonical_sha256_v3(expression),
+    }
+
+    def failed(issue: _Issue) -> tuple[None, dict[str, Any]]:
+        return None, {
+            **base_report,
+            "status": issue.status,
+            "authorizing": False,
+            "issue": issue.to_payload(),
+        }
+
+    variant: str
+    value_va: int
+    target_unit_ids: tuple[str, ...]
+    external_targets: tuple[CanonicalValueV3, ...]
+    profile_id: str | None = None
+    import_slot_rva: int | None = None
+    import_identity: dict[str, Any] | None = None
+
+    exact_constant = _constant(expression)
+    if exact_constant is not None:
+        variant = "static_code_target"
+        value_va = exact_constant
+        if value_va < image_base:
+            return failed(
+                _Issue(
+                    "incomplete",
+                    "static_code_target_outside_image",
+                    "constant target is below the PE image base",
+                )
+            )
+        target_rva = value_va - image_base
+        section = _section_for_rva(sections, target_rva)
+        if section is None or not section.executable:
+            return failed(
+                _Issue(
+                    "incomplete",
+                    "static_code_target_not_executable",
+                    "constant target does not resolve to executable PE bytes",
+                )
+            )
+        matches = tuple(
+            sorted(
+                row.record_id
+                for row in semantics.values()
+                if row.rva_start == target_rva
+            )
+        )
+        if len(matches) != 1:
+            return failed(
+                _Issue(
+                    "violated" if matches else "incomplete",
+                    (
+                        "static_code_target_ambiguous"
+                        if matches
+                        else "static_code_target_unit_missing"
+                    ),
+                    f"constant target resolves to {len(matches)} semantic units",
+                )
+            )
+        target_unit_ids = matches
+        external_targets = ()
+    else:
+        slot_va = _absolute_dword_load(expression)
+        if slot_va is None:
+            return None, None
+        matching_slots = tuple(row for row in imports if row.slot_va == slot_va)
+        if not matching_slots:
+            return None, None
+        if len(matching_slots) != 1:
+            return failed(
+                _Issue(
+                    "violated",
+                    "static_import_slot_ambiguous",
+                    "absolute load resolves to multiple PE import slots",
+                )
+            )
+        slot = matching_slots[0]
+        variant = "import_slot"
+        value_va = slot.slot_va
+        import_slot_rva = slot.slot_rva
+        import_identity = {
+            "kind": "import",
+            "dll": slot.dll,
+            "symbol": slot.symbol,
+            "ordinal": slot.ordinal,
+        }
+        target = _external_target_for_import(slot)
+        transfer = (
+            "jump" if occurrence.transfer_kind == "indirect_jump" else "call"
+        )
+        matching_profiles = tuple(
+            sorted(
+                (
+                    row
+                    for row in profiles.values()
+                    if transfer in row.allowed_transfers
+                    and _profile_matches_external_target(row, target)
+                ),
+                key=lambda row: row.record_id,
+            )
+        )
+        if len(matching_profiles) != 1:
+            return failed(
+                _Issue(
+                    "violated" if len(matching_profiles) > 1 else "incomplete",
+                    (
+                        "static_import_profile_ambiguous"
+                        if len(matching_profiles) > 1
+                        else "static_import_profile_missing"
+                    ),
+                    f"PE import slot resolves to {len(matching_profiles)} external profiles",
+                )
+            )
+        profile_id = matching_profiles[0].record_id
+        target_unit_ids = ()
+        external_targets = (target,)
+
+    inventory_issue = _static_target_inventory_issue(
+        proposal=proposal,
+        semantic=semantic,
+        occurrence=occurrence,
+        target_unit_ids=target_unit_ids,
+        external_targets=external_targets,
+    )
+    if inventory_issue is not None:
+        return failed(inventory_issue)
+    if prior is not None and (
+        prior.source_unit_id != semantic.record_id
+        or prior.source_rva != semantic.rva_start
+        or prior.source_event_index != occurrence.event_index
+        or prior.transfer_kind != occurrence.transfer_kind
+        or prior.target_expression_sha256 != canonical_sha256_v3(expression)
+        or prior.target_unit_ids != target_unit_ids
+        or tuple(
+            sorted(
+                (_external_target_identity(row) for row in prior.external_targets),
+                key=lambda row: row.data,
+            )
+        )
+        != tuple(
+            sorted(
+                (_external_target_identity(row) for row in external_targets),
+                key=lambda row: row.data,
+            )
+        )
+    ):
+        return failed(
+            _Issue(
+                "violated",
+                "static_target_prior_evidence_contradiction",
+                "prior target evidence differs from the exact static value proof",
+            )
+        )
+
+    external_hash = (
+        None
+        if not external_targets
+        else canonical_sha256_v3(external_targets[0].to_value())
+    )
+    certificate = {
+        "kind": "checked-pe-static-value-v3",
+        "variant": variant,
+        "exit_id": occurrence.exit_id,
+        "source_unit_id": semantic.record_id,
+        "source_rva": semantic.rva_start,
+        "source_event_index": occurrence.event_index,
+        "transfer_kind": occurrence.transfer_kind,
+        "target_expression_sha256": canonical_sha256_v3(expression),
+        "image_base": image_base,
+        "value_va": value_va,
+        "target_unit_ids": list(target_unit_ids),
+        "external_profile_record_id": profile_id,
+        "external_target_sha256": external_hash,
+        "import_slot_rva": import_slot_rva,
+        "import_identity": import_identity,
+    }
+    evidence = TargetEvaluationEvidenceV3.create(
+        record_id=occurrence.exit_id,
+        source_unit_id=semantic.record_id,
+        source_rva=semantic.rva_start,
+        source_event_index=occurrence.event_index,
+        transfer_kind=occurrence.transfer_kind,
+        target_expression=expression,
+        evaluation_method="checked_pe_static_value",
+        memory_record_id=_PE_STATIC_MEMORY_RECORD_NOT_APPLICABLE_V3,
+        inductive_fact_id=None,
+        target_unit_ids=target_unit_ids,
+        external_targets=(row.to_value() for row in external_targets),
+        evaluation_certificate=certificate,
+    )
+    return evidence, {
+        **base_report,
+        "status": "complete",
+        "authorizing": False,
+        "method": "checked_pe_static_value",
+        "variant": variant,
+        "target_unit_ids": list(target_unit_ids),
+        "external_targets": [row.to_value() for row in external_targets],
+        "external_profile_record_id": profile_id,
+        "evidence_sha256": evidence.evidence_sha256,
+        "note": "checked provider evidence; target authority rechecks the compact binding",
+    }
+
+
 def _proof_for_exit(
     *,
     occurrence: IndirectExitOccurrenceV3,
@@ -941,6 +682,8 @@ def _proof_for_exit(
     image_data: bytes,
     image_base: int,
     sections: tuple[_Section, ...],
+    imports: tuple[_ImportSlot, ...],
+    profiles: Mapping[str, ExternalProfileV3],
 ) -> tuple[TargetEvaluationEvidenceV3 | None, dict[str, Any]]:
     expression = occurrence.target_expression.to_value()
     base_report: dict[str, Any] = {
@@ -959,6 +702,20 @@ def _proof_for_exit(
             "authorizing": False,
             "issue": _Issue(status, code, detail).to_payload(),
         }
+
+    static_evidence, static_report = _static_value_proof_for_exit(
+        occurrence=occurrence,
+        semantic=semantic,
+        proposal=proposal,
+        semantics=semantics,
+        profiles=profiles,
+        prior=prior,
+        image_base=image_base,
+        sections=sections,
+        imports=imports,
+    )
+    if static_report is not None:
+        return static_evidence, static_report
 
     shape = _table_shape(expression)
     if shape is None:
@@ -1208,6 +965,207 @@ def _proof_for_exit(
     }
 
 
+def _external_target_identity(value: CanonicalValueV3) -> CanonicalValueV3:
+    target = mapping(value.to_value(), "parametric external target")
+    imported = target.get("import")
+    source = imported if isinstance(imported, Mapping) else target
+    dll = source.get("dll")
+    symbol = source.get("symbol")
+    ordinal = source.get("ordinal")
+    if isinstance(dll, str) and dll and (
+        (isinstance(symbol, str) and bool(symbol))
+        != (isinstance(ordinal, int) and not isinstance(ordinal, bool))
+    ):
+        return CanonicalValueV3.of(
+            {
+                "kind": "import",
+                "dll": dll.lower(),
+                "symbol": symbol if isinstance(symbol, str) and symbol else None,
+                "ordinal": (
+                    ordinal
+                    if isinstance(ordinal, int) and not isinstance(ordinal, bool)
+                    else None
+                ),
+            }
+        )
+    protocol = source.get("external_protocol")
+    if isinstance(protocol, Mapping) and protocol:
+        return CanonicalValueV3.of(
+            {"kind": "protocol", "protocol": dict(protocol)}
+        )
+    return CanonicalValueV3.of({})
+
+
+def _profile_matches_external_target(
+    profile: ExternalProfileV3, target: CanonicalValueV3
+) -> bool:
+    exact = mapping(
+        _external_target_identity(target).to_value(),
+        "normalized external target",
+    )
+    expected = mapping(profile.identity.to_value(), "external profile identity")
+    return all(exact.get(key) == value for key, value in expected.items())
+
+
+def _external_target_for_profile(
+    profile: ExternalProfileV3,
+) -> CanonicalValueV3 | None:
+    identity = mapping(profile.identity.to_value(), "external profile identity")
+    if identity.get("kind") == "import":
+        dll = identity.get("dll")
+        symbol = identity.get("symbol")
+        ordinal = identity.get("ordinal")
+        if not isinstance(dll, str) or not dll:
+            return None
+        if (isinstance(symbol, str) and bool(symbol)) == (
+            isinstance(ordinal, int) and not isinstance(ordinal, bool)
+        ):
+            return None
+        return CanonicalValueV3.of(
+            {
+                "import": {
+                    "dll": dll.lower(),
+                    "symbol": symbol if isinstance(symbol, str) else None,
+                    "ordinal": (
+                        ordinal
+                        if isinstance(ordinal, int) and not isinstance(ordinal, bool)
+                        else None
+                    ),
+                }
+            }
+        )
+    if identity.get("kind") == "protocol" and isinstance(
+        identity.get("protocol"), Mapping
+    ):
+        return CanonicalValueV3.of(
+            {"external_protocol": dict(identity["protocol"])}
+        )
+    return None
+
+
+def _parametric_evidence_for_exit(
+    *,
+    occurrence: IndirectExitOccurrenceV3,
+    semantic: SemanticIndexRecordV3,
+    proposal: StructuralTargetProposalV3 | None,
+    summary: ParametricSccSummaryV3 | None,
+    profiles: Mapping[str, ExternalProfileV3],
+) -> tuple[TargetEvaluationEvidenceV3 | None, dict[str, Any] | None]:
+    if summary is None or summary.status != "complete" or not summary.authorizing:
+        return None, None
+    exit_record = summary.indirect_exit(occurrence.exit_id)
+    if exit_record is None:
+        return None, None
+    fact = summary.value_fact(exit_record.value_fact_id)
+    if fact is None or fact.lattice != "finite":
+        return None, None
+    if (
+        exit_record.source_unit_id != semantic.record_id
+        or exit_record.expression_sha256
+        != canonical_sha256_v3(occurrence.target_expression.to_value())
+    ):
+        return None, None
+
+    profile_targets: list[tuple[str, CanonicalValueV3]] = []
+    for profile_id in exit_record.external_profile_record_ids:
+        profile = profiles.get(profile_id)
+        target = None if profile is None else _external_target_for_profile(profile)
+        if target is None:
+            return None, None
+        profile_targets.append((profile_id, target))
+    profile_targets.sort(key=lambda row: row[0])
+    canonical_external_targets = tuple(
+        sorted({target for _profile_id, target in profile_targets}, key=lambda row: row.data)
+    )
+    if len(canonical_external_targets) != len(
+        exit_record.external_profile_record_ids
+    ):
+        return None, None
+
+    if proposal is not None and proposal.status == "recovered":
+        proposed_external = tuple(
+            sorted(
+                (_external_target_identity(row) for row in proposal.external_targets),
+                key=lambda row: row.data,
+            )
+        )
+        checked_external = tuple(
+            sorted(
+                (_external_target_identity(row) for row in canonical_external_targets),
+                key=lambda row: row.data,
+            )
+        )
+        if (
+            exit_record.target_unit_ids != proposal.target_unit_ids
+            or checked_external != proposed_external
+        ):
+            return None, None
+
+    external_bindings: list[dict[str, str]] = []
+    for profile_id, target in profile_targets:
+        if not _profile_matches_external_target(profiles[profile_id], target):
+            return None, None
+        external_bindings.append(
+            {
+                "external_profile_record_id": profile_id,
+                "external_target_sha256": canonical_sha256_v3(
+                    target.to_value()
+                ),
+            }
+        )
+    external_bindings.sort(
+        key=lambda row: (
+            row["external_profile_record_id"],
+            row["external_target_sha256"],
+        )
+    )
+    certificate = {
+        "kind": "checked-parametric-target-fact-v3",
+        "summary_record_id": summary.record_id,
+        "exit_id": occurrence.exit_id,
+        "source_unit_id": semantic.record_id,
+        "source_rva": semantic.rva_start,
+        "source_event_index": occurrence.event_index,
+        "transfer_kind": occurrence.transfer_kind,
+        "target_expression_sha256": canonical_sha256_v3(
+            occurrence.target_expression.to_value()
+        ),
+        "value_fact_id": fact.fact_id,
+        "external_target_bindings": external_bindings,
+    }
+    evidence = TargetEvaluationEvidenceV3.create(
+        record_id=occurrence.exit_id,
+        source_unit_id=semantic.record_id,
+        source_rva=semantic.rva_start,
+        source_event_index=occurrence.event_index,
+        transfer_kind=occurrence.transfer_kind,
+        target_expression=occurrence.target_expression.to_value(),
+        evaluation_method="checked_parametric_summary",
+        memory_record_id=_PARAMETRIC_MEMORY_RECORD_NOT_APPLICABLE_V3,
+        inductive_fact_id=None,
+        target_unit_ids=exit_record.target_unit_ids,
+        external_targets=(
+            row.to_value() for row in canonical_external_targets
+        ),
+        evaluation_certificate=certificate,
+    )
+    return evidence, {
+        "exit_id": occurrence.exit_id,
+        "source_unit_id": semantic.record_id,
+        "status": "complete",
+        "authorizing": False,
+        "method": "checked_parametric_summary",
+        "summary_record_id": summary.record_id,
+        "value_fact_id": fact.fact_id,
+        "target_unit_ids": list(exit_record.target_unit_ids),
+        "external_targets": [
+            target.to_value() for target in canonical_external_targets
+        ],
+        "evidence_sha256": evidence.evidence_sha256,
+        "note": "checked summary evidence; target authority independently replays the fact",
+    }
+
+
 def generate_indexed_target_evidence_v3(
     *,
     binary_path: Path,
@@ -1217,6 +1175,8 @@ def generate_indexed_target_evidence_v3(
     transition_summaries_path: Path,
     structural_targets_path: Path,
     output_directory: Path,
+    parametric_summaries_path: Path | None = None,
+    external_profiles_path: Path | None = None,
     target_hints_path: Path | None = None,
     target_evidence_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -1227,6 +1187,16 @@ def generate_indexed_target_evidence_v3(
     structural_reader = open_artifact_reader_v3(structural_targets_path)
     hints_reader = None if target_hints_path is None else open_artifact_reader_v3(target_hints_path)
     prior_reader = None if target_evidence_path is None else open_artifact_reader_v3(target_evidence_path)
+    parametric_reader = (
+        None
+        if parametric_summaries_path is None
+        else open_artifact_reader_v3(parametric_summaries_path)
+    )
+    profile_reader = (
+        None
+        if external_profiles_path is None
+        else open_artifact_reader_v3(external_profiles_path)
+    )
     readers = {
         "semantic_index": semantic_reader,
         "transition_summaries": transition_reader,
@@ -1236,6 +1206,10 @@ def generate_indexed_target_evidence_v3(
         readers["target_hints"] = hints_reader
     if prior_reader is not None:
         readers["target_evidence"] = prior_reader
+    if parametric_reader is not None:
+        readers["parametric_summaries"] = parametric_reader
+    if profile_reader is not None:
+        readers["external_profiles"] = profile_reader
 
     global_issues: list[_Issue] = []
     expected_kinds = {
@@ -1244,6 +1218,8 @@ def generate_indexed_target_evidence_v3(
         "structural_targets": STRUCTURAL_TARGETS_ARTIFACT_KIND_V3,
         "target_hints": TARGET_HINTS_ARTIFACT_KIND_V3,
         "target_evidence": TARGET_EVALUATION_EVIDENCE_ARTIFACT_KIND_V3,
+        "parametric_summaries": PARAMETRIC_SCC_SUMMARIES_ARTIFACT_KIND_V3,
+        "external_profiles": EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
     }
     bindings: dict[str, ArtifactBindingV3] = {}
     for name, reader in readers.items():
@@ -1276,16 +1252,37 @@ def generate_indexed_target_evidence_v3(
         global_issues.append(_Issue("violated", "indexed_machine_ir_manifest_contradiction", "machine-IR manifest does not bind the exact machine IR bytes"))
 
     try:
-        image_data, image_base, sections = _parse_pe(binary_path)
+        image_data, image_base, sections, imports = _parse_pe(binary_path)
         machine_units = _read_machine_ir(machine_ir_path)
         semantics = _artifact_index(semantic_reader, SEMANTIC_INDEX_CODEC_V3)
         summaries = _artifact_index(transition_reader, TRANSITION_SUMMARY_CODEC_V3)
         structural_units = _artifact_index(structural_reader, STRUCTURAL_TARGET_UNIT_CODEC_V3)
         prior = {} if prior_reader is None else _artifact_index(prior_reader, TARGET_EVALUATION_EVIDENCE_CODEC_V3)
+        parametric_by_unit: dict[str, ParametricSccSummaryV3] = {}
+        if parametric_reader is not None:
+            for source in parametric_reader.iter_records():
+                summary = PARAMETRIC_SCC_SUMMARY_CODEC_V3.read(source).value
+                for unit_id in summary.member_unit_ids:
+                    if unit_id in parametric_by_unit:
+                        raise IndexedTargetEvidenceV3Error(
+                            f"parametric summaries cover unit {unit_id!r} more than once"
+                        )
+                    parametric_by_unit[unit_id] = summary
+        profiles: dict[str, ExternalProfileV3] = {}
+        if profile_reader is not None:
+            for source in profile_reader.iter_records():
+                payload = source.value.to_value()
+                if (
+                    isinstance(payload, Mapping)
+                    and payload.get("schema") == EXTERNAL_PROFILE_RECORD_V3_SCHEMA
+                ):
+                    profile = EXTERNAL_PROFILE_CODEC_V3.read(source).value
+                    profiles[profile.record_id] = profile
     except (IndexedTargetEvidenceV3Error, ValueError) as exc:
         global_issues.append(_Issue("violated", "indexed_input_decode_contradiction", str(exc)))
-        image_data, image_base, sections = b"", 0, ()
+        image_data, image_base, sections, imports = b"", 0, (), ()
         machine_units, semantics, summaries, structural_units, prior = {}, {}, {}, {}, {}
+        parametric_by_unit, profiles = {}, {}
 
     records: list[ArtifactRecordV3] = []
     exit_reports: list[dict[str, Any]] = []
@@ -1294,6 +1291,22 @@ def generate_indexed_target_evidence_v3(
             structural = structural_units.get(unit_id)
             proposals = {} if structural is None else {row.record_id: row for row in structural.proposals}
             for occurrence in semantic.indirect_exits:
+                evidence, report = _parametric_evidence_for_exit(
+                    occurrence=occurrence,
+                    semantic=semantic,
+                    proposal=proposals.get(occurrence.exit_id),
+                    summary=parametric_by_unit.get(unit_id),
+                    profiles=profiles,
+                )
+                if evidence is not None:
+                    assert report is not None
+                    exit_reports.append(report)
+                    records.append(
+                        TARGET_EVALUATION_EVIDENCE_CODEC_V3.write(
+                            evidence.record_id, evidence
+                        )
+                    )
+                    continue
                 recovery, recovery_issue = _manifest_recovery(machine_manifest, occurrence.exit_id)
                 if recovery_issue is not None:
                     exit_reports.append({
@@ -1317,6 +1330,8 @@ def generate_indexed_target_evidence_v3(
                     image_data=image_data,
                     image_base=image_base,
                     sections=sections,
+                    imports=imports,
+                    profiles=profiles,
                 )
                 exit_reports.append(report)
                 if evidence is not None:
@@ -1371,6 +1386,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--semantic-index", type=Path, required=True)
     parser.add_argument("--transition-summaries", type=Path, required=True)
     parser.add_argument("--structural-targets", type=Path, required=True)
+    parser.add_argument("--parametric-summaries", type=Path)
+    parser.add_argument("--external-profiles", type=Path)
     parser.add_argument("--target-hints", type=Path)
     parser.add_argument("--target-evidence", type=Path)
     parser.add_argument("--out", type=Path, required=True)
@@ -1386,6 +1403,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         semantic_index_path=arguments.semantic_index,
         transition_summaries_path=arguments.transition_summaries,
         structural_targets_path=arguments.structural_targets,
+        parametric_summaries_path=arguments.parametric_summaries,
+        external_profiles_path=arguments.external_profiles,
         target_hints_path=arguments.target_hints,
         target_evidence_path=arguments.target_evidence,
         output_directory=arguments.out,

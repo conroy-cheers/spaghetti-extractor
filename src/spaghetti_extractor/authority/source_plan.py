@@ -53,7 +53,7 @@ class _SourceUnitV3:
     unit_sha256: str
     rva_start: int
     rva_end: int
-    direct_target_rvas: tuple[int, ...]
+    dependency_target_rvas: tuple[int, ...]
     resource_class: str
     bucket: int
 
@@ -124,7 +124,7 @@ def _prepare_units(
                     unit_sha256=hashlib.sha256(encoded).hexdigest(),
                     rva_start=start,
                     rva_end=end,
-                    direct_target_rvas=_direct_target_rvas(row),
+                    dependency_target_rvas=_dependency_target_rvas(row),
                     resource_class=resource_class,
                     bucket=identity_bucket,
                 )
@@ -159,6 +159,24 @@ def _direct_target_rvas(row: dict[str, Any]) -> tuple[int, ...]:
     control = mapping(row.get("control"), "machine-IR control")
     values = sequence(control.get("direct_targets", []), "direct target RVAs")
     return tuple(sorted(set(uint(value, "direct target RVA") for value in values)))
+
+
+def _dependency_target_rvas(row: dict[str, Any]) -> tuple[int, ...]:
+    """Return every exact local control dependency used for SCC planning."""
+
+    targets = set(_direct_target_rvas(row))
+    semantics = mapping(row.get("semantics", {}), "machine-IR semantics")
+    events = sequence(
+        semantics.get("external_events", []), "machine-IR external events"
+    )
+    for value in events:
+        event = mapping(value, "machine-IR external event")
+        if event.get("kind") != "internal_call":
+            continue
+        target = event.get("target_rva")
+        if isinstance(target, int) and not isinstance(target, bool):
+            targets.add(uint(target, "internal-call target RVA"))
+    return tuple(sorted(targets))
 
 
 def prepare_analysis_source_v3(
@@ -204,7 +222,7 @@ def prepare_analysis_source_v3(
     for row in rows:
         unit_id = row.unit_id
         dependencies: list[str] = []
-        for target_rva in row.direct_target_rvas:
+        for target_rva in row.dependency_target_rvas:
             target = by_rva.get(target_rva)
             if target is None:
                 unresolved_direct_targets.append(

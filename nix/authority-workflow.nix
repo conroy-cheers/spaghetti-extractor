@@ -94,6 +94,7 @@ let
   nativeExternalArtifacts = {
     external_profiles = externalInputs.externalProfiles;
     launch_roots = externalInputs.launchRoots;
+    static_value_origins = externalInputs.staticValueOrigins;
   };
   earlyStandardExternalArtifacts = {
     inductive_inputs = standardEvidence.inductiveInputs;
@@ -125,6 +126,44 @@ let
   # graph with the checked providers.  Identical upstream CA derivations are
   # shared; this does not recompute extraction, semantics, or target closure.
   bootstrapGraph = mkGraph bootstrapExternalArtifacts;
+  generatedParametricSummaryProposals =
+    if
+      diagnosticEmptyEvidence
+      || builtins.hasAttr "parametric_proposals" externalArtifacts
+    then
+      null
+    else
+      import ./authority-input-parametric-summary-proposals.nix {
+        inherit pkgs pythonEnv pythonSource contentAddressed;
+        name = "${name}-parametric-summary-proposals-v3";
+        unitFacts = bootstrapGraph.phases."parametric-unit-facts-v3".artifact;
+        memoryVersions = bootstrapGraph.phases."memory-versions-v3".artifact;
+        structuralTargets =
+          bootstrapGraph.phases."structural-target-proposals-v3".artifact;
+        externalProfiles = externalInputs.externalProfiles.artifact;
+        staticValueOrigins = externalInputs.staticValueOrigins.artifact;
+      };
+  generatedParametricSummaryProposalMetadata =
+    if generatedParametricSummaryProposals == null then null else
+    builtins.fromJSON (
+      builtins.readFile "${generatedParametricSummaryProposals}/metadata.json"
+    );
+  generatedParametricSummaryProposalArtifact =
+    lib.optionalAttrs (generatedParametricSummaryProposals != null) {
+      parametric_proposals = {
+        artifact = "${generatedParametricSummaryProposals}/artifact";
+        expectedKind = externalKinds.parametric_proposals;
+        expectedRecordIds =
+          generatedParametricSummaryProposalMetadata.record_ids;
+      };
+    };
+  summaryExternalArtifacts =
+    bootstrapExternalArtifacts // generatedParametricSummaryProposalArtifact;
+  summaryGraph =
+    if generatedParametricSummaryProposals == null then
+      bootstrapGraph
+    else
+      mkGraph summaryExternalArtifacts;
   generatedExceptionEvidence =
     if
       diagnosticEmptyEvidence
@@ -136,7 +175,7 @@ let
       import ./authority-input-exception-evidence.nix {
         inherit pkgs pythonEnv pythonSource machineIr contentAddressed;
         name = "${name}-exception-evidence-v3";
-        semanticIndex = bootstrapGraph.phases."semantic-index-v3".artifact;
+        semanticIndex = summaryGraph.phases."semantic-index-v3".artifact;
         launchProfile = launchProfileTemplate;
       };
   generatedExceptionEvidenceMetadata =
@@ -180,7 +219,7 @@ let
         semanticKernel = "${isaSemanticKernel}/semantic-kernel.json";
         name = "${name}-isa-evidence-v3";
         machineIr = machineIr;
-        semanticIndex = bootstrapGraph.phases."semantic-index-v3".artifact;
+        semanticIndex = summaryGraph.phases."semantic-index-v3".artifact;
       };
   generatedISAEvidenceArtifact =
     lib.optionalAttrs (generatedISAEvidence != null) {
@@ -202,11 +241,14 @@ let
         name = "${name}-indexed-target-evidence-v3";
         machineIrManifest =
           "${builtins.dirOf (toString machineIr)}/machine-ir-manifest.json";
-        semanticIndex = bootstrapGraph.phases."semantic-index-v3".artifact;
+        semanticIndex = summaryGraph.phases."semantic-index-v3".artifact;
         transitionSummaries =
-          bootstrapGraph.phases."transition-summaries-v3".artifact;
+          summaryGraph.phases."transition-summaries-v3".artifact;
         structuralTargets =
-          bootstrapGraph.phases."structural-target-proposals-v3".artifact;
+          summaryGraph.phases."structural-target-proposals-v3".artifact;
+        parametricSummaries =
+          summaryGraph.phases."parametric-scc-summaries-v3".artifact;
+        externalProfiles = externalInputs.externalProfiles.artifact;
         targetHints = standardEvidence.targetHints.artifact;
       };
   generatedIndexedTargetEvidenceMetadata =
@@ -223,13 +265,14 @@ let
           generatedIndexedTargetEvidenceMetadata.record_ids;
       };
     };
+  # Target recovery and external-site checking do not depend on ISA
+  # qualification. Keep this graph free of ISA evidence so component-local
+  # service binding cannot accidentally realize the expensive ISA campaign.
   targetEvidenceExternalArtifacts =
-    bootstrapExternalArtifacts
-    // generatedTargetEvidenceArtifact
-    // generatedISAEvidenceArtifact;
+    summaryExternalArtifacts // generatedTargetEvidenceArtifact;
   targetEvidenceGraph =
-    if generatedIndexedTargetEvidence == null && generatedISAEvidence == null then
-      bootstrapGraph
+    if generatedIndexedTargetEvidence == null then
+      summaryGraph
     else
       mkGraph targetEvidenceExternalArtifacts;
   generatedExternalSiteEvidence =
@@ -254,8 +297,26 @@ let
     builtins.fromJSON (
       builtins.readFile "${generatedExternalSiteEvidence}/metadata.json"
     );
+  externalSiteExternalArtifacts =
+    targetEvidenceExternalArtifacts
+    // lib.optionalAttrs (generatedExternalSiteEvidence != null) {
+      external_site_evidence = {
+        artifact = "${generatedExternalSiteEvidence}/artifact";
+        expectedKind = externalKinds.external_site_evidence;
+        expectedRecordIds =
+          generatedExternalSiteEvidenceMetadata.record_ids;
+      };
+    };
+  externalSiteGraph =
+    if generatedExternalSiteEvidence == null then
+      targetEvidenceGraph
+    else
+      mkGraph externalSiteExternalArtifacts;
+  componentExternalSites =
+    externalSiteGraph.phases."canonical-external-sites-v3".artifact;
   generatedProviderArtifactsWithoutImplementation =
     generatedExceptionEvidenceArtifact
+    // generatedParametricSummaryProposalArtifact
     // generatedTargetEvidenceArtifact
     // generatedISAEvidenceArtifact
     // lib.optionalAttrs (generatedExternalSiteEvidence != null) {
@@ -330,25 +391,15 @@ let
         name = "${name}-final-authority-gate-v3";
         artifact = finalAuthorityArtifact;
       };
-  fallbackInterpreter =
-    if fallbackCapabilityAnalysis == null || finalAuthorityGate == null then
+  fallbackSupport =
+    if fallbackCapabilityAnalysis == null then
       null
     else
-      import ./candidate-interpreter-package.nix {
+      import ./machine-ir-support-package.nix {
         inherit pkgs pythonEnv pythonSource;
         machineIr = machineIrPackage;
         capabilityAnalysis = fallbackCapabilityAnalysis;
-        inherit finalAuthorityGate;
         namePrefix = "${name}-standard-fallback";
-      };
-  fallbackCoverageReceipt =
-    if fallbackInterpreter == null then null else
-      import ./fallback-coverage-receipt.nix {
-        inherit pkgs pythonEnv pythonSource;
-        machineIr = machineIrPackage;
-        interpreterPackage = fallbackInterpreter;
-        namePrefix = "${name}-standard-fallback";
-        inherit contentAddressed;
       };
   diagnosticsArtifacts = lib.mapAttrs (
     _: phase: phase.artifact
@@ -372,14 +423,17 @@ assert unknownOverrides == [ ];
     bootstrapExternalArtifacts
     externalInputs
     fallbackCapabilityAnalysis
-    fallbackCoverageReceipt
-    fallbackInterpreter
+    fallbackSupport
     generatedExternalSiteEvidence
     generatedExceptionEvidence
     generatedISAEvidence
     generatedIndexedTargetEvidence
+    generatedParametricSummaryProposals
     generatedImplementationCapabilities
     generatedProviderArtifacts
+    externalSiteExternalArtifacts
+    externalSiteGraph
+    componentExternalSites
     graph
     machineInput
     manifest
@@ -388,6 +442,8 @@ assert unknownOverrides == [ ];
     preImplementationExternalArtifacts
     preImplementationGraph
     standardEvidence
+    summaryExternalArtifacts
+    summaryGraph
     targetEvidenceGraph
     targetEvidenceExternalArtifacts
     earlyStandardExternalArtifacts

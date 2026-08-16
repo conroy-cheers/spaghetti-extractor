@@ -1,6 +1,6 @@
-{ pkgs }:
+{ pkgs, pythonEnv }:
 let
-  graph = import ./fixture.nix { inherit pkgs; };
+  graph = import ./fixture.nix { inherit pkgs pythonEnv; };
   structuralPacks = builtins.attrValues graph.structuralPacks;
   dependencyPacks = builtins.attrValues graph.dependencyPacks;
   transitionShards = map (shard: shard.derivation) (

@@ -1,0 +1,53 @@
+{
+  "format": "spaghetti-extractor-component-boundary-review-v2",
+  "lift_unit_id": "e",
+  "accept_derived_machine_boundary": true,
+  "overrides": {
+    "portable_interface_ir": {
+      "format": "spaghetti-extractor-component-interface-ir-v2",
+      "id": "e",
+      "types": [
+        {
+          "id": "u32",
+          "kind": "scalar",
+          "c_type": "uint32_t"
+        }
+      ],
+      "state": [],
+      "operations": [
+        {
+          "id": "increment",
+          "kind": "operation",
+          "parameters": [
+            {
+              "id": "value",
+              "type_id": "u32"
+            }
+          ],
+          "results": [
+            {
+              "id": "result",
+              "type_id": "u32"
+            }
+          ],
+          "effect_ids": [],
+          "allowed_service_ids": [],
+          "pre_states": [
+            "ready"
+          ],
+          "post_states": [
+            "ready"
+          ]
+        }
+      ],
+      "effects": [],
+      "services": [],
+      "protocol": {
+        "states": [
+          "ready"
+        ],
+        "initial_state": "ready"
+      }
+    }
+  }
+}

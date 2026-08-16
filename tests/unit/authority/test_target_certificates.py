@@ -18,6 +18,14 @@ from spaghetti_extractor.authority.inductive import (
 )
 from spaghetti_extractor.authority.memory_records import MEMORY_VERSION_CODEC_V3
 from spaghetti_extractor.authority.memory_versions import MEMORY_VERSIONS_PHASE_V3
+from spaghetti_extractor.authority.authority_common import PrimaryBlockerV3
+from spaghetti_extractor.authority.parametric_summary_records import (
+    PARAMETRIC_SCC_SUMMARY_CODEC_V3,
+    ParametricIndirectExitV3,
+    ParametricSccSummaryV3,
+    ValueFactV3,
+    ValueOriginV3,
+)
 from spaghetti_extractor.authority.semantic_index import (
     SEMANTIC_INDEX_CODEC_V3,
     SEMANTIC_INDEX_PHASE_V3,
@@ -52,6 +60,9 @@ from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
     ArtifactRecordV3,
     ArtifactSetWriterV3,
+    CanonicalValueV3,
+    RecordDependencyV3,
+    canonical_sha256_v3,
 )
 from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 from spaghetti_extractor.artifacts.scheduling import (
@@ -139,6 +150,12 @@ class IndirectTargetCertificatesV3Tests(unittest.TestCase):
         proposal_target: str | None = None,
         proposal_status: str = "recovered",
         external_targets: tuple[dict[str, object], ...] = (),
+        evaluation_method: str = "inductive_finite_values",
+        parametric_summary_status: str = "missing",
+        parametric_fact_target: str = "target",
+        parametric_include_exit: bool = True,
+        parametric_certificate_mutation: str | None = None,
+        external_profile_record_ids: tuple[str, ...] = (),
     ) -> tuple[dict[str, Path], DependencySchedulingManifestV3, str]:
         machine_ir = _write(
             root / "machine-ir",
@@ -255,6 +272,42 @@ class IndirectTargetCertificatesV3Tests(unittest.TestCase):
         )
         evidence_records: tuple[ArtifactRecordV3, ...] = ()
         if include_evidence:
+            evaluation_certificate = None
+            memory_record_id = memory_value.record_id
+            inductive_fact_id: str | None = fact.fact_id
+            if evaluation_method == "checked_parametric_summary":
+                memory_record_id = "not-applicable:checked-parametric-summary"
+                inductive_fact_id = None
+                evaluation_certificate = {
+                    "kind": "checked-parametric-target-fact-v3",
+                    "summary_record_id": "summary:dispatch",
+                    "exit_id": occurrence.exit_id,
+                    "source_unit_id": "dispatch",
+                    "source_rva": 0x1000,
+                    "source_event_index": None,
+                    "transfer_kind": "indirect_jump",
+                    "target_expression_sha256": canonical_sha256_v3(
+                        occurrence.target_expression.to_value()
+                    ),
+                    "value_fact_id": "fact:parametric-target",
+                    "external_target_bindings": [
+                        {
+                            "external_profile_record_id": profile_id,
+                            "external_target_sha256": canonical_sha256_v3(target),
+                        }
+                        for profile_id, target in sorted(
+                            zip(
+                                external_profile_record_ids,
+                                external_targets,
+                                strict=True,
+                            )
+                        )
+                    ],
+                }
+                if parametric_certificate_mutation == "wrong_fact":
+                    evaluation_certificate["value_fact_id"] = "fact:missing"
+                elif parametric_certificate_mutation == "extra_field":
+                    evaluation_certificate["unexpected"] = True
             evidence = TargetEvaluationEvidenceV3.create(
                 record_id=occurrence.exit_id,
                 source_unit_id="dispatch",
@@ -262,13 +315,14 @@ class IndirectTargetCertificatesV3Tests(unittest.TestCase):
                 source_event_index=None,
                 transfer_kind="indirect_jump",
                 target_expression=occurrence.target_expression.to_value(),
-                evaluation_method="inductive_finite_values",
-                memory_record_id=memory_value.record_id,
-                inductive_fact_id=fact.fact_id,
+                evaluation_method=evaluation_method,
+                memory_record_id=memory_record_id,
+                inductive_fact_id=inductive_fact_id,
                 target_unit_ids=(
                     () if evidence_target is None else (evidence_target,)
                 ),
                 external_targets=external_targets,
+                evaluation_certificate=evaluation_certificate,
             )
             evidence_records = (
                 TARGET_EVALUATION_EVIDENCE_CODEC_V3.write(evidence.record_id, evidence),
@@ -278,11 +332,90 @@ class IndirectTargetCertificatesV3Tests(unittest.TestCase):
             "indirect-target-evaluation-evidence-v3",
             evidence_records,
         )
+        summary_records: tuple[ArtifactRecordV3, ...] = ()
+        if parametric_summary_status != "missing":
+            complete = parametric_summary_status == "complete"
+            summary_fact = ValueFactV3(
+                "fact:parametric-target",
+                "finite",
+                tuple(
+                    sorted(
+                        (
+                            *(
+                                ()
+                                if evidence_target is None
+                                else (
+                                    ValueOriginV3(
+                                        "static_code_target",
+                                        parametric_fact_target,
+                                        0,
+                                    ),
+                                )
+                            ),
+                            *(
+                                ValueOriginV3("import_target", profile_id, 0)
+                                for profile_id in external_profile_record_ids
+                            ),
+                        )
+                    )
+                ),
+            )
+            summary_exit = ParametricIndirectExitV3(
+                occurrence.exit_id,
+                "dispatch",
+                canonical_sha256_v3(occurrence.target_expression.to_value()),
+                summary_fact.fact_id,
+                () if evidence_target is None else (evidence_target,),
+                external_profile_record_ids,
+            )
+            blocker = (
+                None
+                if complete
+                else PrimaryBlockerV3(
+                    "incomplete", "fixture_parametric_summary_incomplete"
+                )
+            )
+            summary = ParametricSccSummaryV3(
+                record_id="summary:dispatch",
+                scc_id="summary:dispatch",
+                status=parametric_summary_status,
+                authorizing=complete,
+                proposal_id=None,
+                member_unit_ids=("dispatch",),
+                recursive=False,
+                checked_base_path_unit_ids=(),
+                value_facts=(summary_fact,) if complete else (),
+                register_relations=(),
+                stack_accesses=(),
+                stack_cleanup_bytes=None,
+                return_address_preserved=True,
+                memory_effects=(),
+                call_effects=(),
+                returns=(),
+                indirect_exits=(summary_exit,)
+                if complete and parametric_include_exit
+                else (),
+                primary_blocker=blocker,
+                dependencies=(RecordDependencyV3("semantic_index", "dispatch"),),
+            )
+            summary_records = (
+                PARAMETRIC_SCC_SUMMARY_CODEC_V3.write(summary.record_id, summary),
+            )
+        parametric_summaries = _write(
+            root / "parametric-summaries",
+            "parametric-scc-summaries-v3",
+            summary_records,
+        )
+        external_profiles = _write(
+            root / "external-profiles", "external-profile-authority-v3", ()
+        )
         certificates = INDIRECT_TARGET_CERTIFICATES_PHASE_V3.run(
             output_directory=root / "certificates",
             inputs={
+                "external_profiles": external_profiles,
                 "inductive_inputs": inductive_inputs,
                 "memory_versions": memory,
+                "parametric_summaries": parametric_summaries,
                 "semantic_index": semantic,
                 "semantic_index_global": semantic,
                 "structural_targets": targets,
@@ -361,6 +494,123 @@ class IndirectTargetCertificatesV3Tests(unittest.TestCase):
                 "indirect_target_evaluation_certificate_missing",
                 {row["code"] for row in issues},
             )
+
+    def test_checked_parametric_summary_authorizes_exact_internal_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            inputs, _schedule, _exit_id = self._chain(
+                Path(temporary),
+                include_evidence=True,
+                evaluation_method="checked_parametric_summary",
+                parametric_summary_status="complete",
+            )
+            certificate = INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.read(
+                ArtifactSetReaderV3(inputs["target_certificates"]).get_record(
+                    "dispatch"
+                )
+            ).value.certificates[0]
+
+            self.assertEqual(certificate.status, "complete")
+            self.assertTrue(certificate.authorizing)
+            self.assertEqual(certificate.target_unit_ids, ("target",))
+            self.assertEqual(
+                {row.input_name for row in certificate.dependencies},
+                {
+                    "parametric_summaries",
+                    "semantic_index",
+                    "semantic_index_global",
+                    "structural_targets",
+                    "target_evidence",
+                    "transition_summaries",
+                },
+            )
+
+    def test_checked_parametric_summary_authorizes_exact_external_profile(self) -> None:
+        external_target = {
+            "machine_target_value": 0x7000,
+            "import": {"dll": "example.dll", "symbol": "Callback"},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            inputs, _schedule, _exit_id = self._chain(
+                Path(temporary),
+                include_evidence=True,
+                evidence_target=None,
+                external_targets=(external_target,),
+                evaluation_method="checked_parametric_summary",
+                parametric_summary_status="complete",
+                external_profile_record_ids=("external-profile:callback",),
+            )
+            certificate = INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.read(
+                ArtifactSetReaderV3(inputs["target_certificates"]).get_record(
+                    "dispatch"
+                )
+            ).value.certificates[0]
+
+            self.assertEqual(certificate.status, "complete")
+            self.assertTrue(certificate.authorizing)
+            self.assertEqual(
+                certificate.external_targets,
+                (CanonicalValueV3.of(external_target),),
+            )
+
+    def test_missing_or_incomplete_parametric_summary_remains_incomplete(self) -> None:
+        for summary_status, expected_code in (
+            ("missing", "parametric_target_summary_missing"),
+            ("incomplete", "parametric_target_summary_not_authorizing"),
+        ):
+            with self.subTest(summary_status=summary_status):
+                with tempfile.TemporaryDirectory() as temporary:
+                    inputs, _schedule, _exit_id = self._chain(
+                        Path(temporary),
+                        include_evidence=True,
+                        evaluation_method="checked_parametric_summary",
+                        parametric_summary_status=summary_status,
+                    )
+                    certificate = INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.read(
+                        ArtifactSetReaderV3(
+                            inputs["target_certificates"]
+                        ).get_record("dispatch")
+                    ).value.certificates[0]
+
+                    self.assertEqual(certificate.status, "incomplete")
+                    self.assertEqual(certificate.primary_blocker.code, expected_code)
+
+    def test_parametric_summary_omission_and_corruption_are_violated(self) -> None:
+        cases = (
+            (
+                {"parametric_include_exit": False},
+                "parametric_target_summary_exit_missing",
+            ),
+            (
+                {"parametric_certificate_mutation": "wrong_fact"},
+                "parametric_target_summary_exit_contradiction",
+            ),
+            (
+                {"parametric_certificate_mutation": "extra_field"},
+                "parametric_target_certificate_malformed",
+            ),
+            (
+                {"parametric_fact_target": "dispatch"},
+                "parametric_target_membership_contradiction",
+            ),
+        )
+        for overrides, expected_code in cases:
+            with self.subTest(expected_code=expected_code):
+                with tempfile.TemporaryDirectory() as temporary:
+                    inputs, _schedule, _exit_id = self._chain(
+                        Path(temporary),
+                        include_evidence=True,
+                        evaluation_method="checked_parametric_summary",
+                        parametric_summary_status="complete",
+                        **overrides,
+                    )
+                    certificate = INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.read(
+                        ArtifactSetReaderV3(
+                            inputs["target_certificates"]
+                        ).get_record("dispatch")
+                    ).value.certificates[0]
+
+                    self.assertEqual(certificate.status, "violated")
+                    self.assertEqual(certificate.primary_blocker.code, expected_code)
 
     def test_checked_evidence_overrides_only_an_incomplete_structural_proposal(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

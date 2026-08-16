@@ -43,6 +43,7 @@ from ..external.machine_import_profiles import (
     load_machine_import_profile_set,
 )
 from ..errors import ToolkitInputError
+from ..external.callbacks import parse_callback_source
 from ..pe32.image import parse_pe_image
 from ..pe32.model import ParsedPEImage
 from ..authority._schema import AnalysisV3Error, mapping, sequence, text, uint
@@ -52,6 +53,7 @@ from ..authority.external_site_records import (
     EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
     EXTERNAL_PROFILE_CODEC_V3,
     EXTERNAL_PROFILE_ISSUE_CODEC_V3,
+    ExternalCallArityV3,
     ExternalProfileIssueV3,
     ExternalProfileV3,
 )
@@ -60,6 +62,13 @@ from ..authority.root_closure import (
     LAUNCH_ROOT_EVIDENCE_CODEC_V3,
     LaunchRootEvidenceV3,
     launch_root_id_v3,
+)
+from ..authority.static_value_records import (
+    PE32_IMPORT_SLOT_CODEC_V3,
+    PE32_STATIC_IMAGE_CODEC_V3,
+    STATIC_VALUE_ORIGINS_ARTIFACT_KIND_V3,
+    PE32ImportSlotV3,
+    PE32StaticImageV3,
 )
 
 
@@ -254,12 +263,58 @@ def _adapt_profile_contract(
 ) -> ExternalProfileV3 | AdapterIssueV3:
     contract = selected.contract
     subject = f"{selected.identity.dll}!{selected.identity.value}"
-    if selected.arity_kind != "fixed" or selected.argument_words is None:
+    if selected.arity_kind == "fixed" and selected.argument_words is not None:
+        arity = ExternalCallArityV3.fixed(selected.argument_words)
+    elif selected.arity_kind == "variadic":
+        minimum_words = contract.get("minimum_argument_words")
+        if (
+            not isinstance(minimum_words, int)
+            or isinstance(minimum_words, bool)
+            or not 0 <= minimum_words <= 256
+        ):
+            return AdapterIssueV3(
+                "violated",
+                "external_profile_arity_malformed",
+                subject,
+                "variadic profile entry has no valid minimum argument-word prefix",
+            )
+        raw_forwarding = contract.get("raw_caller_stack_suffix_forwarding")
+        if raw_forwarding is None:
+            return AdapterIssueV3(
+                "incomplete",
+                "external_variadic_forwarding_missing",
+                subject,
+                "variadic profile entry has no exact raw caller-stack suffix forwarding contract",
+            )
+        if not isinstance(raw_forwarding, Mapping):
+            return AdapterIssueV3(
+                "violated",
+                "external_variadic_forwarding_malformed",
+                subject,
+                "variadic profile forwarding evidence is not an object",
+            )
+        try:
+            arity = ExternalCallArityV3.parse(
+                {
+                    "kind": "variadic",
+                    "minimum_words": minimum_words,
+                    "raw_caller_stack_suffix_forwarding": dict(raw_forwarding),
+                },
+                label="external profile arity",
+            )
+        except AnalysisV3Error:
+            return AdapterIssueV3(
+                "violated",
+                "external_variadic_forwarding_contradiction",
+                subject,
+                "variadic profile forwarding evidence contradicts the exact v3 contract",
+            )
+    else:
         return AdapterIssueV3(
             "incomplete",
-            "external_profile_arity_not_exact",
+            "external_profile_arity_unsupported",
             subject,
-            "native v3 external profiles currently require one exact argument-word count",
+            "native v3 external profiles require fixed arity or exact raw-suffix variadic forwarding",
         )
     disposition = contract.get("disposition", "returns")
     dispositions = {
@@ -297,6 +352,27 @@ def _adapt_profile_contract(
             subject,
             "profile entry lacks an exact ABI, memory, world, or callback effect",
         )
+    if mapped_callback == "registers":
+        if not isinstance(contract.get("callback_source"), Mapping):
+            return AdapterIssueV3(
+                "incomplete",
+                "external_profile_callback_source_missing",
+                subject,
+                "callback profile entry has no exact callback source",
+            )
+        try:
+            parse_callback_source(
+                contract,
+                argument_words=arity.minimum_words,
+                context=f"external profile {subject}",
+            )
+        except ToolkitInputError as exc:
+            return AdapterIssueV3(
+                "violated",
+                "external_profile_callback_source_malformed",
+                subject,
+                str(exc),
+            )
     machine_contract = {
         key: value
         for key, value in contract.items()
@@ -304,7 +380,6 @@ def _adapt_profile_contract(
     }
     machine_contract.update(
         {
-            "argument_words": selected.argument_words,
             "disposition": dispositions[str(disposition)],
             "memory_effect": memory_effect,
             "world_effect": world_effect,
@@ -321,17 +396,23 @@ def _adapt_profile_contract(
             ),
         }
     )
+    if arity.kind == "fixed":
+        machine_contract["argument_words"] = arity.words
+    else:
+        machine_contract.pop("argument_words", None)
+        machine_contract["arity_contract"] = arity.to_payload()
     return ExternalProfileV3.create(
         profile_id=selected.profile_id,
         profile_sha256=selected.profile_sha256,
         identity=_import_identity(selected),
         allowed_transfers=("call", "jump"),
         allowed_dispositions=(dispositions[str(disposition)],),
-        argument_words=selected.argument_words,
+        argument_words=arity.exact_words,
         memory_effect=memory_effect,
         world_effect=world_effect,
         callback_effect=mapped_callback,
         machine_contract=machine_contract,
+        arity=arity,
     )
 
 
@@ -718,6 +799,83 @@ def _aggregate_status(issues: Iterable[AdapterIssueV3]) -> str:
     return "complete"
 
 
+def _adapt_static_value_origins(
+    binary_path: Path,
+    *,
+    binary_binding: ArtifactBindingV3,
+) -> tuple[tuple[ArtifactRecordV3, ...], str, tuple[AdapterIssueV3, ...]]:
+    """Extract exact loader-defined import slots without reading thunk values."""
+
+    try:
+        image = parse_pe_image(binary_path)
+        if image.machine != "i386" or image.bitness != 32:
+            raise ExternalInputAdapterV3Error(
+                "static-value adapter requires PE32 i386"
+            )
+        if image.sha256 != binary_binding.sha256:
+            raise ExternalInputAdapterV3Error(
+                "static-value adapter binary hash disagrees with its binding"
+            )
+        image_record = PE32StaticImageV3.create(
+            image_base=image.image_base,
+            size_of_image=image.size_of_image,
+        )
+        records: list[ArtifactRecordV3] = [
+            PE32_STATIC_IMAGE_CODEC_V3.write(
+                image_record.record_id, image_record
+            )
+        ]
+        issues: list[AdapterIssueV3] = []
+        slot_rvas: set[int] = set()
+        for imported in image.imports:
+            if imported.thunk_rva is None:
+                issues.append(
+                    AdapterIssueV3(
+                        "incomplete",
+                        "pe32_import_slot_rva_missing",
+                        f"{imported.dll}!{imported.symbol or imported.ordinal}",
+                        "the exact PE parser did not recover this import's IAT slot",
+                    )
+                )
+                continue
+            if imported.thunk_rva in slot_rvas:
+                issues.append(
+                    AdapterIssueV3(
+                        "violated",
+                        "pe32_import_slot_ambiguous",
+                        f"rva:{imported.thunk_rva:#x}",
+                        "multiple imports claim one exact IAT slot",
+                    )
+                )
+                continue
+            slot_rvas.add(imported.thunk_rva)
+            slot = PE32ImportSlotV3.create(
+                image_base=image.image_base,
+                slot_rva=imported.thunk_rva,
+                dll=imported.dll,
+                symbol=imported.symbol,
+                ordinal=(
+                    imported.ordinal if imported.symbol is None else None
+                ),
+            )
+            records.append(
+                PE32_IMPORT_SLOT_CODEC_V3.write(slot.record_id, slot)
+            )
+        return (
+            tuple(sorted(records, key=lambda row: row.record_id)),
+            _aggregate_status(issues),
+            tuple(sorted(set(issues))),
+        )
+    except (ExternalInputAdapterV3Error, ToolkitInputError, AnalysisV3Error) as exc:
+        issue = AdapterIssueV3(
+            "violated",
+            "pe32_static_value_source_violated",
+            "static-value-origins",
+            str(exc),
+        )
+        return (), "violated", (issue,)
+
+
 def adapt_external_inputs_v3(
     *,
     binary: Path,
@@ -743,9 +901,13 @@ def adapt_external_inputs_v3(
         binary_binding=binary_binding,
         launch_template=launch_template,
     )
+    static_records, static_status, static_issues = _adapt_static_value_origins(
+        binary, binary_binding=binary_binding
+    )
     output_directory.mkdir(parents=True, exist_ok=False)
     profile_output = output_directory / "external-profiles"
     root_output = output_directory / "launch-roots"
+    static_output = output_directory / "static-value-origins"
     profile_manifest = ArtifactSetWriterV3(
         artifact_kind=EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
         bindings=profiles.bindings,
@@ -756,6 +918,11 @@ def adapt_external_inputs_v3(
         bindings=roots.bindings,
         status=roots.artifact_status,
     ).write(root_output, roots.records)
+    static_manifest = ArtifactSetWriterV3(
+        artifact_kind=STATIC_VALUE_ORIGINS_ARTIFACT_KIND_V3,
+        bindings=(binary_binding,),
+        status=static_status,
+    ).write(static_output, static_records)
     metadata = {
         "format": EXTERNAL_INPUT_ADAPTER_FORMAT_V3,
         "binary": {
@@ -777,6 +944,13 @@ def adapt_external_inputs_v3(
             "artifact_status": root_manifest.status,
             "record_ids": [record.record_id for record in roots.records],
             "issues": [issue.to_payload() for issue in roots.issues],
+        },
+        "static_value_origins": {
+            "artifact_kind": STATIC_VALUE_ORIGINS_ARTIFACT_KIND_V3,
+            "artifact_id": static_manifest.artifact_id,
+            "artifact_status": static_manifest.status,
+            "record_ids": [record.record_id for record in static_records],
+            "issues": [issue.to_payload() for issue in static_issues],
         },
     }
     (output_directory / "metadata.json").write_bytes(

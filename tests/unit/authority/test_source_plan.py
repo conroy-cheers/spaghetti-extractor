@@ -9,8 +9,14 @@ from spaghetti_extractor.authority._schema import AnalysisV3Error
 from spaghetti_extractor.authority.source_plan import prepare_analysis_source_v3
 
 
-def _unit(unit_id: str, start: int, targets: list[int]) -> dict[str, object]:
-    return {
+def _unit(
+    unit_id: str,
+    start: int,
+    targets: list[int],
+    *,
+    call_targets: tuple[int, ...] = (),
+) -> dict[str, object]:
+    unit = {
         "format": "spaghetti-extractor-machine-ir-v2",
         "record_kind": "unit",
         "id": unit_id,
@@ -24,7 +30,14 @@ def _unit(unit_id: str, start: int, targets: list[int]) -> dict[str, object]:
             "direct_targets": targets,
             "has_indirect_target": False,
         },
+        "semantics": {
+            "external_events": [
+                {"kind": "internal_call", "target_rva": target}
+                for target in call_targets
+            ],
+        },
     }
+    return unit
 
 
 def _write_machine_ir(path: Path, rows: list[dict[str, object]]) -> None:
@@ -119,6 +132,49 @@ class AnalysisSourcePlanV3Tests(unittest.TestCase):
             self.assertEqual(
                 unresolved["targets"],
                 [{"source_unit_id": "unit:a", "target_rva": 0xDEAD}],
+            )
+
+    def test_direct_internal_calls_are_dependency_edges(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            machine_ir = root / "machine-ir.jsonl"
+            binary = root / "fixture.exe"
+            binary.write_bytes(b"MZfixture")
+            _write_machine_ir(
+                machine_ir,
+                [
+                    _unit(
+                        "unit:caller",
+                        0x1000,
+                        [],
+                        call_targets=(0x1010,),
+                    ),
+                    _unit(
+                        "unit:callee",
+                        0x1010,
+                        [],
+                        call_targets=(0x1000,),
+                    ),
+                ],
+            )
+
+            plan = prepare_analysis_source_v3(
+                machine_ir=machine_ir,
+                binary=binary,
+                output_directory=root / "out",
+            )
+
+            edges = json.loads(
+                (root / "out" / plan["record_edges"]["filename"]).read_text(
+                    encoding="ascii"
+                )
+            )
+            by_id = {row["node_id"]: row for row in edges["nodes"]}
+            self.assertEqual(
+                by_id["unit:caller"]["dependencies"], ["unit:callee"]
+            )
+            self.assertEqual(
+                by_id["unit:callee"]["dependencies"], ["unit:caller"]
             )
 
     def test_duplicate_entries_fail_closed(self) -> None:

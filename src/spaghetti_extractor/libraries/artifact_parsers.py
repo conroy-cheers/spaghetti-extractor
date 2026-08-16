@@ -326,21 +326,44 @@ def _coff_function_fingerprints(
         if section_number <= 0 or section_number > len(sections):
             continue
         section = sections[section_number - 1]
-        code_like = bool(int(symbol["type"]) & 0x20) or (
-            bool(section["contains_code"]) and int(symbol["storage_class"]) in {2, 3}
+        function_typed = bool(int(symbol["type"]) & 0x20)
+        name = str(symbol["name"])
+        section_pseudo_symbol = (
+            not function_typed
+            and (name == str(section["name"]) or name.startswith("."))
+        )
+        code_like = function_typed or (
+            bool(section["contains_code"])
+            and int(symbol["storage_class"]) in {2, 3}
+            and not section_pseudo_symbol
         )
         if code_like and symbol["name"]:
             by_section[section_number].append(symbol)
     for section_number, members in sorted(by_section.items()):
         section = sections[section_number - 1]
         data = bytes(section["data"])
-        ordered = sorted(members, key=lambda item: (int(item["value"]), str(item["name"])))
+        aliases_by_offset: dict[int, list[Mapping[str, Any]]] = defaultdict(list)
+        for symbol in members:
+            aliases_by_offset[int(symbol["value"])].append(symbol)
+        ordered_offsets = sorted(aliases_by_offset)
+        ordered = [
+            min(aliases_by_offset[offset], key=lambda item: str(item["name"]))
+            for offset in ordered_offsets
+        ]
         for position, symbol in enumerate(ordered):
             start = int(symbol["value"])
+            aliases = sorted(
+                {
+                    str(item["name"])
+                    for item in aliases_by_offset[start]
+                    if item["name"]
+                }
+            )
             size = 0
-            aux = bytes(symbol["aux"])
-            if int(symbol["aux_count"]) and len(aux) >= 8 and int(symbol["type"]) & 0x20:
-                size = int.from_bytes(aux[4:8], "little")
+            for alias in aliases_by_offset[start]:
+                aux = bytes(alias["aux"])
+                if int(alias["aux_count"]) and len(aux) >= 8 and int(alias["type"]) & 0x20:
+                    size = max(size, int.from_bytes(aux[4:8], "little"))
             if size <= 0:
                 next_offsets = [int(other["value"]) for other in ordered[position + 1 :] if int(other["value"]) > start]
                 end = next_offsets[0] if next_offsets else len(data)
@@ -360,11 +383,22 @@ def _coff_function_fingerprints(
                     continue
                 local = relocation_offset - start
                 masked[local : local + width] = b"\0" * width
-                holes.append({"offset": local, "width": width, "type": int(relocation["type"])})
+                target_symbol = str(relocation.get("target_symbol", ""))
+                target_section = int(relocation.get("target_section_number", 0))
+                holes.append(
+                    {
+                        "offset": local,
+                        "width": width,
+                        "type": int(relocation["type"]),
+                        "target_symbol": target_symbol,
+                        "target_section": target_section,
+                    }
+                )
             fixed = len(blob) - sum(item["width"] for item in holes)
             functions.append(
                 {
                     "name": str(symbol["name"]),
+                    "aliases": aliases,
                     "section": str(section["name"]),
                     "section_index": section_number,
                     "offset": start,
@@ -375,6 +409,13 @@ def _coff_function_fingerprints(
                     "normalized_sha256": sha256(masked).hexdigest(),
                     "masked_bytes": bytes(masked).hex(),
                     "relocation_holes": holes,
+                    "relocation_targets": sorted(
+                        {
+                            str(item["target_symbol"])
+                            for item in holes
+                            if item["target_symbol"]
+                        }
+                    ),
                     "fixed_bytes": fixed,
                     "matchable": fixed >= 4,
                     "match_strength": (

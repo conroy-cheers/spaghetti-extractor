@@ -1,0 +1,41 @@
+{
+  "format": "spaghetti-extractor-component-machine-binding-declaration-v2",
+  "id": "short-option-classifier",
+  "unit_ids": [
+    "semantic-transfer:original-cutpoint-000011ac-000011b3"
+  ],
+  "operations": [
+    {
+      "operation_id": "classify",
+      "entry_unit_ids": [
+        "semantic-transfer:original-cutpoint-000011ac-000011b3"
+      ],
+      "exit_unit_ids": [
+        "semantic-transfer:original-cutpoint-000011ac-000011b3"
+      ],
+      "parameters": [
+        {
+          "id": "value",
+          "projection": {
+            "kind": "register",
+            "register": "ecx",
+            "width": 16,
+            "at": "entry"
+          }
+        }
+      ],
+      "results": [
+        {
+          "id": "route",
+          "projection": {"kind": "control_condition", "at": "exit"}
+        }
+      ],
+      "state": [],
+      "preserved_state_ids": [],
+      "effects": [],
+      "callback_operation_ids": [],
+      "continuation_unit_ids": []
+    }
+  ],
+  "services": []
+}

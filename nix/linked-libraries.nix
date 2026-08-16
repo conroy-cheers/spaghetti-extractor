@@ -9,11 +9,13 @@
   artifactInputs ? null,
   artifactRoot ? null,
   catalogIndexes ? [ ],
+  abiCatalogs ? [ ],
   catalogLock ? null,
-  review ? null,
-  interfaceCatalog ? null,
-  assignments ? null,
-  machineImportReport ? null,
+  implementations ? { },
+  adoptionIntents ? { },
+  canonicalExternalSites ? null,
+  targetCertificates ? null,
+  targetId ? namePrefix,
 }:
 
 assert (artifactInputs == null) == (artifactRoot == null);
@@ -21,364 +23,295 @@ assert (artifactInputs == null) == (artifactRoot == null);
 let
   lib = pkgs.lib;
   python = "${pythonEnv}/bin/python3";
-  phasePythonSource = import ./python-module-closure.nix {
-    phaseRole = "proposal";
-    inherit pkgs;
-    modules = [
-      "spaghetti_extractor.libraries.catalog"
-      "spaghetti_extractor.libraries.interfaces"
-      "spaghetti_extractor.libraries.matching"
-      "spaghetti_extractor.libraries.refinement"
-      "spaghetti_extractor.libraries.replacements"
-      "spaghetti_extractor.util"
-    ];
-    name = "${namePrefix}-linked-libraries-python-closure";
+  identifier = value:
+    builtins.isString value && value != ""
+    && builtins.match "[A-Za-z0-9][A-Za-z0-9._-]*" value != null;
+  asStoreInput = name: value:
+    if value != null && builtins.typeOf value == "path" then
+      builtins.path { path = value; inherit name; }
+    else value;
+  mkPhaseSource = phase: role: modules: import ./python-module-closure.nix {
+    phaseRole = role;
+    inherit pkgs modules;
+    name = "${namePrefix}-libraries-${phase}-python-closure";
   };
+  environment = phaseSource: ''
+    export PYTHONHASHSEED=0
+    export PYTHONDONTWRITEBYTECODE=1
+    export LC_ALL=C.UTF-8
+    export SOURCE_DATE_EPOCH=1
+    export PYTHONPATH=${phaseSource}/src
+  '';
   commonAttrs = {
     nativeBuildInputs = [ pythonEnv pkgs.jq ];
     preferLocalBuild = false;
     allowSubstitutes = true;
     __contentAddressed = true;
   };
-  environment = ''
-    export PYTHONHASHSEED=0
-    export LC_ALL=C.UTF-8
-    export SOURCE_DATE_EPOCH=1
-    export PYTHONPATH=${phasePythonSource}/src
-  '';
-  asStoreInput = name: value:
-    if value != null && builtins.typeOf value == "path" then
-      builtins.path { path = value; inherit name; }
-    else
-      value;
+
+  catalogSource = mkPhaseSource "catalog" "proposal" [
+    "spaghetti_extractor.libraries.catalog"
+  ];
+  targetSignatureSource = mkPhaseSource "target-signature" "proposal" [
+    "spaghetti_extractor.libraries.signature_graph"
+  ];
+  catalogSearchSource = mkPhaseSource "catalog-search" "proposal" [
+    "spaghetti_extractor.libraries.abi_catalog"
+  ];
+  releaseSource = mkPhaseSource "release-hypotheses" "proposal" [
+    "spaghetti_extractor.libraries.v4_matching"
+  ];
+  emptyReleaseSource = mkPhaseSource "empty-release-hypotheses" "proposal" [
+    "spaghetti_extractor.libraries.v4_record_support"
+    "spaghetti_extractor.util"
+  ];
   artifactInputsInput = asStoreInput "library-artifact-inputs.json" artifactInputs;
   artifactRootInput = asStoreInput "library-artifact-root" artifactRoot;
   catalogIndexInputs = map (asStoreInput "library-artifact-index.json") catalogIndexes;
+  abiCatalogInputs = map (asStoreInput "library-abi-catalog-v3.json") abiCatalogs;
   catalogLockInput = asStoreInput "library-catalog-lock.json" catalogLock;
-  reviewInput = asStoreInput "linked-island-review.json" review;
-  interfaceCatalogInput = asStoreInput "interface-contract-catalog.json" interfaceCatalog;
-  assignmentsInput = asStoreInput "linked-interface-assignments.json" assignments;
-  machineImportReportInput = asStoreInput "machine-import-contract-report.json" machineImportReport;
+  implementationInputs = lib.mapAttrs
+    (id: value: asStoreInput "${id}-reusable-library-implementation-v1.json" value)
+    implementations;
+  intentInputs = lib.mapAttrs
+    (id: value: asStoreInput "${id}-library-adoption-intent-v1.json" value)
+    adoptionIntents;
+  intentPayloads = lib.mapAttrs
+    (_: value: builtins.fromJSON (builtins.readFile value))
+    intentInputs;
 
   artifactIndex =
-    if artifactInputs == null then
-      null
-    else
-      pkgs.runCommand "${namePrefix}-library-artifact-index-v2" commonAttrs ''
-        set -euo pipefail
-        ${environment}
-        mkdir -p "$out"
-        ${python} - \
-          ${lib.escapeShellArg artifactInputsInput} \
-          ${lib.escapeShellArg artifactRootInput} \
-          "$out/library-artifact-index.json" <<'PY'
-        import pathlib
-        import sys
-        from spaghetti_extractor.libraries.catalog import index_library_artifacts
-
-        index_library_artifacts(
-            inputs=pathlib.Path(sys.argv[1]),
-            artifact_root=pathlib.Path(sys.argv[2]),
-            out=pathlib.Path(sys.argv[3]),
-        )
-        PY
-        jq -e '
-          (.format == "spaghetti-extractor-library-artifact-index-v1" or
-           .format == "spaghetti-extractor-library-artifact-index-v2") and
-          .status == "indexed" and
-          (.executes_original_binary | not) and
-          (.authority.can_authorize_replacement | not)
-        ' "$out/library-artifact-index.json" >/dev/null
-      '';
-
-  allIndexes = catalogIndexInputs ++ lib.optional (artifactIndex != null) "${artifactIndex}/library-artifact-index.json";
-
-  generatedCatalogLock =
-    if catalogLockInput != null || allIndexes == [ ] then
-      null
-    else
-      pkgs.runCommand "${namePrefix}-library-catalog-lock-v1" commonAttrs ''
-        set -euo pipefail
-        ${environment}
-        mkdir -p "$out"
-        ${python} - "$out/library-catalog-lock.json" ${lib.escapeShellArgs allIndexes} <<'PY'
-        import pathlib
-        import sys
-        from spaghetti_extractor.libraries.catalog import lock_library_catalog
-
-        lock_library_catalog(
-            indexes=[pathlib.Path(value) for value in sys.argv[2:]],
-            out=pathlib.Path(sys.argv[1]),
-        )
-        PY
-        jq -e '
-          .format == "spaghetti-extractor-library-catalog-lock-v1" and
-          .status == "locked"
-        ' "$out/library-catalog-lock.json" >/dev/null
-      '';
-
-  effectiveCatalogLock =
-    if catalogLockInput != null then catalogLockInput
-    else if generatedCatalogLock != null then "${generatedCatalogLock}/library-catalog-lock.json"
-    else null;
-
-  matchEvidence = pkgs.runCommand
-    "${namePrefix}-library-match-evidence-v1"
-    commonAttrs
-    ''
+    if artifactInputs == null then null else
+    pkgs.runCommand "${namePrefix}-library-artifact-index-v2" commonAttrs ''
       set -euo pipefail
-      ${environment}
+      ${environment catalogSource}
       mkdir -p "$out"
       ${python} - \
-        ${lib.escapeShellArg original} \
-        ${lib.escapeShellArg machineIr} \
-        ${if effectiveCatalogLock == null then "-" else lib.escapeShellArg effectiveCatalogLock} \
-        ${if reviewInput == null then "-" else lib.escapeShellArg reviewInput} \
-        "$out/match-evidence.json" <<'PY'
+        ${lib.escapeShellArg artifactInputsInput} \
+        ${lib.escapeShellArg artifactRootInput} \
+        "$out/library-artifact-index.json" <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.libraries.matching import propose_library_match_evidence
+      from spaghetti_extractor.libraries.catalog import index_library_artifacts
 
-      original, machine_ir, catalog_lock, review, output = sys.argv[1:]
-      propose_library_match_evidence(
-          original=pathlib.Path(original),
-          machine_ir=pathlib.Path(machine_ir),
-          catalog_lock=(
-              None if catalog_lock == "-" else pathlib.Path(catalog_lock)
-          ),
-          review=None if review == "-" else pathlib.Path(review),
-          out=pathlib.Path(output),
-      )
-      PY
-      jq -e '
-        .format == "spaghetti-extractor-library-match-evidence-v1" and
-        .status == "proposed" and
-        (.executes_original_binary | not) and
-        (.authority.can_authorize_replacement | not)
-      ' "$out/match-evidence.json" >/dev/null
-    '';
-
-  libraryHypotheses = pkgs.runCommand
-    "${namePrefix}-library-hypothesis-set-v1"
-    commonAttrs
-    ''
-      set -euo pipefail
-      ${environment}
-      mkdir -p "$out"
-      ${python} - \
-        ${matchEvidence}/match-evidence.json \
-        "$out/library-hypotheses.json" <<'PY'
-      import pathlib
-      import sys
-      from spaghetti_extractor.libraries.matching import infer_library_hypotheses
-
-      infer_library_hypotheses(
-          match_evidence=pathlib.Path(sys.argv[1]),
-          out=pathlib.Path(sys.argv[2]),
-      )
-      PY
-      jq -e '
-        .format == "spaghetti-extractor-library-hypothesis-set-v1" and
-        (.status == "inferred" or .status == "incomplete") and
-        (.executes_original_binary | not) and
-        (.authority.can_authorize_replacement | not)
-      ' "$out/library-hypotheses.json" >/dev/null
-    '';
-
-  dynamicRequirements = pkgs.runCommand
-    "${namePrefix}-dynamic-library-requirements-v1"
-    commonAttrs
-    ''
-      set -euo pipefail
-      ${environment}
-      mkdir -p "$out"
-      ${python} - \
-        ${lib.escapeShellArg machineIr} \
-        ${if machineImportReportInput == null then "-" else lib.escapeShellArg machineImportReportInput} \
-        "$out/dynamic-library-requirements.json" <<'PY'
-      import pathlib
-      import sys
-      from spaghetti_extractor.libraries.refinement import derive_dynamic_library_requirements
-
-      derive_dynamic_library_requirements(
-          machine_ir=pathlib.Path(sys.argv[1]),
-          machine_import_report=(
-              None if sys.argv[2] == "-" else pathlib.Path(sys.argv[2])
-          ),
+      index_library_artifacts(
+          inputs=pathlib.Path(sys.argv[1]),
+          artifact_root=pathlib.Path(sys.argv[2]),
           out=pathlib.Path(sys.argv[3]),
       )
       PY
       jq -e '
-        .format == "spaghetti-extractor-dynamic-library-requirements-v1" and
-        (.status == "qualified" or .status == "incomplete") and
+        (.format == "spaghetti-extractor-library-artifact-index-v1" or
+         .format == "spaghetti-extractor-library-artifact-index-v2") and
+        .status == "indexed" and
         (.executes_original_binary | not) and
-        (.authority.same_abi_implies_same_behavior | not)
-      ' "$out/dynamic-library-requirements.json" >/dev/null
+        (.authority.can_authorize_replacement | not)
+      ' "$out/library-artifact-index.json" >/dev/null
     '';
 
-  linkedIslands = pkgs.runCommand
-    "${namePrefix}-linked-island-manifest-v2"
-    commonAttrs
-    ''
+  allIndexes = catalogIndexInputs
+    ++ lib.optional (artifactIndex != null) "${artifactIndex}/library-artifact-index.json";
+  generatedCatalogLock =
+    if catalogLockInput != null || allIndexes == [ ] then null else
+    pkgs.runCommand "${namePrefix}-library-catalog-lock-v1" commonAttrs ''
       set -euo pipefail
-      ${environment}
+      ${environment catalogSource}
       mkdir -p "$out"
-      ${python} - \
-        ${lib.escapeShellArg original} \
-        ${lib.escapeShellArg machineIr} \
-        ${matchEvidence}/match-evidence.json \
-        ${libraryHypotheses}/library-hypotheses.json \
-        ${if reviewInput == null then "-" else lib.escapeShellArg reviewInput} \
-        "$out/linked-islands.json" <<'PY'
+      ${python} - "$out/library-catalog-lock.json" ${lib.escapeShellArgs allIndexes} <<'PY'
       import pathlib
       import sys
-      from spaghetti_extractor.libraries.refinement import refine_linked_islands
+      from spaghetti_extractor.libraries.catalog import lock_library_catalog
 
-      original, machine_ir, evidence, hypotheses, review, output = sys.argv[1:]
-      refine_linked_islands(
-          original=pathlib.Path(original),
-          machine_ir=pathlib.Path(machine_ir),
-          match_evidence=pathlib.Path(evidence),
-          hypotheses=pathlib.Path(hypotheses),
-          review=None if review == "-" else pathlib.Path(review),
-          out=pathlib.Path(output),
+      lock_library_catalog(
+          indexes=[pathlib.Path(value) for value in sys.argv[2:]],
+          out=pathlib.Path(sys.argv[1]),
+      )
+      PY
+      jq -e '.format == "spaghetti-extractor-library-catalog-lock-v1" and .status == "locked"' \
+        "$out/library-catalog-lock.json" >/dev/null
+    '';
+  effectiveCatalogLock =
+    if catalogLockInput != null then catalogLockInput
+    else if generatedCatalogLock != null then "${generatedCatalogLock}/library-catalog-lock.json"
+    else null;
+  catalogSearchInputs = lib.optional (effectiveCatalogLock != null) effectiveCatalogLock
+    ++ abiCatalogInputs;
+
+  targetSignatureGraph = pkgs.runCommand
+    "${namePrefix}-library-target-signature-graph-v3" commonAttrs ''
+      set -euo pipefail
+      ${environment targetSignatureSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${lib.escapeShellArg machineIr} \
+        ${lib.escapeShellArg original} \
+        "$out/target-signature-graph.json" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.libraries.signature_graph import build_target_signature_graph
+
+      build_target_signature_graph(
+          machine_ir=pathlib.Path(sys.argv[1]),
+          original_pe=pathlib.Path(sys.argv[2]),
+          out=pathlib.Path(sys.argv[3]),
       )
       PY
       jq -e '
-        .format == "spaghetti-extractor-linked-island-manifest-v2" and
-        (.status == "classified" or .status == "incomplete") and
-        (.executes_original_binary | not) and
-        .coverage.classified_exactly_once and
-        .coverage.classified_units == .coverage.machine_units and
-        (.authority.artifact_recognition_authorizes_replacement | not)
-      ' "$out/linked-islands.json" >/dev/null
+        .format == "spaghetti-extractor-library-target-signature-graph-v3" and
+        (.status == "complete" or .status == "incomplete" or .status == "violated") and
+        (.executes_original_binary | not)
+      ' "$out/target-signature-graph.json" >/dev/null
     '';
 
-  generatedInterfaceCatalog =
-    if interfaceCatalog != null then
-      null
-    else
-      pkgs.runCommand "${namePrefix}-empty-interface-contract-catalog-v1" commonAttrs ''
+  catalogSearchIndex =
+    if catalogSearchInputs == [ ] then null else
+    pkgs.runCommand "${namePrefix}-library-catalog-search-index-v3" commonAttrs ''
+      set -euo pipefail
+      ${environment catalogSearchSource}
+      mkdir -p "$out"
+      ${python} - "$out/catalog-search-index.json" ${lib.escapeShellArgs catalogSearchInputs} <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.libraries.abi_catalog import build_catalog_search_index
+
+      build_catalog_search_index(
+          catalog_lock_or_indexes=[pathlib.Path(value) for value in sys.argv[2:]],
+          out=pathlib.Path(sys.argv[1]),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-library-catalog-search-index-v3" and
+        (.status == "complete" or .status == "incomplete" or .status == "violated") and
+        (.executes_original_binary | not)
+      ' "$out/catalog-search-index.json" >/dev/null
+    '';
+
+  releaseHypotheses =
+    if catalogSearchIndex == null then
+      pkgs.runCommand "${namePrefix}-library-release-hypotheses-empty-v4" commonAttrs ''
         set -euo pipefail
-        ${environment}
+        ${environment emptyReleaseSource}
         mkdir -p "$out"
-        ${python} - "$out/interface-contract-catalog.json" <<'PY'
+        ${python} - ${lib.escapeShellArg targetId} "$out/manifest.json" <<'PY'
         import pathlib
         import sys
-        from spaghetti_extractor.libraries.interfaces import bind_interface_contract_catalog
+        from spaghetti_extractor.artifacts.formats import LIBRARY_RELEASE_HYPOTHESES_SET_V4_FORMAT
+        from spaghetti_extractor.libraries.v4_record_support import canonical_sha256
         from spaghetti_extractor.util import write_json
 
-        write_json(pathlib.Path(sys.argv[1]), bind_interface_contract_catalog({
-            "format": "spaghetti-extractor-interface-contract-catalog-v1",
-            "catalog_id": "empty-unqualified-interface-catalog-v1",
-            "contracts": [],
-            "replacements": [],
-        }))
+        core = {
+            "format": LIBRARY_RELEASE_HYPOTHESES_SET_V4_FORMAT,
+            "target_id": sys.argv[1],
+            "target_binary_sha256": "0" * 64,
+            "target_signature_graph_sha256": "0" * 64,
+            "catalog_search_index_sha256": "0" * 64,
+            "releases": [],
+        }
+        write_json(pathlib.Path(sys.argv[2]), {**core, "manifest_sha256": canonical_sha256(core)})
         PY
-      '';
-
-  effectiveInterfaceCatalog =
-    if interfaceCatalogInput != null then interfaceCatalogInput
-    else "${generatedInterfaceCatalog}/interface-contract-catalog.json";
-
-  generatedAssignments =
-    if assignments != null then
-      null
+      ''
     else
-      pkgs.runCommand "${namePrefix}-empty-linked-interface-assignments-v1" commonAttrs ''
+      pkgs.runCommand "${namePrefix}-library-release-hypotheses-v4" commonAttrs ''
         set -euo pipefail
-        ${environment}
+        ${environment releaseSource}
         mkdir -p "$out"
         ${python} - \
-          ${linkedIslands}/linked-islands.json \
-          "$out/linked-interface-assignments.json" <<'PY'
-        import json
+          ${lib.escapeShellArg targetId} \
+          ${targetSignatureGraph}/target-signature-graph.json \
+          ${catalogSearchIndex}/catalog-search-index.json \
+          ${lib.escapeShellArg original} \
+          "$out" \
+          ${lib.escapeShellArgs (builtins.attrValues implementationInputs)} <<'PY'
         import pathlib
         import sys
-        from spaghetti_extractor.libraries.interfaces import bind_linked_interface_assignments
-        from spaghetti_extractor.util import write_json
+        from spaghetti_extractor.libraries.v4_matching import solve_library_release_hypotheses
 
-        manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-        write_json(pathlib.Path(sys.argv[2]), bind_linked_interface_assignments({
-            "format": "spaghetti-extractor-linked-interface-assignments-v1",
-            "linked_island_manifest_sha256": manifest["manifest_sha256"],
-            "assignments": [],
-        }))
-        PY
-      '';
-
-  effectiveAssignments =
-    if assignmentsInput != null then assignmentsInput
-    else "${generatedAssignments}/linked-interface-assignments.json";
-
-  interfaceQualification =
-      pkgs.runCommand "${namePrefix}-linked-interface-qualification-v1" commonAttrs ''
-        set -euo pipefail
-        ${environment}
-        mkdir -p "$out"
-        ${python} - \
-          ${linkedIslands}/linked-islands.json \
-          ${lib.escapeShellArg effectiveInterfaceCatalog} \
-          ${lib.escapeShellArg effectiveAssignments} \
-          "$out/interface-qualification.json" <<'PY'
-        import pathlib
-        import sys
-        from spaghetti_extractor.libraries.interfaces import qualify_linked_interfaces
-
-        qualify_linked_interfaces(
-            linked_islands=pathlib.Path(sys.argv[1]),
-            interface_catalog=pathlib.Path(sys.argv[2]),
-            assignments=pathlib.Path(sys.argv[3]),
-            out=pathlib.Path(sys.argv[4]),
+        solve_library_release_hypotheses(
+            target_id=sys.argv[1],
+            target_signatures=pathlib.Path(sys.argv[2]),
+            search_index=pathlib.Path(sys.argv[3]),
+            target_pe=pathlib.Path(sys.argv[4]),
+            out_dir=pathlib.Path(sys.argv[5]),
+            implementations=[pathlib.Path(value) for value in sys.argv[6:]],
         )
         PY
         jq -e '
-          .format == "spaghetti-extractor-linked-interface-qualification-v1" and
-          (.status == "qualified" or .status == "incomplete" or .status == "violated") and
-          (.executes_original_binary | not) and
-          (.authority.artifact_identity_is_semantic_proof | not)
-        ' "$out/interface-qualification.json" >/dev/null
+          .format == "spaghetti-extractor-library-release-hypotheses-set-v4" and
+          (.releases | type == "array")
+        ' "$out/manifest.json" >/dev/null
       '';
 
-  replacementPlan =
-      pkgs.runCommand "${namePrefix}-library-replacement-plan-v1" commonAttrs ''
+  checkedIslands = lib.mapAttrs
+    (selectionId: intent:
+      let
+        payload = intentPayloads.${selectionId};
+        implementationId = payload.implementation_id or null;
+        implementation =
+          if implementationId == null then null
+          else implementations.${implementationId} or null;
+      in
+      assert lib.assertMsg (payload.format or null == "spaghetti-extractor-library-adoption-intent-v1")
+        "library adoption ${selectionId} has the wrong format";
+      assert lib.assertMsg (payload.target_id or null == targetId)
+        "library adoption ${selectionId} belongs to another target";
+      if (payload.mode or null) != "adopt" then null else
+      assert lib.assertMsg (implementation != null)
+        "library adoption ${selectionId} references an unavailable implementation";
+      assert lib.assertMsg (canonicalExternalSites != null && targetCertificates != null
+        && catalogSearchIndex != null)
+        "adopted library islands require canonical external sites, target certificates, and a catalog";
+      import ./library-island-check.nix {
+        inherit pkgs pythonEnv targetId machineIr canonicalExternalSites
+          targetCertificates;
+        name = "${namePrefix}-${selectionId}-checked-library-island-v1";
+        releaseHypotheses = releaseHypotheses;
+        islandId = payload.island_id;
+        adoptionIntent = intent;
+        behaviorPack = implementation;
+        catalogSearchIndex =
+          "${catalogSearchIndex}/catalog-search-index.json";
+      })
+    adoptionIntents;
+  nonNullCheckedIslands = lib.filterAttrs (_: value: value != null) checkedIslands;
+  generatedComponents = lib.mapAttrs
+    (selectionId: receipt:
+      let
+        payload = intentPayloads.${selectionId};
+        implementation = implementationInputs.${payload.implementation_id};
+      in import ./library-component-generation.nix {
+        inherit pkgs pythonEnv machineIr canonicalExternalSites;
+        name = "${namePrefix}-${selectionId}-generated-library-component-v1";
+        releaseHypotheses = releaseHypotheses;
+        checkedIsland = "${receipt}/checked-library-island.json";
+        behaviorPack = implementation;
+        catalogSearchIndex =
+          "${catalogSearchIndex}/catalog-search-index.json";
+      })
+    nonNullCheckedIslands;
+  checks = lib.mapAttrs
+    (selectionId: receipt: pkgs.runCommand
+      "${namePrefix}-${selectionId}-library-adoption-check-v1"
+      { nativeBuildInputs = [ pkgs.jq ]; __contentAddressed = true; } ''
         set -euo pipefail
-        ${environment}
+        jq -e '.status == "complete"' ${receipt}/checked-library-island.json >/dev/null
+        jq -e '.status == "complete"' \
+          ${generatedComponents.${selectionId}}/library-component.json >/dev/null
         mkdir -p "$out"
-        ${python} - \
-          ${linkedIslands}/linked-islands.json \
-          ${interfaceQualification}/interface-qualification.json \
-          ${lib.escapeShellArg effectiveInterfaceCatalog} \
-          ${dynamicRequirements}/dynamic-library-requirements.json \
-          "$out/replacement-plan.json" <<'PY'
-        import pathlib
-        import sys
-        from spaghetti_extractor.libraries.replacements import plan_library_replacements
-
-        plan_library_replacements(
-            linked_islands=pathlib.Path(sys.argv[1]),
-            interface_qualification=pathlib.Path(sys.argv[2]),
-            interface_catalog=pathlib.Path(sys.argv[3]),
-            dynamic_requirements=pathlib.Path(sys.argv[4]),
-            out=pathlib.Path(sys.argv[5]),
-        )
-        PY
-        jq -e '
-          .format == "spaghetti-extractor-library-replacement-plan-v1" and
-          (.status == "complete" or .status == "incomplete") and
-          (.completion.fallback_counts_as_lifting_progress | not)
-        ' "$out/replacement-plan.json" >/dev/null
-      '';
+        ln -s ${receipt}/checked-library-island.json "$out/checked-library-island.json"
+        ln -s ${generatedComponents.${selectionId}} \
+          "$out/generated-library-component"
+      '')
+    nonNullCheckedIslands;
 in
+assert lib.assertMsg (identifier targetId) "library targetId must be an identifier";
+assert lib.assertMsg (builtins.all (value: builtins.isString value && value != "")
+  (builtins.attrNames implementations))
+  "reusable implementation keys must be nonempty implementation IDs";
+assert lib.assertMsg (builtins.all identifier (builtins.attrNames adoptionIntents))
+  "library adoption keys must be identifiers";
 {
-  inherit
-    artifactIndex
-    dynamicRequirements
-    generatedCatalogLock
-    linkedIslands
-    libraryHypotheses
-    matchEvidence
-    interfaceQualification
-    replacementPlan
-    ;
+  inherit artifactIndex catalogSearchIndex generatedCatalogLock targetSignatureGraph
+    releaseHypotheses checkedIslands generatedComponents checks;
+  implementations = implementationInputs;
+  adoptionIntents = intentInputs;
 }

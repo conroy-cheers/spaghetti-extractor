@@ -10,9 +10,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from ..artifacts.formats import MACHINE_IR_FORMAT
+from ..artifacts.formats import GENERATED_LIBRARY_COMPONENT_V1_FORMAT, MACHINE_IR_FORMAT
 from ..external.contracts import (
-    CheckedExternalSiteContract,
     CheckedExternalSiteContractError,
     parse_checked_external_site_contract,
 )
@@ -25,6 +24,25 @@ from .formats import (
     COMPONENT_RUNTIME_COMPLETION_V3_FORMAT,
     COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
     PORTABLE_SELECTION_V3_FORMAT,
+    COMPONENT_SOURCE_PACKAGE_V3_FORMAT,
+)
+from .activation_receipt import ActivationReceiptV1
+from .implementation import ComponentImplementationV3
+from .interface_ir import PortableComponentInterfaceV2
+from .machine_binding import ComponentMachineBindingV1
+from .runtime_paths import render_finite_path_operation
+from .semantic_contract import ComponentSemanticContractV1
+from .universal_binding import read_component_machine_binding_v3
+from .universal_contract import read_component_contract_v3
+from .semantic_paths import SemanticPathError, build_operation_path_model
+from .runtime_expressions import (
+    CExpression as _CExpression,
+    CompletionExpression as _CompletionExpression,
+    STATE_FIELDS as _STATE_FIELDS,
+    json_pointer as _json_pointer,
+    machine_source_expression as _machine_source_expression,
+    render_external_call as _render_external_call,
+    result_register as _result_register,
 )
 from .adapter import load_component_adapter_plan
 from .intent import ComponentIntentError
@@ -43,9 +61,14 @@ def build_component_runtime_package(
     machine_ir: Path | str,
     activation_plan: Path | str,
     contracts: Mapping[str, Path | str],
+    portable_interfaces: Mapping[str, Path | str] | None = None,
+    semantic_contracts: Mapping[str, Path | str] | None = None,
     implementations: Mapping[str, Path | str],
     qualifications: Mapping[str, Path | str],
     adapter_plans: Mapping[str, Path | str],
+    activation_receipts: Mapping[str, Path | str] | None = None,
+    machine_bindings: Mapping[str, Path | str] | None = None,
+    library_components: Mapping[str, Path | str] | None = None,
     interpreter_package: Path | str,
     out_dir: Path | str,
 ) -> dict[str, object]:
@@ -126,28 +149,99 @@ def build_component_runtime_package(
         if isinstance(row, Mapping)
         and row.get("ownership_state") == "portable_replacement"
     ]
+    library_selections = {
+        _string(row.get("id"), "library component selection id"): row
+        for row in portable_selections
+        if row.get("kind") == "library_component"
+    }
+    authored_portable_selections = [
+        row for row in portable_selections if row.get("kind") != "library_component"
+    ]
     component_rows: list[dict[str, object]] = []
     selection_rows: list[dict[str, object]] = []
     override_entries: list[dict[str, object]] = []
+    activation_receipt_inputs = activation_receipts or {}
+    machine_binding_inputs = machine_bindings or {}
+    portable_interface_inputs = portable_interfaces or {}
+    semantic_contract_inputs = semantic_contracts or {}
+    library_component_inputs = library_components or {}
 
-    for selection in portable_selections:
+    for selection in authored_portable_selections:
         identity = _string(selection.get("id"), "portable component id")
-        contract_root = _required_mapping_path(contracts, identity, "contract")
         implementation_root = _required_mapping_path(
             implementations, identity, "source package"
         )
-        qualification_path = _required_mapping_path(
-            qualifications, identity, "qualification"
-        )
-        adapter_plan_root = _required_mapping_path(
-            adapter_plans, identity, "adapter plan"
-        )
+        source = load_component_source_package(implementation_root)
+        if source.get("format") == COMPONENT_SOURCE_PACKAGE_V3_FORMAT:
+            portable_interface_path = _required_mapping_path(
+                portable_interface_inputs, identity, "portable interface"
+            )
+            receipt_path = _required_mapping_path(
+                activation_receipt_inputs, identity, "activation receipt"
+            )
+            binding_path = _required_mapping_path(
+                machine_binding_inputs, identity, "machine binding"
+            )
+            interface_file = (
+                portable_interface_path / "portable-interface.json"
+                if portable_interface_path.is_dir()
+                else portable_interface_path
+            )
+            interface = PortableComponentInterfaceV2.parse(
+                _read_object(interface_file, "portable component interface")
+            )
+            binding_file = (
+                binding_path / "machine-binding.json"
+                if binding_path.is_dir()
+                else binding_path
+            )
+            binding = ComponentMachineBindingV1.parse(
+                _read_object(binding_file, "component machine binding")
+            )
+            semantic_contract_path = _required_mapping_path(
+                semantic_contract_inputs, identity, "semantic contract"
+            )
+            semantic_contract_file = (
+                semantic_contract_path / "semantic-contract.json"
+                if semantic_contract_path.is_dir()
+                else semantic_contract_path
+            )
+            semantic_contract = ComponentSemanticContractV1.parse(
+                _read_object(semantic_contract_file, "component semantic contract")
+            )
+            component_row, component_selections, component_overrides = (
+                _build_v2_scalar_component(
+                    identity=identity,
+                    interface=interface,
+                    implementation_root=implementation_root,
+                    source=source,
+                    activation_receipt_path=receipt_path,
+                    binding=binding,
+                    semantic_contract=semantic_contract,
+                    members={
+                        unit_id: machine_rows[unit_id]
+                        for unit_id in binding.unit_ids
+                    },
+                    output=output,
+                )
+            )
+            component_rows.append(component_row)
+            selection_rows.extend(component_selections)
+            override_entries.extend(component_overrides)
+            continue
+        contract_root = _required_mapping_path(contracts, identity, "contract")
         contract = _read_object(contract_root / "contract.json", "component contract")
         _check_self_hash(
             contract,
             COMPONENT_CONTRACT_PACKAGE_V2_FORMAT,
             "contract_sha256",
             "component contract",
+        )
+        qualification_path = _required_mapping_path(
+            qualifications, identity, "qualification"
+        )
+        adapter_plan_root = _required_mapping_path(
+            adapter_plans, identity, "adapter plan"
         )
         qualification = _read_object(
             qualification_path / "qualification.json"
@@ -161,7 +255,6 @@ def build_component_runtime_package(
             "qualification_sha256",
             "component qualification",
         )
-        source = load_component_source_package(implementation_root)
         adapter_plan = load_component_adapter_plan(adapter_plan_root)
         _validate_component_bindings(
             identity, contract, source, qualification, adapter_plan
@@ -275,6 +368,121 @@ def build_component_runtime_package(
                 }
             )
 
+    for selection_id, raw_root in sorted(library_component_inputs.items()):
+        component_root = Path(raw_root)
+        manifest = _read_object(
+            component_root / "library-component.json",
+            "generated library component",
+        )
+        _check_self_hash(
+            manifest,
+            GENERATED_LIBRARY_COMPONENT_V1_FORMAT,
+            "package_sha256",
+            "generated library component",
+        )
+        if manifest.get("status") != "complete":
+            raise ComponentIntentError(
+                f"library adoption {selection_id!r} is not a complete generated component"
+            )
+        identity = _string(manifest.get("component_id"), "library component id")
+        activation_selection = library_selections.get(identity)
+        if activation_selection is None:
+            raise ComponentIntentError(
+                f"library adoption {selection_id!r} is absent from the activation plan"
+            )
+        source_root = component_root / "source-package"
+        source = load_component_source_package(source_root)
+        interface = PortableComponentInterfaceV2.parse(
+            _read_object(
+                component_root / "portable-interface.json",
+                "library portable interface",
+            )
+        )
+        binding = ComponentMachineBindingV1.parse(
+            _read_object(
+                component_root / "machine-binding.json",
+                "library machine binding",
+            )
+        )
+        universal_contract = read_component_contract_v3(
+            component_root / "component-contract-v3.json"
+        )
+        universal_binding = read_component_machine_binding_v3(
+            component_root / "machine-binding-v3.json"
+        )
+        universal_implementation = ComponentImplementationV3.parse(
+            _read_object(
+                component_root / "implementation-v3.json",
+                "library universal implementation",
+            )
+        )
+        selected_units = {
+            _string(value, "library activation unit")
+            for value in _array(
+                activation_selection.get("unit_ids"), "library activation units"
+            )
+        }
+        if (
+            activation_selection.get("selection_id") != selection_id
+            or selected_units != set(universal_binding.unit_ids)
+            or activation_selection.get("machine_binding_sha256")
+            != universal_binding.binding_sha256
+            or activation_selection.get("activation_receipt_sha256")
+            != universal_implementation.authority_sha256
+            or activation_selection.get("contract_sha256")
+            != universal_contract.contract_sha256
+            or universal_binding.contract_sha256
+            != universal_contract.contract_sha256
+            or universal_implementation.contract_sha256
+            != universal_contract.contract_sha256
+        ):
+            raise ComponentIntentError(
+                f"library adoption {selection_id!r} has stale activation authority"
+            )
+        semantic_contract = ComponentSemanticContractV1.parse(
+            _read_object(
+                component_root / "semantic-contract.json",
+                "library semantic contract",
+            )
+        )
+        component_row, component_selections, component_overrides = (
+            _build_v2_scalar_component(
+                identity=identity,
+                interface=interface,
+                implementation_root=source_root,
+                source=source,
+                activation_receipt_path=component_root / "implementation-v3.json",
+                binding=binding,
+                semantic_contract=semantic_contract,
+                members={
+                    unit_id: machine_rows[unit_id]
+                    for unit_id in binding.unit_ids
+                },
+                output=output,
+                library_component_manifest=manifest,
+            )
+        )
+        component_rows.append(component_row)
+        selection_rows.extend(component_selections)
+        override_entries.extend(component_overrides)
+
+    if set(library_selections) != {
+        _string(
+            _read_object(Path(root) / "library-component.json", "generated library component").get("component_id"),
+            "library component id",
+        )
+        for root in library_component_inputs.values()
+    }:
+        raise ComponentIntentError(
+            "activation plan and generated library implementation inventory differ"
+        )
+
+    selected_unit_ids = [str(row["unit_id"]) for row in selection_rows]
+    if len(selected_unit_ids) != len(set(selected_unit_ids)):
+        raise ComponentIntentError(
+            "portable components claim overlapping machine-IR units"
+        )
+
     selection_core = {
         "format": PORTABLE_SELECTION_V3_FORMAT,
         "status": "checked",
@@ -312,7 +520,7 @@ def build_component_runtime_package(
         },
         "policy": {
             "runtime_package_is_sole_candidate_authority": True,
-            "enabled_components_must_be_qualified": True,
+            "enabled_components_must_have_checked_activation_authority": True,
             "subsumed_members_may_not_fallback": True,
             "fallback_on_unimplemented": False,
             "original_execution_forbidden": True,
@@ -511,6 +719,245 @@ def _render_component_adapter(
             "",
         ]
     )
+
+
+def _build_v2_scalar_component(
+    *,
+    identity: str,
+    interface: PortableComponentInterfaceV2,
+    implementation_root: Path,
+    source: Mapping[str, object],
+    activation_receipt_path: Path,
+    binding: ComponentMachineBindingV1,
+    semantic_contract: ComponentSemanticContractV1,
+    members: Mapping[str, Mapping[str, object]],
+    output: Path,
+    library_component_manifest: Mapping[str, object] | None = None,
+) -> tuple[dict[str, object], list[dict[str, object]], list[dict[str, object]]]:
+    receipt_file = (
+        activation_receipt_path / "activation-receipt.json"
+        if activation_receipt_path.is_dir()
+        else activation_receipt_path
+    )
+    raw_authority = _read_object(receipt_file, "component activation authority")
+    if library_component_manifest is None:
+        receipt = ActivationReceiptV1.parse(raw_authority)
+        authority_valid = (
+            receipt.status == "checked"
+            and receipt.activation_authorized
+            and receipt.component_id == identity
+            and receipt.bindings.get("implementation_sha256")
+            == source.get("implementation_sha256")
+            and receipt.bindings.get("interface_sha256") == interface.sha256
+            and receipt.bindings.get("component_machine_binding_sha256")
+            == binding.binding_sha256
+        )
+        activation_authority_binding = {
+            "activation_receipt_sha256": receipt.receipt_sha256,
+        }
+    else:
+        implementation = ComponentImplementationV3.parse(raw_authority)
+        manifest_bindings = _object(
+            library_component_manifest.get("bindings"),
+            "generated library component bindings",
+        )
+        authority_valid = (
+            implementation.authorizing
+            and implementation.kind == "portable_c"
+            and implementation.component_id == identity
+            and implementation.artifact_sha256
+            == source.get("implementation_sha256")
+            and implementation.implementation_sha256
+            == manifest_bindings.get("universal_implementation_sha256")
+            and manifest_bindings.get("source_package_sha256")
+            == source.get("implementation_sha256")
+            and manifest_bindings.get("interface_sha256") == interface.sha256
+        )
+        activation_authority_binding = {
+            "universal_implementation_sha256": (
+                implementation.implementation_sha256
+            ),
+        }
+    if (
+        not authority_valid
+        or binding.identity != identity
+        or binding.interface_sha256 != interface.sha256
+        or set(binding.unit_ids) != set(members)
+        or semantic_contract.status != "satisfied"
+        or semantic_contract.payload.get("component_id") != identity
+        or _object(
+            semantic_contract.payload.get("bindings"),
+            "semantic contract bindings",
+        ).get("machine_binding_sha256") != binding.binding_sha256
+    ):
+        raise ComponentIntentError(
+            f"component {identity} portable V2 activation bindings are stale"
+        )
+
+    symbols = _object(source.get("operation_symbols"), "component operation symbols")
+    interface.validate_operation_symbols(symbols)
+    component_dir = output / "components" / identity
+    copied_sources = _copy_component_sources(
+        implementation_root, source, output, identity
+    )
+    public_header = component_dir / "portable-component.h"
+    implementation_header = component_dir / "portable-component-implementation.h"
+    public_header.write_text(interface.render_public_header(), encoding="ascii")
+    implementation_header.write_text(
+        interface.render_implementation_header(symbols), encoding="ascii"
+    )
+    support_sources = copied_sources + [
+        _artifact(public_header, output),
+        _artifact(implementation_header, output),
+    ]
+    adapter_path = component_dir / "generated-adapter.c"
+    adapter_symbols: list[tuple[int, str, str]] = []
+    adapter_path.write_text(
+        _render_v2_scalar_adapter(
+            identity=identity,
+            interface=interface,
+            binding=binding,
+            semantic_contract=semantic_contract,
+            source_symbols=symbols,
+            members=members,
+            symbols=adapter_symbols,
+        ),
+        encoding="ascii",
+    )
+    component_core: dict[str, object] = {
+        "id": identity,
+        "interface_format": "spaghetti-extractor-component-interface-ir-v2",
+        "interface_sha256": interface.sha256,
+        "implementation_sha256": source["implementation_sha256"],
+        **activation_authority_binding,
+        "machine_binding_sha256": binding.binding_sha256,
+        "operation_symbols": dict(symbols),
+        "unit_ids": sorted(members),
+        "entries": [
+            {"unit_id": unit_id, "rva": rva, "symbol": symbol}
+            for rva, unit_id, symbol in adapter_symbols
+        ],
+        "adapter_sha256": sha256_file(adapter_path),
+    }
+    manifest_sha256 = _canonical_sha256(component_core)
+    row = {**component_core, "component_manifest_sha256": manifest_sha256}
+    entry_by_id = {unit_id: (rva, symbol) for rva, unit_id, symbol in adapter_symbols}
+    primary_entry_rva = min(rva for rva, _symbol in entry_by_id.values())
+    selections = [
+        {
+            "unit_id": unit_id,
+            "rva": _unit_rva(members[unit_id]),
+            "replacement_id": f"{identity}:{unit_id}" if unit_id in entry_by_id else identity,
+            "cluster_id": identity,
+            "component_manifest_sha256": manifest_sha256,
+            "fallback_on_unimplemented": False,
+            "dispatch_role": "entry" if unit_id in entry_by_id else "subsumed_member",
+            "entry_rva": entry_by_id.get(unit_id, (primary_entry_rva, ""))[0],
+        }
+        for unit_id in sorted(members, key=lambda item: (_unit_rva(members[item]), item))
+    ]
+    overrides = [
+        {
+            "replacement_id": f"{identity}:{unit_id}",
+            "manifest_sha256": manifest_sha256,
+            "cluster_id": identity,
+            "entry_unit_id": unit_id,
+            "entry_rva": rva,
+            "fallback_on_unimplemented": False,
+            "unit_ids": sorted(members),
+            "rva_spans": _member_spans(members),
+            "symbol": symbol,
+            "source": _artifact(adapter_path, output, symbol=symbol),
+            "support_sources": support_sources,
+        }
+        for rva, unit_id, symbol in adapter_symbols
+    ]
+    return row, selections, overrides
+
+
+def _render_v2_scalar_adapter(
+    *,
+    identity: str,
+    interface: PortableComponentInterfaceV2,
+    binding: ComponentMachineBindingV1,
+    semantic_contract: ComponentSemanticContractV1,
+    source_symbols: Mapping[str, object],
+    members: Mapping[str, Mapping[str, object]],
+    symbols: list[tuple[int, str, str]],
+) -> str:
+    interface_id = interface.identity
+    operation_index = {row.identity: row for row in interface.operations}
+    contract_operations = {
+        _string(row.get("operation_id"), "semantic operation id"): row
+        for row in _array(
+            semantic_contract.payload.get("operations"),
+            "semantic contract operations",
+        )
+        if isinstance(row, Mapping)
+    }
+    lines = [
+        '#include "state-machine-runtime.h"',
+        '#include "portable-component-implementation.h"',
+        "#include <stdint.h>",
+        "",
+        "static uint32_t component_read(spx_runtime *rt, uint32_t address, uint32_t width, uint32_t *fault) {",
+        "  if (rt == 0 || rt->read == 0) { *fault = 1U; return 0U; }",
+        "  return rt->read(rt->context, address, width, fault);",
+        "}",
+        "static void component_write(spx_runtime *rt, uint32_t address, uint32_t width, uint32_t value, uint32_t *fault) {",
+        "  if (rt == 0 || rt->write == 0) { *fault = 1U; return; }",
+        "  rt->write(rt->context, address, width, value, fault);",
+        "}",
+        "static uint32_t component_parity(uint32_t value) {",
+        "  value &= 0xffU; value ^= value >> 4U; value &= 0xfU;",
+        "  return (0x9669U >> value) & 1U;",
+        "}",
+        "static uint32_t component_sub_overflow(uint32_t left, uint32_t right, uint32_t result) {",
+        "  return (((left ^ right) & (left ^ result)) >> 31U) & 1U;",
+        "}",
+        "static uint32_t component_add_overflow(uint32_t left, uint32_t right, uint32_t result) {",
+        "  return (((~(left ^ right)) & (left ^ result)) >> 31U) & 1U;",
+        "}",
+        f"static const spx_{interface_id}_services_v2 component_services = {{ 0 }};",
+        f"static spx_{interface_id}_context_v2 component_context = {{",
+        "  .services = &component_services,",
+        "  .state = { 0 },",
+        f"  .protocol_state = SPX_{interface_id.upper()}_PROTOCOL_{interface.initial_protocol_state.upper()},",
+        "};",
+        "",
+    ]
+    for bound in binding.operations:
+        operation = operation_index[bound.operation_id]
+        entry_id = bound.entry_unit_ids[0]
+        rva = _unit_rva(members[entry_id])
+        adapter_symbol = f"spx_component_{_c_identifier(identity)}_{rva:08x}"
+        symbols.append((rva, entry_id, adapter_symbol))
+        try:
+            path_model = build_operation_path_model(
+                contract_operations[bound.operation_id],
+                interface,
+                semantic_contract.payload.get("services"),
+            )
+            lines.append(
+                render_finite_path_operation(
+                    interface=interface,
+                    operation=operation,
+                    binding=bound,
+                    service_bindings=semantic_contract.payload.get("services", []),
+                    source_symbol=_string(
+                        source_symbols[bound.operation_id],
+                        "portable source symbol",
+                    ),
+                    adapter_symbol=adapter_symbol,
+                    model=path_model,
+                )
+            )
+        except (KeyError, SemanticPathError) as exc:
+            raise ComponentIntentError(
+                f"portable V2 finite-path runtime lowering failed for "
+                f"{bound.operation_id}: {exc}"
+            ) from exc
+    return "\n".join(lines)
 
 
 def _render_scalar_entry_adapter(
@@ -920,226 +1367,6 @@ def _render_linear_external_replay(
     raise ComponentIntentError("component external replay prefix has no call")
 
 
-def _render_external_call(
-    *,
-    lines: list[str],
-    contract: CheckedExternalSiteContract,
-    event: Mapping[str, object],
-    renderer: "_CExpression",
-    unit_id: str,
-    event_index: int,
-) -> dict[tuple[str, int, str], str]:
-    identity = contract.identity
-    call_name = "external_call_0"
-    lines.append(f"  spx_machine_state {call_name}_input = external_replay_state;")
-    for field, expression in _object(
-        event.get("register_inputs"), "external register inputs"
-    ).items():
-        if field not in _STATE_FIELDS:
-            raise ComponentIntentError("component external call register input is invalid")
-        lines.append(
-            f"  {call_name}_input.{field} = {renderer.render(expression)};"
-        )
-    for field, expression in _object(
-        event.get("flag_inputs"), "external flag inputs"
-    ).items():
-        if field not in _STATE_FIELDS:
-            raise ComponentIntentError("component external call flag input is invalid")
-        lines.append(
-            f"  {call_name}_input.{field} = {renderer.render(expression)};"
-        )
-    call_renderer = _CExpression(
-        {name: f"{call_name}_input.{name}" for name in _STATE_FIELDS},
-        memory_fault="memory_fault",
-    )
-    arguments = [call_renderer.render(value) for value in contract.arguments]
-    if arguments:
-        lines.append(
-            f"  uint32_t {call_name}_arguments[{len(arguments)}] = "
-            "{ " + ", ".join(arguments) + " };"
-        )
-    argument_pointer = f"{call_name}_arguments" if arguments else "0"
-    instruction_rva = int(event.get("instruction_rva", 0))
-    return_rva = int(event.get("return_rva", 0))
-    symbol = "0" if identity.symbol is None else _c_string(identity.symbol)
-    ordinal = 0 if identity.ordinal is None else identity.ordinal
-    lines.extend(
-        [
-            f"  spx_call_event {call_name}_event = {{",
-            "    SPX_CALL_EXTERNAL_IMPORT,",
-            f"    {instruction_rva}U, {event_index}U, 0U, {return_rva}U,",
-            f"    {_c_string(identity.dll or '')}, {symbol}, {ordinal}U, "
-            f"{1 if identity.ordinal is not None else 0}U,",
-            f"    {argument_pointer}, {len(arguments)}U, 0, 0U",
-            "  };",
-            f"  spx_machine_state {call_name}_output;",
-            f"  spx_call_status {call_name}_status = spx_invoke_call(",
-            f"      rt, &{call_name}_event, &{call_name}_input, &{call_name}_output);",
-            f"  if ({call_name}_status != SPX_CALL_OK) return (spx_step_result){{",
-            f"    {call_name}_status == SPX_CALL_DIVIDE_ERROR ? SPX_DIVIDE_ERROR :",
-            f"    {call_name}_status == SPX_CALL_MEMORY_FAULT ? SPX_MEMORY_FAULT :",
-            f"    {call_name}_status == SPX_CALL_EXTERNAL_FAULT ? SPX_EXTERNAL_FAULT :",
-            "    SPX_UNIMPLEMENTED, 0U, 0U };",
-        ]
-    )
-    results: dict[tuple[str, int, str], str] = {}
-    for relation in contract.result_register_relations:
-        if not isinstance(relation, Mapping) or relation.get("relation") != "exact":
-            continue
-        register = relation.get("register")
-        if isinstance(register, str):
-            results[(unit_id, event_index, register)] = (
-                f"{call_name}_output.{register}"
-            )
-    return results
-
-
-def _machine_source_expression(
-    parameter: Mapping[str, object],
-    members: Mapping[str, Mapping[str, object]],
-) -> object:
-    source = _object(parameter.get("machine_source"), "logical parameter source")
-    if source.get("kind") == "register":
-        return {
-            "op": "reg",
-            "name": source.get("name"),
-            "width": source.get("width", 32),
-        }
-    if source.get("kind") == "expression" and source.get("expression") is not None:
-        return source["expression"]
-    evidence = _object(source.get("evidence"), "logical parameter evidence")
-    unit = members.get(_string(evidence.get("unit_id"), "parameter evidence unit"))
-    if unit is None:
-        raise ComponentIntentError("parameter evidence is outside the component")
-    return _json_pointer(
-        unit,
-        _string(evidence.get("json_pointer"), "parameter evidence pointer"),
-    )
-
-
-class _CExpression:
-    def __init__(self, names: Mapping[str, str], *, memory_fault: str) -> None:
-        self.names = names
-        self.memory_fault = memory_fault
-
-    def render(self, value: object) -> str:
-        expression = _object(value, "machine expression")
-        op = expression.get("op")
-        if op == "const":
-            return f"UINT32_C({int(expression.get('value', 0)) & 0xFFFFFFFF})"
-        if op in {"reg", "flag"}:
-            name = _string(expression.get("name"), "machine state name")
-            if name not in self.names:
-                raise ComponentIntentError(f"adapter expression uses unsupported state {name}")
-            return self.names[name]
-        if op == "false":
-            return "0U"
-        if op == "true":
-            return "1U"
-        if op == "load":
-            return "component_read(rt, {address}, {width}U, &{fault})".format(
-                address=self.render(expression.get("address")),
-                width=int(expression.get("width", 4)),
-                fault=self.memory_fault,
-            )
-        raw_args = _array(expression.get("args", []), f"{op} arguments")
-        args = [self.render(arg) if isinstance(arg, Mapping) else str(int(arg)) for arg in raw_args]
-        if op == "add32":
-            return "(" + " + ".join(args) + ")"
-        if op == "sub32":
-            return f"({args[0]} - {args[1]})"
-        if op == "and32":
-            return f"({args[0]} & {args[1]})"
-        if op == "or32":
-            return f"({args[0]} | {args[1]})"
-        if op == "xor32":
-            return f"({args[0]} ^ {args[1]})"
-        if op == "eq":
-            return f"(({args[0]}) == ({args[1]}))"
-        if op == "ult32":
-            return f"((uint32_t)({args[0]}) < (uint32_t)({args[1]}))"
-        if op == "ite":
-            return f"(({args[0]}) ? ({args[1]}) : ({args[2]}))"
-        if op == "not":
-            return f"(!({args[0]}))"
-        if op == "msb":
-            return f"((({args[-1]}) >> ({args[0]} - 1U)) & 1U)"
-        if op == "parity":
-            return f"component_parity({args[-1]})"
-        if op == "sub_overflow":
-            return f"component_sub_overflow({args[1]}, {args[2]}, {args[3]})"
-        if op == "add_overflow":
-            return f"component_add_overflow({args[1]}, {args[2]}, {args[3]})"
-        raise ComponentIntentError(f"adapter expression operation is unsupported: {op}")
-
-
-class _CompletionExpression(_CExpression):
-    def __init__(
-        self,
-        names: Mapping[str, str],
-        *,
-        memory_fault: str,
-        external_results: Mapping[tuple[str, int, str], str],
-    ) -> None:
-        super().__init__(names, memory_fault=memory_fault)
-        self.external_results = external_results
-
-    def render(self, value: object) -> str:
-        expression = _object(value, "component completion expression")
-        if expression.get("op") == "entry":
-            name = _string(expression.get("name"), "completion entry field")
-            if name not in self.names:
-                raise ComponentIntentError(
-                    f"completion expression uses unsupported state {name}"
-                )
-            return self.names[name]
-        if expression.get("op") == "logical_result":
-            return "((uint32_t)logical_result)"
-        if expression.get("op") == "external_result":
-            event_index = expression.get("event_index")
-            key = (
-                _string(expression.get("unit_id"), "completion external-result unit"),
-                event_index,
-                _string(
-                    expression.get("register"),
-                    "completion external-result register",
-                ),
-            )
-            if (
-                not isinstance(event_index, int)
-                or isinstance(event_index, bool)
-                or event_index < 0
-                or key not in self.external_results
-            ):
-                raise ComponentIntentError(
-                    "completion external-result reference is not available"
-                )
-            return self.external_results[key]
-        return super().render(expression)
-
-
-def _result_register(
-    result: Mapping[str, object], members: Mapping[str, Mapping[str, object]]
-) -> str:
-    refs = _array(result.get("effect_refs", []), "logical result effect references")
-    if len(refs) != 1:
-        raise ComponentIntentError("logical result must own one register-write effect")
-    ref = _object(refs[0], "logical result effect reference")
-    if ref.get("family") != "register_write":
-        raise ComponentIntentError("logical result effect is not a register write")
-    unit = members.get(_string(ref.get("unit_id"), "logical result effect unit"))
-    index = ref.get("index")
-    if unit is None or not isinstance(index, int):
-        raise ComponentIntentError("logical result effect reference is stale")
-    writes = _array(
-        _object(unit.get("semantics"), "machine semantics").get("register_writes", []),
-        "register writes",
-    )
-    if index < 0 or index >= len(writes):
-        raise ComponentIntentError("logical result effect index is stale")
-    return _string(_object(writes[index], "register write").get("register"), "result register")
-
-
 def _write_override_package(
     *,
     output: Path,
@@ -1338,129 +1565,20 @@ def _interpreter_binding(path: Path) -> tuple[Path, str]:
     return manifest, digest
 
 
-def _member_spans(members: Mapping[str, Mapping[str, object]]) -> list[dict[str, int]]:
-    return [
-        {
-            "start": int(_object(_object(row.get("source"), "unit source").get("original"), "unit original")["rva_start"]),
-            "end": int(_object(_object(row.get("source"), "unit source").get("original"), "unit original")["rva_end"]),
-        }
-        for row in sorted(members.values(), key=_unit_rva)
-    ]
-
-
-def _artifact(path: Path, root: Path, *, symbol: str | None = None) -> dict[str, object]:
-    row: dict[str, object] = {
-        "path": path.relative_to(root).as_posix(),
-        "sha256": sha256_file(path),
-    }
-    if symbol is not None:
-        row["symbol"] = symbol
-    return row
-
-
-def _required_mapping_path(
-    values: Mapping[str, Path | str], identity: str, description: str
-) -> Path:
-    value = values.get(identity)
-    if value is None:
-        raise ComponentIntentError(f"component {identity} has no {description}")
-    return Path(value)
-
-
-def _unit_rva(row: Mapping[str, object]) -> int:
-    return int(_object(_object(row.get("source"), "unit source").get("original"), "unit original")["rva_start"])
-
-
-def _json_pointer(value: object, pointer: str) -> object:
-    current = value
-    if not pointer.startswith("/"):
-        raise ComponentIntentError("machine evidence pointer is malformed")
-    for raw in pointer[1:].split("/"):
-        token = raw.replace("~1", "/").replace("~0", "~")
-        if isinstance(current, Mapping):
-            current = current[token]
-        elif isinstance(current, list):
-            current = current[int(token)]
-        else:
-            raise ComponentIntentError("machine evidence pointer traverses a scalar")
-    return current
-
-
-_STATE_FIELDS = (
-    "eax",
-    "ebx",
-    "ecx",
-    "edx",
-    "esi",
-    "edi",
-    "ebp",
-    "esp",
-    "cf",
-    "zf",
-    "sf",
-    "of",
-    "pf",
-    "df",
+from .runtime_support import (
+    _array,
+    _artifact,
+    _c_identifier,
+    _c_type,
+    _canonical_sha256,
+    _check_self_hash,
+    _member_spans,
+    _object,
+    _read_object,
+    _required_mapping_path,
+    _string,
+    _unit_rva,
 )
-
-
-def _c_type(value: object, *, source_abi: object) -> str:
-    result = logical_c_type(value, source_abi=source_abi)
-    if result is None:
-        raise ComponentIntentError(f"unsupported logical C type: {value}")
-    return result
-
-
-def _c_identifier(value: str) -> str:
-    result = re.sub(r"[^A-Za-z0-9_]", "_", value)
-    if not result or result[0].isdigit():
-        result = "component_" + result
-    return result
-
-
-def _c_string(value: str) -> str:
-    return json.dumps(value, ensure_ascii=True)
-
-
-def _check_self_hash(
-    payload: Mapping[str, object], format_name: str, field: str, description: str
-) -> None:
-    if payload.get("format") != format_name:
-        raise ComponentIntentError(f"unsupported {description} format")
-    core = copy.deepcopy(dict(payload))
-    expected = core.pop(field, None)
-    if expected != _canonical_sha256(core):
-        raise ComponentIntentError(f"{description} self-hash is stale")
-
-
-def _read_object(path: Path, description: str) -> dict[str, object]:
-    try:
-        return dict(_object(json.loads(path.read_text(encoding="utf-8")), description))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ComponentIntentError(f"cannot read {description}: {exc}") from exc
-
-
-def _object(value: object, description: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ComponentIntentError(f"{description} must be an object")
-    return value
-
-
-def _array(value: object, description: str) -> list[Any]:
-    if not isinstance(value, list):
-        raise ComponentIntentError(f"{description} must be an array")
-    return value
-
-
-def _string(value: object, description: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ComponentIntentError(f"{description} must be a nonempty string")
-    return value
-
-
-def _canonical_sha256(value: object) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-    return sha256(encoded).hexdigest()
 
 
 __all__ = [

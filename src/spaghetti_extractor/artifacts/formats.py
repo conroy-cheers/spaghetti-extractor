@@ -27,6 +27,8 @@ STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT = (
 FALLBACK_CAPABILITY_ANALYSIS_FORMAT = (
     "spaghetti-extractor-fallback-capability-analysis-v1"
 )
+STRUCTURAL_EXECUTABLE_FORMAT = "spaghetti-extractor-structural-executable-v1"
+RELEASE_ACCEPTANCE_FORMAT = "spaghetti-extractor-release-acceptance-v1"
 CALLER_MEMORY_FRAME_MODEL = "pe32-declared-pointer-arguments-v1"
 SAME_LIBRARY_CALL_THROUGH_EFFECT_MODEL = "same-library-call-through-v1"
 LAUNCH_ASSUMPTION_TEMPLATE_FORMAT = (
@@ -86,6 +88,37 @@ LINKED_INTERFACE_QUALIFICATION_FORMAT = (
     "spaghetti-extractor-linked-interface-qualification-v1"
 )
 LIBRARY_REPLACEMENT_PLAN_FORMAT = "spaghetti-extractor-library-replacement-plan-v1"
+LIBRARY_ABI_CATALOG_V3_FORMAT = "spaghetti-extractor-library-abi-catalog-v3"
+LIBRARY_TARGET_SIGNATURE_GRAPH_V3_FORMAT = (
+    "spaghetti-extractor-library-target-signature-graph-v3"
+)
+LIBRARY_CATALOG_SEARCH_INDEX_V3_FORMAT = (
+    "spaghetti-extractor-library-catalog-search-index-v3"
+)
+LIBRARY_CONSTELLATION_HYPOTHESES_V3_FORMAT = (
+    "spaghetti-extractor-library-constellation-hypotheses-v3"
+)
+LIBRARY_PROCEDURE_CANDIDATES_V3_FORMAT = (
+    "spaghetti-extractor-library-procedure-candidates-v3"
+)
+LIBRARY_STATUS_V4_FORMAT = "spaghetti-extractor-library-status-v4"
+LIBRARY_RELEASE_HYPOTHESES_V4_FORMAT = (
+    "spaghetti-extractor-library-release-hypotheses-v4"
+)
+LIBRARY_RELEASE_HYPOTHESES_SET_V4_FORMAT = (
+    "spaghetti-extractor-library-release-hypotheses-set-v4"
+)
+CHECKED_LIBRARY_ISLAND_V1_FORMAT = "spaghetti-extractor-checked-library-island-v1"
+REUSABLE_LIBRARY_IMPLEMENTATION_V1_FORMAT = (
+    "spaghetti-extractor-reusable-library-implementation-v1"
+)
+REUSABLE_LIBRARY_BEHAVIOR_PACK_V1_FORMAT = (
+    "spaghetti-extractor-reusable-library-behavior-pack-v1"
+)
+GENERATED_LIBRARY_COMPONENT_V1_FORMAT = (
+    "spaghetti-extractor-generated-library-component-v1"
+)
+LIBRARY_ADOPTION_INTENT_V1_FORMAT = "spaghetti-extractor-library-adoption-intent-v1"
 CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA = (
     "spaghetti-extractor-canonical-external-site-record-v3"
 )
@@ -117,11 +150,24 @@ __all__ = [
     "LIBRARY_ARTIFACT_INDEX_V2_FORMAT",
     "LIBRARY_ARTIFACT_INPUTS_FORMAT",
     "LIBRARY_ARTIFACT_INPUTS_V2_FORMAT",
+    "LIBRARY_ADOPTION_INTENT_V1_FORMAT",
     "LIBRARY_CATALOG_LOCK_FORMAT",
     "LIBRARY_HYPOTHESIS_SET_FORMAT",
     "LIBRARY_INTERFACE_CATALOG_FORMAT",
     "LIBRARY_MATCH_EVIDENCE_FORMAT",
     "LIBRARY_REPLACEMENT_PLAN_FORMAT",
+    "LIBRARY_ABI_CATALOG_V3_FORMAT",
+    "LIBRARY_CATALOG_SEARCH_INDEX_V3_FORMAT",
+    "LIBRARY_CONSTELLATION_HYPOTHESES_V3_FORMAT",
+    "LIBRARY_PROCEDURE_CANDIDATES_V3_FORMAT",
+    "LIBRARY_RELEASE_HYPOTHESES_V4_FORMAT",
+    "LIBRARY_RELEASE_HYPOTHESES_SET_V4_FORMAT",
+    "LIBRARY_STATUS_V4_FORMAT",
+    "LIBRARY_TARGET_SIGNATURE_GRAPH_V3_FORMAT",
+    "CHECKED_LIBRARY_ISLAND_V1_FORMAT",
+    "REUSABLE_LIBRARY_IMPLEMENTATION_V1_FORMAT",
+    "REUSABLE_LIBRARY_BEHAVIOR_PACK_V1_FORMAT",
+    "GENERATED_LIBRARY_COMPONENT_V1_FORMAT",
     "DYNAMIC_LIBRARY_REQUIREMENTS_FORMAT",
     "EXTERNAL_OPERATION_CONTRACT_FORMAT",
     "EXTERNAL_OPERATION_PROFILE_FORMAT",
@@ -149,9 +195,11 @@ __all__ = [
     "SOURCE_OPERATION_CATALOG_FORMAT",
     "SOURCE_OPERATION_RENDERING_FORMAT",
     "STATIC_ANALYSIS_PROFILE_ID",
+    "STRUCTURAL_EXECUTABLE_FORMAT",
     "STATIC_PROGRAM_CONTRACT_FORMAT",
     "STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT",
     "FALLBACK_CAPABILITY_ANALYSIS_FORMAT",
     "STATIC_MACHINE_IMPORT_PROFILE_FORMAT",
     "TARGET_HINTS_ARTIFACT_KIND",
+    "RELEASE_ACCEPTANCE_FORMAT",
 ]

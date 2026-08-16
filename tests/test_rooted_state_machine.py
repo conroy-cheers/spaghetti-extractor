@@ -9,6 +9,7 @@ from spaghetti_extractor.reconstruction.rooted_state_machine import (
     _manifest_seed_roots,
     _merge_roots,
     _rooted_direct_reachability,
+    _structural_direct_reachability,
 )
 from spaghetti_extractor.errors import ToolkitInputError
 
@@ -66,6 +67,23 @@ class RootedDirectControlTests(unittest.TestCase):
         self.assertEqual(result["status"], "complete")
         self.assertEqual(result["reachable_transfer_rvas"], [0x1000, 0x1200])
         self.assertEqual(result["missing_target_rvas"], [])
+
+    def test_structural_closure_includes_unreachable_unit_targets(self) -> None:
+        rows = [
+            _row("root", 0x1000, {"kind": "return"}),
+            _row(
+                "not-yet-behaviorally-reachable",
+                0x2000,
+                {"kind": "fallthrough", "target_rva": 0x2010},
+            ),
+        ]
+
+        result = _structural_direct_reachability(rows)
+
+        self.assertEqual(result["missing_target_rvas"], [0x2010])
+        self.assertEqual(
+            result["reachable_transfer_rvas"], [0x1000, 0x2000]
+        )
 
     def test_internal_call_is_direct_and_indirect_call_remains_a_frontier(self) -> None:
         rows = [

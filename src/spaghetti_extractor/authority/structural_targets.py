@@ -514,6 +514,7 @@ STRUCTURAL_TARGETS_PHASE_V3 = map_units(
     output_artifact_kind=STRUCTURAL_TARGETS_ARTIFACT_KIND_V3,
     transform=_transform_structural_target_unit,
     completeness=check_structural_targets_completeness_v3,
+    output_value_codec="plain-json-v1",
 )
 
 

@@ -25,7 +25,9 @@ def write_spx_native_engine_package(
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
     canonical_external_sites: Path | str,
-    machine_import_profiles: Iterable[Path | str] = (),
+    root_closure: Path | str,
+    target_certificates: Path | str,
+    parametric_summaries: Path | str,
     fixed_image_base: int | None = None,
     preferred_image_base: int | None = None,
     initial_zero_ranges: Iterable[tuple[int, int]] = (),
@@ -47,14 +49,26 @@ def write_spx_native_engine_package(
         termination_import=termination_import,
         base_relocation_evidence=base_relocation_evidence,
         canonical_external_sites=canonical_external_sites,
-        machine_import_profiles=machine_import_profiles,
+        root_closure=root_closure,
+        target_certificates=target_certificates,
+        parametric_summaries=parametric_summaries,
         fixed_image_base=fixed_image_base,
         preferred_image_base=preferred_image_base,
         initial_zero_ranges=initial_zero_ranges,
         selected_portable_components=selected_portable_components,
     )
     if plan.status != "ready":
-        raise ToolkitInputError("native engine plan is incomplete; no sources were written")
+        categories = sorted(
+            {
+                str(row.get("category"))
+                for row in plan.blockers
+                if row.get("category") is not None
+            }
+        )
+        raise ToolkitInputError(
+            "native engine plan is incomplete; no sources were written"
+            + (f" ({', '.join(categories)})" if categories else "")
+        )
     out.mkdir(parents=True, exist_ok=True)
     plan_path = out / "native-engine-plan.json"
     write_json(plan_path, plan.payload(state_machine_sha256=sha256_file(input_path)))
@@ -99,6 +113,17 @@ def write_spx_native_engine_package(
             ),
             "authority": "canonical-external-sites-v3",
         },
+        "execution_authority": {
+            "root_closure_manifest_sha256": sha256_file(
+                Path(root_closure) / "manifest.json"
+            ),
+            "target_certificates_manifest_sha256": sha256_file(
+                Path(target_certificates) / "manifest.json"
+            ),
+            "parametric_summaries_manifest_sha256": sha256_file(
+                Path(parametric_summaries) / "manifest.json"
+            ),
+        },
         "sources": [
             {"path": path.name, "sha256": sha256_file(path)}
             for path in (header, source, assembly, layout_source)
@@ -116,12 +141,12 @@ def write_spx_native_engine_package(
         "image_base_policy": plan.payload(state_machine_sha256="")["image_base_policy"],
         "blockers": list(plan.blockers),
         "policy": {
-            "execution_scope": "complete-static-authority",
+            "execution_scope": "structural-executable-v1",
             "dynamic_base": plan.fixed_image_base is None,
             "base_relocations": "complete-pe32-highlow-inventory-required",
             "raw_x87_instruction_payloads": "forbidden",
             "typed_x87_operations": TYPED_NATIVE_X87_OPERATION_FORMAT,
-            "static_hybrid_closure_receipt_required": True,
+            "structural_execution_receipt_required": True,
             "root_callback_engine_buffers": "fixed-launch-buffers",
             "nested_callback_engine_buffers": "stack-local-requires-checked-runtime-frame",
             "terminal_control": (

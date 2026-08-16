@@ -6,6 +6,7 @@
   machineIr,
   staticExport,
   staticAuthority ? null,
+  structuralExecutionGate,
   machineImportProfiles,
   namePrefix,
   compiler ? pkgs.pkgsCross.mingw32.stdenv.cc,
@@ -15,23 +16,28 @@
 
 assert pkgs.lib.assertMsg
   (staticAuthority != null)
-  "static-closed candidates require v3 final authority";
+  "structural candidates require checked static analysis artifacts";
+assert pkgs.lib.assertMsg
+  (structuralExecutionGate != null)
+  "structural candidates require structural-executable-v1";
 assert pkgs.lib.assertMsg
   (componentRuntimePackage != null)
   "static-closed candidates require a component runtime package";
 
 let
   lib = pkgs.lib;
-  candidateAuthorityArg = lib.escapeShellArg
-    "${candidateAuthorityGate}/candidate-authority.json";
-  finalAuthorityArg = lib.escapeShellArg
-    (toString staticAuthority.finalAuthorityArtifact);
+  structuralExecutionArg = lib.escapeShellArg
+    "${structuralExecutionGate}/structural-executable.json";
   canonicalExternalSites =
     staticAuthority.graph.outputs."canonical-external-sites-v3"
       or (throw "static authority omitted canonical-external-sites-v3");
   canonicalExternalSitesArg = lib.escapeShellArg (toString canonicalExternalSites);
-  fallbackCoverageArg = lib.escapeShellArg
-    "${fallbackCoverageReceipt}/fallback-coverage-receipt.json";
+  rootClosure = staticAuthority.graph.outputs."launch-root-closure-v3"
+    or (throw "static authority omitted launch-root-closure-v3");
+  targetCertificates = staticAuthority.graph.outputs."indirect-target-certificates-v3"
+    or (throw "static authority omitted indirect-target-certificates-v3");
+  parametricSummaries = staticAuthority.graph.outputs."parametric-scc-summaries-v3"
+    or (throw "static authority omitted parametric-scc-summaries-v3");
   python = "${pythonEnv}/bin/python3";
   loadImageContract = "${staticExport}/load-image-contract.json";
   mkPythonClosure = suffix: modules: import ./python-module-closure.nix {
@@ -48,9 +54,6 @@ let
   ];
   nativeBuildPythonSource = mkPythonClosure "native-build" [
     "spaghetti_extractor.candidate.build"
-  ];
-  candidateAuthorityPythonSource = mkPythonClosure "candidate-authority-v3" [
-    "spaghetti_extractor.candidate.authority"
   ];
   profileArgs = lib.concatMapStringsSep " "
     (profile: lib.escapeShellArg (toString profile)) machineImportProfiles;
@@ -104,96 +107,6 @@ let
       PY
     '';
 
-  fallbackCoverageReceipt = import ./fallback-coverage-receipt.nix {
-    inherit pkgs pythonEnv pythonSource machineIr namePrefix;
-    interpreterPackage = interpreter;
-    portableReplacements = portableReplacementSelection;
-  };
-
-  candidateAuthorityReport = pkgs.runCommand
-    "${namePrefix}-candidate-authority-v3"
-    {
-      nativeBuildInputs = [ pythonEnv pkgs.jq ];
-      preferLocalBuild = false;
-      allowSubstitutes = true;
-      __contentAddressed = true;
-    }
-    ''
-      set -euo pipefail
-      export PYTHONHASHSEED=0
-      export LC_ALL=C.UTF-8
-      export SOURCE_DATE_EPOCH=1
-      export PYTHONPATH=${candidateAuthorityPythonSource}/src
-      mkdir -p "$out"
-      ${python} - \
-        ${staticAuthority.finalAuthorityArtifact} \
-        ${machineIr}/machine-ir.jsonl \
-        ${machineIr}/machine-ir-manifest.json \
-        ${fallbackCoverageReceipt}/fallback-coverage-receipt.json \
-        ${componentRuntime} \
-        "$out/candidate-authority.json" <<'PY'
-      import pathlib
-      import sys
-
-      from spaghetti_extractor.candidate.authority import (
-          build_candidate_authority,
-      )
-
-      (
-          final_authority,
-          machine_ir,
-          manifest,
-          fallback_receipt,
-          component_runtime,
-          output,
-      ) = sys.argv[1:]
-      receipt = build_candidate_authority(
-          final_authority=pathlib.Path(final_authority),
-          machine_ir=pathlib.Path(machine_ir),
-          machine_ir_manifest=pathlib.Path(manifest),
-          fallback_coverage_receipt=pathlib.Path(fallback_receipt),
-          component_runtime_package=pathlib.Path(component_runtime),
-      )
-      pathlib.Path(output).write_text(receipt.to_json(), encoding="ascii")
-      PY
-      jq -e '
-        .format == "spaghetti-extractor-candidate-authority-receipt-v3" and
-        (.status == "authorized" or .status == "incomplete" or .status == "violated") and
-        .policy.final_authority_v3_required and
-        .policy.candidate_generation_fails_closed
-      ' "$out/candidate-authority.json" >/dev/null
-    '';
-
-  candidateAuthorityGate = pkgs.runCommand
-    "${namePrefix}-candidate-authority-gate-v3"
-    {
-      nativeBuildInputs = [ pythonEnv pkgs.jq ];
-      preferLocalBuild = false;
-      allowSubstitutes = true;
-      __contentAddressed = true;
-    }
-    ''
-      set -euo pipefail
-      export PYTHONHASHSEED=0
-      export PYTHONPATH=${candidateAuthorityPythonSource}/src
-      mkdir -p "$out"
-      ${python} - ${candidateAuthorityReport}/candidate-authority.json \
-        "$out/candidate-authority.json" <<'PY'
-      import pathlib
-      import sys
-      from spaghetti_extractor.candidate.authority import (
-          parse_candidate_authority,
-          require_candidate_authority,
-      )
-
-      source, output = map(pathlib.Path, sys.argv[1:])
-      receipt = require_candidate_authority(
-          parse_candidate_authority(source.read_bytes())
-      )
-      output.write_text(receipt.to_json(), encoding="ascii")
-      PY
-    '';
-
   nativeEngine = pkgs.runCommand "${namePrefix}-native-engine-v1" {
     nativeBuildInputs = [ pythonEnv pkgs.jq ];
     preferLocalBuild = false;
@@ -206,9 +119,9 @@ let
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${nativeEnginePythonSource}/src
     jq -e '
-      .format == "spaghetti-extractor-candidate-authority-receipt-v3" and
-      .status == "authorized"
-    ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
+      .format == "spaghetti-extractor-structural-executable-v1" and
+      .status == "complete" and .executable
+    ' ${structuralExecutionGate}/structural-executable.json >/dev/null
     ${python} - \
       ${machineIr}/machine-ir.jsonl \
       ${machineIr}/machine-ir-manifest.json \
@@ -217,6 +130,9 @@ let
       ${portableReplacementArg} \
       ${machineImportProfileBundle}/profile.json \
       ${canonicalExternalSitesArg} \
+      ${lib.escapeShellArg (toString rootClosure)} \
+      ${lib.escapeShellArg (toString targetCertificates)} \
+      ${lib.escapeShellArg (toString parametricSummaries)} \
       "$out" ${profileArgs} <<'PY'
     import json
     import pathlib
@@ -237,8 +153,11 @@ let
     portable_path = sys.argv[5]
     profile_bundle = pathlib.Path(sys.argv[6])
     canonical_external_sites_path = sys.argv[7]
-    output = pathlib.Path(sys.argv[8])
-    profiles = tuple(pathlib.Path(value) for value in sys.argv[9:])
+    root_closure_path = pathlib.Path(sys.argv[8])
+    target_certificates_path = pathlib.Path(sys.argv[9])
+    parametric_summaries_path = pathlib.Path(sys.argv[10])
+    output = pathlib.Path(sys.argv[11])
+    profiles = tuple(pathlib.Path(value) for value in sys.argv[12:])
     selected_portable_components = ()
     if portable_path:
         portable_payload = json.loads(
@@ -279,8 +198,10 @@ let
         base_relocation_evidence=inputs.base_relocation_evidence,
         fixed_image_base=inputs.fixed_image_base,
         preferred_image_base=inputs.image_base,
-        machine_import_profiles=(profile_bundle,),
         canonical_external_sites=pathlib.Path(canonical_external_sites_path),
+        root_closure=root_closure_path,
+        target_certificates=target_certificates_path,
+        parametric_summaries=parametric_summaries_path,
         out=output,
         initial_zero_ranges=inputs.initial_zero_ranges,
         selected_portable_components=selected_portable_components,
@@ -292,8 +213,8 @@ let
       .counts.input_transfers > 0 and
       .counts.transfers == .counts.input_transfers and
       .counts.blockers == 0 and
-      .policy.execution_scope == "complete-static-authority" and
-      .policy.static_hybrid_closure_receipt_required and
+      .policy.execution_scope == "structural-executable-v1" and
+      .policy.structural_execution_receipt_required and
       (.authority | contains("candidate generation only"))
     ' "$out/native-engine-package.json" >/dev/null
   '';
@@ -328,8 +249,8 @@ let
     jq -e '
       .format == "spaghetti-extractor-native-runtime-package-v1" and
       .status == "ready" and
-      .policy.execution_scope == "complete-static-authority" and
-      .policy.static_hybrid_closure_receipt_required and
+      .policy.execution_scope == "structural-executable-v1" and
+      .policy.structural_execution_receipt_required and
       (.acceptance_authority | not)
     ' "$out/native-runtime-package.json" >/dev/null
   '';
@@ -356,16 +277,14 @@ let
     export SOURCE_DATE_EPOCH=1
     export PYTHONPATH=${nativeBuildPythonSource}/src
     jq -e '
-      .format == "spaghetti-extractor-candidate-authority-receipt-v3" and
-      .status == "authorized"
-    ' ${candidateAuthorityGate}/candidate-authority.json >/dev/null
+      .format == "spaghetti-extractor-structural-executable-v1" and
+      .status == "complete" and .executable
+    ' ${structuralExecutionGate}/structural-executable.json >/dev/null
     ${python} - \
       ${interpreter} ${nativeEngine} ${nativeRuntime} \
-      ${candidateAuthorityArg} \
-      ${finalAuthorityArg} \
+      ${structuralExecutionArg} \
       ${machineIr}/machine-ir.jsonl \
       ${machineIr}/machine-ir-manifest.json \
-      ${fallbackCoverageArg} \
       ${componentRuntimeArg} \
       ${loadImageContract} \
       ${machineIr}/recovered-executable-data.json \
@@ -384,28 +303,31 @@ let
         interpreter_package=pathlib.Path(sys.argv[1]),
         native_engine_package=pathlib.Path(sys.argv[2]),
         native_runtime_package=pathlib.Path(sys.argv[3]),
-        candidate_authority=optional_path(sys.argv[4]),
-        final_authority=optional_path(sys.argv[5]),
-        machine_ir=pathlib.Path(sys.argv[6]),
-        machine_ir_manifest=pathlib.Path(sys.argv[7]),
-        fallback_coverage_receipt=optional_path(sys.argv[8]),
-        component_runtime_package=pathlib.Path(sys.argv[9]),
-        region_override_package=optional_path(sys.argv[9]),
-        load_image_contract=pathlib.Path(sys.argv[10]),
-        recovered_executable_data=pathlib.Path(sys.argv[11]),
-        precompiled_objects=pathlib.Path(sys.argv[12]),
-        compiler=pathlib.Path(sys.argv[13]),
-        out_dir=pathlib.Path(sys.argv[14]),
+        candidate_authority=None,
+        final_authority=None,
+        structural_execution_receipt=pathlib.Path(sys.argv[4]),
+        machine_ir=pathlib.Path(sys.argv[5]),
+        machine_ir_manifest=pathlib.Path(sys.argv[6]),
+        fallback_coverage_receipt=None,
+        component_runtime_package=pathlib.Path(sys.argv[7]),
+        region_override_package=optional_path(sys.argv[7]),
+        load_image_contract=pathlib.Path(sys.argv[8]),
+        recovered_executable_data=pathlib.Path(sys.argv[9]),
+        precompiled_objects=pathlib.Path(sys.argv[10]),
+        compiler=pathlib.Path(sys.argv[11]),
+        out_dir=pathlib.Path(sys.argv[12]),
       )
     PY
     jq -e '
       .format == "spaghetti-extractor-interpreter-native-build-v1" and
       .status == "candidate-generated" and
       .acceptance_authority == "none" and
-      .inputs.candidate_authority.status == "authorized" and
-      .inputs.execution_scope.execution_scope == "complete-static-authority" and
+      .inputs.candidate_authority == null and
+      .inputs.structural_executable.status == "complete" and
+      .inputs.structural_executable.executable and
+      .inputs.execution_scope.execution_scope == "structural-executable-v1" and
       .inputs.execution_scope.acceptance_authority == "none" and
-      .policy.candidate_class == "release-static-closed"
+      .policy.candidate_class == "structural-executable-hybrid"
     ' "$out/interpreter-native-build-manifest.json" >/dev/null
     test -s "$out/candidate.exe"
   '';
@@ -413,11 +335,9 @@ in
 {
   inherit
     interpreter
+    structuralExecutionGate
     componentRuntime
     machineImportProfileBundle
-    fallbackCoverageReceipt
-    candidateAuthorityReport
-    candidateAuthorityGate
     nativeEngine
     nativeRuntime
     nativeObjects

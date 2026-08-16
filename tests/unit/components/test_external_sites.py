@@ -13,6 +13,7 @@ from spaghetti_extractor.artifacts.artifact_set import (
     RecordDependencyV3,
     canonical_sha256_v3,
 )
+from spaghetti_extractor.artifacts.io import write_artifact_bundle_v3
 from spaghetti_extractor.authority.authority_common import PrimaryBlockerV3
 from spaghetti_extractor.authority.external_site_records import (
     CANONICAL_EXTERNAL_SITE_CODEC_V3,
@@ -25,6 +26,10 @@ from spaghetti_extractor.authority.external_site_records import (
 from spaghetti_extractor.components.external_sites import (
     load_component_external_site_slice,
     project_component_external_sites,
+)
+from spaghetti_extractor.external.site_authority import (
+    CanonicalExternalSiteRecordError,
+    read_canonical_external_sites,
 )
 
 
@@ -177,6 +182,54 @@ def _resolution() -> dict[str, object]:
 
 
 class ComponentExternalSiteTests(unittest.TestCase):
+    def test_public_index_reads_bundle_and_projects_requested_units(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first"
+            second = root / "second"
+            for output, record in (
+                (first, _record("unit:a", complete=True)),
+                (second, _record("unit:b", complete=True, symbol="strlen")),
+            ):
+                ArtifactSetWriterV3(
+                    artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+                    bindings=(),
+                    status="complete",
+                ).write(output, [record])
+            bundle = root / "bundle"
+            write_artifact_bundle_v3(
+                bundle,
+                (first, second),
+                ("unit:a", "unit:b"),
+                expected_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+            )
+
+            sites = read_canonical_external_sites(
+                bundle, record_ids=("unit:a",)
+            )
+
+        self.assertEqual(len(sites), 1)
+        self.assertEqual(next(iter(sites.values())).unit_id, "unit:a")
+
+    def test_public_index_rejects_record_identity_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            original = _record("unit:a", complete=True)
+            mismatched = ArtifactRecordV3.create(
+                "unit:b", original.value.to_value()
+            )
+            ArtifactSetWriterV3(
+                artifact_kind=CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+                bindings=(),
+                status="complete",
+            ).write(root / "artifact", [mismatched])
+
+            with self.assertRaisesRegex(
+                CanonicalExternalSiteRecordError,
+                "record ID disagrees",
+            ):
+                read_canonical_external_sites(root / "artifact")
+
     def test_projects_and_loads_one_authorizing_component_slice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

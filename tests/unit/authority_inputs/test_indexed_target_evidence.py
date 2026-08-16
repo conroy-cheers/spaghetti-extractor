@@ -12,6 +12,10 @@ from spaghetti_extractor.authority.semantic_index import (
     SEMANTIC_INDEX_CODEC_V3,
     SEMANTIC_INDEX_PHASE_V3,
 )
+from spaghetti_extractor.authority.external_site_records import (
+    EXTERNAL_PROFILE_CODEC_V3,
+    ExternalProfileV3,
+)
 from spaghetti_extractor.authority.structural_targets import (
     STRUCTURAL_TARGETS_PHASE_V3,
 )
@@ -35,7 +39,7 @@ from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
 from spaghetti_extractor.authority_inputs.indexed_target_evidence import (
     generate_indexed_target_evidence_v3,
 )
-from tests.pe_fixtures import pe32_image_with_pointer_slot
+from tests.pe_fixtures import pe32_image_with_pointer_slot, pe32_import_image
 
 
 IMAGE_BASE = 0x400000
@@ -377,11 +381,26 @@ class _Fixture:
         guard_condition: dict[str, object] | None = None,
         predecessor_selector_value: dict[str, object] | None = None,
         split_compare_guard: bool = False,
+        import_symbol: str | None = None,
     ) -> None:
         root.mkdir()
         self.root = root
         self.binary = root / "fixture.exe"
-        self.binary.write_bytes(_pe(writable=writable, targets=targets))
+        if import_symbol is not None:
+            target_expression = {
+                "op": "load",
+                "width": 4,
+                "address": _const(IMAGE_BASE + 0x2040),
+            }
+            self.binary.write_bytes(
+                pe32_import_image(
+                    b"\x90" * 0x200,
+                    symbol=import_symbol,
+                    iat_offset=0x40,
+                )
+            )
+        else:
+            self.binary.write_bytes(_pe(writable=writable, targets=targets))
         pe_sha256 = hashlib.sha256(self.binary.read_bytes()).hexdigest()
         self.binding = ArtifactBindingV3(
             "binary", "pe32", "fixture.exe", pe_sha256
@@ -453,8 +472,14 @@ class _Fixture:
                         "source_rva": 0x1010,
                         "source_event_index": None,
                         "kind": "indirect_jump",
-                        "status": "recovered",
-                        "target_unit_ids": sorted(set(target_ids or ["case-zero", "case-one"])),
+                        "status": (
+                            "incomplete" if import_symbol is not None else "recovered"
+                        ),
+                        "target_unit_ids": (
+                            []
+                            if import_symbol is not None
+                            else sorted(set(target_ids or ["case-zero", "case-one"]))
+                        ),
                         "external_targets": [],
                         "failure": None,
                     },
@@ -503,6 +528,41 @@ class _Fixture:
             + "\n",
             encoding="ascii",
         )
+        profile_records: tuple[ArtifactRecordV3, ...] = ()
+        if import_symbol is not None:
+            profile = ExternalProfileV3.create(
+                profile_id=f"kernel32-{import_symbol}",
+                profile_sha256="1" * 64,
+                identity={
+                    "kind": "import",
+                    "dll": "kernel32.dll",
+                    "symbol": import_symbol,
+                    "ordinal": None,
+                },
+                allowed_transfers=("call", "jump"),
+                allowed_dispositions=("returns",),
+                argument_words=0,
+                memory_effect="none",
+                world_effect="none",
+                callback_effect="none",
+                machine_contract={
+                    "abi_template": "pe32-stdcall-v1",
+                    "argument_words": 0,
+                    "disposition": "returns",
+                    "memory_effect": "none",
+                    "world_effect": "none",
+                    "callback_effect": "none",
+                },
+            )
+            profile_records = (
+                EXTERNAL_PROFILE_CODEC_V3.write(profile.record_id, profile),
+            )
+        self.external_profiles = root / "external-profiles"
+        ArtifactSetWriterV3(
+            artifact_kind="external-profile-authority-v3",
+            bindings=(self.binding,),
+            status="complete",
+        ).write(self.external_profiles, profile_records)
 
     def run(self, name: str) -> tuple[dict[str, Any], ArtifactSetReaderV3]:
         output = self.root / name
@@ -514,6 +574,7 @@ class _Fixture:
             transition_summaries_path=self.transitions,
             structural_targets_path=self.structural,
             target_hints_path=self.hints,
+            external_profiles_path=self.external_profiles,
             output_directory=output,
         )
         return report, ArtifactSetReaderV3(output / "artifact")
@@ -553,11 +614,18 @@ class IndexedTargetEvidenceV3Tests(unittest.TestCase):
             inductive = self._empty_authority_input(
                 fixture.root / "inductive", "inductive-inputs-v3", fixture.binding
             )
+            parametric = self._empty_authority_input(
+                fixture.root / "parametric",
+                "parametric-scc-summaries-v3",
+                fixture.binding,
+            )
             certificates = INDIRECT_TARGET_CERTIFICATES_PHASE_V3.run(
                 output_directory=fixture.root / "certificates",
                 inputs={
+                    "external_profiles": fixture.external_profiles,
                     "inductive_inputs": inductive,
                     "memory_versions": memory,
+                    "parametric_summaries": parametric,
                     "semantic_index": fixture.semantic,
                     "semantic_index_global": fixture.semantic,
                     "structural_targets": fixture.structural,
@@ -573,6 +641,49 @@ class IndexedTargetEvidenceV3Tests(unittest.TestCase):
             self.assertTrue(unit.authorizing)
             self.assertEqual(unit.certificates[0].status, "complete")
             self.assertTrue(unit.certificates[0].authorizing)
+
+    def test_exact_code_va_emits_checked_static_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = _Fixture(
+                Path(temporary) / "fixture",
+                targets=(0x1100, 0x1100),
+                target_expression=_const(IMAGE_BASE + 0x1100),
+            )
+            report, reader = fixture.run("output")
+
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(report["counts"]["evidence_records"], 1)
+            evidence = TARGET_EVALUATION_EVIDENCE_CODEC_V3.read(
+                reader.get_record(fixture.exit_id)
+            ).value
+            self.assertEqual(evidence.evaluation_method, "checked_pe_static_value")
+            self.assertEqual(evidence.target_unit_ids, ("case-zero",))
+            certificate = evidence.evaluation_certificate
+            self.assertIsNotNone(certificate)
+            assert certificate is not None
+            self.assertEqual(
+                certificate.to_value()["variant"], "static_code_target"
+            )
+
+    def test_iat_slot_load_emits_loader_bound_import_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            fixture = _Fixture(
+                Path(temporary) / "fixture",
+                import_symbol="ExitProcess",
+            )
+            report, reader = fixture.run("output")
+
+            self.assertEqual(report["status"], "complete")
+            evidence = TARGET_EVALUATION_EVIDENCE_CODEC_V3.read(
+                reader.get_record(fixture.exit_id)
+            ).value
+            self.assertEqual(evidence.evaluation_method, "checked_pe_static_value")
+            self.assertEqual(evidence.target_unit_ids, ())
+            self.assertEqual(len(evidence.external_targets), 1)
+            target = evidence.external_targets[0].to_value()
+            self.assertEqual(target["import"]["dll"], "kernel32.dll")
+            self.assertEqual(target["import"]["symbol"], "ExitProcess")
+            self.assertNotIn("machine_target_value", target)
 
     @staticmethod
     def _empty_authority_input(

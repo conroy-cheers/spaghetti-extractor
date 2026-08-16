@@ -1,0 +1,19 @@
+[package]
+name = "spaghetti-extractor-native"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+
+[lib]
+name = "spaghetti_extractor_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.29.0", features = ["extension-module"] }
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+sha2 = "0.10.9"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+strip = true

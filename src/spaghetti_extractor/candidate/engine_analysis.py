@@ -320,48 +320,6 @@ def _machine_ir_event_evidence(
     return _canonical_sha256(identity), _canonical_sha256(abi), target_expression
 
 
-def _machine_ir_callback_registration(
-    event: Mapping[str, Any], *, transfer_id: str, event_index: int
-) -> tuple[CallbackSource, int, CallbackABI] | None:
-    raw_contract = event.get("abi_contract")
-    if raw_contract is None:
-        return None
-    if not isinstance(raw_contract, Mapping):
-        raise ToolkitInputError(
-            f"{transfer_id} external event {event_index} has malformed ABI contract"
-        )
-    if raw_contract.get("world_effect") != "callbackRegistration":
-        return None
-    argument_words = _required_u32(
-        raw_contract.get("argument_words"),
-        f"{transfer_id} callback-registration argument count",
-    )
-    argument_base_offset = _required_u32(
-        raw_contract.get("argument_base_offset"),
-        f"{transfer_id} callback-registration argument base offset",
-    )
-    if (
-        argument_words > 64
-        or argument_base_offset % 4 != 0
-        or argument_base_offset > 0x10000
-    ):
-        raise ToolkitInputError(
-            f"{transfer_id} callback-registration argument inventory is invalid"
-        )
-    context = f"{transfer_id} external event {event_index}"
-    source = parse_callback_source(
-        raw_contract,
-        argument_words=argument_words,
-        context=context,
-    )
-    callback_abi = parse_callback_abi(raw_contract, context=context)
-    return (
-        source,
-        source.stack_argument_offset(argument_base_offset),
-        callback_abi,
-    )
-
-
 def _exact_u32_expression(value: Any) -> int | None:
     if not isinstance(value, Mapping) or value.get("op") != "const":
         return None
@@ -547,7 +505,7 @@ def _machine_ir_register_import_sites(
     rows: Iterable[Mapping[str, Any]],
     *,
     import_iat_vas: Mapping[tuple[str, str | int], int],
-    internal_call_preserved_registers: Mapping[int, frozenset[str]],
+    call_preserved_registers: Mapping[tuple[str, int], frozenset[str]],
     allow_diagnostic_abi_hypotheses: bool,
 ) -> _RegisterImportSiteAnalysis:
     """Propagate exact IAT origins through registers and checked direct CFG edges.
@@ -657,6 +615,7 @@ def _machine_ir_register_import_sites(
             tuple[int, str], _DiagnosticCallPreservation
         ] = {}
         site_origins: dict[int, Any] = {}
+        unit_id = _required_string(row.get("id"), "machine-IR transfer ID")
         call_index = 0
         for raw_event in events:
             if not isinstance(raw_event, Mapping) or raw_event.get("family") != "external":
@@ -666,10 +625,8 @@ def _machine_ir_register_import_sites(
                 target_rva = raw_event.get("target_rva")
                 instruction_rva = raw_event.get("instruction_rva")
                 call_origins[call_index] = _IMPORT_ORIGIN_UNKNOWN
-                call_preserved[call_index] = (
-                    internal_call_preserved_registers.get(target_rva, frozenset())
-                    if isinstance(target_rva, int) and not isinstance(target_rva, bool)
-                    else frozenset()
+                call_preserved[call_index] = call_preserved_registers.get(
+                    (unit_id, call_index), frozenset()
                 )
                 if (
                     allow_diagnostic_abi_hypotheses

@@ -20,6 +20,12 @@ from .interface import (
     finalize_component_interface_spec,
     synthesize_component_interface_spec,
 )
+from .interface_ir import (
+    ComponentInterfaceIRError,
+    ComponentInterfaceIRV1,
+    PortableComponentInterfaceV2,
+    parse_component_interface,
+)
 from .external_sites import load_component_external_site_slice
 from .semantic import build_semantic_component_catalog
 from ..util import write_json
@@ -38,6 +44,7 @@ _INTERFACE_OVERRIDE_FIELDS = frozenset(
         "claims",
         "policy",
         "source_abi",
+        "portable_interface_ir",
     }
 )
 
@@ -90,6 +97,7 @@ def build_lift_unit_contract(
     )
     review_payload = None if review is None else _load_review(review, lift_unit_id)
     reviewed = _apply_review(synthesized, review_payload)
+    portable_interface = _portable_interface(reviewed)
     refinement = check_component_interface(
         catalog=catalog,
         machine_ir=machine_ir,
@@ -154,6 +162,11 @@ def build_lift_unit_contract(
             "component_sha256": catalog["components"][0]["component_sha256"],
             "interface_spec_sha256": reviewed["interface_spec_sha256"],
             "interface_refinement_sha256": refinement["refinement_sha256"],
+            "portable_interface_ir_sha256": (
+                None
+                if portable_interface is None
+                else _canonical_sha256(reviewed["portable_interface_ir"])
+            ),
             "external_site_projection_sha256": (
                 None
                 if external_site_slice is None
@@ -164,7 +177,12 @@ def build_lift_unit_contract(
             "membership": "exact_machine_unit_membership_v2",
             "machine_boundary": "derived_from_exact_machine_ir_v2",
             "logical_interface": (
-                "operator_reviewed_and_machine_effect_checked_v2"
+                "operator_reviewed_portable_interface_ir_v2"
+                if status == "checked"
+                and isinstance(portable_interface, PortableComponentInterfaceV2)
+                else "operator_reviewed_portable_interface_ir_v1"
+                if status == "checked" and portable_interface is not None
+                else "operator_reviewed_and_machine_effect_checked_v2"
                 if status == "checked"
                 else "none"
             ),
@@ -185,6 +203,9 @@ def build_lift_unit_contract(
             "synthesized_interface": "synthesized-interface.json",
             "reviewed_interface": "reviewed-interface.json",
             "interface_refinement": "interface-refinement.json",
+            "portable_interface_header": (
+                "portable-interface.h" if portable_interface is not None else None
+            ),
             "external_sites": (
                 "external-sites.json" if external_site_slice is not None else None
             ),
@@ -199,6 +220,15 @@ def build_lift_unit_contract(
     write_json(output / "synthesized-interface.json", synthesized)
     write_json(output / "reviewed-interface.json", reviewed)
     write_json(output / "interface-refinement.json", refinement)
+    if portable_interface is not None:
+        (output / "portable-interface.h").write_text(
+            (
+                portable_interface.render_public_header()
+                if isinstance(portable_interface, PortableComponentInterfaceV2)
+                else portable_interface.render_c_header()
+            ),
+            encoding="ascii",
+        )
     if external_site_slice is not None:
         if isinstance(external_sites, Mapping):
             write_json(
@@ -211,6 +241,18 @@ def build_lift_unit_contract(
             (output / "external-sites.json").write_bytes(source.read_bytes())
     write_json(output / "contract.json", result)
     return result
+
+
+def _portable_interface(
+    reviewed: Mapping[str, object],
+) -> ComponentInterfaceIRV1 | PortableComponentInterfaceV2 | None:
+    payload = reviewed.get("portable_interface_ir")
+    if payload is None:
+        return None
+    try:
+        return parse_component_interface(payload)
+    except ComponentInterfaceIRError as exc:
+        raise ComponentIntentError(f"portable component interface is invalid: {exc}") from exc
 
 
 def load_component_boundary_review(

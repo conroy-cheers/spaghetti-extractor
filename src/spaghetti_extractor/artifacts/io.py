@@ -37,7 +37,6 @@ from .artifact_set import (
     _canonical_tuple,
     _digest,
     _fail,
-    _json_value,
     _name,
     _record_value_id,
     _strict_object,
@@ -47,8 +46,10 @@ from .artifact_set import (
     canonical_sha256_v3,
     identity_bucket_v3,
     parse_canonical_json_v3,
+    parse_canonical_json_lines_v3,
     value_codec_v3,
 )
+
 
 class ArtifactSetReaderV3:
     """Validate and stream a v3 artifact without materializing all payloads."""
@@ -102,7 +103,7 @@ class ArtifactSetReaderV3:
         if observed != expected:
             _fail(
                 "artifact_layout_mismatch",
-                f"artifact files differ: missing={sorted(expected-observed)!r}, extra={sorted(observed-expected)!r}",
+                f"artifact files differ: missing={sorted(expected - observed)!r}, extra={sorted(observed - expected)!r}",
                 "regenerate into a fresh output directory and do not add sidecar files inside the artifact set",
                 location=str(self._root),
             )
@@ -163,11 +164,10 @@ class ArtifactSetReaderV3:
         cache_bytes = descriptor.decoded_size_bytes
         while (
             self._pack_cache
-            and self._pack_cache_bytes + cache_bytes
-            > MAX_READER_PACK_CACHE_BYTES
+            and self._pack_cache_bytes + cache_bytes > MAX_READER_PACK_CACHE_BYTES
         ):
-            _path, (evicted_bytes, _fingerprint, _records, _index) = self._pack_cache.popitem(
-                last=False
+            _path, (evicted_bytes, _fingerprint, _records, _index) = (
+                self._pack_cache.popitem(last=False)
             )
             self._pack_cache_bytes -= evicted_bytes
         if cache_bytes <= MAX_READER_PACK_CACHE_BYTES:
@@ -223,7 +223,9 @@ class ArtifactSetReaderV3:
             )
         decoded = bytearray()
         try:
-            with gzip.GzipFile(fileobj=io.BytesIO(compressed), mode="rb") as decoded_source:
+            with gzip.GzipFile(
+                fileobj=io.BytesIO(compressed), mode="rb"
+            ) as decoded_source:
                 while chunk := decoded_source.read(1024 * 1024):
                     decoded.extend(chunk)
                     if len(decoded) > self.manifest.max_pack_bytes:
@@ -244,8 +246,7 @@ class ArtifactSetReaderV3:
         decoded_size = len(decoded_bytes)
         if (
             decoded_size != descriptor.decoded_size_bytes
-            or hashlib.sha256(decoded_bytes).hexdigest()
-            != descriptor.decoded_sha256
+            or hashlib.sha256(decoded_bytes).hexdigest() != descriptor.decoded_sha256
             or decoded_size > self.manifest.max_pack_bytes
         ):
             _fail(
@@ -256,112 +257,247 @@ class ArtifactSetReaderV3:
             )
         expressions: dict[str, InternedExpressionV3] = {}
         value_nodes: dict[str, JsonValue] = {}
-        values: dict[str, tuple[JsonValue, tuple[str, ...], tuple[RecordDependencyV3, ...]]] = {}
+        values: dict[
+            str, tuple[JsonValue, tuple[str, ...], tuple[RecordDependencyV3, ...]]
+        ] = {}
         used_expressions: set[str] = set()
         used_values: set[str] = set()
         used_value_nodes: set[str] = set()
         record_ids: list[str] = []
-        with io.BytesIO(decoded_bytes) as source:
-            header = self._read_line(source, path, 1)
-            header_row = _strict_object(
-                parse_canonical_json_v3(header, location=f"{path}:1"),
-                {"entry", "format", "schema_version", "artifact_kind", "bucket", "part", "record_count", "first_record_id", "last_record_id"},
-                "pack header",
+        rows = parse_canonical_json_lines_v3(
+            decoded_bytes,
+            location=str(path),
+            maximum_line_bytes=self.manifest.max_pack_bytes,
+        )
+        if not rows:
+            _fail(
+                "empty_pack",
+                "pack has no header",
+                "regenerate the pack",
+                location=str(path),
             )
-            if header_row != {
-                "entry": "header",
-                "format": ARTIFACT_PACK_V3_FORMAT,
-                "schema_version": SCHEMA_VERSION,
-                "artifact_kind": self.manifest.artifact_kind,
-                "bucket": descriptor.bucket,
-                "part": descriptor.part,
-                "record_count": descriptor.record_count,
-                "first_record_id": descriptor.first_record_id,
-                "last_record_id": descriptor.last_record_id,
-            }:
+        header_row = _strict_object(
+            rows[0],
+            {
+                "entry",
+                "format",
+                "schema_version",
+                "artifact_kind",
+                "bucket",
+                "part",
+                "record_count",
+                "first_record_id",
+                "last_record_id",
+            },
+            "pack header",
+        )
+        if header_row != {
+            "entry": "header",
+            "format": ARTIFACT_PACK_V3_FORMAT,
+            "schema_version": SCHEMA_VERSION,
+            "artifact_kind": self.manifest.artifact_kind,
+            "bucket": descriptor.bucket,
+            "part": descriptor.part,
+            "record_count": descriptor.record_count,
+            "first_record_id": descriptor.first_record_id,
+            "last_record_id": descriptor.last_record_id,
+        }:
+            _fail(
+                "pack_header_mismatch",
+                "pack header contradicts its manifest descriptor",
+                "discard the artifact and rebuild it",
+                location=f"{path}:1",
+            )
+        for line_number, row in enumerate(rows[1:], 2):
+            if not isinstance(row, Mapping):
                 _fail(
-                    "pack_header_mismatch",
-                    "pack header contradicts its manifest descriptor",
-                    "discard the artifact and rebuild it",
-                    location=f"{path}:1",
+                    "invalid_pack_entry",
+                    "NDJSON entry is not an object",
+                    "regenerate the pack",
+                    location=f"{path}:{line_number}",
                 )
-            line_number = 1
-            while raw := source.readline(self.manifest.max_pack_bytes + 1):
-                line_number += 1
-                if len(raw) > self.manifest.max_pack_bytes:
+            entry = row.get("entry")
+            if entry == "expression":
+                parsed = _strict_object(
+                    row, {"entry", "id", "value"}, "expression entry"
+                )
+                expression = InternedExpressionV3(
+                    str(parsed["id"]), CanonicalValueV3.of(parsed["value"])
+                )
+                if expression.expression_id in expressions:
                     _fail(
-                        "oversized_pack_entry", "one NDJSON entry exceeds the pack limit", "split the record into smaller semantic facts", location=f"{path}:{line_number}"
+                        "duplicate_expression",
+                        f"expression {expression.expression_id!r} is repeated",
+                        "emit each interned value once per pack",
+                        location=f"{path}:{line_number}",
                     )
-                row = parse_canonical_json_v3(self._strip_newline(raw, path, line_number), location=f"{path}:{line_number}")
-                if not isinstance(row, Mapping):
-                    _fail("invalid_pack_entry", "NDJSON entry is not an object", "regenerate the pack", location=f"{path}:{line_number}")
-                entry = row.get("entry")
-                if entry == "expression":
-                    parsed = _strict_object(row, {"entry", "id", "value"}, "expression entry")
-                    expression = InternedExpressionV3(str(parsed["id"]), CanonicalValueV3.of(parsed["value"]))
-                    if expression.expression_id in expressions:
-                        _fail("duplicate_expression", f"expression {expression.expression_id!r} is repeated", "emit each interned value once per pack", location=f"{path}:{line_number}")
-                    expressions[expression.expression_id] = expression
-                elif entry == "value_node":
-                    parsed = _strict_object(row, {"entry", "id", "encoded"}, "recursive value node entry")
-                    node_id = str(parsed["id"])
-                    if not node_id.startswith("value-node:") or node_id in value_nodes:
-                        _fail("duplicate_value_node", f"recursive value node {node_id!r} is invalid or repeated", "emit each codec node exactly once per pack", location=f"{path}:{line_number}")
-                    value_nodes[node_id] = _json_value(parsed["encoded"])
-                elif entry == "record_value":
-                    parsed = _strict_object(row, {"entry", "id", "value", "expression_ids", "dependencies"}, "record value entry")
-                    expression_ids = _canonical_tuple((str(item) for item in _strict_sequence(parsed["expression_ids"], "expression IDs")), "expression IDs")
-                    dependencies = tuple(RecordDependencyV3.parse(item) for item in _strict_sequence(parsed["dependencies"], "record dependencies"))
-                    missing_expressions = sorted(set(expression_ids) - set(expressions))
-                    if missing_expressions:
-                        _fail("undefined_expression", "record value refers to an expression not yet defined", "place intern definitions before their first use", location=f"{path}:{line_number}")
-                    value_id = str(parsed["id"])
-                    if not value_id.startswith("record-value:") or value_id in values:
-                        _fail("stale_record_value", "record value identity is malformed or duplicated", "regenerate the pack", location=f"{path}:{line_number}")
-                    values[value_id] = (_json_value(parsed["value"]), expression_ids, dependencies)
-                elif entry == "record":
-                    parsed = _strict_object(row, {"entry", "id", "value_id"}, "record entry")
-                    record_id = str(parsed["id"])
-                    value_id = str(parsed["value_id"])
-                    if value_id not in values:
-                        _fail("undefined_record_value", f"record {record_id!r} refers to unknown {value_id!r}", "place record values before their first use", location=f"{path}:{line_number}")
-                    if identity_bucket_v3(record_id) != descriptor.bucket:
-                        _fail("wrong_record_bucket", f"record {record_id!r} is in the wrong bucket", "use identity_bucket_v3 through ArtifactSetWriterV3", location=f"{path}:{line_number}")
-                    encoded_value, expression_ids, dependencies = values[value_id]
-                    value = self._value_codec.decode(encoded_value, value_nodes, used_nodes=used_value_nodes)
-                    record = ArtifactRecordV3(record_id, value, dependencies, tuple(expressions[item] for item in expression_ids))
-                    if _record_value_id(record) != value_id:
-                        _fail("stale_record_value", f"record value {value_id!r} does not bind its decoded content", "discard and rebuild the artifact", location=f"{path}:{line_number}")
-                    record_ids.append(record_id)
-                    used_values.add(value_id)
-                    used_expressions.update(expression_ids)
-                    yield record
-                else:
-                    _fail("invalid_pack_entry", f"unknown NDJSON entry kind {entry!r}", "regenerate the pack with the v3 writer", location=f"{path}:{line_number}")
+                expressions[expression.expression_id] = expression
+            elif entry == "value_node":
+                parsed = _strict_object(
+                    row, {"entry", "id", "encoded"}, "recursive value node entry"
+                )
+                node_id = str(parsed["id"])
+                if not node_id.startswith("value-node:") or node_id in value_nodes:
+                    _fail(
+                        "duplicate_value_node",
+                        f"recursive value node {node_id!r} is invalid or repeated",
+                        "emit each codec node exactly once per pack",
+                        location=f"{path}:{line_number}",
+                    )
+                # parse_canonical_json_v3 has already established that the
+                # complete line is an exact JsonValue.  Retain that checked
+                # tree instead of recursively copying it once more.
+                value_nodes[node_id] = parsed["encoded"]
+            elif entry == "record_value":
+                parsed = _strict_object(
+                    row,
+                    {"entry", "id", "value", "expression_ids", "dependencies"},
+                    "record value entry",
+                )
+                expression_ids = _canonical_tuple(
+                    (
+                        str(item)
+                        for item in _strict_sequence(
+                            parsed["expression_ids"], "expression IDs"
+                        )
+                    ),
+                    "expression IDs",
+                )
+                dependencies = tuple(
+                    RecordDependencyV3.parse(item)
+                    for item in _strict_sequence(
+                        parsed["dependencies"], "record dependencies"
+                    )
+                )
+                missing_expressions = sorted(set(expression_ids) - set(expressions))
+                if missing_expressions:
+                    _fail(
+                        "undefined_expression",
+                        "record value refers to an expression not yet defined",
+                        "place intern definitions before their first use",
+                        location=f"{path}:{line_number}",
+                    )
+                value_id = str(parsed["id"])
+                if not value_id.startswith("record-value:") or value_id in values:
+                    _fail(
+                        "stale_record_value",
+                        "record value identity is malformed or duplicated",
+                        "regenerate the pack",
+                        location=f"{path}:{line_number}",
+                    )
+                values[value_id] = (
+                    parsed["value"],
+                    expression_ids,
+                    dependencies,
+                )
+            elif entry == "record":
+                parsed = _strict_object(
+                    row, {"entry", "id", "value_id"}, "record entry"
+                )
+                record_id = str(parsed["id"])
+                value_id = str(parsed["value_id"])
+                if value_id not in values:
+                    _fail(
+                        "undefined_record_value",
+                        f"record {record_id!r} refers to unknown {value_id!r}",
+                        "place record values before their first use",
+                        location=f"{path}:{line_number}",
+                    )
+                if identity_bucket_v3(record_id) != descriptor.bucket:
+                    _fail(
+                        "wrong_record_bucket",
+                        f"record {record_id!r} is in the wrong bucket",
+                        "use identity_bucket_v3 through ArtifactSetWriterV3",
+                        location=f"{path}:{line_number}",
+                    )
+                encoded_value, expression_ids, dependencies = values[value_id]
+                value = self._value_codec.decode(
+                    encoded_value, value_nodes, used_nodes=used_value_nodes
+                )
+                record = ArtifactRecordV3(
+                    record_id,
+                    value,
+                    dependencies,
+                    tuple(expressions[item] for item in expression_ids),
+                )
+                if _record_value_id(record) != value_id:
+                    _fail(
+                        "stale_record_value",
+                        f"record value {value_id!r} does not bind its decoded content",
+                        "discard and rebuild the artifact",
+                        location=f"{path}:{line_number}",
+                    )
+                record_ids.append(record_id)
+                used_values.add(value_id)
+                used_expressions.update(expression_ids)
+                yield record
+            else:
+                _fail(
+                    "invalid_pack_entry",
+                    f"unknown NDJSON entry kind {entry!r}",
+                    "regenerate the pack with the v3 writer",
+                    location=f"{path}:{line_number}",
+                )
         if record_ids != sorted(record_ids) or len(set(record_ids)) != len(record_ids):
-            _fail("noncanonical_record_order", "pack records are duplicated or unsorted", "regenerate the pack with the v3 writer", location=str(path))
-        if len(record_ids) != descriptor.record_count or record_ids[:1] != [descriptor.first_record_id] or record_ids[-1:] != [descriptor.last_record_id]:
-            _fail("pack_inventory_mismatch", "pack records contradict its descriptor", "regenerate the artifact set", location=str(path))
-        if used_values != set(values) or used_expressions != set(expressions) or used_value_nodes != set(value_nodes):
-            _fail("unused_interned_value", "pack contains unused interned values", "emit only values referenced by records in that pack", location=str(path))
+            _fail(
+                "noncanonical_record_order",
+                "pack records are duplicated or unsorted",
+                "regenerate the pack with the v3 writer",
+                location=str(path),
+            )
+        if (
+            len(record_ids) != descriptor.record_count
+            or record_ids[:1] != [descriptor.first_record_id]
+            or record_ids[-1:] != [descriptor.last_record_id]
+        ):
+            _fail(
+                "pack_inventory_mismatch",
+                "pack records contradict its descriptor",
+                "regenerate the artifact set",
+                location=str(path),
+            )
+        if (
+            used_values != set(values)
+            or used_expressions != set(expressions)
+            or used_value_nodes != set(value_nodes)
+        ):
+            _fail(
+                "unused_interned_value",
+                "pack contains unused interned values",
+                "emit only values referenced by records in that pack",
+                location=str(path),
+            )
 
     @staticmethod
     def _read_line(source: Any, path: Path, line_number: int) -> bytes:
         raw = source.readline(MAX_PACK_BYTES + 1)
         if not raw:
-            _fail("empty_pack", "pack has no header", "regenerate the pack", location=str(path))
+            _fail(
+                "empty_pack",
+                "pack has no header",
+                "regenerate the pack",
+                location=str(path),
+            )
         return ArtifactSetReaderV3._strip_newline(raw, path, line_number)
 
     @staticmethod
     def _strip_newline(raw: bytes, path: Path, line_number: int) -> bytes:
         if not raw.endswith(b"\n") or raw.endswith(b"\r\n"):
-            _fail("noncanonical_ndjson", "pack line does not end in one LF", "write packs with ArtifactSetWriterV3", location=f"{path}:{line_number}")
+            _fail(
+                "noncanonical_ndjson",
+                "pack line does not end in one LF",
+                "write packs with ArtifactSetWriterV3",
+                location=f"{path}:{line_number}",
+            )
         return raw[:-1]
 
     def find_record(self, record_id: str) -> ArtifactRecordV3 | None:
         bucket = identity_bucket_v3(record_id)
         for pack in self.manifest.packs:
-            if pack.bucket != bucket or not pack.first_record_id <= record_id <= pack.last_record_id:
+            if (
+                pack.bucket != bucket
+                or not pack.first_record_id <= record_id <= pack.last_record_id
+            ):
                 continue
             _records, by_id = self._load_pack(pack)
             record = by_id.get(record_id)
@@ -400,7 +536,7 @@ class ArtifactSetReaderV3:
         if expected != observed:
             _fail(
                 "planner_omission",
-                f"artifact coverage differs: missing={sorted(expected-observed)!r}, unexpected={sorted(observed-expected)!r}",
+                f"artifact coverage differs: missing={sorted(expected - observed)!r}, unexpected={sorted(observed - expected)!r}",
                 "regenerate the scheduling plan from the independently checked structural universe",
             )
 
@@ -619,17 +755,29 @@ class ArtifactBundleManifestV3:
                 location=location,
             )
         fields = {
-            "format", "schema_version", "artifact_kind", "artifact_id", "status",
-            "bindings", "members", "record_count", "inventory_path",
-            "inventory_size_bytes", "inventory_sha256",
-            "inventory_decoded_size_bytes", "inventory_decoded_sha256",
+            "format",
+            "schema_version",
+            "artifact_kind",
+            "artifact_id",
+            "status",
+            "bindings",
+            "members",
+            "record_count",
+            "inventory_path",
+            "inventory_size_bytes",
+            "inventory_sha256",
+            "inventory_decoded_size_bytes",
+            "inventory_decoded_sha256",
         }
         row = _strict_object(
             parse_canonical_json_v3(data, location=location),
             fields,
             "artifact bundle manifest",
         )
-        if row["format"] != ARTIFACT_BUNDLE_V3_FORMAT or row["schema_version"] != SCHEMA_VERSION:
+        if (
+            row["format"] != ARTIFACT_BUNDLE_V3_FORMAT
+            or row["schema_version"] != SCHEMA_VERSION
+        ):
             _fail(
                 "wrong_artifact_format",
                 "document is not an artifact-bundle-v3 manifest",
@@ -640,8 +788,14 @@ class ArtifactBundleManifestV3:
             artifact_kind=str(row["artifact_kind"]),
             artifact_id=str(row["artifact_id"]),
             status=str(row["status"]),
-            bindings=tuple(ArtifactBindingV3.parse(item) for item in _strict_sequence(row["bindings"], "bundle bindings")),
-            members=tuple(ArtifactBundleMemberV3.parse(item) for item in _strict_sequence(row["members"], "bundle members")),
+            bindings=tuple(
+                ArtifactBindingV3.parse(item)
+                for item in _strict_sequence(row["bindings"], "bundle bindings")
+            ),
+            members=tuple(
+                ArtifactBundleMemberV3.parse(item)
+                for item in _strict_sequence(row["members"], "bundle members")
+            ),
             record_count=int(row["record_count"]),
             inventory_path=str(row["inventory_path"]),
             inventory_size_bytes=int(row["inventory_size_bytes"]),
@@ -742,8 +896,7 @@ class ArtifactBundleReaderV3:
             )
         if (
             len(compressed) != self.manifest.inventory_size_bytes
-            or hashlib.sha256(compressed).hexdigest()
-            != self.manifest.inventory_sha256
+            or hashlib.sha256(compressed).hexdigest() != self.manifest.inventory_sha256
         ):
             _fail(
                 "corrupt_bundle_inventory",
@@ -773,8 +926,7 @@ class ArtifactBundleReaderV3:
             )
         values = parse_canonical_json_v3(decoded, location=str(path))
         record_ids = tuple(
-            str(item)
-            for item in _strict_sequence(values, "bundle record IDs")
+            str(item) for item in _strict_sequence(values, "bundle record IDs")
         )
         if (
             record_ids != tuple(sorted(set(record_ids)))
@@ -805,7 +957,7 @@ class ArtifactBundleReaderV3:
         if observed != self._record_id_set:
             _fail(
                 "planner_omission",
-                f"bundle coverage differs: missing={sorted(self._record_id_set-observed)!r}",
+                f"bundle coverage differs: missing={sorted(self._record_id_set - observed)!r}",
                 "repair the shard selection or regenerate the affected phase",
             )
 
@@ -866,9 +1018,7 @@ class ArtifactBundleReaderV3:
                         )
 
 
-ArtifactInputManifestV3: TypeAlias = (
-    ArtifactSetManifestV3 | ArtifactBundleManifestV3
-)
+ArtifactInputManifestV3: TypeAlias = ArtifactSetManifestV3 | ArtifactBundleManifestV3
 ArtifactInputReaderV3: TypeAlias = ArtifactSetReaderV3 | ArtifactBundleReaderV3
 
 
@@ -1024,9 +1174,23 @@ def check_artifact_set_v3(
     dependency_record_exists: Callable[[RecordDependencyV3], bool] | None = None,
 ) -> ArtifactSetManifestV3:
     reader = ArtifactSetReaderV3(root)
-    if expected_bindings is not None and reader.manifest.bindings != tuple(sorted(set(expected_bindings))):
-        _fail("binding_mismatch", "artifact semantic bindings differ from the authority inputs", "rebuild the artifact from the exact binary/profile/checker bindings")
-    if expected_dependencies is not None and reader.manifest.dependencies != tuple(sorted(set(expected_dependencies))):
-        _fail("dependency_mismatch", "artifact dependency bindings differ from declared inputs", "rebuild the phase with its exact declared artifact inputs")
-    reader.validate_completeness(expected_record_ids, dependency_record_exists=dependency_record_exists)
+    if expected_bindings is not None and reader.manifest.bindings != tuple(
+        sorted(set(expected_bindings))
+    ):
+        _fail(
+            "binding_mismatch",
+            "artifact semantic bindings differ from the authority inputs",
+            "rebuild the artifact from the exact binary/profile/checker bindings",
+        )
+    if expected_dependencies is not None and reader.manifest.dependencies != tuple(
+        sorted(set(expected_dependencies))
+    ):
+        _fail(
+            "dependency_mismatch",
+            "artifact dependency bindings differ from declared inputs",
+            "rebuild the phase with its exact declared artifact inputs",
+        )
+    reader.validate_completeness(
+        expected_record_ids, dependency_record_exists=dependency_record_exists
+    )
     return reader.manifest

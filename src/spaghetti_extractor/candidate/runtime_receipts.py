@@ -108,7 +108,7 @@ def _validate_implementation_dispatch_receipt(
         "runtime_code_target_lookup": "exact-active-transfer-rva",
         "unresolved_dispatch": "fail-closed-as-unimplemented",
         "portable_component_fallback_on_unimplemented": False,
-        "static_hybrid_closure_receipt_required_for_candidate": True,
+        "structural_execution_receipt_required_for_candidate": True,
         "acceptance_authority": False,
     }
     if policy != expected_policy:

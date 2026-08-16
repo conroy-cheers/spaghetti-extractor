@@ -82,6 +82,7 @@ let
         export LC_ALL=C.UTF-8
         export SOURCE_DATE_EPOCH=1
         export SPAGHETTI_ORIGINAL_EXECUTION_FORBIDDEN=1
+        export SPAGHETTI_REQUIRE_NATIVE=1
         export PYTHONPATH=${pythonSource}/src
         ${if memoryLimitMiB == null then "" else "ulimit -v ${toString (memoryLimitMiB * 1024)}"}
         mkdir -p "$out"

@@ -63,7 +63,10 @@ def text(value: Any, context: str, *, maximum: int = 1024) -> str:
         not isinstance(value, str)
         or not value
         or len(value) > maximum
-        or any(ord(character) < 0x20 for character in value)
+        or (
+            not value.isprintable()
+            and any(ord(character) < 0x20 for character in value)
+        )
     ):
         fail(
             "record_schema_mismatch",
@@ -172,9 +175,7 @@ def dependencies_for(
     input_name: str, records: Iterable[ArtifactRecordV3]
 ) -> tuple[RecordDependencyV3, ...]:
     return tuple(
-        sorted(
-            RecordDependencyV3(input_name, record.record_id) for record in records
-        )
+        sorted(RecordDependencyV3(input_name, record.record_id) for record in records)
     )
 
 

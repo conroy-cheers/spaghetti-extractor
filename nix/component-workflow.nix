@@ -10,8 +10,11 @@
   intent,
   reviewRoot ? null,
   sourceRoot ? null,
+  bindingRoot ? null,
+  inductionRoot ? null,
   namePrefix,
   interpreterPackage ? null,
+  generatedLibraryComponents ? { },
   compiler ? pkgs.pkgsCross.mingw32.stdenv.cc,
 }:
 
@@ -35,11 +38,26 @@ let
     owner = liftUnit.id;
   }) (builtins.filter (liftUnit: (liftUnit.interface_review or null) != null)
     liftUnits);
+  bindingAssets = map (liftUnit: {
+    path = toString (bindingRoot + "/${lib.removePrefix "bindings/" liftUnit.machine_binding}");
+    role = "component_machine_binding";
+    owner = liftUnit.id;
+  }) (builtins.filter (liftUnit: (liftUnit.machine_binding or null) != null)
+    liftUnits);
+  inductionAssets = map (liftUnit: {
+    path = if inductionRoot == null then
+      throw "${liftUnit.id} declares an induction declaration but inductionRoot is unset"
+    else toString
+      (inductionRoot + "/${lib.removePrefix "induction/" liftUnit.induction}");
+    role = "component_induction";
+    owner = liftUnit.id;
+  }) (builtins.filter (liftUnit: (liftUnit.induction or null) != null)
+    liftUnits);
   assetInventory = [ {
     path = toString intent;
     role = "component_intent";
     owner = "component-workflow";
-  } ] ++ sourceAssets ++ reviewAssets;
+  } ] ++ sourceAssets ++ reviewAssets ++ bindingAssets ++ inductionAssets;
   mkPhaseSource = phase: modules: import ./python-module-closure.nix {
     phaseRole = "candidate";
     inherit pkgs modules;
@@ -50,6 +68,9 @@ let
   ];
   contractSource = mkPhaseSource "contract" [
     "spaghetti_extractor.components.contracts"
+  ];
+  developmentContractSource = mkPhaseSource "development-contract" [
+    "spaghetti_extractor.components.development_contract"
   ];
   externalSiteSource = mkPhaseSource "external-sites" [
     "spaghetti_extractor.components.external_sites"
@@ -72,6 +93,67 @@ let
   statusSource = mkPhaseSource "status" [
     "spaghetti_extractor.components.status"
   ];
+  machineBindingSource = mkPhaseSource "machine-binding" [
+    "spaghetti_extractor.components.machine_binding"
+    "spaghetti_extractor.util"
+  ];
+  compileReceiptSource = mkPhaseSource "compile-receipt" [
+    "spaghetti_extractor.components.compile_receipt"
+  ];
+  sourceProfileSource = mkPhaseSource "source-profile" [
+    "spaghetti_extractor.components.source_profile"
+    "spaghetti_extractor.util"
+  ];
+  semanticContractSource = mkPhaseSource "semantic-contract" [
+    "spaghetti_extractor.components.semantic_contract"
+    "spaghetti_extractor.util"
+  ];
+  universalContractSource = mkPhaseSource "universal-contract" [
+    "spaghetti_extractor.components.universal_contract"
+    "spaghetti_extractor.components.universal_binding"
+  ];
+  componentImplementationSource = mkPhaseSource "universal-implementation" [
+    "spaghetti_extractor.components.implementation"
+  ];
+  componentDependencySource = mkPhaseSource "universal-dependencies" [
+    "spaghetti_extractor.components.dependency_graph"
+    "spaghetti_extractor.components.retirement"
+  ];
+  inductionPackageSource = mkPhaseSource "induction-package" [
+    "spaghetti_extractor.components.inductive_package"
+    "spaghetti_extractor.util"
+  ];
+  inductionCertificateSource = mkPhaseSource "induction-certificate" [
+    "spaghetti_extractor.components.inductive_certificate"
+    "spaghetti_extractor.components.inductive_contract"
+    "spaghetti_extractor.util"
+  ];
+  inductionRefinementSource = mkPhaseSource "induction-refinement" [
+    "spaghetti_extractor.components.inductive_refinement"
+    "spaghetti_extractor.util"
+  ];
+  inductionFinalizationSource = mkPhaseSource "induction-finalization" [
+    "spaghetti_extractor.components.inductive_certificate"
+    "spaghetti_extractor.components.inductive_contract"
+    "spaghetti_extractor.components.inductive_receipts"
+    "spaghetti_extractor.util"
+  ];
+  refinementSource = mkPhaseSource "semantic-refinement" [
+    "spaghetti_extractor.components.refinement"
+    "spaghetti_extractor.util"
+  ];
+  serviceGraphSource = mkPhaseSource "service-graph" [
+    "spaghetti_extractor.components.service_graph"
+    "spaghetti_extractor.components.machine_binding"
+    "spaghetti_extractor.util"
+  ];
+  activationReceiptSource = mkPhaseSource "activation-receipt" [
+    "spaghetti_extractor.components.activation_receipt"
+    "spaghetti_extractor.util"
+  ];
+  ownershipSource = mkPhaseSource "ownership" [
+    "spaghetti_extractor.components.ownership"
+  ];
   proposalInput = import ./component-proposal-input.nix {
     inherit pkgs pythonEnv componentProposals intent namePrefix;
   };
@@ -85,6 +167,12 @@ let
     inherit path;
     name = "${namePrefix}-${name}";
   };
+  resolveRootFile = name: root: relative:
+    if lib.isDerivation root
+    then "${root}/${relative}"
+    else if builtins.isString root
+    then "${root}/${relative}"
+    else pinInputFile name (root + "/${relative}");
   environment = phaseSource: ''
     export PYTHONHASHSEED=0
     export LC_ALL=C.UTF-8
@@ -227,12 +315,20 @@ let
         (.authority.can_authorize_candidate_runtime | not)
       ' "$out/external-sites.json" >/dev/null
     '';
-  externalSiteSlices =
-    if canonicalExternalSites == null then { }
-    else builtins.listToAttrs (map (liftUnit: {
+  # Keep the canonical site artifact lazy. Merely asking for a pure component
+  # contract must not force target-wide external-site analysis because some
+  # other component declares an external service.
+  externalSiteSlices = builtins.listToAttrs (map (liftUnit: {
       name = liftUnit.id;
-      value = mkExternalSiteSlice liftUnit;
-    }) liftUnits);
+      value =
+        if canonicalExternalSites == null then
+          throw "${liftUnit.id} requires canonical external sites"
+        else
+          mkExternalSiteSlice liftUnit;
+    }) (builtins.filter (liftUnit:
+      (liftUnit.machine_binding or null) != null
+      && liftUnitUsesExternalSites liftUnit
+    ) liftUnits));
   mkContract = liftUnit:
     let
       review = liftUnit.interface_review or null;
@@ -284,6 +380,76 @@ let
     name = liftUnit.id;
     value = mkContract liftUnit;
   }) liftUnits);
+  mkDevelopmentDeclaration = liftUnit:
+    builtins.toFile
+      "${namePrefix}-${liftUnit.id}-component-development-declaration-v1.json"
+      (builtins.toJSON {
+        format = "spaghetti-extractor-component-development-declaration-v1";
+        program_id = intentPayload.program_id;
+        kind = liftUnit.kind;
+        id = liftUnit.id;
+        label = liftUnit.label;
+        boundary = if liftUnit.kind == "component"
+          then { selector = liftUnit.selector; }
+          else { members = liftUnit.members; };
+        evidence_profile = liftUnit.evidence_profile;
+        source = liftUnit.source;
+      });
+  developmentLiftUnits = builtins.filter (liftUnit:
+    (liftUnit.source or null) != null &&
+    (liftUnit.source.operations or null) != null &&
+    (liftUnit.interface_review or null) != null &&
+    liftUnit.evidence_profile == "portable-component-v2"
+  ) liftUnits;
+  developmentDeclarations = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkDevelopmentDeclaration liftUnit;
+  }) developmentLiftUnits);
+  mkDevelopmentContract = liftUnit:
+    let
+      review = liftUnit.interface_review or null;
+      reviewPath =
+        if review == null then
+          throw "${liftUnit.id} declares a portable source without an interface review"
+        else if reviewRoot == null then
+          throw "${liftUnit.id} declares an interface review but reviewRoot is unset"
+        else pinInputFile "${liftUnit.id}-boundary-review.json"
+          (reviewRoot + "/${lib.removePrefix "reviews/" review}");
+    in
+    pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-development-contract-v1" common ''
+      set -euo pipefail
+      ${environment developmentContractSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${developmentDeclarations.${liftUnit.id}} \
+        ${reviewPath} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.components.development_contract import (
+          build_component_development_contract,
+      )
+
+      build_component_development_contract(
+          declaration=pathlib.Path(sys.argv[1]),
+          review=pathlib.Path(sys.argv[2]),
+          out_dir=pathlib.Path(sys.argv[3]),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-development-contract-v1" and
+        .status == "checked" and
+        (.executes_original_binary | not) and
+        (.authority.activation_authorized | not) and
+        (.authority.candidate_runtime_authorized | not)
+      ' "$out/contract.json" >/dev/null
+    '';
+  developmentContracts = builtins.listToAttrs (
+    map (liftUnit: {
+      name = liftUnit.id;
+      value = mkDevelopmentContract liftUnit;
+    }) developmentLiftUnits
+  );
   mkSourcePaths = liftUnit: paths:
     builtins.listToAttrs (map (relative: {
       name = relative;
@@ -306,6 +472,8 @@ let
         ${lib.escapeShellArg liftUnit.id} \
         ${lib.escapeShellArg (builtins.toJSON files)} \
         ${lib.escapeShellArg (builtins.toJSON sharedInputs)} \
+        ${lib.escapeShellArg (builtins.toJSON (source.entry or null))} \
+        ${lib.escapeShellArg (builtins.toJSON (source.operations or null))} \
         "$out" <<'PY'
       import json
       import pathlib
@@ -316,12 +484,14 @@ let
           lift_unit_id=sys.argv[1],
           files={key: pathlib.Path(value) for key, value in json.loads(sys.argv[2]).items()},
           shared_inputs={key: pathlib.Path(value) for key, value in json.loads(sys.argv[3]).items()},
-          entry=json.loads(${builtins.toJSON (builtins.toJSON source.entry)}),
-          out_dir=pathlib.Path(sys.argv[4]),
+          entry=json.loads(sys.argv[4]),
+          operation_symbols=json.loads(sys.argv[5]),
+          out_dir=pathlib.Path(sys.argv[6]),
       )
       PY
       jq -e --arg id ${lib.escapeShellArg liftUnit.id} '
-        .format == "spaghetti-extractor-component-source-package-v2" and
+        (.format == "spaghetti-extractor-component-source-package-v2" or
+         .format == "spaghetti-extractor-component-source-package-v3") and
         .lift_unit_id == $id and
         (.files | length) > 0 and
         (.implementation_sha256 | length) == 64
@@ -333,6 +503,790 @@ let
       value = mkSourcePackage liftUnit;
     }) (builtins.filter (liftUnit: (liftUnit.source or null) != null) liftUnits)
   );
+  portableV2LiftUnits = builtins.filter (liftUnit:
+    (liftUnit.source or null) != null &&
+    (liftUnit.source.operations or null) != null &&
+    liftUnit.evidence_profile == "portable-component-v2" &&
+    builtins.hasAttr liftUnit.id developmentContracts
+  ) liftUnits;
+  mkCompileReceipt = liftUnit:
+    pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-compile-v1"
+      (common // {
+        nativeBuildInputs = common.nativeBuildInputs ++ [
+          pkgs.stdenv.cc
+          compiler
+        ];
+      }) ''
+      set -euo pipefail
+      ${environment compileReceiptSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${developmentContracts.${liftUnit.id}}/portable-interface.json \
+        ${sourcePackages.${liftUnit.id}} \
+        ${pkgs.stdenv.cc}/bin/cc \
+        ${compiler}/bin/i686-w64-mingw32-gcc \
+        ${lib.escapeShellArg (if builtins.hasAttr liftUnit.id inductionPackages
+          then "${inductionPackages.${liftUnit.id}}/source-plan.json"
+          else "-")} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.compile_receipt import (
+          build_component_compile_receipt,
+      )
+
+      interface, source, host_cc, pe32_cc = map(pathlib.Path, sys.argv[1:5])
+      induction = [] if sys.argv[5] == "-" else [pathlib.Path(sys.argv[5])]
+      output = pathlib.Path(sys.argv[6])
+      build_component_compile_receipt(
+          interface=interface,
+          source_package=source,
+          host_compiler=host_cc,
+          pe32_compiler=pe32_cc,
+          out_dir=output,
+          inductive_source_plans=induction,
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-compile-receipt-v1" and
+        .status == "checked" and
+        .policy.host_and_pe32_abi_checked and
+        .policy.framework_managed_state and
+        .policy.component_mutable_globals_forbidden
+      ' "$out/compile-receipt.json" >/dev/null
+    '';
+  compileReceipts = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkCompileReceipt liftUnit;
+  }) portableV2LiftUnits);
+  sourceProfiles = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = pkgs.runCommand
+      "${namePrefix}-${liftUnit.id}-component-source-profile-v1" common ''
+      set -euo pipefail
+      ${environment sourceProfileSource}
+      mkdir -p "$out"
+      ${python} - ${sourcePackages.${liftUnit.id}} "$out/source-profile.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.source_profile import (
+          check_component_source_profile,
+      )
+      from spaghetti_extractor.util import write_json
+
+      write_json(
+          pathlib.Path(sys.argv[2]),
+          check_component_source_profile(package=pathlib.Path(sys.argv[1])),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-source-profile-v1" and
+        (.status == "satisfied" or .status == "incomplete" or .status == "violated") and
+        (.policy.operator_behavior_examples_used | not)
+      ' "$out/source-profile.json" >/dev/null
+    '';
+  }) portableV2LiftUnits);
+  machineBindingLiftUnits = builtins.filter (liftUnit:
+    (liftUnit.machine_binding or null) != null &&
+    liftUnit.evidence_profile == "portable-component-v2" &&
+    builtins.hasAttr liftUnit.id developmentContracts
+  ) liftUnits;
+  liftUnitUsesExternalSites = liftUnit:
+    let
+      bindingPath =
+        if bindingRoot == null then
+          throw "${liftUnit.id} declares a machine binding but bindingRoot is unset"
+        else resolveRootFile "${liftUnit.id}-machine-binding.json" bindingRoot
+          (lib.removePrefix "bindings/" liftUnit.machine_binding);
+      declaration = builtins.fromJSON (builtins.readFile bindingPath);
+    in builtins.any
+      (service: (service.provider.kind or null) == "external_site")
+      (declaration.services or [ ]);
+  mkMachineBindingReceipt = liftUnit:
+    let
+      binding = liftUnit.machine_binding;
+      bindingPath =
+        if bindingRoot == null then
+          throw "${liftUnit.id} declares a machine binding but bindingRoot is unset"
+        else resolveRootFile "${liftUnit.id}-machine-binding.json" bindingRoot
+          (lib.removePrefix "bindings/" binding);
+      requiresExternalSites = liftUnitUsesExternalSites liftUnit;
+      externalSites =
+        if canonicalExternalSites == null || !requiresExternalSites then "-"
+        else toString canonicalExternalSites;
+    in pkgs.runCommand
+      "${namePrefix}-${liftUnit.id}-component-machine-binding-v1" common ''
+      set -euo pipefail
+      ${environment machineBindingSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${bindingPath} \
+        ${developmentContracts.${liftUnit.id}}/portable-interface.json \
+        ${machineIr}/machine-ir.jsonl \
+        ${machineIr}/machine-ir-manifest.json \
+        ${lib.escapeShellArg externalSites} \
+        "$out/machine-binding.json" \
+        "$out/machine-binding-receipt.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.machine_binding import (
+          check_component_machine_binding,
+          materialize_component_machine_binding,
+      )
+      from spaghetti_extractor.util import write_json
+
+      declaration, interface, machine_ir, manifest = map(pathlib.Path, sys.argv[1:5])
+      sites = None if sys.argv[5] == "-" else pathlib.Path(sys.argv[5])
+      binding = pathlib.Path(sys.argv[6])
+      output = pathlib.Path(sys.argv[7])
+      write_json(binding, materialize_component_machine_binding(
+          declaration=declaration,
+          interface=interface,
+          machine_ir=machine_ir,
+          machine_ir_manifest=manifest,
+      ))
+      receipt = check_component_machine_binding(
+          binding=binding,
+          interface=interface,
+          machine_ir=machine_ir,
+          machine_ir_manifest=manifest,
+          canonical_external_sites=sites,
+      )
+      write_json(output, receipt)
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-machine-binding-receipt-v1" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
+        (.activation_authorized == (.status == "checked"))
+      ' "$out/machine-binding-receipt.json" >/dev/null
+    '';
+  machineBindingReceipts = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkMachineBindingReceipt liftUnit;
+  }) machineBindingLiftUnits);
+  semanticContracts = lib.mapAttrs (liftUnitId: bindingReceipt:
+    let
+      liftUnit = liftUnitsById.${liftUnitId};
+      externalSites =
+        if canonicalExternalSites == null || !(liftUnitUsesExternalSites liftUnit)
+        then "-"
+        else toString canonicalExternalSites;
+    in pkgs.runCommand
+      "${namePrefix}-${liftUnitId}-component-semantic-contract-v1" common ''
+      set -euo pipefail
+      ${environment semanticContractSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${developmentContracts.${liftUnitId}}/portable-interface.json \
+        ${bindingReceipt}/machine-binding.json \
+        ${machineIr}/machine-ir.jsonl \
+        ${machineIr}/machine-ir-manifest.json \
+        ${lib.escapeShellArg externalSites} \
+        "$out/semantic-contract.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.semantic_contract import (
+          build_component_semantic_contract,
+      )
+      from spaghetti_extractor.util import write_json
+
+      interface, binding, machine_ir, manifest = map(pathlib.Path, sys.argv[1:5])
+      external_sites = None if sys.argv[5] == "-" else pathlib.Path(sys.argv[5])
+      output = pathlib.Path(sys.argv[6])
+      write_json(output, build_component_semantic_contract(
+          interface=interface,
+          binding=binding,
+          machine_ir=machine_ir,
+          machine_ir_manifest=manifest,
+          canonical_external_sites=external_sites,
+      ))
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-semantic-contract-v1" and
+        (.status == "satisfied" or .status == "incomplete" or .status == "violated") and
+        .policy.behavior_is_machine_derived and
+        (.policy.operator_expected_outputs_accepted | not)
+      ' "$out/semantic-contract.json" >/dev/null
+    '') machineBindingReceipts;
+  universalContracts = lib.mapAttrs (liftUnitId: semanticContract:
+    pkgs.runCommand
+      "${namePrefix}-${liftUnitId}-universal-component-contract-v3" common ''
+      set -euo pipefail
+      ${environment universalContractSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${developmentContracts.${liftUnitId}}/portable-interface.json \
+        ${machineBindingReceipts.${liftUnitId}}/machine-binding.json \
+        ${machineBindingReceipts.${liftUnitId}}/machine-binding-receipt.json \
+        ${semanticContract}/semantic-contract.json \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.universal_contract import (
+          build_component_contract_v3,
+      )
+
+      build_component_contract_v3(
+          interface=pathlib.Path(sys.argv[1]),
+          machine_binding=pathlib.Path(sys.argv[2]),
+          machine_binding_receipt=pathlib.Path(sys.argv[3]),
+          semantic_contract=pathlib.Path(sys.argv[4]),
+          out=pathlib.Path(sys.argv[5]),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-contract-v3" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
+        .policy.implementation_independent and
+        (.policy.original_binary_executed | not)
+      ' "$out/component-contract-v3.json" >/dev/null
+    '') semanticContracts;
+  universalMachineBindings = lib.mapAttrs (liftUnitId: contract:
+    pkgs.runCommand
+      "${namePrefix}-${liftUnitId}-universal-machine-binding-v3" common ''
+      set -euo pipefail
+      ${environment universalContractSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${contract}/component-contract-v3.json \
+        ${machineBindingReceipts.${liftUnitId}}/machine-binding.json \
+        ${machineBindingReceipts.${liftUnitId}}/machine-binding-receipt.json \
+        ${semanticContracts.${liftUnitId}}/semantic-contract.json \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.universal_binding import (
+          build_component_machine_binding_v3,
+      )
+
+      build_component_machine_binding_v3(
+          contract=pathlib.Path(sys.argv[1]),
+          machine_binding=pathlib.Path(sys.argv[2]),
+          machine_binding_receipt=pathlib.Path(sys.argv[3]),
+          semantic_contract=pathlib.Path(sys.argv[4]),
+          out=pathlib.Path(sys.argv[5]),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-machine-binding-v3" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
+        (.policy.original_binary_executed | not)
+      ' "$out/machine-binding-v3.json" >/dev/null
+    '') universalContracts;
+  machineImplementations = lib.mapAttrs (liftUnitId: binding:
+    pkgs.runCommand
+      "${namePrefix}-${liftUnitId}-machine-ir-component-implementation-v3" common ''
+      set -euo pipefail
+      ${environment componentImplementationSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${lib.escapeShellArg "${liftUnitId}_machine_ir"} \
+        ${universalContracts.${liftUnitId}}/component-contract-v3.json \
+        ${binding}/machine-binding-v3.json \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.implementation import (
+          adapt_machine_ir_implementation_v3,
+      )
+
+      adapt_machine_ir_implementation_v3(
+          implementation_id=sys.argv[1],
+          contract=pathlib.Path(sys.argv[2]),
+          machine_binding=pathlib.Path(sys.argv[3]),
+          out=pathlib.Path(sys.argv[4]),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-implementation-v3" and
+        .kind == "machine_ir" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated")
+      ' "$out/implementation-v3.json" >/dev/null
+    '') universalMachineBindings;
+  inductiveLiftUnits = builtins.filter
+    (liftUnit: (liftUnit.induction or null) != null)
+    liftUnits;
+  mkInductionDeclarationInputs = liftUnit:
+    let
+      declarationPath =
+        if inductionRoot == null then
+          throw "${liftUnit.id} declares an induction declaration but inductionRoot is unset"
+        else resolveRootFile "${liftUnit.id}-induction.json" inductionRoot
+          (lib.removePrefix "induction/" liftUnit.induction);
+      declaration = builtins.fromJSON (builtins.readFile declarationPath);
+      combined =
+        if (declaration.format or null) !=
+            "spaghetti-extractor-inductive-component-declaration-v1" ||
+           !(builtins.isAttrs (declaration.source or null)) ||
+           !(builtins.isAttrs (declaration.proof or null))
+        then throw
+          "${liftUnit.id} induction must use the combined source/proof declaration V1"
+        else declaration;
+    in {
+      original = declarationPath;
+      source = builtins.toFile
+        "${namePrefix}-${liftUnit.id}-inductive-source-declaration-v1.json"
+        (builtins.toJSON ({
+          format = "spaghetti-extractor-inductive-declaration-v1";
+        } // combined.source));
+      proof = builtins.toFile
+        "${namePrefix}-${liftUnit.id}-inductive-proof-declaration-v1.json"
+        (builtins.toJSON ({
+          format = "spaghetti-extractor-inductive-proof-declaration-v1";
+        } // combined.proof));
+    };
+  inductionDeclarations = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkInductionDeclarationInputs liftUnit;
+  }) inductiveLiftUnits);
+  mkInductionPackage = liftUnit:
+    let
+      declarationPath = inductionDeclarations.${liftUnit.id}.source;
+      semanticContract =
+        if builtins.hasAttr liftUnit.id semanticContracts then
+          semanticContracts.${liftUnit.id}
+        else throw
+          "${liftUnit.id} declares induction but has no exact semantic contract";
+      portableInterface =
+        if builtins.hasAttr liftUnit.id developmentContracts then
+          "${developmentContracts.${liftUnit.id}}/portable-interface.json"
+        else throw
+          "${liftUnit.id} declares induction but has no portable component V2 interface";
+    in pkgs.runCommand
+      "${namePrefix}-${liftUnit.id}-component-induction-package-v1" common ''
+      set -euo pipefail
+      ${environment inductionPackageSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${declarationPath} \
+        ${portableInterface} \
+        ${semanticContract}/semantic-contract.json \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.inductive_package import (
+          write_inductive_package,
+      )
+
+      declaration, interface, semantic_contract, output = map(
+          pathlib.Path, sys.argv[1:]
+      )
+      write_inductive_package(
+          declaration=declaration,
+          interface=interface,
+          semantic_contract=semantic_contract,
+          out_dir=output,
+      )
+      PY
+      jq -e --arg id ${lib.escapeShellArg liftUnit.id} '
+        .format == "spaghetti-extractor-inductive-package-v1" and
+        .status == "checked" and
+        .component_id == $id and
+        (.policy.original_binary_executed | not) and
+        (.policy.operator_behavior_examples_accepted | not) and
+        .policy.exact_machine_inventory_replayed and
+        (.artifacts | keys) == [
+          "cutpoint_relation", "machine_receipt", "source_plan"
+        ]
+      ' "$out/induction-package.json" >/dev/null
+      test -s "$out/source-plan.json"
+      test -s "$out/machine-receipt.json"
+      test -s "$out/cutpoint-relation.json"
+    '';
+  inductionPackages = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkInductionPackage liftUnit;
+  }) inductiveLiftUnits);
+  mkInductionDraftCertificate = liftUnit:
+    pkgs.runCommand
+      "${namePrefix}-${liftUnit.id}-component-induction-certificate-draft-v1"
+      common ''
+      set -euo pipefail
+      ${environment inductionCertificateSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${inductionDeclarations.${liftUnit.id}.proof} \
+        ${semanticContracts.${liftUnit.id}}/semantic-contract.json \
+        ${developmentContracts.${liftUnit.id}}/portable-interface.json \
+        ${sourcePackages.${liftUnit.id}} \
+        ${inductionPackages.${liftUnit.id}}/source-plan.json \
+        ${inductionPackages.${liftUnit.id}}/machine-receipt.json \
+        ${inductionPackages.${liftUnit.id}}/cutpoint-relation.json \
+        "$out/certificate.json" \
+        "$out/certificate-check.json" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.inductive_certificate import (
+          materialize_inductive_certificate,
+      )
+      from spaghetti_extractor.components.inductive_contract import (
+          check_inductive_operation_certificate,
+      )
+      from spaghetti_extractor.components.inductive_receipts import (
+          CheckedInductiveMachineReceiptV1,
+      )
+      from spaghetti_extractor.util import write_json
+
+      proof, semantic, interface, source, plan, machine_path, relation, certificate_out, check_out = (
+          map(pathlib.Path, sys.argv[1:])
+      )
+      certificate = materialize_inductive_certificate(
+          proof_declaration=proof,
+          semantic_contract=semantic,
+          interface=interface,
+          source_package=source,
+          source_plan=plan,
+          machine_receipt=machine_path,
+          cutpoint_relation=relation,
+      )
+      machine = CheckedInductiveMachineReceiptV1.parse(
+          json.loads(machine_path.read_text(encoding="utf-8"))
+      )
+      machine_references = {
+          item.receipt_id: machine.to_payload()
+          for item in certificate.receipts
+          if item.kind == "machine_semantics"
+      }
+      check = check_inductive_operation_certificate(
+          certificate, receipt_payloads=machine_references
+      )
+      write_json(certificate_out, certificate.to_payload())
+      write_json(check_out, check.to_payload())
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-portable-inductive-operation-certificate-v1"
+      ' "$out/certificate.json" >/dev/null
+      jq -e '
+        .format == "spaghetti-extractor-portable-inductive-operation-check-v1" and
+        .status == "incomplete"
+      ' "$out/certificate-check.json" >/dev/null
+    '';
+  inductionDraftCertificates = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkInductionDraftCertificate liftUnit;
+  }) inductiveLiftUnits);
+  mkInductionSourceReceipt = liftUnit:
+    pkgs.runCommand
+      "${namePrefix}-${liftUnit.id}-component-induction-source-refinement-v1"
+      (common // {
+        nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.cbmc pkgs.stdenv.cc ];
+      }) ''
+      set -euo pipefail
+      ${environment inductionRefinementSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${semanticContracts.${liftUnit.id}}/semantic-contract.json \
+        ${developmentContracts.${liftUnit.id}}/portable-interface.json \
+        ${sourcePackages.${liftUnit.id}} \
+        ${sourceProfiles.${liftUnit.id}}/source-profile.json \
+        ${inductionPackages.${liftUnit.id}}/source-plan.json \
+        ${inductionPackages.${liftUnit.id}}/machine-receipt.json \
+        ${inductionPackages.${liftUnit.id}}/cutpoint-relation.json \
+        ${inductionDraftCertificates.${liftUnit.id}}/certificate.json \
+        ${pkgs.cbmc}/bin/cbmc \
+        "$out/source-receipt.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.inductive_refinement import (
+          check_inductive_source_refinement_artifacts,
+      )
+      from spaghetti_extractor.util import write_json
+
+      semantic, interface, source, profile, plan, machine, relation, certificate, cbmc, output = (
+          map(pathlib.Path, sys.argv[1:])
+      )
+      write_json(output, check_inductive_source_refinement_artifacts(
+          semantic_contract=semantic,
+          interface=interface,
+          source_package=source,
+          source_profile=profile,
+          source_plan=plan,
+          machine_receipt=machine,
+          cutpoint_relation=relation,
+          certificate=certificate,
+          cbmc=cbmc,
+      ))
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-inductive-source-refinement-receipt-v1" and
+        (.status == "satisfied" or .status == "incomplete" or .status == "violated") and
+        (.policy.original_binary_executed | not) and
+        (.policy.behavior_examples_used | not) and
+        (.policy.bounded_unwinding_used | not)
+      ' "$out/source-receipt.json" >/dev/null
+    '';
+  inductionSourceReceipts = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkInductionSourceReceipt liftUnit;
+  }) inductiveLiftUnits);
+  mkInductionRefinement = liftUnit:
+    pkgs.runCommand
+      "${namePrefix}-${liftUnit.id}-component-induction-refinement-v1"
+      common ''
+      set -euo pipefail
+      ${environment inductionFinalizationSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${inductionDeclarations.${liftUnit.id}.proof} \
+        ${semanticContracts.${liftUnit.id}}/semantic-contract.json \
+        ${developmentContracts.${liftUnit.id}}/portable-interface.json \
+        ${sourcePackages.${liftUnit.id}} \
+        ${inductionPackages.${liftUnit.id}}/source-plan.json \
+        ${inductionPackages.${liftUnit.id}}/machine-receipt.json \
+        ${inductionPackages.${liftUnit.id}}/cutpoint-relation.json \
+        ${inductionDraftCertificates.${liftUnit.id}}/certificate.json \
+        ${inductionDraftCertificates.${liftUnit.id}}/certificate-check.json \
+        ${inductionSourceReceipts.${liftUnit.id}}/source-receipt.json \
+        "$out" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.inductive_certificate import (
+          materialize_inductive_certificate,
+      )
+      from spaghetti_extractor.components.inductive_contract import (
+          InductiveOperationCertificateV1,
+          InductiveOperationCheckV1,
+          check_inductive_operation_certificate,
+      )
+      from spaghetti_extractor.components.inductive_receipts import (
+          CheckedInductiveMachineReceiptV1,
+          finalize_inductive_refinement_receipt,
+      )
+      from spaghetti_extractor.util import write_json
+
+      proof, semantic, interface, source, plan, machine_path, relation, draft_path, draft_check_path, source_receipt_path, output = (
+          map(pathlib.Path, sys.argv[1:])
+      )
+      source_receipt = json.loads(source_receipt_path.read_text(encoding="utf-8"))
+      machine = CheckedInductiveMachineReceiptV1.parse(
+          json.loads(machine_path.read_text(encoding="utf-8"))
+      )
+      if source_receipt.get("status") == "satisfied":
+          certificate = materialize_inductive_certificate(
+              proof_declaration=proof,
+              semantic_contract=semantic,
+              interface=interface,
+              source_package=source,
+              source_plan=plan,
+              machine_receipt=machine_path,
+              cutpoint_relation=relation,
+              source_receipt=source_receipt,
+          )
+          receipts = {
+              item.receipt_id: (
+                  machine.to_payload()
+                  if item.kind == "machine_semantics"
+                  else source_receipt
+              )
+              for item in certificate.receipts
+          }
+          check = check_inductive_operation_certificate(
+              certificate, receipt_payloads=receipts
+          )
+      else:
+          certificate = InductiveOperationCertificateV1.parse(
+              json.loads(draft_path.read_text(encoding="utf-8"))
+          )
+          check = InductiveOperationCheckV1.parse(
+              json.loads(draft_check_path.read_text(encoding="utf-8"))
+          )
+      receipt = finalize_inductive_refinement_receipt(
+          certificate=certificate,
+          certificate_check=check,
+          machine_receipt=machine,
+          source_receipt=source_receipt,
+      )
+      write_json(output / "certificate.json", certificate.to_payload())
+      write_json(output / "certificate-check.json", check.to_payload())
+      write_json(output / "refinement-receipt.json", receipt)
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-inductive-refinement-receipt-v1" and
+        (.status == "satisfied" or .status == "incomplete" or .status == "violated") and
+        (.activation_authorized == (.status == "satisfied")) and
+        (.policy.original_binary_executed | not) and
+        (.policy.behavior_examples_used | not) and
+        (.policy.bounded_unwinding_used | not)
+      ' "$out/refinement-receipt.json" >/dev/null
+    '';
+  inductionRefinementArtifacts = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkInductionRefinement liftUnit;
+  }) inductiveLiftUnits);
+  finiteRefinementContracts = builtins.removeAttrs semanticContracts
+    (map (liftUnit: liftUnit.id) inductiveLiftUnits);
+  finiteRefinementReceipts = lib.mapAttrs (liftUnitId: semanticContract:
+    pkgs.runCommand
+      "${namePrefix}-${liftUnitId}-component-semantic-refinement-v1"
+      (common // {
+        nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.cbmc pkgs.stdenv.cc ];
+      }) ''
+      set -euo pipefail
+      ${environment refinementSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${semanticContract}/semantic-contract.json \
+        ${developmentContracts.${liftUnitId}}/portable-interface.json \
+        ${sourcePackages.${liftUnitId}} \
+        ${sourceProfiles.${liftUnitId}}/source-profile.json \
+        ${pkgs.cbmc}/bin/cbmc \
+        "$out/refinement-receipt.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.refinement import check_component_refinement
+      from spaghetti_extractor.util import write_json
+
+      semantic, interface, source, profile, cbmc, output = map(pathlib.Path, sys.argv[1:])
+      write_json(output, check_component_refinement(
+          semantic_contract=semantic,
+          interface=interface,
+          source_package=source,
+          source_profile=profile,
+          cbmc=cbmc,
+      ))
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-refinement-receipt-v1" and
+        (.status == "satisfied" or .status == "incomplete" or .status == "violated") and
+        (.activation_authorized == (.status == "satisfied")) and
+        (.policy.original_binary_executed | not) and
+        (.policy.operator_behavior_examples_used | not)
+      ' "$out/refinement-receipt.json" >/dev/null
+    '') finiteRefinementContracts;
+  refinementReceipts = finiteRefinementReceipts // inductionRefinementArtifacts;
+  mkServiceGraph = liftUnit:
+    let
+      binding = if builtins.hasAttr liftUnit.id machineBindingReceipts
+        then "${machineBindingReceipts.${liftUnit.id}}/machine-binding.json"
+        else "-";
+    in pkgs.runCommand
+      "${namePrefix}-${liftUnit.id}-component-service-graph-v1" common ''
+      set -euo pipefail
+      ${environment serviceGraphSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${developmentContracts.${liftUnit.id}}/portable-interface.json \
+        ${lib.escapeShellArg binding} \
+        "$out/service-graph.json" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.interface_ir import (
+          PortableComponentInterfaceV2,
+      )
+      from spaghetti_extractor.components.machine_binding import (
+          ComponentMachineBindingV1,
+      )
+      from spaghetti_extractor.components.service_graph import (
+          ServiceGraphConfigurationV1,
+          build_service_graph,
+      )
+      from spaghetti_extractor.util import write_json
+
+      interface_path = pathlib.Path(sys.argv[1])
+      binding_path = sys.argv[2]
+      output = pathlib.Path(sys.argv[3])
+      interface = PortableComponentInterfaceV2.parse(
+          json.loads(interface_path.read_text(encoding="utf-8"))
+      )
+      service_index = {row.identity: row for row in interface.services}
+      bindings = []
+      if binding_path != "-":
+          machine = ComponentMachineBindingV1.parse(
+              json.loads(pathlib.Path(binding_path).read_text(encoding="utf-8"))
+          )
+          for row in machine.services:
+              service = service_index[row.service_id]
+              provider = dict(row.provider)
+              if provider["kind"] == "external_site":
+                  provider.update({
+                      "parameter_type_ids": list(service.parameter_type_ids),
+                      "result_type_id": service.result_type_id,
+                      "effect_ids": list(service.effect_ids),
+                  })
+              elif provider["kind"] == "machine_events":
+                  provider = {
+                      "kind": "machine_events",
+                      "event_ids": sorted(
+                          f"{event['unit_id']}:{event['event_index']}:{event['event_sha256']}"
+                          for event in provider["events"]
+                      ),
+                      "parameter_type_ids": list(service.parameter_type_ids),
+                      "result_type_id": service.result_type_id,
+                      "effect_ids": list(service.effect_ids),
+                  }
+              bindings.append({
+                  "component_id": interface.identity,
+                  "service_id": row.service_id,
+                  "provider": provider,
+                  "mediation": row.mediation,
+              })
+      configuration = ServiceGraphConfigurationV1.create(
+          identity=interface.identity,
+          bindings=bindings,
+      )
+      graph = build_service_graph(
+          interfaces={interface.identity: interface},
+          configuration=configuration,
+      )
+      write_json(output, graph.to_payload())
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-service-graph-v1" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
+        (.activation_authorized == (.status == "checked"))
+      ' "$out/service-graph.json" >/dev/null
+    '';
+  serviceGraphs = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkServiceGraph liftUnit;
+  }) portableV2LiftUnits);
+  ownershipReceipts = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = pkgs.runCommand
+      "${namePrefix}-${liftUnit.id}-component-ownership-v1" common ''
+      set -euo pipefail
+      ${environment ownershipSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${machineBindingReceipts.${liftUnit.id}}/machine-binding.json \
+        ${resolutionSlices.${liftUnit.id}} \
+        "$out/ownership-receipt.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.ownership import (
+          build_component_ownership_receipt,
+      )
+
+      build_component_ownership_receipt(
+          machine_binding=pathlib.Path(sys.argv[1]),
+          resolution_slice=pathlib.Path(sys.argv[2]),
+          out=pathlib.Path(sys.argv[3]),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-ownership-receipt-v1" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
+        (.activation_authorized == (.status == "checked"))
+      ' "$out/ownership-receipt.json" >/dev/null
+    '';
+  }) machineBindingLiftUnits);
   mkAdapterPlan = liftUnit:
     pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-adapter-plan-v1" common ''
       set -euo pipefail
@@ -370,7 +1324,10 @@ let
     map (liftUnit: {
       name = liftUnit.id;
       value = mkAdapterPlan liftUnit;
-    }) (builtins.filter (liftUnit: (liftUnit.source or null) != null) liftUnits)
+    }) (builtins.filter (liftUnit:
+      (liftUnit.source or null) != null &&
+      (liftUnit.source.entry or null) != null
+    ) liftUnits)
   );
   mkEvidence = liftUnit:
     pkgs.runCommand "${namePrefix}-${liftUnit.id}-component-evidence-v3"
@@ -413,11 +1370,9 @@ let
       value = mkEvidence liftUnit;
     }) (builtins.filter (liftUnit:
       (liftUnit.source or null) != null &&
+      builtins.hasAttr liftUnit.id adapterPlans &&
       (liftUnit.verification or null) != null &&
-      builtins.elem (liftUnit.verification.producer or null) [
-        "exhaustive-finite-domain-v1"
-        "candidate-only-functional-suite-v1"
-      ]
+      (liftUnit.verification.producer or null) == "exhaustive-finite-domain-v1"
     ) liftUnits)
   );
   mkQualification = liftUnit:
@@ -460,13 +1415,305 @@ let
       value = mkQualification liftUnit;
     }) (builtins.filter (liftUnit: builtins.hasAttr liftUnit.id evidences) liftUnits)
   );
+  mkActivationReceiptWithGraph = scope: liftUnit: serviceGraph:
+    let
+      machineBinding = if builtins.hasAttr liftUnit.id machineBindingReceipts
+        then "${machineBindingReceipts.${liftUnit.id}}/machine-binding-receipt.json"
+        else "-";
+      refinement = if builtins.hasAttr liftUnit.id refinementReceipts
+        then "${refinementReceipts.${liftUnit.id}}/refinement-receipt.json"
+        else "-";
+      ownership = if builtins.hasAttr liftUnit.id ownershipReceipts
+        then "${ownershipReceipts.${liftUnit.id}}/ownership-receipt.json"
+        else "-";
+    in pkgs.runCommand
+      "${namePrefix}-${scope}-${liftUnit.id}-component-activation-receipt-v2" common ''
+      set -euo pipefail
+      ${environment activationReceiptSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${developmentContracts.${liftUnit.id}}/portable-interface.json \
+        ${sourceProfiles.${liftUnit.id}}/source-profile.json \
+        ${compileReceipts.${liftUnit.id}}/compile-receipt.json \
+        ${lib.escapeShellArg machineBinding} \
+        ${lib.escapeShellArg refinement} \
+        ${serviceGraph}/service-graph.json \
+        ${lib.escapeShellArg ownership} \
+        ${lib.escapeShellArg liftUnit.id} \
+        "$out/activation-receipt.json" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.activation_receipt import (
+          ActivationReceiptV1,
+      )
+      from spaghetti_extractor.util import write_json
+
+      def load(path):
+          if path == "-":
+              return None
+          return json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+
+      interface, source_profile, compile_receipt, machine, refinement, services, ownership, component_id, output = (
+          sys.argv[1:]
+      )
+      receipt = ActivationReceiptV1.from_receipts(
+          interface=load(interface),
+          source_profile=load(source_profile),
+          source_compile=load(compile_receipt),
+          machine_binding=load(machine),
+          semantic_refinement=load(refinement),
+          service_graph=load(services),
+          ownership=load(ownership),
+          component_id=component_id,
+      )
+      write_json(pathlib.Path(output), receipt.to_payload())
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-activation-receipt-v2" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
+        (.activation_authorized == (.status == "checked")) and
+        (.facets | length) == 7
+      ' "$out/activation-receipt.json" >/dev/null
+    '';
+  mkActivationReceipt = liftUnit:
+    mkActivationReceiptWithGraph "standalone" liftUnit serviceGraphs.${liftUnit.id};
+  activationReceipts = builtins.listToAttrs (map (liftUnit: {
+    name = liftUnit.id;
+    value = mkActivationReceipt liftUnit;
+  }) (builtins.filter (liftUnit:
+    builtins.hasAttr liftUnit.id compileReceipts
+  ) portableV2LiftUnits));
+  activationCheckGates = lib.mapAttrs (liftUnitId: receipt:
+    pkgs.runCommand "${namePrefix}-${liftUnitId}-component-activation-check-v1" common ''
+      set -euo pipefail
+      jq -e '
+        .format == "spaghetti-extractor-component-activation-receipt-v2" and
+        .status == "checked" and .activation_authorized
+      ' ${receipt}/activation-receipt.json >/dev/null || {
+        jq '{status, facets, next_actions}' \
+          ${receipt}/activation-receipt.json >&2
+        exit 1
+      }
+      mkdir -p "$out"
+      cp ${receipt}/activation-receipt.json "$out/activation-receipt.json"
+    '') activationReceipts;
+  activationStatusReports = lib.mapAttrs (liftUnitId: receipt:
+    pkgs.runCommand "${namePrefix}-${liftUnitId}-component-activation-status-v1" common ''
+      set -euo pipefail
+      mkdir -p "$out"
+      cp ${receipt}/activation-receipt.json "$out/status.json"
+    '') activationReceipts;
+  liftUnitsById = builtins.listToAttrs (map (row: {
+    name = row.id;
+    value = row;
+  }) liftUnits);
+  enabledPortableV2Ids = configuration:
+    map (selection: selection.id) (builtins.filter (selection:
+      selection.activation == "enabled" &&
+      builtins.hasAttr selection.id compileReceipts
+    ) configuration.selections);
+  selectedPortableV2Ids = configuration:
+    map (selection: selection.id) (builtins.filter (selection:
+      builtins.hasAttr selection.id machineBindingReceipts
+    ) configuration.selections);
+  mkConfigurationServiceGraph = configuration:
+    let
+      enabledIds = selectedPortableV2Ids configuration;
+      enabledInterfacePaths = builtins.listToAttrs (map (id: {
+        name = id;
+        value = "${developmentContracts.${id}}/portable-interface.json";
+      }) enabledIds);
+      knownInterfacePaths = builtins.listToAttrs (map (liftUnit: {
+        name = liftUnit.id;
+        value = "${developmentContracts.${liftUnit.id}}/portable-interface.json";
+      }) portableV2LiftUnits);
+      bindingPaths = builtins.listToAttrs (map (id: {
+        name = id;
+        value = "${machineBindingReceipts.${id}}/machine-binding.json";
+      }) (builtins.filter (id: builtins.hasAttr id machineBindingReceipts) enabledIds));
+      graphId = "configuration_${builtins.substring 0 20
+        (builtins.hashString "sha256" configuration.id)}";
+    in pkgs.runCommand
+      "${namePrefix}-${configuration.id}-component-service-graph-v1" common ''
+      set -euo pipefail
+      ${environment serviceGraphSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${lib.escapeShellArg graphId} \
+        ${lib.escapeShellArg (builtins.toJSON enabledInterfacePaths)} \
+        ${lib.escapeShellArg (builtins.toJSON knownInterfacePaths)} \
+        ${lib.escapeShellArg (builtins.toJSON bindingPaths)} \
+        "$out/service-graph.json" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.interface_ir import (
+          PortableComponentInterfaceV2,
+      )
+      from spaghetti_extractor.components.machine_binding import (
+          ComponentMachineBindingV1,
+      )
+      from spaghetti_extractor.components.service_graph import (
+          ServiceGraphConfigurationV1,
+          build_service_graph,
+      )
+      from spaghetti_extractor.util import write_json
+
+      graph_id, raw_enabled_interfaces, raw_known_interfaces, raw_bindings, output = sys.argv[1:]
+      interfaces_by_lift_unit = {
+          lift_unit_id: PortableComponentInterfaceV2.parse(
+              json.loads(pathlib.Path(value).read_text(encoding="utf-8"))
+          )
+          for lift_unit_id, value in json.loads(raw_known_interfaces).items()
+      }
+      enabled_lift_unit_ids = set(json.loads(raw_enabled_interfaces))
+      interfaces = {
+          interface.identity: interface
+          for lift_unit_id, interface in interfaces_by_lift_unit.items()
+          if lift_unit_id in enabled_lift_unit_ids
+      }
+      bindings = []
+      for lift_unit_id, value in json.loads(raw_bindings).items():
+          machine = ComponentMachineBindingV1.parse(
+              json.loads(pathlib.Path(value).read_text(encoding="utf-8"))
+          )
+          consumer = interfaces_by_lift_unit[lift_unit_id]
+          services = {row.identity: row for row in consumer.services}
+          for row in machine.services:
+              service = services[row.service_id]
+              provider = dict(row.provider)
+              if provider["kind"] == "external_site":
+                  provider.update({
+                      "parameter_type_ids": list(service.parameter_type_ids),
+                      "result_type_id": service.result_type_id,
+                      "effect_ids": list(service.effect_ids),
+                  })
+              elif provider["kind"] == "machine_events":
+                  provider = {
+                      "kind": "machine_events",
+                      "event_ids": sorted(
+                          f"{event['unit_id']}:{event['event_index']}:{event['event_sha256']}"
+                          for event in provider["events"]
+                      ),
+                      "parameter_type_ids": list(service.parameter_type_ids),
+                      "result_type_id": service.result_type_id,
+                      "effect_ids": list(service.effect_ids),
+                  }
+              elif provider["kind"] == "component_operation":
+                  provider_lift_unit_id = provider["component_id"]
+                  if provider_lift_unit_id in interfaces_by_lift_unit:
+                      provider["component_id"] = (
+                          interfaces_by_lift_unit[provider_lift_unit_id].identity
+                      )
+              bindings.append({
+                  "component_id": consumer.identity,
+                  "service_id": row.service_id,
+                  "provider": provider,
+                  "mediation": row.mediation,
+              })
+      graph = build_service_graph(
+          interfaces=interfaces,
+          configuration=ServiceGraphConfigurationV1.create(
+              identity=graph_id,
+              bindings=bindings,
+          ),
+      )
+      write_json(pathlib.Path(output), graph.to_payload())
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-service-graph-v1" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
+        (.activation_authorized == (.status == "checked"))
+      ' "$out/service-graph.json" >/dev/null
+    '';
+  serviceConfigurations = builtins.filter (configuration:
+    selectedPortableV2Ids configuration != [ ]) intentPayload.configurations;
+  configurationServiceGraphs = builtins.listToAttrs (map (configuration: {
+    name = configuration.id;
+    value = mkConfigurationServiceGraph configuration;
+  }) serviceConfigurations);
+  configurationActivationReceipts = builtins.listToAttrs (map (configuration:
+    let
+      ids = builtins.filter (id:
+        builtins.hasAttr id compileReceipts &&
+        builtins.hasAttr id machineBindingReceipts &&
+        builtins.hasAttr id refinementReceipts &&
+        builtins.hasAttr id ownershipReceipts
+      ) (enabledPortableV2Ids configuration);
+    in {
+      name = configuration.id;
+      value = builtins.listToAttrs (map (id: {
+        name = id;
+        value = mkActivationReceiptWithGraph configuration.id liftUnitsById.${id}
+          configurationServiceGraphs.${configuration.id};
+      }) ids);
+    }) serviceConfigurations);
+  mkPortableImplementation = configurationId: liftUnitId: receipt:
+    pkgs.runCommand
+      "${namePrefix}-${configurationId}-${liftUnitId}-portable-component-implementation-v3"
+      common ''
+      set -euo pipefail
+      ${environment componentImplementationSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${lib.escapeShellArg "${liftUnitId}_portable_c"} \
+        ${universalContracts.${liftUnitId}}/component-contract-v3.json \
+        ${universalMachineBindings.${liftUnitId}}/machine-binding-v3.json \
+        ${sourcePackages.${liftUnitId}} \
+        ${receipt}/activation-receipt.json \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.implementation import (
+          adapt_portable_c_implementation_v3,
+      )
+
+      adapt_portable_c_implementation_v3(
+          implementation_id=sys.argv[1],
+          contract=pathlib.Path(sys.argv[2]),
+          machine_binding=pathlib.Path(sys.argv[3]),
+          source_package=pathlib.Path(sys.argv[4]),
+          activation_receipt=pathlib.Path(sys.argv[5]),
+          out=pathlib.Path(sys.argv[6]),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-implementation-v3" and
+        .kind == "portable_c" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated")
+      ' "$out/implementation-v3.json" >/dev/null
+    '';
+  portableImplementationsByConfiguration = lib.mapAttrs
+    (configurationId: receipts:
+      lib.mapAttrs (liftUnitId: receipt:
+        mkPortableImplementation configurationId liftUnitId receipt
+      ) receipts
+    ) configurationActivationReceipts;
+  developmentPackages = lib.mapAttrs (liftUnitId: developmentContract:
+    pkgs.linkFarm "${namePrefix}-${liftUnitId}-component-development-package-v1" [
+      { name = "declaration"; path = developmentDeclarations.${liftUnitId}; }
+      { name = "contract"; path = developmentContract; }
+      { name = "source"; path = sourcePackages.${liftUnitId}; }
+    ]) developmentContracts;
   mkActivationPlan = configuration:
     let
       selectedIds = map (selection: selection.id) configuration.selections;
       selectedContractPaths = builtins.listToAttrs (map (id: {
         name = id;
         value = toString contracts.${id};
-      }) selectedIds);
+      }) (builtins.filter (id: !(builtins.hasAttr id machineBindingReceipts)) selectedIds));
+      selectedPortableInterfacePaths = builtins.listToAttrs (map (id: {
+        name = id;
+        value = "${developmentContracts.${id}}/portable-interface.json";
+      }) (builtins.filter (id: builtins.hasAttr id machineBindingReceipts) selectedIds));
+      selectedMachineBindingPaths = builtins.listToAttrs (map (id: {
+        name = id;
+        value = "${machineBindingReceipts.${id}}/machine-binding.json";
+      }) (builtins.filter (id: builtins.hasAttr id machineBindingReceipts) selectedIds));
       selectedImplementationPaths = builtins.listToAttrs (map (id: {
         name = id;
         value = toString sourcePackages.${id};
@@ -479,6 +1726,13 @@ let
         name = id;
         value = toString adapterPlans.${id};
       }) (builtins.filter (id: builtins.hasAttr id adapterPlans) selectedIds));
+      configurationReceipts = configurationActivationReceipts.${configuration.id} or { };
+      selectedActivationReceiptPaths = builtins.listToAttrs (map (id: {
+        name = id;
+        value = "${configurationReceipts.${id}}/activation-receipt.json";
+      }) (builtins.filter (id: builtins.hasAttr id configurationReceipts) selectedIds));
+      selectedLibraryComponentPaths = lib.mapAttrs
+        (_id: value: toString value) generatedLibraryComponents;
     in pkgs.runCommand "${namePrefix}-${configuration.id}-component-activation-plan-v3" common ''
       set -euo pipefail
       ${environment configurationSource}
@@ -488,9 +1742,13 @@ let
         ${resolution}/component-resolution.json \
         ${lib.escapeShellArg configuration.id} \
         ${lib.escapeShellArg (builtins.toJSON selectedContractPaths)} \
+        ${lib.escapeShellArg (builtins.toJSON selectedPortableInterfacePaths)} \
+        ${lib.escapeShellArg (builtins.toJSON selectedMachineBindingPaths)} \
         ${lib.escapeShellArg (builtins.toJSON selectedImplementationPaths)} \
         ${lib.escapeShellArg (builtins.toJSON selectedQualificationPaths)} \
         ${lib.escapeShellArg (builtins.toJSON selectedAdapterPlanPaths)} \
+        ${lib.escapeShellArg (builtins.toJSON selectedActivationReceiptPaths)} \
+        ${lib.escapeShellArg (builtins.toJSON selectedLibraryComponentPaths)} \
         "$out/activation-plan.json" <<'PY'
       import json
       import pathlib
@@ -502,10 +1760,14 @@ let
           resolution=pathlib.Path(sys.argv[2]),
           configuration_id=sys.argv[3],
           contracts={key: pathlib.Path(value) for key, value in json.loads(sys.argv[4]).items()},
-          implementations={key: pathlib.Path(value) for key, value in json.loads(sys.argv[5]).items()},
-          qualifications={key: pathlib.Path(value) for key, value in json.loads(sys.argv[6]).items()},
-          adapter_plans={key: pathlib.Path(value) for key, value in json.loads(sys.argv[7]).items()},
-          out=pathlib.Path(sys.argv[8]),
+          portable_interfaces={key: pathlib.Path(value) for key, value in json.loads(sys.argv[5]).items()},
+          machine_bindings={key: pathlib.Path(value) for key, value in json.loads(sys.argv[6]).items()},
+          implementations={key: pathlib.Path(value) for key, value in json.loads(sys.argv[7]).items()},
+          qualifications={key: pathlib.Path(value) for key, value in json.loads(sys.argv[8]).items()},
+          adapter_plans={key: pathlib.Path(value) for key, value in json.loads(sys.argv[9]).items()},
+          activation_receipts={key: pathlib.Path(value) for key, value in json.loads(sys.argv[10]).items()},
+          generated_library_components={key: pathlib.Path(value) for key, value in json.loads(sys.argv[11]).items()},
+          out=pathlib.Path(sys.argv[12]),
       )
       PY
       jq -e '
@@ -535,7 +1797,209 @@ let
     name = configuration.id;
     value = mkActivationPlan configuration;
   }) intentPayload.configurations);
-  liftUnitsById = builtins.listToAttrs (map (row: { name = row.id; value = row; }) liftUnits);
+  selectedUniversalImplementations = configuration:
+    let
+      portable = portableImplementationsByConfiguration.${configuration.id} or { };
+      selectedRows = builtins.filter
+        (selection: builtins.hasAttr selection.id universalContracts)
+        configuration.selections;
+    in builtins.listToAttrs (map (selection: {
+      name = selection.id;
+      value =
+        if selection.activation == "enabled" && builtins.hasAttr selection.id portable
+        then portable.${selection.id}
+        else machineImplementations.${selection.id};
+    }) selectedRows);
+  mkUniversalDependencyGraph = configuration:
+    let
+      selectedContracts = builtins.listToAttrs (map (selection: {
+        name = selection.id;
+        value = universalContracts.${selection.id};
+      }) (builtins.filter
+        (selection: builtins.hasAttr selection.id universalContracts)
+        configuration.selections));
+      selectedImplementations = selectedUniversalImplementations configuration;
+      serviceGraph = configurationServiceGraphs.${configuration.id} or null;
+      asPaths = values: lib.mapAttrs (_id: value: toString value) values;
+      libraryPaths = asPaths generatedLibraryComponents;
+    in pkgs.runCommand
+      "${namePrefix}-${configuration.id}-component-dependency-graph-v3" common ''
+      set -euo pipefail
+      ${environment componentDependencySource}
+      mkdir -p "$out"
+      ${python} - \
+        ${lib.escapeShellArg (builtins.toJSON (asPaths selectedContracts))} \
+        ${lib.escapeShellArg (builtins.toJSON (asPaths selectedImplementations))} \
+        ${lib.escapeShellArg (builtins.toJSON libraryPaths)} \
+        ${lib.escapeShellArg (if serviceGraph == null then "-" else "${serviceGraph}/service-graph.json")} \
+        "$out" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.components.dependency_graph import (
+          build_component_dependency_graph_from_service_graph_v3,
+          build_component_dependency_graph_v3,
+      )
+      from spaghetti_extractor.components.implementation import (
+          read_component_implementation_v3,
+      )
+      from spaghetti_extractor.components.universal_contract import (
+          read_component_contract_v3,
+      )
+
+      def paths(raw):
+          return {key: pathlib.Path(value) for key, value in json.loads(raw).items()}
+
+      contract_paths = paths(sys.argv[1])
+      implementation_paths = paths(sys.argv[2])
+      for selection_id, root in paths(sys.argv[3]).items():
+          contract_paths[f"library:{selection_id}"] = root / "component-contract-v3.json"
+          implementation_paths[f"library:{selection_id}"] = root / "implementation-v3.json"
+      contracts = {}
+      for value in contract_paths.values():
+          contract = read_component_contract_v3(value)
+          contracts[contract.component_id] = contract
+      implementations = {}
+      for value in implementation_paths.values():
+          implementation = read_component_implementation_v3(value)
+          implementations[implementation.component_id] = implementation
+      service_graph = None if sys.argv[4] == "-" else pathlib.Path(sys.argv[4])
+      if service_graph is None:
+          build_component_dependency_graph_v3(
+              contracts=contracts,
+              implementations=implementations,
+              bindings=[],
+              out=pathlib.Path(sys.argv[5]),
+          )
+      else:
+          build_component_dependency_graph_from_service_graph_v3(
+              contracts=contracts,
+              implementations=implementations,
+              service_graph=service_graph,
+              out=pathlib.Path(sys.argv[5]),
+          )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-component-dependency-graph-v3" and
+        (.status == "checked" or .status == "incomplete" or .status == "violated") and
+        (.policy.original_binary_executed | not)
+      ' "$out/component-dependency-graph-v3.json" >/dev/null
+    '';
+  dependencyGraphs = builtins.listToAttrs (map (configuration: {
+    name = configuration.id;
+    value = mkUniversalDependencyGraph configuration;
+  }) intentPayload.configurations);
+  mkComponentReleaseGate = configurationId: mode:
+    pkgs.runCommand
+      "${namePrefix}-${configurationId}-component-${mode}-release-gate-v1" common ''
+      set -euo pipefail
+      ${environment componentDependencySource}
+      mkdir -p "$out"
+      ${python} - \
+        ${dependencyGraphs.${configurationId}}/component-dependency-graph-v3.json \
+        ${activationPlans.${configurationId}}/activation-plan.json \
+        ${lib.escapeShellArg mode} \
+        "$out" <<'PY'
+      import pathlib
+      import sys
+      from spaghetti_extractor.components.dependency_graph import (
+          build_component_release_gate_v1,
+      )
+
+      build_component_release_gate_v1(
+          graph=pathlib.Path(sys.argv[1]),
+          activation_plan=pathlib.Path(sys.argv[2]),
+          mode=sys.argv[3],
+          out=pathlib.Path(sys.argv[4]),
+      )
+      PY
+    '';
+  hybridGates = lib.mapAttrs
+    (configurationId: _graph: mkComponentReleaseGate configurationId "hybrid")
+    dependencyGraphs;
+  portableGates = lib.mapAttrs
+    (configurationId: _graph: mkComponentReleaseGate configurationId "portable")
+    dependencyGraphs;
+  mkComponentReleaseCheck = configurationId: mode: gate:
+    pkgs.runCommand
+      "${namePrefix}-${configurationId}-component-${mode}-release-check-v1"
+      (common // { nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.jq ]; }) ''
+      set -euo pipefail
+      jq -e --arg mode ${lib.escapeShellArg mode} '
+        .format == "spaghetti-extractor-component-release-gate-v1" and
+        .mode == $mode and .status == "ready" and .ready
+      ' ${gate}/component-${mode}-release-gate-v1.json >/dev/null || {
+        jq '{mode, status, counts, issues}' \
+          ${gate}/component-${mode}-release-gate-v1.json >&2
+        exit 1
+      }
+      mkdir -p "$out"
+      cp ${gate}/component-${mode}-release-gate-v1.json \
+        "$out/component-${mode}-release-gate-v1.json"
+    '';
+  hybridCheckGates = lib.mapAttrs
+    (configurationId: gate:
+      mkComponentReleaseCheck configurationId "hybrid" gate)
+    hybridGates;
+  portableCheckGates = lib.mapAttrs
+    (configurationId: gate:
+      mkComponentReleaseCheck configurationId "portable" gate)
+    portableGates;
+  mkRetirementReport = configuration:
+    let
+      selectedBindings = builtins.listToAttrs (map (selection: {
+        name = selection.id;
+        value = universalMachineBindings.${selection.id};
+      }) (builtins.filter
+        (selection: builtins.hasAttr selection.id universalMachineBindings)
+        configuration.selections));
+      asPaths = values: lib.mapAttrs (_id: value: toString value) values;
+      roots = map (selection: selection.id) (builtins.filter
+        (selection: selection.activation == "enabled" &&
+          builtins.hasAttr selection.id universalContracts)
+        configuration.selections);
+    in pkgs.runCommand
+      "${namePrefix}-${configuration.id}-component-retirement-report-v1" common ''
+      set -euo pipefail
+      ${environment componentDependencySource}
+      mkdir -p "$out"
+      ${python} - \
+        ${dependencyGraphs.${configuration.id}}/component-dependency-graph-v3.json \
+        ${lib.escapeShellArg (builtins.toJSON (asPaths selectedBindings))} \
+        ${lib.escapeShellArg (builtins.toJSON (asPaths generatedLibraryComponents))} \
+        ${lib.escapeShellArg (builtins.toJSON roots)} \
+        "$out" <<'PY'
+      import json
+      import pathlib
+      import sys
+      from spaghetti_extractor.components.retirement import (
+          build_component_retirement_report_v1,
+      )
+
+      bindings = {
+          key: pathlib.Path(value)
+          for key, value in json.loads(sys.argv[2]).items()
+      }
+      for root in json.loads(sys.argv[3]).values():
+          path = pathlib.Path(root) / "machine-binding-v3.json"
+          from spaghetti_extractor.components.universal_binding import (
+              read_component_machine_binding_v3,
+          )
+          binding = read_component_machine_binding_v3(path)
+          bindings[binding.component_id] = binding
+      build_component_retirement_report_v1(
+          graph=pathlib.Path(sys.argv[1]),
+          machine_bindings=bindings,
+          root_component_ids=json.loads(sys.argv[4]),
+          out=pathlib.Path(sys.argv[5]),
+      )
+      PY
+    '';
+  retirementReports = builtins.listToAttrs (map (configuration: {
+    name = configuration.id;
+    value = mkRetirementReport configuration;
+  }) intentPayload.configurations);
   mkSourceBundle = configuration:
     let
       selected = map (selection: liftUnitsById.${selection.id})
@@ -580,10 +2044,27 @@ let
       }) (builtins.filter (id: builtins.hasAttr id values) ids));
     in {
       activationPlan = activationPlans.${configuration.id};
-      contracts = selected selectedIds contracts;
+      contracts = selected
+        (builtins.filter (id: !(builtins.hasAttr id machineBindingReceipts)) selectedIds)
+        contracts;
+      portableInterfaces = selected selectedIds developmentContracts;
+      semanticContracts = selected enabledIds semanticContracts;
       implementations = selected enabledIds sourcePackages;
       qualifications = selected enabledIds qualifications;
       adapterPlans = selected enabledIds adapterPlans;
+      activationReceipts =
+        if builtins.hasAttr configuration.id configurationActivationReceipts
+        then configurationActivationReceipts.${configuration.id}
+        else { };
+      machineBindings = selected enabledIds machineBindingReceipts;
+      libraryComponents = generatedLibraryComponents;
+      universalContracts = selected selectedIds universalContracts;
+      universalMachineBindings = selected selectedIds universalMachineBindings;
+      universalImplementations = selectedUniversalImplementations configuration;
+      dependencyGraph = dependencyGraphs.${configuration.id};
+      hybridGate = hybridGates.${configuration.id};
+      portableGate = portableGates.${configuration.id};
+      retirementReport = retirementReports.${configuration.id};
       inherit enabledIds;
     };
   runtimeConfigurations = builtins.listToAttrs (map (configuration: {
@@ -658,6 +2139,12 @@ let
   }) liftUnits);
   mkWorkPackage = liftUnit:
     let
+      canonicalStatus = if builtins.hasAttr liftUnit.id activationStatusReports
+        then activationStatusReports.${liftUnit.id}
+        else statusReports.${liftUnit.id};
+      canonicalContract = if builtins.hasAttr liftUnit.id developmentContracts
+        then developmentContracts.${liftUnit.id}
+        else contracts.${liftUnit.id};
       optionalLink = values: name:
         lib.optionalString (builtins.hasAttr liftUnit.id values) ''
           ln -s ${values.${liftUnit.id}} "$out/${name}"
@@ -678,6 +2165,16 @@ let
             adapter_plan = if builtins.hasAttr liftUnit.id adapterPlans then "adapter-plan" else null;
             evidence = if builtins.hasAttr liftUnit.id evidences then "evidence" else null;
             qualification = if builtins.hasAttr liftUnit.id qualifications then "qualification" else null;
+            compile_receipt = if builtins.hasAttr liftUnit.id compileReceipts then "compile-receipt" else null;
+            machine_binding = if builtins.hasAttr liftUnit.id machineBindingReceipts then "machine-binding" else null;
+            semantic_contract = if builtins.hasAttr liftUnit.id semanticContracts then "semantic-contract" else null;
+            induction_package = if builtins.hasAttr liftUnit.id inductionPackages then "induction-package" else null;
+            induction_draft_certificate = if builtins.hasAttr liftUnit.id inductionDraftCertificates then "induction-draft-certificate" else null;
+            induction_source_receipt = if builtins.hasAttr liftUnit.id inductionSourceReceipts then "induction-source-receipt" else null;
+            refinement_receipt = if builtins.hasAttr liftUnit.id refinementReceipts then "refinement-receipt" else null;
+            service_graph = if builtins.hasAttr liftUnit.id serviceGraphs then "service-graph" else null;
+            ownership = if builtins.hasAttr liftUnit.id ownershipReceipts then "ownership" else null;
+            activation_receipt = if builtins.hasAttr liftUnit.id activationReceipts then "activation-receipt" else null;
           };
           policy = {
             authorizes_runtime = false;
@@ -691,12 +2188,22 @@ let
         mkdir -p "$out"
         ln -s ${resolution} "$out/resolution"
         ${optionalLink externalSiteSlices "external-sites"}
-        ln -s ${contracts.${liftUnit.id}} "$out/contract"
-        ln -s ${statusReports.${liftUnit.id}} "$out/status"
+        ln -s ${canonicalContract} "$out/contract"
+        ln -s ${canonicalStatus} "$out/status"
         ${optionalLink sourcePackages "source"}
         ${optionalLink adapterPlans "adapter-plan"}
         ${optionalLink evidences "evidence"}
         ${optionalLink qualifications "qualification"}
+        ${optionalLink compileReceipts "compile-receipt"}
+        ${optionalLink machineBindingReceipts "machine-binding"}
+        ${optionalLink semanticContracts "semantic-contract"}
+        ${optionalLink inductionPackages "induction-package"}
+        ${optionalLink inductionDraftCertificates "induction-draft-certificate"}
+        ${optionalLink inductionSourceReceipts "induction-source-receipt"}
+        ${optionalLink refinementReceipts "refinement-receipt"}
+        ${optionalLink serviceGraphs "service-graph"}
+        ${optionalLink ownershipReceipts "ownership"}
+        ${optionalLink activationReceipts "activation-receipt"}
         cp ${manifest} "$out/work-package.json"
       '';
   workPackages = builtins.listToAttrs (map (liftUnit: {
@@ -760,6 +2267,13 @@ let
       hasEvidence = builtins.hasAttr liftUnit.id evidences;
       hasAdapterPlan = builtins.hasAttr liftUnit.id adapterPlans;
       hasQualification = builtins.hasAttr liftUnit.id qualifications;
+      hasPortableV2 = builtins.hasAttr liftUnit.id compileReceipts;
+      hasSourceProfile = builtins.hasAttr liftUnit.id sourceProfiles;
+      hasMachineBinding = builtins.hasAttr liftUnit.id machineBindingReceipts;
+      hasSemanticContract = builtins.hasAttr liftUnit.id semanticContracts;
+      hasInduction = builtins.hasAttr liftUnit.id inductionPackages;
+      hasSemanticRefinement = builtins.hasAttr liftUnit.id refinementReceipts;
+      hasActivationReceipt = builtins.hasAttr liftUnit.id activationReceipts;
     };
   }) liftUnits);
   configurationIndex = builtins.listToAttrs (map (configuration: {
@@ -779,11 +2293,22 @@ let
     ++ lib.mapAttrsToList (name: path: { name = "adapter-${name}"; inherit path; }) adapterPlans
     ++ lib.mapAttrsToList (name: path: { name = "evidence-${name}"; inherit path; }) evidences
     ++ lib.mapAttrsToList (name: path: { name = "qualification-${name}"; inherit path; }) qualifications
+    ++ lib.mapAttrsToList (name: path: { name = "compile-${name}"; inherit path; }) compileReceipts
+    ++ lib.mapAttrsToList (name: path: { name = "source-profile-${name}"; inherit path; }) sourceProfiles
+    ++ lib.mapAttrsToList (name: path: { name = "machine-binding-${name}"; inherit path; }) machineBindingReceipts
+    ++ lib.mapAttrsToList (name: path: { name = "semantic-contract-${name}"; inherit path; }) semanticContracts
+    ++ lib.mapAttrsToList (name: path: { name = "induction-${name}"; inherit path; }) inductionPackages
+    ++ lib.mapAttrsToList (name: path: { name = "induction-draft-${name}"; inherit path; }) inductionDraftCertificates
+    ++ lib.mapAttrsToList (name: path: { name = "induction-source-${name}"; inherit path; }) inductionSourceReceipts
+    ++ lib.mapAttrsToList (name: path: { name = "semantic-refinement-${name}"; inherit path; }) refinementReceipts
+    ++ lib.mapAttrsToList (name: path: { name = "service-graph-${name}"; inherit path; }) serviceGraphs
+    ++ lib.mapAttrsToList (name: path: { name = "ownership-${name}"; inherit path; }) ownershipReceipts
+    ++ lib.mapAttrsToList (name: path: { name = "activation-${name}"; inherit path; }) activationReceipts
     ++ lib.mapAttrsToList (name: path: { name = "configuration-${name}"; inherit path; }) activationPlans
   );
 in
 {
-  inherit proposalInput resolution resolutionSlices externalSiteSlices contracts sourcePackages adapterPlans evidences qualifications
+  inherit proposalInput resolution resolutionSlices externalSiteSlices contracts developmentDeclarations developmentContracts developmentPackages sourcePackages adapterPlans evidences qualifications compileReceipts sourceProfiles machineBindingReceipts semanticContracts universalContracts universalMachineBindings machineImplementations portableImplementationsByConfiguration dependencyGraphs hybridGates portableGates hybridCheckGates portableCheckGates retirementReports inductionDeclarations inductionPackages inductionDraftCertificates inductionSourceReceipts inductionRefinementArtifacts finiteRefinementReceipts refinementReceipts serviceGraphs configurationServiceGraphs ownershipReceipts activationReceipts configurationActivationReceipts activationCheckGates activationStatusReports
     activationPlans sourceBundles runtimeConfigurations mkRuntime runtimeFor
     runtimePackages statusReports workPackages checkGates
     configurationStatusReports configurationCheckGates liftUnitIndex

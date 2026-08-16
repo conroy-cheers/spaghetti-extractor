@@ -298,7 +298,7 @@ class CandidateAuthorityV3Tests(unittest.TestCase):
             "bindings": {"machine_ir_sha256": self.machine_ir_sha256},
             "policy": {
                 "runtime_package_is_sole_candidate_authority": True,
-                "enabled_components_must_be_qualified": True,
+                "enabled_components_must_have_checked_activation_authority": True,
                 "subsumed_members_may_not_fallback": True,
                 "fallback_on_unimplemented": False,
                 "original_execution_forbidden": True,

@@ -32,7 +32,17 @@ from .inductive_records import (
     InductiveCutpointV3,
     InvariantFactV3,
 )
+from .external_site_records import (
+    EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
+    EXTERNAL_PROFILE_CODEC_V3,
+    ExternalProfileV3,
+)
 from .memory_records import MEMORY_VERSION_CODEC_V3, MemoryVersionRecordV3
+from .parametric_summary_records import (
+    PARAMETRIC_SCC_SUMMARIES_ARTIFACT_KIND_V3,
+    PARAMETRIC_SCC_SUMMARY_CODEC_V3,
+    ParametricSccSummaryV3,
+)
 from .semantic_index import (
     SEMANTIC_INDEX_ARTIFACT_KIND_V3,
     SEMANTIC_INDEX_CODEC_V3,
@@ -53,6 +63,8 @@ from .target_certificate_records import (
     IndirectTargetCertificateV3,
     TargetEvaluationEvidenceV3,
     _INDEXED_PE_TABLE_CERTIFICATE_KIND_V3,
+    _PE_STATIC_VALUE_CERTIFICATE_KIND_V3,
+    _PARAMETRIC_TARGET_CERTIFICATE_KIND_V3,
 )
 from .transition_records import (
     TRANSITION_SUMMARIES_ARTIFACT_KIND_V3,
@@ -136,13 +148,17 @@ def _checked_target_values(
         dependencies.append(dependency)
         target = SEMANTIC_INDEX_CODEC_V3.read(target_record).value
         values.append(target.rva_start)
+    require_external_machine_value = evidence.evaluation_method in {
+        "exact_constant",
+        "inductive_finite_values",
+    }
     for target in evidence.external_targets:
         machine_value = _external_machine_value(target)
-        if machine_value is None:
+        if machine_value is None and require_external_machine_value:
             blockers.append(
                 PrimaryBlockerV3("incomplete", "external_target_membership_unproven")
             )
-        else:
+        elif machine_value is not None:
             values.append(machine_value)
     if len(values) != len(set(values)):
         blockers.append(
@@ -332,6 +348,421 @@ def _checked_indexed_pe_table_blockers(
     return []
 
 
+def _external_target_identity_v3(value: CanonicalValueV3) -> CanonicalValueV3:
+    target = mapping(value.to_value(), "external target")
+    imported = target.get("import")
+    source = imported if isinstance(imported, Mapping) else target
+    dll = source.get("dll")
+    symbol = source.get("symbol")
+    ordinal = source.get("ordinal")
+    if isinstance(dll, str) and dll and (
+        (isinstance(symbol, str) and bool(symbol))
+        != (isinstance(ordinal, int) and not isinstance(ordinal, bool))
+    ):
+        return CanonicalValueV3.of(
+            {
+                "kind": "import",
+                "dll": dll.lower(),
+                "symbol": symbol if isinstance(symbol, str) and symbol else None,
+                "ordinal": (
+                    ordinal
+                    if isinstance(ordinal, int) and not isinstance(ordinal, bool)
+                    else None
+                ),
+            }
+        )
+    return CanonicalValueV3.of({})
+
+
+def _checked_pe_static_value_blockers(
+    context: PhaseContextV3,
+    *,
+    evidence: TargetEvaluationEvidenceV3,
+    semantic: SemanticIndexRecordV3,
+    occurrence: IndirectExitOccurrenceV3,
+    dependencies: list[RecordDependencyV3],
+) -> list[PrimaryBlockerV3]:
+    """Recheck one exact code-VA or loader-bound IAT-slot certificate."""
+
+    if evidence.evaluation_certificate is None:
+        return [PrimaryBlockerV3("violated", "static_target_certificate_missing")]
+    try:
+        certificate = mapping(
+            evidence.evaluation_certificate.to_value(),
+            "static PE target certificate",
+        )
+    except AnalysisV3Error:
+        return [PrimaryBlockerV3("violated", "static_target_certificate_malformed")]
+    required = {
+        "kind",
+        "variant",
+        "exit_id",
+        "source_unit_id",
+        "source_rva",
+        "source_event_index",
+        "transfer_kind",
+        "target_expression_sha256",
+        "image_base",
+        "value_va",
+        "target_unit_ids",
+        "external_profile_record_id",
+        "external_target_sha256",
+        "import_slot_rva",
+        "import_identity",
+    }
+    if set(certificate) != required:
+        return [PrimaryBlockerV3("violated", "static_target_certificate_malformed")]
+    image_base = certificate["image_base"]
+    value_va = certificate["value_va"]
+    target_unit_ids = certificate["target_unit_ids"]
+    if (
+        certificate["kind"] != _PE_STATIC_VALUE_CERTIFICATE_KIND_V3
+        or certificate["variant"] not in {"static_code_target", "import_slot"}
+        or certificate["exit_id"] != occurrence.exit_id
+        or certificate["source_unit_id"] != semantic.record_id
+        or certificate["source_rva"] != semantic.rva_start
+        or certificate["source_event_index"] != occurrence.event_index
+        or certificate["transfer_kind"] != occurrence.transfer_kind
+        or certificate["target_expression_sha256"]
+        != canonical_sha256_v3(occurrence.target_expression.to_value())
+        or not isinstance(image_base, int)
+        or isinstance(image_base, bool)
+        or not 0 <= image_base < 1 << 32
+        or not isinstance(value_va, int)
+        or isinstance(value_va, bool)
+        or not 0 <= value_va < 1 << 32
+        or not isinstance(target_unit_ids, list)
+        or target_unit_ids != sorted(set(target_unit_ids))
+        or any(not isinstance(row, str) or not row for row in target_unit_ids)
+        or tuple(target_unit_ids) != evidence.target_unit_ids
+    ):
+        return [
+            PrimaryBlockerV3("violated", "static_target_certificate_contradiction")
+        ]
+
+    expression = occurrence.target_expression.to_value()
+    if certificate["variant"] == "static_code_target":
+        if (
+            not isinstance(expression, Mapping)
+            or expression.get("op") != "const"
+            or expression.get("value") != value_va
+            or len(target_unit_ids) != 1
+            or evidence.external_targets
+            or certificate["external_profile_record_id"] is not None
+            or certificate["external_target_sha256"] is not None
+            or certificate["import_slot_rva"] is not None
+            or certificate["import_identity"] is not None
+        ):
+            return [
+                PrimaryBlockerV3(
+                    "violated", "static_code_target_certificate_contradiction"
+                )
+            ]
+        target_record = _record_or_none(
+            context, "semantic_index_global", target_unit_ids[0]
+        )
+        if target_record is None:
+            return [PrimaryBlockerV3("violated", "static_code_target_unit_unknown")]
+        dependencies.append(
+            RecordDependencyV3("semantic_index_global", target_unit_ids[0])
+        )
+        target = SEMANTIC_INDEX_CODEC_V3.read(target_record).value
+        if image_base + target.rva_start != value_va:
+            return [
+                PrimaryBlockerV3(
+                    "violated", "static_code_target_address_contradiction"
+                )
+            ]
+        return []
+
+    profile_id = certificate["external_profile_record_id"]
+    target_sha256 = certificate["external_target_sha256"]
+    slot_rva = certificate["import_slot_rva"]
+    raw_identity = certificate["import_identity"]
+    if (
+        target_unit_ids
+        or len(evidence.external_targets) != 1
+        or not isinstance(profile_id, str)
+        or not profile_id
+        or not isinstance(target_sha256, str)
+        or len(target_sha256) != 64
+        or not isinstance(slot_rva, int)
+        or isinstance(slot_rva, bool)
+        or slot_rva < 0
+        or image_base + slot_rva != value_va
+        or not isinstance(expression, Mapping)
+        or expression.get("op") != "load"
+        or expression.get("width") != 4
+        or not isinstance(expression.get("address"), Mapping)
+        or expression["address"].get("op") != "const"
+        or expression["address"].get("value") != value_va
+        or canonical_sha256_v3(evidence.external_targets[0].to_value())
+        != target_sha256
+        or not isinstance(raw_identity, Mapping)
+    ):
+        return [
+            PrimaryBlockerV3(
+                "violated", "static_import_target_certificate_contradiction"
+            )
+        ]
+    try:
+        import_identity = CanonicalValueV3.of(dict(raw_identity))
+    except (TypeError, ValueError):
+        return [PrimaryBlockerV3("violated", "static_import_identity_malformed")]
+    if _external_target_identity_v3(evidence.external_targets[0]) != import_identity:
+        return [
+            PrimaryBlockerV3("violated", "static_import_identity_contradiction")
+        ]
+    profile_record = _record_or_none(context, "external_profiles", profile_id)
+    if profile_record is None:
+        return [
+            PrimaryBlockerV3(
+                "incomplete", "static_import_external_profile_missing"
+            )
+        ]
+    dependencies.append(RecordDependencyV3("external_profiles", profile_id))
+    profile: ExternalProfileV3 = EXTERNAL_PROFILE_CODEC_V3.read(
+        profile_record
+    ).value
+    transfer = "jump" if occurrence.transfer_kind == "indirect_jump" else "call"
+    if profile.identity != import_identity or transfer not in profile.allowed_transfers:
+        return [
+            PrimaryBlockerV3(
+                "violated", "static_import_external_profile_contradiction"
+            )
+        ]
+    return []
+
+
+def _checked_parametric_summary_blockers(
+    context: PhaseContextV3,
+    *,
+    evidence: TargetEvaluationEvidenceV3,
+    semantic: SemanticIndexRecordV3,
+    occurrence: IndirectExitOccurrenceV3,
+    dependencies: list[RecordDependencyV3],
+) -> list[PrimaryBlockerV3]:
+    """Replay one finite target fact from checked SCC-summary authority."""
+
+    if evidence.evaluation_certificate is None:
+        return [
+            PrimaryBlockerV3("violated", "parametric_target_certificate_missing")
+        ]
+    try:
+        certificate = mapping(
+            evidence.evaluation_certificate.to_value(),
+            "parametric-summary target certificate",
+        )
+    except AnalysisV3Error:
+        return [
+            PrimaryBlockerV3("violated", "parametric_target_certificate_malformed")
+        ]
+    required = {
+        "kind",
+        "summary_record_id",
+        "exit_id",
+        "source_unit_id",
+        "source_rva",
+        "source_event_index",
+        "transfer_kind",
+        "target_expression_sha256",
+        "value_fact_id",
+        "external_target_bindings",
+    }
+    if set(certificate) != required:
+        return [
+            PrimaryBlockerV3("violated", "parametric_target_certificate_malformed")
+        ]
+    summary_record_id = certificate["summary_record_id"]
+    value_fact_id = certificate["value_fact_id"]
+    if (
+        certificate["kind"] != _PARAMETRIC_TARGET_CERTIFICATE_KIND_V3
+        or not isinstance(summary_record_id, str)
+        or not summary_record_id
+        or not isinstance(value_fact_id, str)
+        or not value_fact_id
+        or certificate["exit_id"] != occurrence.exit_id
+        or certificate["source_unit_id"] != semantic.record_id
+        or certificate["source_rva"] != semantic.rva_start
+        or certificate["source_event_index"] != occurrence.event_index
+        or certificate["transfer_kind"] != occurrence.transfer_kind
+        or certificate["target_expression_sha256"]
+        != canonical_sha256_v3(occurrence.target_expression.to_value())
+    ):
+        return [
+            PrimaryBlockerV3(
+                "violated", "parametric_target_certificate_contradiction"
+            )
+        ]
+
+    raw_bindings = certificate["external_target_bindings"]
+    if not isinstance(raw_bindings, list):
+        return [
+            PrimaryBlockerV3("violated", "parametric_target_certificate_malformed")
+        ]
+    external_bindings: list[tuple[str, str]] = []
+    for row in raw_bindings:
+        if not isinstance(row, Mapping) or set(row) != {
+            "external_profile_record_id",
+            "external_target_sha256",
+        }:
+            return [
+                PrimaryBlockerV3(
+                    "violated", "parametric_target_certificate_malformed"
+                )
+            ]
+        profile_id = row["external_profile_record_id"]
+        target_sha256 = row["external_target_sha256"]
+        if (
+            not isinstance(profile_id, str)
+            or not profile_id
+            or not isinstance(target_sha256, str)
+            or len(target_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in target_sha256)
+        ):
+            return [
+                PrimaryBlockerV3(
+                    "violated", "parametric_target_certificate_malformed"
+                )
+            ]
+        external_bindings.append((profile_id, target_sha256))
+    if external_bindings != sorted(set(external_bindings)) or len(
+        {profile_id for profile_id, _digest in external_bindings}
+    ) != len(external_bindings):
+        return [
+            PrimaryBlockerV3("violated", "parametric_target_certificate_malformed")
+        ]
+
+    if context.manifest("parametric_summaries").status == "violated":
+        return [
+            PrimaryBlockerV3(
+                "violated", "parametric_summary_artifact_contradiction"
+            )
+        ]
+    summary_record = _record_or_none(
+        context, "parametric_summaries", summary_record_id
+    )
+    if summary_record is None:
+        return [
+            PrimaryBlockerV3(
+                "incomplete",
+                "parametric_target_summary_missing",
+            )
+        ]
+    dependencies.append(
+        RecordDependencyV3("parametric_summaries", summary_record_id)
+    )
+    summary = PARAMETRIC_SCC_SUMMARY_CODEC_V3.read(summary_record).value
+    if summary.status != "complete" or not summary.authorizing:
+        return [
+            PrimaryBlockerV3(
+                "violated" if summary.status == "violated" else "incomplete",
+                "parametric_target_summary_not_authorizing",
+                "parametric_summaries",
+                summary_record_id,
+            )
+        ]
+    return _parametric_summary_target_contradictions(
+        summary=summary,
+        evidence=evidence,
+        semantic=semantic,
+        occurrence=occurrence,
+        value_fact_id=value_fact_id,
+        external_bindings=tuple(external_bindings),
+    )
+
+
+def _parametric_summary_target_contradictions(
+    *,
+    summary: ParametricSccSummaryV3,
+    evidence: TargetEvaluationEvidenceV3,
+    semantic: SemanticIndexRecordV3,
+    occurrence: IndirectExitOccurrenceV3,
+    value_fact_id: str,
+    external_bindings: tuple[tuple[str, str], ...],
+) -> list[PrimaryBlockerV3]:
+    if not summary.covers_unit(semantic.record_id):
+        return [
+            PrimaryBlockerV3(
+                "violated", "parametric_target_summary_source_contradiction"
+            )
+        ]
+    summary_exit = summary.indirect_exit(occurrence.exit_id)
+    if summary_exit is None:
+        return [
+            PrimaryBlockerV3("violated", "parametric_target_summary_exit_missing")
+        ]
+    if (
+        summary_exit.source_unit_id != semantic.record_id
+        or summary_exit.expression_sha256
+        != canonical_sha256_v3(occurrence.target_expression.to_value())
+        or summary_exit.value_fact_id != value_fact_id
+    ):
+        return [
+            PrimaryBlockerV3(
+                "violated", "parametric_target_summary_exit_contradiction"
+            )
+        ]
+    fact = summary.value_fact(value_fact_id)
+    if fact is None:
+        return [
+            PrimaryBlockerV3("violated", "parametric_target_value_fact_missing")
+        ]
+    if fact.lattice != "finite":
+        return [
+            PrimaryBlockerV3(
+                "violated", "parametric_target_value_fact_not_finite"
+            )
+        ]
+
+    internal_origins: list[str] = []
+    external_origins: list[str] = []
+    for origin in fact.origins:
+        if (
+            origin.kind == "static_code_target"
+            and origin.subject_id is not None
+            and origin.offset in {None, 0}
+        ):
+            internal_origins.append(origin.subject_id)
+        elif (
+            origin.kind == "import_target"
+            and origin.subject_id is not None
+            and origin.offset in {None, 0}
+        ):
+            external_origins.append(origin.subject_id)
+        else:
+            return [
+                PrimaryBlockerV3(
+                    "violated", "parametric_target_value_origin_contradiction"
+                )
+            ]
+    internal = tuple(sorted(internal_origins))
+    external = tuple(sorted(external_origins))
+    bound_profiles = tuple(profile_id for profile_id, _digest in external_bindings)
+    bound_target_hashes = tuple(digest for _profile_id, digest in external_bindings)
+    evidence_target_hashes = tuple(
+        sorted(
+            canonical_sha256_v3(target.to_value())
+            for target in evidence.external_targets
+        )
+    )
+    if (
+        internal != tuple(sorted(set(internal)))
+        or external != tuple(sorted(set(external)))
+        or internal != summary_exit.target_unit_ids
+        or internal != evidence.target_unit_ids
+        or external != summary_exit.external_profile_record_ids
+        or bound_profiles != external
+        or tuple(sorted(bound_target_hashes)) != evidence_target_hashes
+    ):
+        return [
+            PrimaryBlockerV3(
+                "violated", "parametric_target_membership_contradiction"
+            )
+        ]
+    return []
+
+
 def _transition_binds_occurrence(
     summary: TransitionSummaryRecordV3, occurrence: IndirectExitOccurrenceV3
 ) -> bool:
@@ -495,14 +926,36 @@ def _derive_certificate(
                     "violated", "target_evaluation_binding_contradiction", "target_evidence", occurrence.exit_id
                 )
             )
-        if proposal is not None and proposal.status == "recovered" and (
-            evidence.target_unit_ids != proposal.target_unit_ids
-            or evidence.external_targets != proposal.external_targets
-        ):
-            blockers.append(
-                PrimaryBlockerV3(
-                    "violated", "target_evaluation_inventory_contradiction", "target_evidence", occurrence.exit_id
+        if proposal is not None and proposal.status == "recovered":
+            proposed_external = tuple(
+                sorted(
+                    (
+                        _external_target_identity_v3(row)
+                        for row in proposal.external_targets
+                    ),
+                    key=lambda row: row.data,
                 )
+            )
+            evidence_external = tuple(
+                sorted(
+                    (
+                        _external_target_identity_v3(row)
+                        for row in evidence.external_targets
+                    ),
+                    key=lambda row: row.data,
+                )
+            )
+            if (
+                evidence.target_unit_ids != proposal.target_unit_ids
+                or evidence_external != proposed_external
+            ):
+                blockers.append(
+                    PrimaryBlockerV3(
+                        "violated",
+                        "target_evaluation_inventory_contradiction",
+                        "target_evidence",
+                        occurrence.exit_id,
+                    )
                 )
 
     if (
@@ -528,7 +981,11 @@ def _derive_certificate(
         expression_subject, memory_range = _target_expression_subject(
             occurrence.target_expression.to_value()
         )
-        if evidence.evaluation_method != "checked_indexed_pe_table":
+        if evidence.evaluation_method not in {
+            "checked_indexed_pe_table",
+            "checked_pe_static_value",
+            "checked_parametric_summary",
+        }:
             memory_dependency = RecordDependencyV3(
                 "memory_versions", evidence.memory_record_id
             )
@@ -624,7 +1081,7 @@ def _derive_certificate(
                             blockers.append(
                                 PrimaryBlockerV3("violated", "target_inductive_membership_contradiction")
                             )
-        else:
+        elif evidence.evaluation_method == "checked_indexed_pe_table":
             if evidence.evaluation_certificate is not None:
                 raw_indexed = evidence.evaluation_certificate.to_value()
                 if isinstance(raw_indexed, Mapping):
@@ -644,6 +1101,26 @@ def _derive_certificate(
                     evidence=evidence,
                     semantic=semantic,
                     occurrence=occurrence,
+                )
+            )
+        elif evidence.evaluation_method == "checked_pe_static_value":
+            blockers.extend(
+                _checked_pe_static_value_blockers(
+                    context,
+                    evidence=evidence,
+                    semantic=semantic,
+                    occurrence=occurrence,
+                    dependencies=dependencies,
+                )
+            )
+        else:
+            blockers.extend(
+                _checked_parametric_summary_blockers(
+                    context,
+                    evidence=evidence,
+                    semantic=semantic,
+                    occurrence=occurrence,
+                    dependencies=dependencies,
                 )
             )
 
@@ -784,11 +1261,13 @@ def check_indirect_target_certificates_completeness_v3(
 
 INDIRECT_TARGET_CERTIFICATES_PHASE_V3 = map_units(
     name="indirect-target-certificates-v3",
-    version="1",
+    version="2",
     source_input="semantic_index",
     input_artifact_kinds={
+        "external_profiles": EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
         "inductive_inputs": "inductive-inputs-v3",
         "memory_versions": "memory-versions-v3",
+        "parametric_summaries": PARAMETRIC_SCC_SUMMARIES_ARTIFACT_KIND_V3,
         "semantic_index": SEMANTIC_INDEX_ARTIFACT_KIND_V3,
         "semantic_index_global": SEMANTIC_INDEX_ARTIFACT_KIND_V3,
         "structural_targets": STRUCTURAL_TARGETS_ARTIFACT_KIND_V3,

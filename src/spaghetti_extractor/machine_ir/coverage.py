@@ -4,7 +4,7 @@ This receipt has no behavioral or static-completeness authority.  It checks
 only that every unit in the exact structural machine-IR inventory has one
 selected dispatch implementation and that every fallback entry exists in the
 selected semantic-interpreter lowering.  The independent v2 final audit is the
-sole static authority consumed by the candidate-authority receipt.
+structural implementation coverage consumed by the candidate policy reducer.
 """
 
 from __future__ import annotations

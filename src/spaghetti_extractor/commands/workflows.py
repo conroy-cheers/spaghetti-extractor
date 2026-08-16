@@ -9,6 +9,7 @@ import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import parse_qs
 
 from ..build_support.nix_invocation import builder_arguments, nix_command
 from .common import Handler
@@ -21,6 +22,16 @@ def _identifier(value: str) -> str:
     if _IDENTIFIER.fullmatch(value) is None:
         raise argparse.ArgumentTypeError(
             "identifier must contain only letters, digits, '.', '_', or '-'"
+        )
+    return value
+
+
+def _opaque_identity(value: str) -> str:
+    if not value or len(value) > 512 or any(
+        character.isspace() or ord(character) < 0x20 for character in value
+    ):
+        raise argparse.ArgumentTypeError(
+            "identity must be nonempty, bounded, and contain no whitespace"
         )
     return value
 
@@ -333,9 +344,14 @@ def _component_selection(args: argparse.Namespace) -> tuple[str, str]:
 
 def _component_status(args: argparse.Namespace) -> int:
     kind, identity = _component_selection(args)
+    if args.development and kind != "units":
+        raise ValueError(
+            "--development applies only to a component leaf or operator-defined group"
+        )
+    product = "developmentStatus" if args.development else "status"
     payload = _realize_json(
         args,
-        f"components.{kind}.{_attr_segment(identity)}.status",
+        f"components.{kind}.{_attr_segment(identity)}.{product}",
         "status.json",
     )
     if args.json:
@@ -353,9 +369,27 @@ def _component_status(args: argparse.Namespace) -> int:
 
 def _component_build(args: argparse.Namespace) -> int:
     kind, identity = _component_selection(args)
-    product = "runtime" if kind == "configurations" else "workPackage"
+    product = "runtime" if kind == "configurations" else "build"
     return _build(
         args, f"components.{kind}.{_attr_segment(identity)}.{product}"
+    )
+
+
+def _component_bind(args: argparse.Namespace) -> int:
+    kind, identity = _component_selection(args)
+    if kind != "units":
+        raise ValueError("component bind requires a leaf or operator-defined group")
+    components = _component_index(args)
+    units = components.get("units")
+    row = units.get(identity) if isinstance(units, Mapping) else None
+    if not isinstance(row, Mapping) or row.get("hasMachineBinding") is not True:
+        raise ValueError(
+            f"component {identity!r} has no declared exact machine binding"
+        )
+    return _build(
+        args,
+        f"components.units.{_attr_segment(identity)}.machineBinding",
+        no_link=True,
     )
 
 
@@ -366,6 +400,247 @@ def _component_check(args: argparse.Namespace) -> int:
         f"components.{kind}.{_attr_segment(identity)}.check",
         no_link=True,
     )
+
+
+def _library_status_payload(args: argparse.Namespace) -> dict[str, Any]:
+    return _realize_json(args, "libraries.status", "library-status.json")
+
+
+def _library_status(args: argparse.Namespace) -> int:
+    payload = _library_status_payload(args)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    counts = payload.get("counts", {})
+    print(
+        f"{args.target}: adoption={payload.get('adoption_status')} "
+        f"recognition={payload.get('recognition_status')} "
+        f"releases={counts.get('releases', 0)} "
+        f"islands={counts.get('islands', 0)} "
+        f"identity={counts.get('identity_complete', 0)} "
+        f"boundary={counts.get('boundary_complete', 0)} "
+        f"implementation={counts.get('implementation_complete', 0)} "
+        f"ready={counts.get('ready_adoptions', 0)}/"
+        f"{counts.get('adoption_intents', 0)}"
+    )
+    for row in payload.get("selections", []):
+        if not isinstance(row, Mapping):
+            continue
+        print(
+            f"  {row.get('island_id')}: mode={row.get('mode')} "
+            f"status={row.get('status')} "
+            f"implementation={row.get('implementation_id') or row.get('recipe_id')}"
+        )
+    for blocker in payload.get("primary_blockers", [])[:10]:
+        if isinstance(blocker, Mapping):
+            print(
+                f"blocker: {blocker.get('code')} "
+                f"[{blocker.get('status')}] at {blocker.get('location')}"
+            )
+            if blocker.get("next_action"):
+                print(f"  next: {blocker.get('next_action')}")
+    return 0
+
+
+def _parse_rva(value: str) -> int:
+    try:
+        parsed = int(value, 0)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("RVA must be an integer") from error
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("RVA must not be negative")
+    return parsed
+
+
+def _library_inspect(args: argparse.Namespace) -> int:
+    payload = _library_status_payload(args)
+    rows = payload.get("islands", [])
+    if not isinstance(rows, list):
+        raise ValueError("library status has no island inventory")
+    selected = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        matches = row.get("matches", [])
+        contains_rva = args.rva is None or any(
+            isinstance(match, Mapping)
+            and isinstance(match.get("target_span_start"), int)
+            and isinstance(match.get("target_span_end"), int)
+            and match["target_span_start"] <= args.rva < match["target_span_end"]
+            for match in matches
+        )
+        if args.island is not None and row.get("id") != args.island:
+            continue
+        if args.family is not None and row.get("family_id") != args.family:
+            continue
+        if contains_rva:
+            selected.append(row)
+    if not selected:
+        raise ValueError("no library island matches the requested selector")
+    if args.json:
+        print(json.dumps(selected, indent=2, sort_keys=True))
+    else:
+        for row in selected:
+            matches = row.get("matches", [])
+            score = sum(
+                int(match.get("score", 0))
+                for match in matches
+                if isinstance(match, Mapping)
+            )
+            print(
+                f"{row.get('id')}: family={row.get('family_id')} "
+                f"release={row.get('release_id')} status={row.get('status')} "
+                f"score={score}"
+            )
+            for evidence in row.get("matches", []):
+                if isinstance(evidence, Mapping):
+                    print(
+                        f"  {','.join(evidence.get('evidence', []))}: "
+                        f"{evidence.get('target_function_id')} -> "
+                        f"{evidence.get('catalog_function_id')}"
+                    )
+            for function in row.get("catalog_functions", []):
+                if isinstance(function, Mapping):
+                    print(
+                        f"  catalog: {','.join(function.get('symbols', [])) or '<anonymous>'} "
+                        f"member={function.get('member_id')} "
+                        f"operation={function.get('operation_id')} "
+                        f"abi={function.get('abi_profile_id')}"
+                    )
+            blockers = row.get("issues", [])
+            for blocker in blockers if isinstance(blockers, list) else []:
+                if isinstance(blocker, Mapping):
+                    print(f"  {blocker.get('status')}: {blocker.get('code')}")
+    return 0
+
+
+def _local_target_bundle(args: argparse.Namespace) -> Path:
+    reference = str(args.target_flake)
+    if reference.startswith("path:"):
+        location, separator, query = reference[5:].partition("?")
+        root = Path(location)
+        if separator:
+            values = parse_qs(query, strict_parsing=True)
+            directories = values.get("dir", [])
+            if len(directories) > 1:
+                raise ValueError("--target-flake has more than one dir parameter")
+            if directories:
+                root /= directories[0]
+    elif ":" not in reference and "?" not in reference and "#" not in reference:
+        root = Path(reference)
+    else:
+        raise ValueError(
+            "library adoption requires a writable local --target-flake path"
+        )
+    bundle = (root / args.target).resolve()
+    if not bundle.is_dir():
+        raise ValueError(f"local target bundle does not exist: {bundle}")
+    return bundle
+
+
+def _library_adopt(args: argparse.Namespace) -> int:
+    from ..libraries.v4_adoption_records import LibraryAdoptionIntentV1
+    from ..target_bundles.metadata import TargetMetadata
+
+    payload = _library_status_payload(args)
+    islands = payload.get("islands", [])
+    island = next(
+        (
+            row
+            for row in islands
+            if isinstance(row, Mapping) and row.get("id") == args.island
+        ),
+        None,
+    )
+    if island is None:
+        raise ValueError(f"unknown library island {args.island!r}")
+    hypotheses_sha256 = island.get("hypotheses_sha256")
+    if not isinstance(hypotheses_sha256, str):
+        raise ValueError("library status omitted the island hypotheses hash")
+
+    implementation_id: str | None = None
+    recipe_id: str | None = None
+    mode = "draft"
+    if args.recipe is not None:
+        recipes = island.get("recipes", [])
+        candidates = [
+            row.get("implementation_id")
+            for row in recipes
+            if isinstance(row, Mapping) and row.get("recipe_id") == args.recipe
+        ]
+        candidates = [value for value in candidates if isinstance(value, str)]
+        if len(candidates) != 1:
+            available = sorted(
+                str(row.get("recipe_id"))
+                for row in recipes
+                if isinstance(row, Mapping) and isinstance(row.get("recipe_id"), str)
+            )
+            raise ValueError(
+                f"recipe {args.recipe!r} is not uniquely available for this island; "
+                f"available: {', '.join(available) or 'none'}"
+            )
+        implementation_id = candidates[0]
+        mode = "adopt"
+    else:
+        recipe_id = args.draft
+
+    intent = LibraryAdoptionIntentV1.create(
+        target_id=args.target,
+        island_id=args.island,
+        hypotheses_sha256=hypotheses_sha256,
+        implementation_id=implementation_id,
+        recipe_id=recipe_id,
+        mode=mode,
+    )
+    bundle = _local_target_bundle(args)
+    metadata = TargetMetadata.load(bundle / "target.json")
+    library_paths = [path for name, path in metadata.paths if name == "libraries"]
+    if len(library_paths) != 1:
+        raise ValueError(
+            "target metadata must declare paths.libraries before adopting an island"
+        )
+    destination = bundle / Path(library_paths[0]) / f"{args.island.split(':')[-1]}.json"
+    serialized = json.dumps(intent.to_payload(), indent=2, sort_keys=True) + "\n"
+    if destination.exists():
+        existing = destination.read_text(encoding="utf-8")
+        if existing == serialized:
+            print(destination)
+            return 0
+        if not args.replace:
+            raise ValueError(
+                f"refusing to replace existing library adoption intent: {destination}"
+            )
+    if args.dry_run:
+        print(serialized, end="")
+        return 0
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(serialized, encoding="utf-8")
+    print(destination)
+    return 0
+
+
+def _library_check(args: argparse.Namespace) -> int:
+    if args.selection is None:
+        return _build(args, "libraries.check", no_link=True)
+    index = _operator_index(args)
+    libraries = index.get("libraries")
+    available = (
+        libraries.get("selections", [])
+        if isinstance(libraries, Mapping)
+        else []
+    )
+    selection = args.selection
+    if selection not in available:
+        derived = selection.split(":")[-1]
+        if derived in available:
+            selection = derived
+        else:
+            raise ValueError(
+                f"unknown library selection {args.selection!r}; "
+                f"available: {', '.join(str(value) for value in available) or 'none'}"
+            )
+    suffix = f"libraries.checks.{_attr_segment(selection)}"
+    return _build(args, suffix, no_link=True)
 
 
 def _candidate_build(args: argparse.Namespace) -> int:
@@ -387,6 +662,34 @@ def _candidate_build(args: argparse.Namespace) -> int:
             f"available: {', '.join(configurations)}"
         )
     return _build(args, f"candidate.builds.{_attr_segment(configuration)}")
+
+
+def _candidate_check(args: argparse.Namespace) -> int:
+    index = _operator_index(args)
+    candidate = index.get("candidate")
+    configurations = (
+        candidate.get("configurations", [])
+        if isinstance(candidate, Mapping)
+        else []
+    )
+    configuration = args.configuration or index.get("defaultConfiguration")
+    if not configurations:
+        raise ValueError(
+            "target has no candidate configurations; author component intent first"
+        )
+    if configuration not in configurations:
+        raise ValueError(
+            f"unknown candidate configuration {configuration!r}; "
+            f"available: {', '.join(configurations)}"
+        )
+    return _build(
+        args,
+        (
+            f"candidate.checks.{_attr_segment(configuration)}."
+            f"{_attr_segment(args.mode)}"
+        ),
+        no_link=True,
+    )
 
 
 def _candidate_list(args: argparse.Namespace) -> int:
@@ -447,7 +750,7 @@ def _candidate_status(args: argparse.Namespace) -> int:
     print(
         f"{args.target}: status={payload.get('status')} "
         f"configuration={payload.get('configuration_id')} "
-        f"authority-ready={str(payload.get('authority_ready')).lower()} "
+        f"structural-ready={str(payload.get('structural_ready')).lower()} "
         f"configuration-ready={str(payload.get('configuration_ready')).lower()} "
         f"build-ready={str(payload.get('build_ready')).lower()} "
         f"frontiers={counts.get('primary_frontiers', 0)} "
@@ -499,12 +802,59 @@ def configure_command(name: str, parser: argparse.ArgumentParser) -> Handler:
     if name == "component list":
         parser.add_argument("--json", action="store_true")
         return _component_list
-    if name in {"component status", "component build", "component check"}:
+    if name in {
+        "component status",
+        "component build",
+        "component bind",
+        "component check",
+    }:
         _add_component_selector(parser)
         if name == "component status":
             parser.add_argument("--json", action="store_true")
+            parser.add_argument(
+                "--development",
+                action="store_true",
+                help=(
+                    "show contract/source progress without requiring machine-derived "
+                    "activation authority"
+                ),
+            )
             return _component_status
-        return _component_build if name == "component build" else _component_check
+        if name == "component build":
+            return _component_build
+        if name == "component bind":
+            return _component_bind
+        return _component_check
+    if name == "library status":
+        parser.add_argument("--json", action="store_true")
+        return _library_status
+    if name == "library inspect":
+        selector = parser.add_mutually_exclusive_group(required=True)
+        selector.add_argument("--rva", type=_parse_rva)
+        selector.add_argument("--island", type=_opaque_identity)
+        selector.add_argument("--family", type=_opaque_identity)
+        parser.add_argument("--json", action="store_true")
+        return _library_inspect
+    if name == "library adopt":
+        parser.add_argument("--island", required=True, type=_opaque_identity)
+        selection = parser.add_mutually_exclusive_group(required=True)
+        selection.add_argument(
+            "--recipe",
+            type=_opaque_identity,
+            help="adopt the uniquely matching reusable implementation recipe",
+        )
+        selection.add_argument(
+            "--draft",
+            type=_opaque_identity,
+            metavar="RECIPE",
+            help="record an implementation recipe that still needs qualification",
+        )
+        parser.add_argument("--replace", action="store_true")
+        parser.add_argument("--dry-run", action="store_true")
+        return _library_adopt
+    if name == "library check":
+        parser.add_argument("--selection", type=_opaque_identity)
+        return _library_check
     if name == "candidate list":
         parser.add_argument("--json", action="store_true")
         return _candidate_list
@@ -515,6 +865,15 @@ def configure_command(name: str, parser: argparse.ArgumentParser) -> Handler:
     if name == "candidate build":
         parser.add_argument("--configuration", type=_identifier)
         return _candidate_build
+    if name == "candidate check":
+        parser.add_argument("--configuration", type=_identifier)
+        parser.add_argument(
+            "--mode",
+            choices=("hybrid", "portable"),
+            default="hybrid",
+            help="hybrid permits checked machine implementations; portable does not",
+        )
+        return _candidate_check
     if name == "candidate test":
         parser.add_argument("--suite", type=_identifier)
         return _candidate_test

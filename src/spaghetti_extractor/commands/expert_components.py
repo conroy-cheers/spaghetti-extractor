@@ -115,18 +115,24 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         path_argument(command, "resolution", required=True)
         command.add_argument("--configuration-id", required=True)
         command.add_argument("--contract", action="append", default=[])
+        command.add_argument("--portable-interface", action="append", default=[])
         command.add_argument("--implementation", action="append", default=[])
         command.add_argument("--qualification", action="append", default=[])
         command.add_argument("--adapter-plan", action="append", default=[])
+        command.add_argument("--activation-receipt", action="append", default=[])
+        command.add_argument("--machine-binding", action="append", default=[])
         path_argument(command, "out", required=True)
         return lambda a: compose_component_configuration(
             machine_ir=a.machine_ir,
             resolution=a.resolution,
             configuration_id=a.configuration_id,
             contracts=keyed_paths(a.contract),
+            portable_interfaces=keyed_paths(a.portable_interface),
             implementations=keyed_paths(a.implementation),
             qualifications=keyed_paths(a.qualification),
             adapter_plans=keyed_paths(a.adapter_plan),
+            activation_receipts=keyed_paths(a.activation_receipt),
+            machine_bindings=keyed_paths(a.machine_binding),
             out=a.out,
         )
 
@@ -134,18 +140,26 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         path_argument(command, "machine_ir", required=True)
         path_argument(command, "activation_plan", required=True)
         command.add_argument("--contract", action="append", default=[])
+        command.add_argument("--portable-interface", action="append", default=[])
+        command.add_argument("--semantic-contract", action="append", default=[])
         command.add_argument("--implementation", action="append", default=[])
         command.add_argument("--qualification", action="append", default=[])
         command.add_argument("--adapter-plan", action="append", default=[])
+        command.add_argument("--activation-receipt", action="append", default=[])
+        command.add_argument("--machine-binding", action="append", default=[])
         path_argument(command, "interpreter_package", required=True)
         path_argument(command, "out", required=True)
         return lambda a: build_component_runtime_package(
             machine_ir=a.machine_ir,
             activation_plan=a.activation_plan,
             contracts=keyed_paths(a.contract),
+            portable_interfaces=keyed_paths(a.portable_interface),
+            semantic_contracts=keyed_paths(a.semantic_contract),
             implementations=keyed_paths(a.implementation),
             qualifications=keyed_paths(a.qualification),
             adapter_plans=keyed_paths(a.adapter_plan),
+            activation_receipts=keyed_paths(a.activation_receipt),
+            machine_bindings=keyed_paths(a.machine_binding),
             interpreter_package=a.interpreter_package,
             out_dir=a.out,
         )
