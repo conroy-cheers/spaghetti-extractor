@@ -1,7 +1,6 @@
 {
-  "format": "spaghetti-extractor-static-machine-import-profile-v1",
+  "format": "spaghetti-extractor-static-machine-import-profile-v2",
   "id": "pe32-winmm-runtime-v1",
-  "default_callback_effect": "none",
   "machine_import_signatures": [
     {
       "id": "winmm.dll!midiOutPrepareHeader",
@@ -20,8 +19,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "winmm.dll!midiOutUnprepareHeader",
@@ -40,8 +38,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "winmm.dll!midiOutReset",
@@ -60,8 +57,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "winmm.dll!midiStreamOpen",
@@ -88,19 +84,36 @@
         }
       ],
       "world_effect": "callbackRegistration",
-      "callback_effect": "explicit",
-      "callback_source": {"kind": "argument_word", "argument": 3},
-      "callback_lifetime": "until_midi_stream_closed_or_process_exit",
-      "callback_abi": {
-        "kind": "generic_callback",
-        "argument_words": 5,
-        "stack_cleanup_bytes": 20,
-        "nullable": false
-      },
-      "callback_behavior": {
-        "kind": "nested_native_callback_v1",
+      "callback_protocol": {
+        "format": "spaghetti-extractor-callback-protocol-v1",
+        "id": "winmm-midi-stream-callback",
+        "action": "register",
+        "source": {"kind": "argument_word", "argument": 3, "sentinels": []},
+        "signature": {
+          "abi_template": "pe32-stdcall-v1",
+          "argument_words": 5,
+          "stack_cleanup_bytes": 20,
+          "result": {"kind": "void"}
+        },
+        "instance": {
+          "kind": "argument",
+          "argument": 4,
+          "callback_argument": 2
+        },
+        "previous_result": null,
+        "lifetime": {
+          "kind": "until_resource_event_or_process_exit",
+          "end_event": "winmm.dll!midiStreamClose"
+        },
+        "delivery": {"timing": "nested_or_deferred", "thread": "provider_serialized"},
+        "cardinality": {
+          "minimum": 0,
+          "maximum": null,
+          "scope": "registration_generation"
+        },
+        "provider_behavior": {
+        "kind": "same_pinned_native_provider_v1",
         "provider_relation": "same_pinned_native_provider_v1",
-        "delivery": "during_call_or_until_lifetime_end",
         "activation": {
           "kind": "masked_argument_equals",
           "argument": 5,
@@ -110,11 +123,8 @@
         "message_argument": 1,
         "message_values": [967, 968, 969, 970],
         "resource_argument": 0,
-        "instance_binding": {
-          "callback_argument": 2,
-          "registration_argument": 4
-        },
         "payload_arguments": [3, 4]
+        }
       }
     },
     {
@@ -134,8 +144,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "winmm.dll!midiStreamProperty",
@@ -154,8 +163,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "id": "winmm.dll!midiStreamRestart",
@@ -174,8 +182,7 @@
       },
       "memory_effect": "nativeCallthrough",
       "memory_footprints": [],
-      "world_effect": "nativeCallthrough",
-      "callback_effect": "none"
+      "world_effect": "nativeCallthrough"
     },
     {
       "import": {"dll": "winmm.dll", "symbol": "midiStreamClose"},

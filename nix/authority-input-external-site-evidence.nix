@@ -7,6 +7,7 @@
   transitionSummaries,
   targetCertificates,
   externalProfiles,
+  staticValueOrigins,
   name,
   contentAddressed ? true,
 }:
@@ -46,6 +47,7 @@ pkgs.runCommand name (
     --transition-summaries ${transitionSummaries} \
     --target-certificates ${targetCertificates} \
     --external-profiles ${externalProfiles} \
+    --static-value-origins ${staticValueOrigins} \
     --out "$out/artifact"
 
   ${pythonEnv}/bin/python3 - "$out" <<'PY'

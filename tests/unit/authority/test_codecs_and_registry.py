@@ -68,12 +68,14 @@ class AnalysisV3CodecAndRegistryTests(unittest.TestCase):
         self.assertEqual(
             AUTHORITY_PHASE_REGISTRY_V3.names,
             (
-                "callback-authority-v3",
+                "call-boundary-contracts-v3",
+                "callback-authority-v4",
                 "canonical-external-sites-v3",
                 "exact-units-v3",
                 "exceptional-transitions-v3",
                 "fallback-coverage-v3",
                 "final-authority-v3",
+                "incoming-call-frames-v3",
                 "indirect-target-certificates-v3",
                 "inductive-authority-v3",
                 "isa-qualification-v3",

@@ -14,6 +14,17 @@ from ..artifacts.artifact_set import (
     canonical_sha256_v3,
 )
 from ..artifacts.io import ArtifactSetReaderV3
+from .catalog_call_contracts import (
+    CATALOG_CALL_CONTRACTS_ARTIFACT_KIND_V3,
+    CATALOG_CALL_CONTRACT_CODEC_V1,
+    CatalogCallContractV1,
+    catalog_call_contract_machine_contradictions_v1,
+)
+from .call_boundary_contracts import (
+    CALL_BOUNDARY_CONTRACTS_ARTIFACT_KIND_V3,
+    CALL_BOUNDARY_CONTRACT_CODEC_V3,
+    CallBoundaryContractV3,
+)
 from ..artifacts.phases import PhaseContextV3, reduce
 from ._schema import fail, mapping, require_record_ids, sorted_records
 from .authority_common import (
@@ -79,6 +90,7 @@ from .parametric_summary_checks import (
     StackAccessEvidenceV3,
     UnitSummaryEvidenceV3,
     _CheckedProfileIndexV3,
+    _InternalMemoryFrameResultV3,
     _InternalPreservationResultV3,
     _call_blockers,
     _checked_internal_preservation_v3,
@@ -98,6 +110,9 @@ def check_parametric_scc_proposal_v3(
     preservation_cache: dict[tuple[str, ...], _InternalPreservationResultV3]
     | None = None,
     profile_index: _CheckedProfileIndexV3 | None = None,
+    memory_frame_cache: dict[
+        tuple[str, ...], _InternalMemoryFrameResultV3
+    ] | None = None,
 ) -> ParametricSccSummaryV3:
     """Validate one proposal without trusting a status or convergence bit."""
 
@@ -169,6 +184,7 @@ def check_parametric_scc_proposal_v3(
                 evidence,
                 preservation_cache,
                 profile_index,
+                memory_frame_cache,
             )
         )
         blockers.extend(_return_blockers(proposal, evidence))
@@ -230,6 +246,8 @@ def _collect_inputs(
     tuple[MemoryVersionRecordV3, ...],
     tuple[StructuralTargetProposalV3, ...],
     tuple[ExternalProfileV3, ...],
+    tuple[CatalogCallContractV1, ...],
+    tuple[CallBoundaryContractV3, ...],
     PE32StaticImageV3,
     tuple[PE32ImportSlotV3, ...],
     dict[str, tuple[ParametricSccProposalV3, ...]],
@@ -258,6 +276,18 @@ def _collect_inputs(
         ):
             profile_rows.append(EXTERNAL_PROFILE_CODEC_V3.read(record).value)
     profiles = tuple(profile_rows)
+    catalog_call_contracts = tuple(
+        row.value
+        for row in context.typed_records(
+            "catalog_call_contracts", CATALOG_CALL_CONTRACT_CODEC_V1
+        )
+    )
+    call_boundary_contracts = tuple(
+        row.value
+        for row in context.typed_records(
+            "call_boundary_contracts", CALL_BOUNDARY_CONTRACT_CODEC_V3
+        )
+    )
     static_images: list[PE32StaticImageV3] = []
     import_slots: list[PE32ImportSlotV3] = []
     for record in context.records("static_value_origins"):
@@ -293,6 +323,8 @@ def _collect_inputs(
         memories,
         structural,
         profiles,
+        catalog_call_contracts,
+        call_boundary_contracts,
         static_images[0],
         tuple(sorted(import_slots)),
         proposals,
@@ -677,7 +709,10 @@ def _unit_summary_evidence_v3(
     compact: ParametricUnitFactV3,
     direct_calls: tuple[DirectCallEvidenceV3, ...],
     rva_to_unit: Mapping[int, str],
-) -> tuple[UnitSummaryEvidenceV3, dict[str, tuple[str, str]]]:
+) -> tuple[
+    UnitSummaryEvidenceV3,
+    dict[str, tuple[str, str, int | None]],
+]:
     external_calls = tuple(
         ExternalCallEvidenceV3(row.event_index, row.transfer_kind, row.identity)
         for row in compact.external_calls
@@ -694,7 +729,11 @@ def _unit_summary_evidence_v3(
         for access in compact.stack_accesses
     )
     nonstack_accesses = {
-        access.access_id: (compact.record_id, access.kind)
+        access.access_id: (
+            compact.record_id,
+            access.kind,
+            access.epoch_call_index,
+        )
         for access in compact.nonstack_accesses
     }
     direct_target_unit_ids = tuple(
@@ -725,6 +764,7 @@ def _unit_summary_evidence_v3(
                 for register, expression in compact.register_outputs
             ),
             stack_net_bytes=compact.stack_net_bytes,
+            return_cleanup_bytes=compact.return_cleanup_bytes,
             returns=compact.returns,
             may_not_return=not compact.returns,
             external_calls=external_calls,
@@ -766,7 +806,7 @@ def _checked_memory_effects_v3(
     *,
     member_set: set[str],
     relevant_memories: tuple[MemoryVersionRecordV3, ...],
-    nonstack_accesses: Mapping[str, tuple[str, str]],
+    nonstack_accesses: Mapping[str, tuple[str, str, int | None]],
 ) -> tuple[
     tuple[MemoryEffectEvidenceV3, ...],
     tuple[str, ...],
@@ -782,7 +822,10 @@ def _checked_memory_effects_v3(
             exact = nonstack_accesses.get(link.access_id)
             if exact is None:
                 continue
-            unit_id, access_kind = exact
+            unit_id, access_kind, epoch_call_index = exact
+            if access_kind == "read" and epoch_call_index is None:
+                versioned_accesses.add(link.access_id)
+                continue
             kind = "preserved" if access_kind == "read" else "write"
             key = (unit_id, link.component_id)
             if effect_rank[kind] > effect_rank.get(
@@ -824,6 +867,21 @@ def _checked_memory_effects_v3(
     return memory_effects, kills, unversioned
 
 
+def _invalid_catalog_call_contract_ids_v3(
+    contracts: tuple[CatalogCallContractV1, ...],
+    units: Mapping[str, UnitSummaryEvidenceV3],
+) -> tuple[str, ...]:
+    """Reject catalog declarations contradicted by exact target call boundaries."""
+
+    return tuple(
+        sorted(
+            contract.contract_id
+            for contract in contracts
+            if catalog_call_contract_machine_contradictions_v1(contract, units)
+        )
+    )
+
+
 def _derive_parametric_summaries(
     context: PhaseContextV3,
 ) -> tuple[ParametricSccSummaryV3, ...]:
@@ -832,6 +890,8 @@ def _derive_parametric_summaries(
         memories,
         structural,
         profiles,
+        catalog_call_contracts,
+        call_boundary_contracts,
         static_image,
         import_slots,
         proposals,
@@ -859,7 +919,7 @@ def _derive_parametric_summaries(
             call.target_unit_id for call in calls if call.target_unit_id is not None
         )
     program_units: dict[str, UnitSummaryEvidenceV3] = {}
-    program_nonstack: dict[str, dict[str, tuple[str, str]]] = {}
+    program_nonstack: dict[str, dict[str, tuple[str, str, int | None]]] = {}
     for unit_id, compact in unit_facts.items():
         unit, nonstack = _unit_summary_evidence_v3(
             compact,
@@ -871,6 +931,32 @@ def _derive_parametric_summaries(
     ordered_program_units = tuple(
         sorted(program_units.values(), key=lambda row: row.unit_id)
     )
+    all_nonstack_accesses = {
+        access_id: binding
+        for rows in program_nonstack.values()
+        for access_id, binding in rows.items()
+    }
+    (
+        program_memory_effects,
+        _program_memory_kills,
+        program_unversioned_access_ids,
+    ) = _checked_memory_effects_v3(
+        member_set=set(program_units),
+        relevant_memories=memories,
+        nonstack_accesses=all_nonstack_accesses,
+    )
+    program_unversioned_memory_unit_ids = tuple(
+        sorted(
+            {
+                all_nonstack_accesses[access_id][0]
+                for access_id in program_unversioned_access_ids
+                if access_id in all_nonstack_accesses
+            }
+        )
+    )
+    invalid_catalog_contract_ids = _invalid_catalog_call_contract_ids_v3(
+        catalog_call_contracts, program_units
+    )
     dataflow_evidence = ParametricSccEvidenceV3(
         scc_id="root-independent-target-dataflow-v3",
         member_unit_ids=tuple(sorted(program_units)),
@@ -881,12 +967,20 @@ def _derive_parametric_summaries(
         unversioned_memory_access_ids=(),
         structural_targets=structural,
         external_profiles=profiles,
+        catalog_call_contracts=catalog_call_contracts,
+        call_boundary_contracts=call_boundary_contracts,
+        invalid_catalog_call_contract_ids=invalid_catalog_contract_ids,
         expected_dependencies=(),
         program_units=ordered_program_units,
         static_image=static_image,
         import_slots=import_slots,
+        program_memory_effects=program_memory_effects,
+        program_unversioned_memory_unit_ids=program_unversioned_memory_unit_ids,
     )
     preservation_cache: dict[tuple[str, ...], _InternalPreservationResultV3] = {}
+    memory_frame_cache: dict[
+        tuple[str, ...], _InternalMemoryFrameResultV3
+    ] = {}
     profile_index = _CheckedProfileIndexV3(profiles)
     checked_indirect_targets = _replay_target_dataflow_v3(
         dataflow_evidence,
@@ -894,6 +988,10 @@ def _derive_parametric_summaries(
         preservation_cache=preservation_cache,
         profile_index=profile_index,
     )
+    # Target recovery deliberately uses conservative call summaries while its
+    # finite sets converge. Final SCC replay must consume the completed target
+    # inventory rather than those bootstrap cache entries.
+    preservation_cache.clear()
     memories_by_summary_id: dict[str, list[MemoryVersionRecordV3]] = {}
     for memory in memories:
         for summary_id in memory.transition_summary_ids:
@@ -918,7 +1016,7 @@ def _derive_parametric_summaries(
         )
         dependencies: set[RecordDependencyV3] = set()
         units: list[UnitSummaryEvidenceV3] = []
-        nonstack_accesses: dict[str, tuple[str, str]] = {}
+        nonstack_accesses: dict[str, tuple[str, str, int | None]] = {}
         for unit_id in members:
             dependencies.add(RecordDependencyV3("unit_facts", unit_id))
             units.append(program_units[unit_id])
@@ -955,6 +1053,8 @@ def _derive_parametric_summaries(
             row for row in structural if row.source_unit_id in member_set
         )
         profile_ids: set[str] = set()
+        contract_ids: set[str] = set()
+        boundary_contract_record_ids: set[str] = set()
         relevant_exit_ids = {
             occurrence.exit_id
             for unit_id in members
@@ -1012,11 +1112,16 @@ def _derive_parametric_summaries(
                 sorted(relevant_structural, key=lambda row: row.record_id)
             ),
             external_profiles=profiles,
+            catalog_call_contracts=catalog_call_contracts,
+            call_boundary_contracts=call_boundary_contracts,
+            invalid_catalog_call_contract_ids=invalid_catalog_contract_ids,
             expected_dependencies=(),
             program_units=ordered_program_units,
             static_image=static_image,
             import_slots=import_slots,
-            checked_indirect_targets=relevant_checked_targets,
+            checked_indirect_targets=checked_indirect_targets,
+            program_memory_effects=program_memory_effects,
+            program_unversioned_memory_unit_ids=program_unversioned_memory_unit_ids,
         )
         for unit in units:
             for direct_call in unit.direct_calls:
@@ -1030,6 +1135,18 @@ def _derive_parametric_summaries(
                     )
                     preservation_cache[key] = preservation
                 profile_ids.update(preservation.consumed_profile_ids)
+                contract_ids.update(preservation.consumed_contract_ids)
+                boundary_contract_record_ids.update(
+                    preservation.consumed_boundary_contract_record_ids
+                )
+                dependencies.update(
+                    RecordDependencyV3("unit_facts", consumed_unit_id)
+                    for consumed_unit_id in preservation.consumed_unit_ids
+                )
+                dependencies.update(
+                    RecordDependencyV3("structural_targets", consumed_unit_id)
+                    for consumed_unit_id in preservation.consumed_unit_ids
+                )
         relevant_profiles = tuple(
             sorted(
                 (row for row in profiles if row.record_id in profile_ids),
@@ -1039,6 +1156,16 @@ def _derive_parametric_summaries(
         dependencies.update(
             RecordDependencyV3("external_profiles", row.record_id)
             for row in relevant_profiles
+        )
+        dependencies.update(
+            RecordDependencyV3("catalog_call_contracts", row.contract_id)
+            for row in catalog_call_contracts
+            if row.contract_id in contract_ids
+        )
+        dependencies.update(
+            RecordDependencyV3("call_boundary_contracts", row.record_id)
+            for row in call_boundary_contracts
+            if row.record_id in boundary_contract_record_ids
         )
         expected_dependencies = canonical_dependencies_v3(
             dependency
@@ -1057,17 +1184,23 @@ def _derive_parametric_summaries(
                 sorted(relevant_structural, key=lambda row: row.record_id)
             ),
             external_profiles=profiles,
+            catalog_call_contracts=catalog_call_contracts,
+            call_boundary_contracts=call_boundary_contracts,
+            invalid_catalog_call_contract_ids=invalid_catalog_contract_ids,
             expected_dependencies=expected_dependencies,
             program_units=ordered_program_units,
             static_image=static_image,
             import_slots=import_slots,
             checked_indirect_targets=relevant_checked_targets,
+            program_memory_effects=program_memory_effects,
+            program_unversioned_memory_unit_ids=program_unversioned_memory_unit_ids,
         )
         checked = check_parametric_scc_proposal_v3(
             proposal,
             evidence,
             preservation_cache=preservation_cache,
             profile_index=profile_index,
+            memory_frame_cache=memory_frame_cache,
         )
         if len(proposal_rows) > 1:
             checked = ParametricSccSummaryV3(
@@ -1152,8 +1285,10 @@ def check_parametric_scc_summaries_completeness_v3(
 # record-schema or checker change.
 PARAMETRIC_SCC_SUMMARIES_PHASE_V3 = reduce(
     name="parametric-scc-summaries-v3",
-    version="4",
+    version="5",
     input_artifact_kinds={
+        "call_boundary_contracts": CALL_BOUNDARY_CONTRACTS_ARTIFACT_KIND_V3,
+        "catalog_call_contracts": CATALOG_CALL_CONTRACTS_ARTIFACT_KIND_V3,
         "external_profiles": EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
         "memory_versions": MEMORY_VERSIONS_ARTIFACT_KIND_V3,
         "parametric_proposals": PARAMETRIC_SUMMARY_PROPOSALS_ARTIFACT_KIND_V3,

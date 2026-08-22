@@ -42,5 +42,7 @@ analysis and generation. It is not a whole-program candidate claim.
 Component evidence compares compiled C against canonical machine IR or declared
 candidate-only scenarios, depending on its evidence profile. This does not make
 the Python evaluator or component refinement runner an ISA authority. Executable candidate
-activation separately requires the exact machine-IR inventory to pass the v3
-ISA qualification gate, including its Lean backend and veto-oracle results.
+activation separately requires every exact occurrence in the checked
+root-reachable behavioral projection to pass the v3 ISA qualification gate,
+including its Lean backend and veto-oracle results. Unreachable structural
+occurrences remain classified and fallback-capable without authorizing behavior.

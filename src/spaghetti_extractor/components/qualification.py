@@ -121,7 +121,7 @@ def qualify_lift_unit(
         and method.get("independent_isa_qualification")
         == "required-at-candidate-gate-v3"
         and method.get("universal_equivalence_claimed") is False
-        and method.get("semantic_reference") == "canonical-machine-ir-v2"
+        and method.get("semantic_reference") == "canonical-machine-ir-v3"
         and method.get("reference_backend")
         == "bounded-python-machine-ir-evaluator-v3"
     )

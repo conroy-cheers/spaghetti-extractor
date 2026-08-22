@@ -259,6 +259,9 @@ def build_suite_plan(
             )
         )
         fixtures = sorted({fixture for row in rows for fixture in row.fixtures})
+        declared_resources = sorted(
+            {resource for row in rows for resource in row.declared_resources}
+        )
         shards.append(
             PlannedShard(
                 id=shard_id,
@@ -267,6 +270,7 @@ def build_suite_plan(
                 test_paths=tuple(row.path for row in rows),
                 files=tuple(files),
                 fixtures=tuple(fixtures),
+                declared_resources=tuple(declared_resources),
                 input_sha256=canonical_sha256(
                     {
                         "tests": [{"id": row.id, "input_sha256": row.input_sha256} for row in rows],

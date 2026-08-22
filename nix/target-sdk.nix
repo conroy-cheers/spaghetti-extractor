@@ -20,6 +20,7 @@ let
     inherit pkgs;
     inherit (context) pythonEnv;
     pythonSource = context.sources.staticSource;
+    relationKernel = context.kernels.relationKernel;
   };
   authorityCommon = analysisCommon // {
     isaPythonSource = context.sources.isaSource;
@@ -35,6 +36,7 @@ let
   analysisComponent = callWith ./component-analysis.nix analysisCommon;
   authorityWorkflow = callWith ./authority-workflow.nix authorityCommon;
   componentWorkflow = callWith ./component-workflow.nix analysisCommon;
+  callProtocolWorkflow = callWith ./call-protocol-workflow.nix analysisCommon;
   hybridCandidate = callWith ./candidate-hybrid.nix candidateCommon;
   runtimeFrontierReport = callWith ./runtime-frontier-report.nix analysisCommon;
   candidateTestSuite = callWith ./candidate-test-suite.nix candidateCommon;
@@ -153,8 +155,11 @@ let
     componentSourceRoot ? null,
     componentBindingRoot ? null,
     componentInductionRoot ? null,
+    componentRelationRoot ? null,
+    callProtocols ? { },
     externalInterfaceProfiles ? [ ],
     candidateMachineImportProfiles ? [ ],
+    libraryCatalogPacks ? [ ],
     libraryCatalogIndexes ? [ ],
     libraryAbiCatalogs ? [ ],
     libraryCatalogLock ? null,
@@ -165,8 +170,16 @@ let
   }:
     let
       hasComponents = componentIntent != null;
+      effectiveLibraryCatalogIndexes = libraryCatalogIndexes
+        ++ map (pack: pack.artifactIndex) libraryCatalogPacks;
+      effectivePhysicalAbiCatalogs =
+        map (pack: pack.physicalAbiCatalog) libraryCatalogPacks;
+      effectiveLibraryImplementations = lib.foldl'
+        (result: pack: result // (pack.implementationPaths or { }))
+        libraryImplementations
+        libraryCatalogPacks;
       libraryCatalogConfigured =
-        libraryCatalogIndexes != [ ] || libraryAbiCatalogs != [ ]
+        effectiveLibraryCatalogIndexes != [ ] || libraryAbiCatalogs != [ ]
         || libraryCatalogLock != null;
       libraryAdoptionIntents =
         if libraryAdoptionIntentRoot == null then { } else
@@ -184,19 +197,50 @@ let
         additionalMachineImportProfiles = builtins.tail machineImportProfiles;
         inherit launchProfileTemplate maxUnits maxCandidatesPerSeed;
       };
+      libraryRecognition = callWith ./library-recognition.nix analysisCommon {
+        inherit original namePrefix targetId binaryIdentity;
+        machineIr = analysis.machineIr;
+        catalogIndexes = effectiveLibraryCatalogIndexes;
+        physicalAbiCatalogs = effectivePhysicalAbiCatalogs;
+        abiCatalogs = libraryAbiCatalogs;
+        catalogLock = libraryCatalogLock;
+        implementations = effectiveLibraryImplementations;
+      };
       authority = authorityWorkflow {
         name = "${namePrefix}-authority-v3";
         machineIr = "${analysis.machineIr}/machine-ir.jsonl";
         binary = original;
         inherit binaryIdentity machineImportProfiles launchProfileTemplate;
+        normalCallAbiPremise =
+          "${context.sources.profileSource}/pe32-normal-return-nonvolatile-v1.json";
+        externalArtifacts = lib.optionalAttrs
+          (libraryRecognition.catalogCallContracts != null) {
+            catalog_call_contracts = {
+              artifact = "${libraryRecognition.catalogCallContracts}/artifact";
+              expectedKind = "catalog-call-contracts-v3";
+              expectedRecordIds = (builtins.fromJSON (builtins.readFile
+                "${libraryRecognition.catalogCallContracts}/metadata.json")).record_ids;
+            };
+          };
+      };
+      rootedBehavioralProjection = import ./rooted-behavioral-projection.nix {
+        inherit pkgs;
+        pythonEnv = context.pythonEnv;
+        inherit namePrefix;
+        rootClosure =
+          authority.graph.phases."launch-root-closure-v3".artifact;
+        semanticIndex = authority.graph.phases."semantic-index-v3".artifact;
       };
       linkedLibraries = callWith ./linked-libraries.nix analysisCommon {
-        inherit original namePrefix targetId;
+        inherit original namePrefix targetId binaryIdentity;
         machineIr = analysis.machineIr;
-        catalogIndexes = libraryCatalogIndexes;
+        parametricSummaries =
+          authority.graph.phases."parametric-scc-summaries-v3".artifact;
+        catalogIndexes = effectiveLibraryCatalogIndexes;
+        physicalAbiCatalogs = effectivePhysicalAbiCatalogs;
         abiCatalogs = libraryAbiCatalogs;
         catalogLock = libraryCatalogLock;
-        implementations = libraryImplementations;
+        implementations = effectiveLibraryImplementations;
         adoptionIntents = libraryAdoptionIntents;
         canonicalExternalSites =
           authority.graph.phases."canonical-external-sites-v3".artifact;
@@ -211,10 +255,15 @@ let
         namePrefix = "${namePrefix}-libraries";
         releaseHypotheses = linkedLibraries.releaseHypotheses;
         catalogSearchIndex = linkedLibraries.catalogSearchIndex;
+        abiMatchResolution = linkedLibraries.abiMatchResolution;
         adoptionIntents = linkedLibraries.adoptionIntents;
         checkedIslands = linkedLibraries.checkedIslands;
         generatedComponents = linkedLibraries.generatedComponents;
         implementations = linkedLibraries.implementations;
+      };
+      calls = callProtocolWorkflow {
+        protocols = callProtocols;
+        namePrefix = "${namePrefix}-calls";
       };
       interpreterSupport = assert lib.assertMsg (authority.fallbackSupport != null)
         "PE32 workflows require reusable machine-IR support";
@@ -224,19 +273,25 @@ let
           reconstructionPlan = analysis.reconstructionPlan;
           componentProposals = analysis.componentProposals;
           canonicalExternalSites = authority.componentExternalSites;
+          callbackAuthority =
+            authority.graph.phases."callback-authority-v4".artifact;
+          callBoundaryContracts =
+            authority.graph.phases."call-boundary-contracts-v3".artifact;
           intent = componentIntent;
           reviewRoot = componentReviewRoot;
           sourceRoot = componentSourceRoot;
           bindingRoot = componentBindingRoot;
           inductionRoot = componentInductionRoot;
+          relationRoot = componentRelationRoot;
           inherit namePrefix;
           interpreterPackage = interpreterSupport;
           generatedLibraryComponents = linkedLibraries.generatedComponents;
+          inherit rootedBehavioralProjection;
         };
       configurationIds = if hasComponents
         then builtins.attrNames components.runtimeConfigurations else [ ];
       structuralArtifacts = {
-        callbacks = authority.graph.phases."callback-authority-v3".artifact;
+        callbacks = authority.graph.phases."callback-authority-v4".artifact;
         exceptional_transitions =
           authority.graph.phases."exceptional-transitions-v3".artifact;
         external_sites =
@@ -260,6 +315,7 @@ let
           machineIrManifest = "${analysis.machineIr}/machine-ir-manifest.json";
           fallbackCapabilityAnalysis = authority.fallbackCapabilityAnalysis;
           activationPlan = components.activationPlans.${configurationId};
+          inherit rootedBehavioralProjection;
         };
       }) configurationIds);
       structuralGates = lib.mapAttrs (configurationId: receipt:
@@ -339,7 +395,7 @@ let
         releaseGate = staticReleasePolicies.${configurationId}.gate;
       };
     in {
-      inherit analysis authority linkedLibraries libraryOperator libraryCatalogConfigured components interpreterSupport interpreters
+      inherit analysis authority rootedBehavioralProjection libraryRecognition linkedLibraries libraryOperator libraryCatalogConfigured calls components interpreterSupport interpreters
         structuralArtifacts structuralReceipts structuralGates candidateFor
         candidateTestFor releaseFor staticReleasePolicies configurationIds staticCandidates runtimeFrontiers
         hasComponents;
@@ -391,6 +447,9 @@ let
       componentAssets = if !hasComponents then [ ] else map (asset: asset // {
         path = relativeTargetPath asset.path;
       }) workflow.components.assetInventory;
+      callAssets = map (asset: asset // {
+        path = relativeTargetPath asset.path;
+      }) workflow.calls.assetInventory;
       libraryIntentAssets =
         if !(metadata.paths ? libraries) then [ ] else
         let
@@ -409,14 +468,16 @@ let
         role = "candidate_test";
         owner = id;
       }) candidateTests;
-      manualAssetRoles = [ "runtime" "documentation" "license" ];
+      manualAssetRoles = [
+        "runtime" "documentation" "license" "boundary_schema" "boundary_source"
+      ];
       invalidManualRoles = lib.subtractLists manualAssetRoles
         (builtins.attrNames targetAssets);
       manualAssets = lib.concatMap (role: map (path: {
         inherit path role;
         owner = "target-bundle";
       }) (targetAssets.${role} or [ ])) manualAssetRoles;
-      declaredAssets = metadataAssets ++ componentAssets ++ libraryIntentAssets
+      declaredAssets = metadataAssets ++ componentAssets ++ callAssets ++ libraryIntentAssets
         ++ candidateTestAssets ++ manualAssets;
       ownership = targetBundleLint {
         inherit targetRoot declaredAssets;
@@ -472,6 +533,7 @@ let
           gate = workflow.authority.finalAuthorityGate;
           diagnostics = workflow.authority.diagnostics;
           graph-metadata = workflow.authority.graph.metadata;
+          rooted-behavioral-projection = workflow.rootedBehavioralProjection;
           phases = lib.mapAttrs (_: phase: phase.derivation)
             workflow.authority.graph.phases;
         };
@@ -481,9 +543,17 @@ let
           catalog-search-index = workflow.linkedLibraries.catalogSearchIndex;
           target-signature-graph = workflow.linkedLibraries.targetSignatureGraph;
           release-hypotheses = workflow.linkedLibraries.releaseHypotheses;
+          catalog-call-contracts =
+            workflow.libraryRecognition.catalogCallContracts;
+          target-abi-evidence = workflow.linkedLibraries.targetAbiEvidence;
+          abi-match-resolution = workflow.linkedLibraries.abiMatchResolution;
           checked-islands = workflow.linkedLibraries.checkedIslands;
           generated-components = workflow.linkedLibraries.generatedComponents;
           status = workflow.libraryOperator.status;
+        };
+        calls = {
+          status = workflow.calls.status;
+          subjects = workflow.calls.subjects;
         };
         components = {
           proposals = workflow.analysis.componentProposals;
@@ -498,6 +568,7 @@ let
           machine-bindings = workflow.components.machineBindingReceipts or { };
           semantic-contracts = workflow.components.semanticContracts or { };
           universal-contracts = workflow.components.universalContracts or { };
+          relations = workflow.components.relationArtifacts or { };
           universal-machine-bindings =
             workflow.components.universalMachineBindings or { };
           machine-implementations =
@@ -541,6 +612,7 @@ let
       standardChecks = {
         target-bundle-assets = ownership;
         target-input-identity = targetInputIdentity;
+        call-protocols = workflow.calls.check;
       } // lib.optionalAttrs hasComponents {
         component-resolution = workflow.components.resolution;
         default-component-configuration =
@@ -599,6 +671,9 @@ let
           (workflow.components.universalMachineBindings or { }).${id};
         machineImplementation =
           (workflow.components.machineImplementations or { }).${id};
+      } // lib.optionalAttrs (builtins.hasAttr id (workflow.components.relationArtifacts or { })) {
+        relation = (workflow.components.relationArtifacts or { }).${id};
+        relationCheck = (workflow.components.relationCheckGates or { }).${id};
       } // lib.optionalAttrs (builtins.hasAttr id (workflow.components.inductionPackages or { })) {
         inductionPackage = (workflow.components.inductionPackages or { }).${id};
         inductionDraftCertificate =
@@ -771,6 +846,10 @@ let
           configured = workflow.libraryCatalogConfigured;
           selections = builtins.attrNames workflow.linkedLibraries.checks;
         };
+        calls = {
+          configured = workflow.calls.configured;
+          subjects = lib.mapAttrs (_: _: { }) workflow.calls.subjects;
+        };
       };
       operator = {
         index = operatorIndex;
@@ -794,8 +873,13 @@ let
           catalogSearchIndex = workflow.linkedLibraries.catalogSearchIndex;
           targetSignatureGraph = workflow.linkedLibraries.targetSignatureGraph;
           releaseHypotheses = workflow.linkedLibraries.releaseHypotheses;
+          targetAbiEvidence = workflow.linkedLibraries.targetAbiEvidence;
+          abiMatchResolution = workflow.linkedLibraries.abiMatchResolution;
           checkedIslands = workflow.linkedLibraries.checkedIslands;
           generatedComponents = workflow.linkedLibraries.generatedComponents;
+        };
+        calls = {
+          inherit (workflow.calls) status subjects check;
         };
         candidate = {
           builds = checkedCandidateBuilds;
@@ -868,6 +952,7 @@ in
     catalogPack = callWith ./library-catalog-pack.nix analysisCommon;
     linkedLibraries = callWith ./linked-libraries.nix analysisCommon;
     components = componentWorkflow;
+    boundarySchema = callWith ./boundary-schema-workflow.nix analysisCommon;
   };
   validation = {
     testRunner = context.packages.testkitTestRunner;

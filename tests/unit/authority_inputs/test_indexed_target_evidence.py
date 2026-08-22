@@ -111,7 +111,7 @@ def _unit(
     register_writes = [] if register_writes is None else register_writes
     flag_writes = [] if flag_writes is None else flag_writes
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",
@@ -756,6 +756,62 @@ class IndexedTargetEvidenceV3Tests(unittest.TestCase):
             predecessor_value = {
                 "op": "sub32",
                 "args": [_reg("ecx"), _const(100)],
+            }
+            guard = {
+                "op": "not",
+                "args": [
+                    {
+                        "op": "and_bool",
+                        "args": [
+                            {
+                                "op": "not",
+                                "args": [
+                                    {
+                                        "op": "eq",
+                                        "args": [
+                                            {
+                                                "op": "sub32",
+                                                "args": [
+                                                    predecessor_value,
+                                                    _const(1),
+                                                ],
+                                            },
+                                            _const(0),
+                                        ],
+                                    }
+                                ],
+                            },
+                            {
+                                "op": "not",
+                                "args": [
+                                    {
+                                        "op": "ult32",
+                                        "args": [
+                                            predecessor_value,
+                                            _const(1),
+                                        ],
+                                    }
+                                ],
+                            },
+                        ],
+                    }
+                ],
+            }
+            fixture = _Fixture(
+                Path(temporary) / "fixture",
+                predecessor_selector_value=predecessor_value,
+                guard_condition=guard,
+            )
+            report, reader = fixture.run("output")
+            self.assertEqual(report["status"], "complete")
+            self.assertEqual(reader.manifest.record_count, 1)
+            self.assertEqual(report["exits"][0]["entry_count"], 2)
+
+    def test_self_updated_selector_is_not_substituted_twice_in_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            predecessor_value = {
+                "op": "sub32",
+                "args": [_reg("eax"), _const(100)],
             }
             guard = {
                 "op": "not",

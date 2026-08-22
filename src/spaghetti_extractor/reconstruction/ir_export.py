@@ -77,7 +77,7 @@ def export_machine_ir_package(
     binary = parse_pe_image(original_path)
     if binary.machine != "i386" or binary.bitness != 32:
         raise MachineIRExportError(
-            "machine IR v2 supports x86 PE32 inputs only",
+            "machine IR v3 supports x86 PE32 inputs only",
             code="unsupported_binary_model",
         )
 

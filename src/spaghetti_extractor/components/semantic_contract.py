@@ -16,14 +16,19 @@ from pathlib import Path
 from typing import Mapping
 
 from ..artifacts.artifact_set import ArtifactV3Error, canonical_sha256_v3
+from ..artifacts.boundary_claims import (
+    CheckedCallBoundaryClaimV3,
+    read_checked_call_boundary_claims_v3,
+)
 from ..external.site_authority import (
     CanonicalExternalSiteRecordError,
     CheckedCanonicalExternalSite,
     read_canonical_external_sites,
 )
+from ..external.machine_abi import resolve_machine_call_abi
 from .formats import COMPONENT_SEMANTIC_CONTRACT_V1_FORMAT
 from .interface_ir import PortableComponentInterfaceV2
-from .machine_binding import ComponentMachineBindingV1
+from .machine_binding import ComponentMachineBindingV1, MachineProjectionV1
 
 
 class ComponentSemanticContractError(ValueError):
@@ -85,6 +90,8 @@ def build_component_semantic_contract(
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
     canonical_external_sites: Path | str | None = None,
+    component_resolution: Path | str | Mapping[str, object] | None = None,
+    call_boundary_contracts: Path | str | None = None,
 ) -> dict[str, object]:
     """Build an exact selected-unit contract without executing the original."""
 
@@ -108,6 +115,46 @@ def build_component_semantic_contract(
 
     def issue(status: str, code: str, **fields: object) -> None:
         issues.append({"status": status, "code": code, **fields})
+
+    component_call_boundaries: dict[str, CheckedCallBoundaryClaimV3] = {}
+    resolution_payload: Mapping[str, object] | None = None
+    call_boundary_manifest_sha256: str | None = None
+    if any(
+        service.provider.get("kind") == "component_operation"
+        for service in machine_binding.services
+    ):
+        if component_resolution is None:
+            issue("incomplete", "component_operation_resolution_missing")
+        else:
+            candidate = _load(component_resolution, "component resolution")
+            core = dict(candidate)
+            observed = core.pop("resolution_sha256", None)
+            if (
+                candidate.get("format")
+                not in {
+                    "spaghetti-extractor-component-resolution-v2",
+                    "spaghetti-extractor-component-resolution-slice-v1",
+                }
+                or candidate.get("status") != "checked"
+                or not isinstance(observed, str)
+                or canonical_sha256_v3(core) != observed
+            ):
+                issue("violated", "component_operation_resolution_invalid")
+            else:
+                resolution_payload = candidate
+        if call_boundary_contracts is None:
+            issue("incomplete", "component_operation_call_boundary_missing")
+        else:
+            try:
+                component_call_boundaries, call_boundary_manifest_sha256 = (
+                    read_checked_call_boundary_claims_v3(call_boundary_contracts)
+                )
+            except (ArtifactV3Error, ValueError, OSError) as exc:
+                issue(
+                    "violated",
+                    "component_operation_call_boundary_invalid",
+                    detail=str(exc),
+                )
 
     if manifest_machine.get("sha256") != machine_sha256:
         issue("violated", "machine_ir_manifest_digest_mismatch")
@@ -183,9 +230,73 @@ def build_component_semantic_contract(
                 )
 
     logical_services = {service.identity: service for service in portable.services}
+    logical_types = portable.type_index()
+    resolved_component_calls: list[Mapping[str, object]] = []
+    if resolution_payload is not None:
+        callers = [
+            row
+            for row in _array(
+                resolution_payload.get("components", []),
+                "resolved components",
+            )
+            if isinstance(row, Mapping) and row.get("id") == machine_binding.identity
+        ]
+        if len(callers) != 1:
+            issue("violated", "component_operation_resolution_consumer_ambiguous")
+        else:
+            resolved_component_calls = [
+                row
+                for row in _array(
+                    callers[0].get("component_calls", []),
+                    "resolved component calls",
+                )
+                if isinstance(row, Mapping)
+            ]
     services: list[dict[str, object]] = []
     for service in machine_binding.services:
         provider = service.provider
+        if provider.get("kind") == "component_operation":
+            target_id = provider.get("component_id")
+            calls = [
+                row
+                for row in resolved_component_calls
+                if row.get("target_component_id") == target_id
+            ]
+            target_units = sorted(
+                {
+                    str(row["target_unit_id"])
+                    for row in calls
+                    if isinstance(row.get("target_unit_id"), str)
+                }
+            )
+            boundary = (
+                component_call_boundaries.get(target_units[0])
+                if len(target_units) == 1
+                else None
+            )
+            if boundary is None:
+                issue(
+                    "incomplete",
+                    "component_operation_call_boundary_unresolved",
+                    service_id=service.service_id,
+                    component_id=target_id,
+                )
+                services.append(service.to_payload())
+                continue
+            payload = service.to_payload()
+            materialized_provider = dict(_object(
+                payload.get("provider"), "component-operation provider"
+            ))
+            materialized_provider["call_boundary"] = {
+                "contract_id": boundary.contract_id,
+                "target_unit_id": boundary.target_unit_id,
+                "target_unit_sha256": boundary.target_unit_sha256,
+                "preserved_registers": list(boundary.preserved_registers),
+                "stack_pointer_relation": "same_call_frame",
+            }
+            payload["provider"] = materialized_provider
+            services.append(payload)
+            continue
         if provider.get("kind") != "external_site":
             services.append(service.to_payload())
             continue
@@ -252,11 +363,33 @@ def build_component_semantic_contract(
                 observed=len(contract_arguments),
             )
         result: dict[str, object] | None = None
+        declared_result = provider.get("result_projection")
         if logical is not None and logical.result_type_id is not None:
+            logical_result = logical_types[logical.result_type_id]
+            if logical_result.kind == "callback":
+                accepted_relations = (
+                    {"related_word"}
+                    if (
+                        service.mediation == "callback"
+                        and site.contract.callback_adapter is not None
+                    )
+                    else set()
+                )
+            elif logical_result.kind in {"reference", "view", "resource"}:
+                # Native pointers and handles are related machine words, not
+                # portable scalar values.  Their operator-declared wrapper is
+                # checked below against the exact ABI result register and adds
+                # the origin/resource authority needed to interpret the word.
+                # An ``exact`` profile relation is stronger and is accepted as
+                # well; duplicate relations remain ambiguous and fail below.
+                accepted_relations = {"exact", "related_word"}
+            else:
+                accepted_relations = {"exact"}
             relations = [
                 row
                 for row in site.contract.result_register_relations
-                if isinstance(row, Mapping) and row.get("relation") == "exact"
+                if isinstance(row, Mapping)
+                and row.get("relation") in accepted_relations
             ]
             if len(relations) != 1 or not isinstance(
                 relations[0].get("register"), str
@@ -268,18 +401,75 @@ def build_component_semantic_contract(
                     site_id=site.site_id,
                 )
             else:
-                result = {
+                machine_result = {
                     "kind": "register",
                     "register": relations[0]["register"],
                     "width": 32,
                     "at": "call",
                 }
+                if declared_result is None:
+                    if logical_result.kind in {"scalar", "enum"}:
+                        result = machine_result
+                    else:
+                        issue(
+                            "incomplete",
+                            "external_site_service_result_projection_missing",
+                            service_id=service.service_id,
+                            site_id=site.site_id,
+                            logical_kind=logical_result.kind,
+                        )
+                else:
+                    try:
+                        result_projection = _checked_external_result_projection(
+                            declared_result,
+                            logical_kind=logical_result.kind,
+                            machine_register=str(relations[0]["register"]),
+                        )
+                    except ComponentSemanticContractError as exc:
+                        issue(
+                            "violated",
+                            "external_site_service_result_projection_invalid",
+                            service_id=service.service_id,
+                            site_id=site.site_id,
+                            detail=str(exc),
+                        )
+                    else:
+                        result = result_projection
+        elif declared_result is not None:
+            issue(
+                "violated",
+                "external_site_void_service_has_result_projection",
+                service_id=service.service_id,
+                site_id=site.site_id,
+            )
+        abi = resolve_machine_call_abi(site.contract.abi_template)
+        call_boundary: dict[str, object] | None = None
+        if abi is None:
+            issue(
+                "violated",
+                "external_site_service_abi_unsupported",
+                service_id=service.service_id,
+                site_id=site.site_id,
+                abi_template=site.contract.abi_template,
+            )
+        else:
+            call_boundary = {
+                "contract_id": site.contract.contract_id,
+                "abi_template": abi.template,
+                "preserved_registers": list(abi.preserved_registers),
+                "stack_pointer_adjustment": (
+                    site.contract.argument_words * 4
+                    if abi.callee_cleanup
+                    else 0
+                ),
+            }
         services.append(
             {
                 "service_id": service.service_id,
                 "mediation": service.mediation,
                 "provider": {
                     "kind": "checked_external_site_events",
+                    "call_boundary": call_boundary,
                     "events": [
                         {
                             "site_id": site.site_id,
@@ -318,6 +508,14 @@ def build_component_semantic_contract(
                 else canonical_sha256_v3(
                     [_external_site_payload(site) for site in external_sites.values()]
                 )
+            ),
+            "component_resolution_sha256": (
+                None
+                if resolution_payload is None
+                else resolution_payload.get("resolution_sha256")
+            ),
+            "call_boundary_contracts_manifest_sha256": (
+                call_boundary_manifest_sha256
             ),
         },
         "operations": operations,
@@ -396,6 +594,62 @@ def _external_site_payload(site: CheckedCanonicalExternalSite) -> dict[str, obje
         "authorizing": site.authorizing,
         "contract": None if site.contract is None else site.contract.payload(),
     }
+
+
+def _checked_external_result_projection(
+    value: object,
+    *,
+    logical_kind: str,
+    machine_register: str,
+) -> dict[str, object]:
+    """Validate an operator's logical wrapper around an authorized ABI result.
+
+    The external-site contract remains authoritative for where the result came
+    from.  The binding may only add portable type/origin structure around that
+    exact register; it cannot select a different machine value.
+    """
+
+    projection = MachineProjectionV1.parse(
+        value, "checked external result projection"
+    )
+    expected = {
+        "scalar": "register",
+        "enum": "register",
+        "resource": "resource",
+        "callback": "callback_handle",
+        "reference": "reference",
+        "view": "view",
+    }.get(logical_kind)
+    if expected is None:
+        raise ComponentSemanticContractError(
+            f"logical result kind {logical_kind!r} has no external result adapter"
+        )
+    if projection.kind != expected:
+        raise ComponentSemanticContractError(
+            f"logical result kind {logical_kind!r} requires {expected!r}, "
+            f"not {projection.kind!r}"
+        )
+    source = projection
+    while source.kind in {"resource", "callback_handle", "reference", "view"}:
+        field = "base" if source.kind == "view" else "source"
+        source = MachineProjectionV1.parse(
+            source.payload.get(field),
+            f"checked external {projection.kind} result source",
+        )
+    if source.kind != "register":
+        raise ComponentSemanticContractError(
+            "checked external result must wrap a register projection"
+        )
+    observed_register = source.payload.get("register")
+    if observed_register != machine_register:
+        raise ComponentSemanticContractError(
+            "checked external result register disagrees with its ABI contract"
+        )
+    if source.payload.get("at") != "call":
+        raise ComponentSemanticContractError(
+            "checked external result register must be observed at the call"
+        )
+    return projection.to_payload()
 
 
 def _contract_unit(unit: Mapping[str, object]) -> dict[str, object]:

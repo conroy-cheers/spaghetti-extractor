@@ -10,6 +10,7 @@ from pathlib import Path
 from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.components.machine_binding import (
     COMPONENT_MACHINE_BINDING_DECLARATION_V2,
+    COMPONENT_MACHINE_BINDING_DECLARATION_V3,
     ComponentMachineBindingError,
     MachineProjectionV1,
     check_component_machine_binding,
@@ -69,7 +70,7 @@ def _machine_unit() -> dict[str, object]:
         "value": {"op": "reg", "name": "eax", "width": 32},
     }
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": "unit:increment",
         "status": "qualified",
@@ -79,7 +80,13 @@ def _machine_unit() -> dict[str, object]:
             "instruction_bytes_sha256": "c" * 64,
         },
         "semantics": {
-            "external_events": [{"kind": "import_call"}],
+            "external_events": [
+                {
+                    "kind": "internal_call",
+                    "target_rva": 0x2000,
+                    "return_rva": 0x1010,
+                }
+            ],
             "memory_events": [memory_write],
         },
     }
@@ -161,6 +168,71 @@ def _binding(machine_sha256: str, interface: dict[str, object]) -> dict[str, obj
     )
 
 
+def _component_call_authority(
+    machine_sha256: str,
+) -> tuple[dict[str, object], dict[str, object]]:
+    resolution_core = {
+        "format": "spaghetti-extractor-component-resolution-slice-v1",
+        "status": "checked",
+        "program_id": "test-program",
+        "executes_original_binary": False,
+        "permitted_activation_profiles": ["development"],
+        "bindings": {},
+        "components": [
+            {
+                "id": "counter",
+                "source": {"operations": {"increment": "counter_increment"}},
+            },
+            {
+                "id": "logger",
+                "source": {"operations": {"write": "logger_write"}},
+            },
+        ],
+        "groups": [],
+        "configurations": [],
+    }
+    resolution = {
+        **resolution_core,
+        "resolution_sha256": canonical_sha256_v3(resolution_core),
+    }
+    call = {
+        "target_component_id": "logger",
+        "target_rva": 0x2000,
+        "target_unit_id": "unit:logger",
+        "callsites": [{"source_unit_id": "unit:increment"}],
+        "dependency_sha256": "d" * 64,
+    }
+    catalog_core = {
+        "format": "spaghetti-extractor-semantic-component-catalog-v1",
+        "bindings": {"machine_ir_sha256": machine_sha256},
+        "components": [
+            {
+                "id": "counter",
+                "definition_status": "valid",
+                "component_calls": [call],
+                "refinement": {
+                    "stages": [
+                        {
+                            "kind": "component_resolution_v2",
+                            "resolution_sha256": resolution["resolution_sha256"],
+                        }
+                    ]
+                },
+            },
+            {
+                "id": "logger",
+                "definition_status": "valid",
+                "component_calls": [],
+            },
+        ],
+    }
+    catalog = {
+        **catalog_core,
+        "catalog_sha256": canonical_sha256_v3(catalog_core),
+    }
+    return resolution, catalog
+
+
 class ComponentMachineBindingTests(unittest.TestCase):
     def _fixture(self, root: Path) -> tuple[Path, Path, dict[str, object], dict[str, object]]:
         unit = _machine_unit()
@@ -171,7 +243,7 @@ class ComponentMachineBindingTests(unittest.TestCase):
         manifest.write_text(
             json.dumps(
                 {
-                    "format": "spaghetti-extractor-machine-ir-v2",
+                    "format": "spaghetti-extractor-machine-ir-v3",
                     "binary": {"sha256": PE_SHA256},
                     "artifacts": {"machine_ir": {"sha256": digest}},
                 },
@@ -207,6 +279,26 @@ class ComponentMachineBindingTests(unittest.TestCase):
             effect["fact_sha256"],
             canonical_sha256_v3(_machine_unit()["semantics"]["memory_events"][0]),
         )
+
+    def test_v3_declaration_omits_retired_callback_operation_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine, manifest, interface, binding = self._fixture(Path(temporary))
+            operations = copy.deepcopy(binding["operations"])
+            operations[0].pop("callback_operation_ids")
+            materialized = materialize_component_machine_binding(
+                declaration={
+                    "format": COMPONENT_MACHINE_BINDING_DECLARATION_V3,
+                    "id": binding["id"],
+                    "unit_ids": binding["unit_ids"],
+                    "operations": operations,
+                    "services": binding["services"],
+                },
+                interface=interface,
+                machine_ir=machine,
+                machine_ir_manifest=manifest,
+            )
+
+        self.assertEqual(materialized, binding)
 
     def test_effect_reference_is_bound_to_exact_machine_fact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -503,6 +595,87 @@ class ComponentMachineBindingTests(unittest.TestCase):
         )
         self.assertEqual(receipt["status"], "checked", receipt["issues"])
 
+    def test_component_operation_service_is_bound_to_exact_component_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine, manifest, interface, binding = self._fixture(Path(temporary))
+            binding = copy.deepcopy(binding)
+            binding["services"] = [
+                {
+                    "service_id": "notify",
+                    "provider": {
+                        "kind": "component_operation",
+                        "component_id": "logger",
+                        "operation_id": "write",
+                        "events": [
+                            {
+                                "unit_id": "unit:increment",
+                                "event_index": 0,
+                                "event_sha256": canonical_sha256_v3(
+                                    _machine_unit()["semantics"]["external_events"][0]
+                                ),
+                                "arguments": [
+                                    {
+                                        "kind": "register",
+                                        "register": "ecx",
+                                        "width": 32,
+                                        "at": "call",
+                                    }
+                                ],
+                                "result": None,
+                            }
+                        ],
+                    },
+                    "mediation": "direct",
+                }
+            ]
+            binding.pop("binding_sha256")
+            binding["binding_sha256"] = canonical_sha256_v3(binding)
+            resolution, catalog = _component_call_authority(
+                hashlib.sha256(machine.read_bytes()).hexdigest()
+            )
+            receipt = check_component_machine_binding(
+                binding=binding,
+                interface=interface,
+                machine_ir=machine,
+                machine_ir_manifest=manifest,
+                component_resolution=resolution,
+                semantic_component_catalog=catalog,
+            )
+
+        self.assertEqual(receipt["status"], "checked", receipt["issues"])
+        self.assertEqual(
+            receipt["bindings"]["component_resolution_sha256"],
+            resolution["resolution_sha256"],
+        )
+        self.assertEqual(
+            receipt["bindings"]["semantic_component_catalog_sha256"],
+            catalog["catalog_sha256"],
+        )
+
+    def test_component_operation_service_without_call_authority_is_incomplete(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine, manifest, interface, binding = self._fixture(Path(temporary))
+            binding = copy.deepcopy(binding)
+            binding["services"][0]["provider"] = {
+                "kind": "component_operation",
+                "component_id": "logger",
+                "operation_id": "write",
+            }
+            binding.pop("binding_sha256")
+            binding["binding_sha256"] = canonical_sha256_v3(binding)
+            receipt = check_component_machine_binding(
+                binding=binding,
+                interface=interface,
+                machine_ir=machine,
+                machine_ir_manifest=manifest,
+            )
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertIn(
+            "component_operation_call_authority_missing",
+            {row["code"] for row in receipt["issues"]},
+        )
+
     def test_complete_logical_binding_is_independent_of_runtime_lowering(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             machine, manifest, interface, binding = self._fixture(Path(temporary))
@@ -567,7 +740,7 @@ class ComponentMachineBindingTests(unittest.TestCase):
             machine_sha256 = hashlib.sha256(machine.read_bytes()).hexdigest()
             manifest = root / "machine-ir-manifest.json"
             manifest.write_text(json.dumps({
-                "format": "spaghetti-extractor-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v3",
                 "binary": {"sha256": PE_SHA256},
                 "artifacts": {"machine_ir": {"sha256": machine_sha256}},
             }), encoding="ascii")
@@ -607,6 +780,45 @@ class ComponentMachineBindingTests(unittest.TestCase):
             MachineProjectionV1.parse(
                 {"kind": "reviewed-resource-origin", "evidence": "operator-review-required"}
             )
+
+    def test_finite_control_target_routes_are_canonical_and_unique(self) -> None:
+        projection = {
+            "kind": "finite_control_target",
+            "at": "exit",
+            "unit_id": "unit:dispatch",
+            "selector_parameter_id": "selector",
+            "target_inventory_sha256": "d" * 64,
+            "routes": [
+                {
+                    "selector_value": 0,
+                    "logical_value": 1,
+                    "target_rva": 0x1100,
+                    "target_address": 0x401100,
+                },
+                {
+                    "selector_value": 1,
+                    "logical_value": 2,
+                    "target_rva": 0x1200,
+                    "target_address": 0x401200,
+                },
+            ],
+        }
+        parsed = MachineProjectionV1.parse(projection)
+        self.assertEqual(parsed.to_payload(), projection)
+
+        duplicate = copy.deepcopy(projection)
+        duplicate["routes"][1]["selector_value"] = 0
+        with self.assertRaisesRegex(
+            ComponentMachineBindingError, "selector values must be unique"
+        ):
+            MachineProjectionV1.parse(duplicate)
+
+        reversed_routes = copy.deepcopy(projection)
+        reversed_routes["routes"].reverse()
+        with self.assertRaisesRegex(
+            ComponentMachineBindingError, "canonically ordered"
+        ):
+            MachineProjectionV1.parse(reversed_routes)
 
     def test_result_decoding_unknown_parameter_is_violated(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

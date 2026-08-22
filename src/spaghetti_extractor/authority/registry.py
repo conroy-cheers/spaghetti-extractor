@@ -9,6 +9,7 @@ from types import MappingProxyType
 from ..artifacts.phases import PhaseDefinitionV3
 from ._schema import fail
 from .callbacks import CALLBACK_AUTHORITY_PHASE_V3
+from .call_boundary_contracts import CALL_BOUNDARY_CONTRACTS_PHASE_V3
 from .exact_units import EXACT_UNITS_PHASE_V3
 from .exceptional_transitions import EXCEPTIONAL_TRANSITIONS_PHASE_V3
 from .external_site_checker import CANONICAL_EXTERNAL_SITES_PHASE_V3
@@ -17,6 +18,7 @@ from .final_authority import FINAL_AUTHORITY_PHASE_V3
 from .inductive import (
     INDUCTIVE_AUTHORITY_PHASE_V3,
 )
+from .incoming_call_frames import INCOMING_CALL_FRAMES_PHASE_V3
 from .isa_qualification import ISA_QUALIFICATION_PHASE_V3
 from .memory_versions import MEMORY_VERSIONS_PHASE_V3
 from .parametric_summary_checker import PARAMETRIC_SCC_SUMMARIES_PHASE_V3
@@ -33,12 +35,14 @@ REQUIRED_AUTHORITY_PHASE_NAMES_V3 = frozenset(
         "exact-units-v3",
         "semantic-index-v3",
         "canonical-external-sites-v3",
-        "callback-authority-v3",
+        "callback-authority-v4",
+        "call-boundary-contracts-v3",
         "exceptional-transitions-v3",
         "fallback-coverage-v3",
         "final-authority-v3",
         "inductive-authority-v3",
         "indirect-target-certificates-v3",
+        "incoming-call-frames-v3",
         "memory-versions-v3",
         "parametric-scc-summaries-v3",
         "parametric-unit-facts-v3",
@@ -126,6 +130,8 @@ AUTHORITY_PHASE_REGISTRY_V3 = AuthorityPhaseRegistryV3.create(
         EXACT_UNITS_PHASE_V3,
         SEMANTIC_INDEX_PHASE_V3,
         TRANSITION_SUMMARIES_PHASE_V3,
+        INCOMING_CALL_FRAMES_PHASE_V3,
+        CALL_BOUNDARY_CONTRACTS_PHASE_V3,
         MEMORY_VERSIONS_PHASE_V3,
         STRUCTURAL_TARGETS_PHASE_V3,
         PARAMETRIC_UNIT_FACTS_PHASE_V3,

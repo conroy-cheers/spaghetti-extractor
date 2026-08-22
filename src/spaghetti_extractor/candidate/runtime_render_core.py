@@ -406,12 +406,15 @@ static spx_call_status spx_native_add_external_range(
   }}
   generation = context->external_lifecycle_sequence == 0xffffffffU
       ? 0xffffffffU : context->external_lifecycle_sequence + 1U;
+  if (context->external_object_sequence != 0xffffffffU)
+    ++context->external_object_sequence;
   for (i = 0U; i < context->external_range_count; ++i) {{
     if (context->external_ranges[i].start == start) {{
       context->external_ranges[i].size = size;
       context->external_ranges[i].producer_rva = producer_rva;
       context->external_ranges[i].producer_action = producer_action;
       context->external_ranges[i].generation = generation;
+      context->external_ranges[i].object_id = context->external_object_sequence;
       spx_native_record_external_lifecycle(
           context, 2U, SPX_CALL_OK, producer_rva,
           start, size, producer_rva, producer_action, generation);
@@ -430,6 +433,8 @@ static spx_call_status spx_native_add_external_range(
   context->external_ranges[context->external_range_count].producer_action =
       producer_action;
   context->external_ranges[context->external_range_count].generation = generation;
+  context->external_ranges[context->external_range_count].object_id =
+      context->external_object_sequence;
   ++context->external_range_count;
   spx_native_record_external_lifecycle(
       context, 1U, SPX_CALL_OK, producer_rva,
@@ -776,8 +781,8 @@ void spx_runtime_atomic_compare_exchange(
     uint32_t *observed, uint32_t *exchanged, uint32_t *fault) {{
   if (fault == 0) return;
   *fault = 1U;
-  if (runtime == 0) return;
-  spx_native_atomic_compare_exchange(
+  if (runtime == 0 || runtime->atomic_compare_exchange == 0) return;
+  runtime->atomic_compare_exchange(
       runtime->context, address, width, expected, desired,
       observed, exchanged, fault);
 }}
@@ -787,8 +792,8 @@ void spx_runtime_atomic_exchange(
     uint32_t desired, uint32_t *observed, uint32_t *fault) {{
   if (fault == 0) return;
   *fault = 1U;
-  if (runtime == 0) return;
-  spx_native_atomic_exchange(
+  if (runtime == 0 || runtime->atomic_exchange == 0) return;
+  runtime->atomic_exchange(
       runtime->context, address, width, desired, observed, fault);
 }}
 
@@ -983,12 +988,111 @@ static spx_call_status spx_native_invoke_callable_external_jump(
   return SPX_CALL_UNIMPLEMENTED;
 }}
 
+static spx_boundary_status spx_native_resolve_reference(
+    void *opaque, uint32_t address, uint32_t requested_extent,
+    uint32_t permissions, uint32_t nullable, uint32_t allow_one_past,
+    spx_machine_reference_v1 *result) {{
+  spx_native_context *context = (spx_native_context *)opaque;
+  uint32_t count = 0U, base = 0U, extent = 0U, generation = 0U;
+  uint32_t domain = 0U, object = 0U, i;
+  if (context == 0 || result == 0) return SPX_BOUNDARY_UNSUPPORTED;
+  if (address == 0U) {{
+    if (nullable == 0U) return SPX_BOUNDARY_MEMORY_FAULT;
+    result->domain = result->object = result->generation = 0U;
+    result->offset = result->extent = 0U;
+    result->permissions = 0U;
+    return SPX_BOUNDARY_OK;
+  }}
+#define SPX_CONSIDER_ORIGIN(d, o, g, b, e) do {{                         \
+    uint32_t spx_end = (b) + (e);                                       \
+    uint32_t spx_inside = address >= (b) && address < spx_end;           \
+    uint32_t spx_one_past = allow_one_past != 0U && address == spx_end;  \
+    if ((spx_inside || spx_one_past) &&                                 \
+        requested_extent <= (e) && address - (b) <= (e) - requested_extent) {{ \
+      ++count; domain = (d); object = (o); generation = (g);            \
+      base = (b); extent = (e);                                         \
+    }}                                                                  \
+  }} while (0)
+  SPX_CONSIDER_ORIGIN(1U, 1U, 1U, context->image_base, context->image_size);
+  SPX_CONSIDER_ORIGIN(
+      2U, 1U, context->invocation_generation,
+      context->stack_low, context->stack_high - context->stack_low);
+  if (context->owner_fs_base != 0U)
+    SPX_CONSIDER_ORIGIN(
+        4U, 1U, context->invocation_generation,
+        context->owner_fs_base, SPX_NATIVE_THREAD_ENVIRONMENT_BYTES);
+  for (i = 0U; i < context->external_range_count; ++i)
+    SPX_CONSIDER_ORIGIN(
+        3U, context->external_ranges[i].object_id,
+        context->external_ranges[i].generation,
+        context->external_ranges[i].start,
+        context->external_ranges[i].size);
+#undef SPX_CONSIDER_ORIGIN
+  if (count == 0U) return SPX_BOUNDARY_MEMORY_FAULT;
+  if (count != 1U) return SPX_BOUNDARY_TYPE_MISMATCH;
+  result->domain = domain;
+  result->object = object;
+  result->generation = generation;
+  result->offset = address - base;
+  result->extent = extent;
+  result->permissions = permissions;
+  return SPX_BOUNDARY_OK;
+}}
+
+static spx_boundary_status spx_native_realize_reference(
+    void *opaque, const spx_machine_reference_v1 *reference,
+    uint32_t permissions, uint32_t nullable, uint32_t allow_one_past,
+    uint32_t *address) {{
+  spx_native_context *context = (spx_native_context *)opaque;
+  uint32_t base = 0U, extent = 0U, generation = 0U, found = 0U, i;
+  if (context == 0 || reference == 0 || address == 0)
+    return SPX_BOUNDARY_UNSUPPORTED;
+  if (reference->domain == 0U && reference->object == 0U) {{
+    if (nullable == 0U || reference->generation != 0U ||
+        reference->offset != 0U || reference->extent != 0U ||
+        reference->permissions != 0U)
+      return SPX_BOUNDARY_MEMORY_FAULT;
+    *address = 0U;
+    return SPX_BOUNDARY_OK;
+  }}
+  if (reference->domain == 1U && reference->object == 1U) {{
+    base = context->image_base; extent = context->image_size;
+    generation = 1U; found = 1U;
+  }} else if (reference->domain == 2U && reference->object == 1U) {{
+    base = context->stack_low; extent = context->stack_high - context->stack_low;
+    generation = context->invocation_generation; found = 1U;
+  }} else if (reference->domain == 4U && reference->object == 1U &&
+             context->owner_fs_base != 0U) {{
+    base = context->owner_fs_base; extent = SPX_NATIVE_THREAD_ENVIRONMENT_BYTES;
+    generation = context->invocation_generation; found = 1U;
+  }} else if (reference->domain == 3U) {{
+    for (i = 0U; i < context->external_range_count; ++i)
+      if (context->external_ranges[i].object_id == reference->object) {{
+        base = context->external_ranges[i].start;
+        extent = context->external_ranges[i].size;
+        generation = context->external_ranges[i].generation;
+        ++found;
+      }}
+  }}
+  if (found != 1U) return SPX_BOUNDARY_TYPE_MISMATCH;
+  if (reference->generation != generation) return SPX_BOUNDARY_EXPIRED;
+  if (reference->extent != extent || reference->offset > extent ||
+      (reference->offset == extent && allow_one_past == 0U) ||
+      (reference->permissions & permissions) != permissions ||
+      reference->offset > 0xffffffffU - base)
+    return SPX_BOUNDARY_MEMORY_FAULT;
+  *address = base + (uint32_t)reference->offset;
+  return SPX_BOUNDARY_OK;
+}}
+
 spx_runtime spx_native_runtime_instance = {{
   .context = &spx_native_context_value,
   .read = spx_native_flat_read,
   .write = spx_native_flat_write,
   .atomic_compare_exchange = spx_native_atomic_compare_exchange,
   .atomic_exchange = spx_native_atomic_exchange,
+  .resolve_reference = spx_native_resolve_reference,
+  .realize_reference = spx_native_realize_reference,
   .undefined_value = spx_native_undefined_value,
   .external_call_fallback = spx_dispatch_external_call,
 '''

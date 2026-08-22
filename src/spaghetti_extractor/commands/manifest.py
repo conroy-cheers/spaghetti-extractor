@@ -51,6 +51,36 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "require the component's checked machine-derived authority",
     },
     {
+        "name": "component relation",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "propose, inspect, adopt, or check a machine/logical relation",
+    },
+    {
+        "name": "call status",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "show typed call transport, lifecycle, and idiomatic-view frontiers",
+    },
+    {
+        "name": "call inspect",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "inspect one checked or proposed call protocol",
+    },
+    {
+        "name": "call propose",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "build compiler-assisted and machine-checked call proposals",
+    },
+    {
+        "name": "call adopt",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "write stable operator intent for one call subject",
+    },
+    {
+        "name": "call check",
+        "group": "spaghetti_extractor.commands.workflows",
+        "help": "require complete checked call-protocol authority",
+    },
+    {
         "name": "library status",
         "group": "spaghetti_extractor.commands.workflows",
         "help": "show checked library constellation matches and lifting payoff",
@@ -226,6 +256,16 @@ SUPPORTED_COMMAND_MANIFEST: Final[tuple[dict[str, str], ...]] = (
         "help": "render recovered external operations as non-authoritative C calls",
     },
     {
+        "name": "expert call-protocol-check",
+        "group": "spaghetti_extractor.commands.call_protocols",
+        "help": "check one typed call protocol against dialect and relation laws",
+    },
+    {
+        "name": "expert boundary-check",
+        "group": "spaghetti_extractor.commands.boundaries",
+        "help": "validate a shared boundary schema, target layout, and ABI frames",
+    },
+    {
         "name": "expert candidate-test-suite-run",
         "group": "spaghetti_extractor.commands.validation",
         "help": "run a curated candidate-only test suite",
@@ -243,6 +283,12 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "component build": "operator",
     "component bind": "operator",
     "component check": "operator",
+    "component relation": "operator",
+    "call status": "operator",
+    "call inspect": "operator",
+    "call propose": "operator",
+    "call adopt": "operator",
+    "call check": "operator",
     "library status": "operator",
     "library inspect": "operator",
     "library adopt": "operator",
@@ -278,6 +324,8 @@ SUPPORTED_COMMAND_ROLES: Final[dict[str, str]] = {
     "expert component-compose": "expert",
     "expert component-runtime-build": "expert",
     "expert component-render-source-operations": "diagnostic",
+    "expert call-protocol-check": "expert",
+    "expert boundary-check": "expert",
     "expert candidate-test-suite-run": "diagnostic",
 }
 

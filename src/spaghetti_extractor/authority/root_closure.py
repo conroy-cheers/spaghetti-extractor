@@ -42,6 +42,10 @@ from .callbacks import (
     CALLBACK_AUTHORITY_CODEC_V3,
     CallbackAuthorityV3,
 )
+from .external_site_records import (
+    CANONICAL_EXTERNAL_SITE_CODEC_V3,
+    CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+)
 from .semantic_index import (
     SEMANTIC_INDEX_ARTIFACT_KIND_V3,
     SEMANTIC_INDEX_CODEC_V3,
@@ -232,11 +236,16 @@ class RootedControlEdgeV3:
     def __post_init__(self) -> None:
         text(self.source_unit_id, "rooted edge source unit ID")
         text(self.target_unit_id, "rooted edge target unit ID")
-        if self.edge_kind not in {"direct", "internal_call", "recovered_indirect"}:
+        if self.edge_kind not in {
+            "direct",
+            "event_callback",
+            "internal_call",
+            "recovered_indirect",
+        }:
             fail(
                 "record_schema_mismatch",
                 f"rooted edge kind is {self.edge_kind!r}",
-                "use direct, internal_call, or recovered_indirect",
+                "use direct, event_callback, internal_call, or recovered_indirect",
             )
         text(self.authority_record_id, "rooted edge authority record ID")
         require_stable_id(
@@ -311,6 +320,7 @@ class LaunchRootClosureV3:
     authorizing: bool
     submitted_root_ids: tuple[str, ...]
     admitted_root_ids: tuple[str, ...]
+    callback_root_ids: tuple[str, ...]
     root_unit_ids: tuple[str, ...]
     reachable_unit_ids: tuple[str, ...]
     edges: tuple[RootedControlEdgeV3, ...]
@@ -327,6 +337,7 @@ class LaunchRootClosureV3:
             "launch-root-closure-v3",
             {
                 "submitted_root_ids": list(self.submitted_root_ids),
+                "callback_root_ids": list(self.callback_root_ids),
                 "dependency_records": [row.to_payload() for row in self.dependencies],
             },
             "launch-root closure",
@@ -334,6 +345,7 @@ class LaunchRootClosureV3:
         for values, context in (
             (self.submitted_root_ids, "submitted launch roots"),
             (self.admitted_root_ids, "admitted launch roots"),
+            (self.callback_root_ids, "admitted callback roots"),
             (self.root_unit_ids, "admitted root unit IDs"),
             (self.reachable_unit_ids, "reachable unit IDs"),
             (self.frontier_ids, "rooted frontier IDs"),
@@ -387,6 +399,7 @@ def _encode_root_closure(value: LaunchRootClosureV3) -> dict[str, Any]:
         "authorizing": value.authorizing,
         "submitted_root_ids": list(value.submitted_root_ids),
         "admitted_root_ids": list(value.admitted_root_ids),
+        "callback_root_ids": list(value.callback_root_ids),
         "root_unit_ids": list(value.root_unit_ids),
         "reachable_unit_ids": list(value.reachable_unit_ids),
         "edges": [row.to_payload() for row in value.edges],
@@ -406,6 +419,7 @@ def _decode_root_closure(value: Any) -> LaunchRootClosureV3:
             "authorizing",
             "submitted_root_ids",
             "admitted_root_ids",
+            "callback_root_ids",
             "root_unit_ids",
             "reachable_unit_ids",
             "edges",
@@ -437,6 +451,9 @@ def _decode_root_closure(value: Any) -> LaunchRootClosureV3:
         ),
         admitted_root_ids=canonical_strings(
             row["admitted_root_ids"], "admitted launch roots"
+        ),
+        callback_root_ids=canonical_strings(
+            row["callback_root_ids"], "admitted callback roots"
         ),
         root_unit_ids=canonical_strings(
             row["root_unit_ids"], "admitted root unit IDs"
@@ -611,6 +628,10 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
     exact_units = tuple(SEMANTIC_INDEX_CODEC_V3.read(row).value for row in exact_records)
     exact_by_id = {row.record_id: row for row in exact_units}
     callbacks = _callback_index(callback_records)
+    callback_inventories = {
+        row.record_id: CALLBACK_AUTHORITY_CODEC_V3.read(row).value
+        for row in callback_records
+    }
     roots = tuple(LAUNCH_ROOT_EVIDENCE_CODEC_V3.read(row).value for row in root_records)
     targets = flatten_indirect_target_certificates_v3(target_records)
     dependencies = [
@@ -626,6 +647,7 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
     blockers: list[PrimaryBlockerV3] = list(root_blockers)
     for input_name, code in (
         ("callbacks", "callback_authority_artifact_not_complete"),
+        ("external_sites", "canonical_external_sites_artifact_not_complete"),
         ("semantic_index", "semantic_index_artifact_not_complete"),
         ("launch_roots", "launch_root_artifact_not_complete"),
         (
@@ -667,6 +689,8 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
         target_by_id[target.exit_id] = target
 
     reachable: set[str] = set()
+    callback_root_ids: set[str] = set()
+    callback_root_unit_ids: set[str] = set()
     edges: set[RootedControlEdgeV3] = set()
     frontiers: set[str] = set()
     pending = sorted({root.unit_id for root in admitted}, reverse=True)
@@ -677,6 +701,92 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
         reachable.add(unit_id)
         blockers.extend(exact_blockers[unit_id])
         local_edges = set(successors[unit_id])
+        callback_dependency = RecordDependencyV3("callbacks", unit_id)
+        callback_inventory = callback_inventories.get(unit_id)
+        if callback_inventory is None:
+            blockers.append(
+                PrimaryBlockerV3(
+                    "incomplete",
+                    "reachable_callback_inventory_missing",
+                    callback_dependency.input_name,
+                    callback_dependency.record_id,
+                )
+            )
+        elif callback_inventory.unit_sha256 != exact_by_id[unit_id].unit_sha256:
+            blockers.append(
+                PrimaryBlockerV3(
+                    "violated",
+                    "reachable_callback_inventory_contradiction",
+                    callback_dependency.input_name,
+                    callback_dependency.record_id,
+                )
+            )
+        elif callback_inventory.status != "complete":
+            blockers.append(
+                PrimaryBlockerV3(
+                    (
+                        "violated"
+                        if callback_inventory.status == "violated"
+                        else "incomplete"
+                    ),
+                    (
+                        callback_inventory.primary_blocker.code
+                        if callback_inventory.primary_blocker is not None
+                        else "reachable_callback_authority_incomplete"
+                    ),
+                    callback_dependency.input_name,
+                    callback_dependency.record_id,
+                )
+            )
+        else:
+            for callback in callback_inventory.callbacks:
+                target = exact_by_id.get(callback.target_unit_id)
+                if (
+                    callback.status != "complete"
+                    or not callback.authorizing
+                    or callback.entry_state is None
+                ):
+                    blockers.append(
+                        PrimaryBlockerV3(
+                            (
+                                "violated"
+                                if callback.status == "violated"
+                                else "incomplete"
+                            ),
+                            (
+                                callback.primary_blocker.code
+                                if callback.primary_blocker is not None
+                                else "reachable_callback_authority_incomplete"
+                            ),
+                            callback_dependency.input_name,
+                            callback_dependency.record_id,
+                        )
+                    )
+                    continue
+                if (
+                    target is None
+                    or target.unit_sha256 != callback.target_unit_sha256
+                    or target.rva_start != callback.target_rva
+                ):
+                    blockers.append(
+                        PrimaryBlockerV3(
+                            "violated",
+                            "reachable_callback_target_contradiction",
+                            callback_dependency.input_name,
+                            callback_dependency.record_id,
+                        )
+                    )
+                    continue
+                callback_root_ids.add(callback.callback_id)
+                callback_root_unit_ids.add(callback.target_unit_id)
+                local_edges.add(
+                    RootedControlEdgeV3.create(
+                        unit_id,
+                        callback.target_unit_id,
+                        "event_callback",
+                        callback.callback_id,
+                    )
+                )
         for exit_id in expected_exits[unit_id]:
             dependency = RecordDependencyV3("target_certificates", unit_id)
             target = target_by_id.get(exit_id)
@@ -734,14 +844,54 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
                 reverse=True,
             )
         )
+    for unit_id in sorted(reachable):
+        dependency = RecordDependencyV3("external_sites", unit_id)
+        dependencies.append(dependency)
+        source = context.optional_record("external_sites", unit_id)
+        if source is None:
+            blockers.append(
+                PrimaryBlockerV3(
+                    "incomplete",
+                    "reachable_external_site_inventory_missing",
+                    dependency.input_name,
+                    dependency.record_id,
+                )
+            )
+            continue
+        external = CANONICAL_EXTERNAL_SITE_CODEC_V3.read(source).value
+        if any(
+            site.status == "complete"
+            and site.contract is not None
+            and site.contract.callback_source_decision is not None
+            and site.contract.callback_source_decision.kind
+            == "parametric_entry_word"
+            for site in external.sites
+        ):
+            blockers.append(
+                PrimaryBlockerV3(
+                    "incomplete",
+                    "reachable_parametric_callback_uninstantiated",
+                    dependency.input_name,
+                    dependency.record_id,
+                )
+            )
     primary = aggregate_blockers_v3(blockers)
     status = "complete" if primary is None else primary.status
     submitted_ids = tuple(sorted(row.record_id for row in roots))
-    canonical_dependencies = canonical_dependencies_v3(dependencies)
+    # This is a global reduction. Its output manifest binds every complete
+    # input artifact, so repeating all unit IDs in one semantic record only
+    # bloats the receipt and eventually exceeds the bounded pack size. Keep
+    # one exact record dependency solely when it identifies the primary
+    # actionable blocker.
+    primary_dependency = None if primary is None else primary.dependency
+    canonical_dependencies = canonical_dependencies_v3(
+        () if primary_dependency is None else (primary_dependency,)
+    )
     record_id = stable_id(
         "launch-root-closure-v3",
         {
             "submitted_root_ids": list(submitted_ids),
+            "callback_root_ids": sorted(callback_root_ids),
             "dependency_records": [row.to_payload() for row in canonical_dependencies],
         },
     )
@@ -751,7 +901,12 @@ def _derive_root_closure(context: PhaseContextV3) -> LaunchRootClosureV3:
         authorizing=status == "complete",
         submitted_root_ids=submitted_ids,
         admitted_root_ids=tuple(sorted(row.record_id for row in admitted)),
-        root_unit_ids=tuple(sorted({row.unit_id for row in admitted})),
+        callback_root_ids=tuple(sorted(callback_root_ids)),
+        root_unit_ids=tuple(
+            sorted(
+                {row.unit_id for row in admitted} | callback_root_unit_ids
+            )
+        ),
         reachable_unit_ids=tuple(sorted(reachable)),
         edges=tuple(sorted(edges)),
         frontier_ids=tuple(sorted(frontiers)),
@@ -790,9 +945,10 @@ def check_launch_root_closure_completeness_v3(
 
 LAUNCH_ROOT_CLOSURE_PHASE_V3 = reduce(
     name="launch-root-closure-v3",
-    version="2",
+    version="5",
     input_artifact_kinds={
         "callbacks": CALLBACK_AUTHORITY_ARTIFACT_KIND_V3,
+        "external_sites": CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
         "launch_roots": LAUNCH_ROOT_EVIDENCE_ARTIFACT_KIND_V3,
         "semantic_index": SEMANTIC_INDEX_ARTIFACT_KIND_V3,
         "target_certificates": INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
@@ -800,6 +956,7 @@ LAUNCH_ROOT_CLOSURE_PHASE_V3 = reduce(
     output_artifact_kind=LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3,
     transform=_transform_root_closure,
     completeness=check_launch_root_closure_completeness_v3,
+    dependency_scope="artifact",
 )
 
 

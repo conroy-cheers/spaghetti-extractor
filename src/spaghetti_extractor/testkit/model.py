@@ -11,8 +11,8 @@ from typing import Any, Mapping, Sequence
 from .diagnostics import Diagnostic, TestkitError
 
 
-INDEX_FORMAT = "spaghetti-extractor-test-impact-index-v2"
-PLAN_FORMAT = "spaghetti-extractor-test-suite-plan-v3"
+INDEX_FORMAT = "spaghetti-extractor-test-impact-index-v3"
+PLAN_FORMAT = "spaghetti-extractor-test-suite-plan-v4"
 REBUILD_EXPLANATION_FORMAT = "spaghetti-extractor-rebuild-explanation-v1"
 
 
@@ -79,6 +79,7 @@ class TestRecord:
     dependency_paths: tuple[str, ...]
     fixtures: tuple[str, ...]
     resources: tuple[str, ...]
+    declared_resources: tuple[str, ...]
     sha256: str
     input_sha256: str
     shard: str
@@ -95,6 +96,7 @@ class TestRecord:
             "dependency_paths": list(self.dependency_paths),
             "fixtures": list(self.fixtures),
             "resources": list(self.resources),
+            "declared_resources": list(self.declared_resources),
             "sha256": self.sha256,
             "input_sha256": self.input_sha256,
             "shard": self.shard,
@@ -113,6 +115,9 @@ class TestRecord:
             dependency_paths=_strings(value["dependency_paths"], field_name="dependency_paths"),
             fixtures=_strings(value["fixtures"], field_name="fixtures"),
             resources=_strings(value["resources"], field_name="resources"),
+            declared_resources=_strings(
+                value["declared_resources"], field_name="declared_resources"
+            ),
             sha256=str(value["sha256"]),
             input_sha256=str(value["input_sha256"]),
             shard=str(value["shard"]),
@@ -201,6 +206,7 @@ class PlannedShard:
     test_paths: tuple[str, ...]
     files: tuple[str, ...]
     fixtures: tuple[str, ...]
+    declared_resources: tuple[str, ...]
     input_sha256: str
 
     def as_dict(self) -> dict[str, object]:
@@ -211,6 +217,7 @@ class PlannedShard:
             "test_paths": list(self.test_paths),
             "files": list(self.files),
             "fixtures": list(self.fixtures),
+            "declared_resources": list(self.declared_resources),
             "input_sha256": self.input_sha256,
         }
 
@@ -223,6 +230,9 @@ class PlannedShard:
             test_paths=_strings(value["test_paths"], field_name="test_paths"),
             files=_strings(value["files"], field_name="files"),
             fixtures=_strings(value["fixtures"], field_name="fixtures"),
+            declared_resources=_strings(
+                value["declared_resources"], field_name="declared_resources"
+            ),
             input_sha256=str(value["input_sha256"]),
         )
 

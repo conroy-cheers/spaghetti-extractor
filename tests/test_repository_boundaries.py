@@ -42,8 +42,12 @@ V3_AUTHORITY_PACKAGE = "spaghetti_extractor.authority"
 V3_NATIVE_IMPORT_ROOTS = frozenset(
     {
         V3_AUTHORITY_PACKAGE,
+        "spaghetti_extractor.abi",
         "spaghetti_extractor.authority_inputs.address_expressions",
         "spaghetti_extractor.artifacts",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.libraries",
     }
 )
 V3_LEGACY_IMPORT_EXCEPTIONS: dict[str, frozenset[str]] = {}

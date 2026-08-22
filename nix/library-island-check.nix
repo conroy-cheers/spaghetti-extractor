@@ -10,6 +10,7 @@
   adoptionIntent,
   behaviorPack,
   catalogSearchIndex,
+  abiMatchResolution ? null,
   canonicalExternalSites,
   targetCertificates,
 }:
@@ -44,6 +45,7 @@ pkgs.runCommand name {
     ${lib.escapeShellArg adoptionIntent} \
     ${lib.escapeShellArg behaviorPack} \
     ${lib.escapeShellArg catalogSearchIndex} \
+    ${lib.escapeShellArg (if abiMatchResolution == null then "" else abiMatchResolution)} \
     ${lib.escapeShellArg canonicalExternalSites} \
     ${lib.escapeShellArg targetCertificates} \
     "$out/checked-library-island.json" <<'PY'
@@ -60,9 +62,10 @@ pkgs.runCommand name {
       adoption_intent=pathlib.Path(sys.argv[5]),
       implementation=pathlib.Path(sys.argv[6]),
       catalog_search_index=pathlib.Path(sys.argv[7]),
-      canonical_external_sites=pathlib.Path(sys.argv[8]),
-      target_certificates=pathlib.Path(sys.argv[9]),
-      out=pathlib.Path(sys.argv[10]),
+      abi_match_resolution=(None if not sys.argv[8] else pathlib.Path(sys.argv[8])),
+      canonical_external_sites=pathlib.Path(sys.argv[9]),
+      target_certificates=pathlib.Path(sys.argv[10]),
+      out=pathlib.Path(sys.argv[11]),
   )
   PY
   jq -e '

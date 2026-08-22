@@ -16,7 +16,8 @@ class AuthorityGraphManifestV3Tests(unittest.TestCase):
         self.assertEqual(
             manifest["external_artifact_kinds"],
             {
-                "callback_evidence": "callback-evidence-v3",
+                "callback_evidence": "callback-evidence-v4",
+                "catalog_call_contracts": "catalog-call-contracts-v3",
                 "exception_evidence": "exception-evidence-v3",
                 "external_profiles": "external-profile-authority-v3",
                 "external_site_evidence": "external-site-evidence-v3",
@@ -25,6 +26,7 @@ class AuthorityGraphManifestV3Tests(unittest.TestCase):
                 "isa_evidence": "isa-qualification-evidence-v3",
                 "launch_roots": "launch-root-evidence-v3",
                 "machine_ir": "machine-ir-v3-input",
+                "normal_call_abi_premises": "normal-call-abi-premises-v3",
                 "parametric_proposals": "interprocedural-summary-proposals-v3",
                 "static_value_origins": "pe32-static-value-origins-v3",
                 "target_evidence": "indirect-target-evaluation-evidence-v3",
@@ -72,6 +74,10 @@ class AuthorityGraphManifestV3Tests(unittest.TestCase):
         self.assertEqual(
             phases["launch-root-closure-v3"]["inputs"]["semantic_index"],
             {"source": "phase", "id": "semantic-index-v3"},
+        )
+        self.assertEqual(
+            phases["launch-root-closure-v3"]["inputs"]["external_sites"],
+            {"source": "phase", "id": "canonical-external-sites-v3"},
         )
 
         for phase in phases.values():

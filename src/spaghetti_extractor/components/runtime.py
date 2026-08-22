@@ -27,6 +27,12 @@ from .formats import (
     COMPONENT_SOURCE_PACKAGE_V3_FORMAT,
 )
 from .activation_receipt import ActivationReceiptV1
+from .boundary_plan import (
+    BoundaryOperationPlanV2,
+    ComponentBoundaryPlanReceiptV2,
+    ComponentBoundaryPlanV2,
+)
+from .atomics import interface_uses_atomics, spx_atomics_header
 from .implementation import ComponentImplementationV3
 from .interface_ir import PortableComponentInterfaceV2
 from .machine_binding import ComponentMachineBindingV1
@@ -68,6 +74,7 @@ def build_component_runtime_package(
     adapter_plans: Mapping[str, Path | str],
     activation_receipts: Mapping[str, Path | str] | None = None,
     machine_bindings: Mapping[str, Path | str] | None = None,
+    boundary_plans: Mapping[str, Path | str] | None = None,
     library_components: Mapping[str, Path | str] | None = None,
     interpreter_package: Path | str,
     out_dir: Path | str,
@@ -162,6 +169,7 @@ def build_component_runtime_package(
     override_entries: list[dict[str, object]] = []
     activation_receipt_inputs = activation_receipts or {}
     machine_binding_inputs = machine_bindings or {}
+    boundary_plan_inputs = boundary_plans or {}
     portable_interface_inputs = portable_interfaces or {}
     semantic_contract_inputs = semantic_contracts or {}
     library_component_inputs = library_components or {}
@@ -198,6 +206,23 @@ def build_component_runtime_package(
             binding = ComponentMachineBindingV1.parse(
                 _read_object(binding_file, "component machine binding")
             )
+            plan_root = _required_mapping_path(
+                boundary_plan_inputs, identity, "checked boundary plan"
+            )
+            plan_file = (
+                plan_root / "boundary-plan.json" if plan_root.is_dir() else plan_root
+            )
+            plan_receipt_file = (
+                plan_root / "boundary-plan-receipt.json"
+                if plan_root.is_dir()
+                else plan_root.with_name("boundary-plan-receipt.json")
+            )
+            boundary_plan = ComponentBoundaryPlanV2.parse(
+                _read_object(plan_file, "component boundary plan")
+            )
+            boundary_plan_receipt = ComponentBoundaryPlanReceiptV2.parse(
+                _read_object(plan_receipt_file, "component boundary plan receipt")
+            )
             semantic_contract_path = _required_mapping_path(
                 semantic_contract_inputs, identity, "semantic contract"
             )
@@ -217,6 +242,8 @@ def build_component_runtime_package(
                     source=source,
                     activation_receipt_path=receipt_path,
                     binding=binding,
+                    boundary_plan=boundary_plan,
+                    boundary_plan_receipt=boundary_plan_receipt,
                     semantic_contract=semantic_contract,
                     members={
                         unit_id: machine_rows[unit_id]
@@ -729,6 +756,8 @@ def _build_v2_scalar_component(
     source: Mapping[str, object],
     activation_receipt_path: Path,
     binding: ComponentMachineBindingV1,
+    boundary_plan: ComponentBoundaryPlanV2,
+    boundary_plan_receipt: ComponentBoundaryPlanReceiptV2,
     semantic_contract: ComponentSemanticContractV1,
     members: Mapping[str, Mapping[str, object]],
     output: Path,
@@ -781,6 +810,13 @@ def _build_v2_scalar_component(
     if (
         not authority_valid
         or binding.identity != identity
+        or not boundary_plan_receipt.authorizing
+        or boundary_plan_receipt.component_id != identity
+        or boundary_plan_receipt.plan_sha256 != boundary_plan.plan_sha256
+        or boundary_plan.component_id != identity
+        or boundary_plan.bindings.get("interface_sha256") != interface.sha256
+        or boundary_plan.bindings.get("machine_binding_sha256")
+        != binding.binding_sha256
         or binding.interface_sha256 != interface.sha256
         or set(binding.unit_ids) != set(members)
         or semantic_contract.status != "satisfied"
@@ -806,9 +842,18 @@ def _build_v2_scalar_component(
     implementation_header.write_text(
         interface.render_implementation_header(symbols), encoding="ascii"
     )
+    atomic_public_header: Path | None = None
+    if interface_uses_atomics(interface.types):
+        atomic_public_header = component_dir / "spx-atomics.h"
+        atomic_public_header.write_text(spx_atomics_header(), encoding="ascii")
     support_sources = copied_sources + [
         _artifact(public_header, output),
         _artifact(implementation_header, output),
+        *(
+            [_artifact(atomic_public_header, output)]
+            if atomic_public_header is not None
+            else []
+        ),
     ]
     adapter_path = component_dir / "generated-adapter.c"
     adapter_symbols: list[tuple[int, str, str]] = []
@@ -817,6 +862,7 @@ def _build_v2_scalar_component(
             identity=identity,
             interface=interface,
             binding=binding,
+            boundary_plan=boundary_plan,
             semantic_contract=semantic_contract,
             source_symbols=symbols,
             members=members,
@@ -826,11 +872,13 @@ def _build_v2_scalar_component(
     )
     component_core: dict[str, object] = {
         "id": identity,
-        "interface_format": "spaghetti-extractor-component-interface-ir-v2",
+        "interface_format": interface.format_version,
         "interface_sha256": interface.sha256,
         "implementation_sha256": source["implementation_sha256"],
         **activation_authority_binding,
         "machine_binding_sha256": binding.binding_sha256,
+        "boundary_plan_sha256": boundary_plan.plan_sha256,
+        "boundary_plan_receipt_sha256": boundary_plan_receipt.receipt_sha256,
         "operation_symbols": dict(symbols),
         "unit_ids": sorted(members),
         "entries": [
@@ -880,6 +928,7 @@ def _render_v2_scalar_adapter(
     identity: str,
     interface: PortableComponentInterfaceV2,
     binding: ComponentMachineBindingV1,
+    boundary_plan: ComponentBoundaryPlanV2,
     semantic_contract: ComponentSemanticContractV1,
     source_symbols: Mapping[str, object],
     members: Mapping[str, Mapping[str, object]],
@@ -895,9 +944,26 @@ def _render_v2_scalar_adapter(
         )
         if isinstance(row, Mapping)
     }
+    plan_operations = {
+        row.operation_id: row for row in boundary_plan.operations
+    }
+    if set(plan_operations) != set(operation_index):
+        raise ComponentIntentError(
+            f"component {identity} boundary plan operation inventory differs"
+        )
     lines = [
         '#include "state-machine-runtime.h"',
         '#include "portable-component-implementation.h"',
+        *(
+            ['#include "spx-atomics-backend.h"']
+            if interface_uses_atomics(interface.types)
+            else []
+        ),
+        *(
+            ['#include "spx-capability-backend.h"']
+            if any(logical_type.kind == "callback" for logical_type in interface.types)
+            else []
+        ),
         "#include <stdint.h>",
         "",
         "static uint32_t component_read(spx_runtime *rt, uint32_t address, uint32_t width, uint32_t *fault) {",
@@ -950,6 +1016,7 @@ def _render_v2_scalar_adapter(
                     ),
                     adapter_symbol=adapter_symbol,
                     model=path_model,
+                    boundary_plan=plan_operations[bound.operation_id],
                 )
             )
         except (KeyError, SemanticPathError) as exc:

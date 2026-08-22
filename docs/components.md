@@ -18,8 +18,11 @@ or unrelated regions first.
 ## Canonical Lifecycle
 
 Artifact version numbers describe individual wire formats, not one global
-component generation. New components use portable interface V2 and source
-package V3. The interface is machine-free; exact machine meaning lives in a
+component generation. New boundary-aware components use
+`PortableComponentInterfaceV5`, which references the shared canonical schema,
+checked operation projections, and lifecycles. Portable interfaces V2-V4 remain
+migration readers for existing targets, and source package V3 remains the
+implementation package. The interface is machine-free; exact machine meaning lives in a
 separate checked binding. Older logical source ABIs remain readable while
 existing targets migrate, but are not the recommended authoring path.
 
@@ -99,8 +102,9 @@ Every release gate also binds the total activation plan and checks that its
 selected component inventory and ownership kinds exactly match the universal
 dependency graph. `hybrid` permits
 checked machine-IR or pinned ownership for remaining units. `portable` requires
-zero machine-IR fallback units as well as portable implementations for every
-component, so it cannot report success for a partly lifted candidate.
+zero machine-IR fallback among units in the checked root-reachable behavioral
+projection. Structurally classified but unreachable units retain fallback
+ownership without blocking portable-lift completion.
 
 The runtime package is constructed directly by the component DAG. It does not
 construct a candidate or require whole-program acceptance. It
@@ -111,11 +115,13 @@ interpreter derivation is reused by standalone component runtimes and all
 candidates, and the same portable-selection artifact is consumed by fallback
 coverage, native dispatch, candidate authority, and completion checks.
 
-### Portable Interface V2
+### Portable Interfaces V2 and V3
 
 Portable interface V2 defines typed operations, framework-managed instance
-state, protocol states, logical resources, callbacks, effects, and injected
-services. It contains no x86 registers, raw addresses, PE ranges, import IDs, or
+state, protocol states, logical resources, effects, and injected services.
+Portable interface V3 adds opaque, typed callback handles without exposing a
+machine ABI or raw function pointer. Both contain no x86 registers, raw
+addresses, PE ranges, import IDs, or
 external-site identities. Authored source may not define mutable global state.
 
 The stable component ID and generated C interface namespace are separate. For
@@ -170,6 +176,15 @@ and arbitrary external-service responses to the exact C operation. A concrete
 or symbolic mismatch is `violated` with its operation/path location. Missing
 semantics or unrepresentable state is `incomplete`. Operator-authored examples
 and expected outputs cannot enter this authority path.
+
+A `finite_control_target` result may replace a recovered indirect jump only
+when its selector expression, closed target inventory, table bytes, and target
+addresses are already machine-derived and checked. The binding assigns portable
+logical route values to that exact target set. Materialization expands every
+checked selector value into a route, static refinement assumes only the proven
+entry domain, and runtime lowering rejects values outside that domain before it
+maps the logical route back to the exact machine continuation. A stale table,
+selector expression, inventory digest, or non-bijective route map fails closed.
 
 ## Legacy Evidence
 
@@ -242,15 +257,16 @@ Draft units remain independently compilable; configurations remain authority
 gated.
 
 `candidate check --mode hybrid` requires complete component dependencies while
-allowing checked fallback. `candidate check --mode portable` requires a wholly
-portable activation plan. `candidate build` always consumes the strict hybrid
+allowing checked fallback. `candidate check --mode portable` requires wholly
+portable ownership throughout the checked root-reachable projection. `candidate
+build` always consumes the strict hybrid
 check plus the target's static release gate; diagnostic dependency reports
 cannot make a candidate executable.
 
 Pure component activation depends only on its selected machine-IR units and
 checked component artifacts. A component that declares an external-site service
 also depends on the canonical target/ABI evidence for that site. Neither path
-depends on whole-target ISA qualification or final candidate acceptance; those
+depends on root-scoped target ISA qualification or final candidate acceptance; those
 remain release-level gates.
 
 `runtime` above is exactly the runtime package consumed by the default-compiler

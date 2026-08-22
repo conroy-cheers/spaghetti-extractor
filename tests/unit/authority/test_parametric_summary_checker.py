@@ -3,7 +3,12 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 
+from spaghetti_extractor.abi.model import AbiFactV1
 from spaghetti_extractor.artifacts.artifact_set import CanonicalValueV3, RecordDependencyV3
+from spaghetti_extractor.authority.catalog_call_contracts import CatalogCallContractV1
+from spaghetti_extractor.authority.call_boundary_contracts import (
+    CallBoundaryContractV3,
+)
 from spaghetti_extractor.authority.parametric_summary_checker import (
     PARAMETRIC_SCC_SUMMARIES_PHASE_V3,
     DirectCallEvidenceV3,
@@ -57,6 +62,7 @@ def _unit(
         input_registers=("eax", "ebx"),
         register_outputs=(("eax", {"op": "const", "value": 7, "width": 32}),),
         stack_net_bytes=12 if returns else None,
+        return_cleanup_bytes=8 if returns else None,
         returns=returns,
         may_not_return=not returns,
         external_calls=external_calls,
@@ -119,6 +125,7 @@ def _program_unit(
         input_registers=(),
         register_outputs=outputs,
         stack_net_bytes=4 if returns else None,
+        return_cleanup_bytes=0 if returns else None,
         returns=returns,
         may_not_return=not returns,
         external_calls=external_calls,
@@ -144,6 +151,7 @@ def _direct_call_effect(
     preserved_registers: tuple[str, ...] | None,
     *,
     target: str = "unit:b",
+    catalog_contract_id: str | None = None,
 ) -> CallEffectV3:
     return CallEffectV3(
         "call:3",
@@ -155,6 +163,38 @@ def _direct_call_effect(
         (),
         None,
         preserved_registers,
+        catalog_contract_id,
+    )
+
+
+def _partial_catalog_contract(
+    *,
+    preserved: tuple[str, ...] = PRESERVED_REGISTERS,
+) -> CatalogCallContractV1:
+    return CatalogCallContractV1.create(
+        binary_sha256="a" * 64,
+        match_id="match:unit-b",
+        target_region_id="region:unit-b",
+        target_entry_unit_id="unit:b",
+        target_unit_ids=("unit:b",),
+        catalog_id="catalog:test",
+        catalog_sha256="b" * 64,
+        catalog_function_id="catalog:function-b",
+        certificate_id="certificate:function-b",
+        exact_facts=(
+            AbiFactV1.create(
+                subject_id="catalog:function-b",
+                field="preserved_state",
+                status="exact",
+                values=(list(preserved),),
+            ),
+            AbiFactV1.create(
+                subject_id="catalog:function-b",
+                field="stack_cleanup",
+                status="exact",
+                values=({"kind": "caller", "bytes": 0},),
+            ),
+        ),
     )
 
 
@@ -208,6 +248,8 @@ class ParametricSummaryCheckerTests(unittest.TestCase):
         self.assertEqual(
             PARAMETRIC_SCC_SUMMARIES_PHASE_V3.required_inputs,
             (
+                "call_boundary_contracts",
+                "catalog_call_contracts",
                 "external_profiles",
                 "memory_versions",
                 "parametric_proposals",
@@ -307,6 +349,113 @@ class ParametricSummaryCheckerTests(unittest.TestCase):
         self.assertEqual(
             result.primary_blocker.code,
             "call_preserved_register_postcondition_missing",
+        )
+
+    def test_call_memory_frame_composes_read_only_callee(self) -> None:
+        direct = DirectCallEvidenceV3("unit:a", 3, "unit:b")
+        local = MemoryEffectEvidenceV3("unit:a", "alias:global", "preserved")
+        evidence = _evidence(
+            direct_calls=(direct,),
+            memory_effects=(local,),
+            program_units=(
+                _program_unit("unit:a", direct_calls=(direct,)),
+                _program_unit("unit:b", returns=True),
+            ),
+        )
+        evidence = replace(
+            evidence,
+            program_memory_effects=(
+                local,
+                MemoryEffectEvidenceV3(
+                    "unit:b", "alias:global", "preserved"
+                ),
+            ),
+        )
+        effect = StaticMemoryEffectV3(
+            "effect:a", "unit:a", "alias:global", "preserved", None, None
+        )
+
+        result = check_parametric_scc_proposal_v3(
+            _proposal(
+                evidence,
+                memory_effects=(effect,),
+                call_effects=(_direct_call_effect(PRESERVED_REGISTERS),),
+            ),
+            evidence,
+        )
+
+        self.assertEqual(result.status, "complete")
+
+    def test_call_memory_frame_rejects_callee_write_overclaim(self) -> None:
+        direct = DirectCallEvidenceV3("unit:a", 3, "unit:b")
+        local = MemoryEffectEvidenceV3("unit:a", "alias:global", "preserved")
+        evidence = _evidence(
+            direct_calls=(direct,),
+            memory_effects=(local,),
+            program_units=(
+                _program_unit("unit:a", direct_calls=(direct,)),
+                _program_unit("unit:b", returns=True),
+            ),
+        )
+        evidence = replace(
+            evidence,
+            program_memory_effects=(
+                local,
+                MemoryEffectEvidenceV3("unit:b", "alias:global", "write"),
+            ),
+        )
+        effect = StaticMemoryEffectV3(
+            "effect:a", "unit:a", "alias:global", "preserved", None, None
+        )
+
+        result = check_parametric_scc_proposal_v3(
+            _proposal(
+                evidence,
+                memory_effects=(effect,),
+                call_effects=(_direct_call_effect(PRESERVED_REGISTERS),),
+            ),
+            evidence,
+        )
+
+        self.assertEqual(result.status, "violated")
+        self.assertEqual(
+            result.primary_blocker.code,
+            "call_memory_postcondition_overclaim",
+        )
+
+    def test_call_memory_frame_fails_closed_on_unversioned_callee_access(self) -> None:
+        direct = DirectCallEvidenceV3("unit:a", 3, "unit:b")
+        local = MemoryEffectEvidenceV3("unit:a", "alias:global", "preserved")
+        evidence = _evidence(
+            direct_calls=(direct,),
+            memory_effects=(local,),
+            program_units=(
+                _program_unit("unit:a", direct_calls=(direct,)),
+                _program_unit("unit:b", returns=True),
+            ),
+        )
+        evidence = replace(
+            evidence,
+            program_memory_effects=(local,),
+            program_unversioned_memory_unit_ids=("unit:b",),
+        )
+        effect = StaticMemoryEffectV3(
+            "effect:a", "unit:a", "alias:global", "preserved", None, None
+        )
+
+        result = check_parametric_scc_proposal_v3(
+            _proposal(
+                evidence,
+                memory_effects=(effect,),
+                call_effects=(_direct_call_effect(PRESERVED_REGISTERS),),
+            ),
+            evidence,
+        )
+
+        self.assertEqual(result.status, "incomplete")
+        self.assertEqual(
+            result.primary_blocker.code,
+            "call_memory_postcondition_summary_missing",
         )
 
     def test_direct_control_loop_uses_complete_finite_closure(self) -> None:
@@ -415,6 +564,215 @@ class ParametricSummaryCheckerTests(unittest.TestCase):
         self.assertEqual(overclaim.status, "violated")
         self.assertEqual(
             overclaim.primary_blocker.code, "call_preserved_register_overclaim"
+        )
+
+    def test_normal_return_boundary_premise_closes_preservation_only(self) -> None:
+        direct = DirectCallEvidenceV3("unit:a", 3, "unit:b")
+        evidence = _evidence(
+            direct_calls=(direct,),
+            program_units=(
+                _program_unit("unit:a", direct_calls=(direct,)),
+                _program_unit("unit:b", returns=True, indirect=True),
+            ),
+        )
+        contract = CallBoundaryContractV3(
+            record_id="unit:b",
+            contract_id="premise:unit:b",
+            target_unit_sha256="b" * 64,
+            target_rva=0x2000,
+            premise_record_id="pe32-normal-return-nonvolatile-v1",
+            premise_content_sha256="c" * 64,
+            transfer_kind="internal_call",
+            applies_when="call_returns_normally",
+            preserved_registers=PRESERVED_REGISTERS,
+            source_frame_count=1,
+            status="complete",
+            authorizing=True,
+            failure_code=None,
+        )
+        evidence = replace(
+            evidence,
+            call_boundary_contracts=(contract,),
+            expected_dependencies=tuple(
+                sorted(
+                    (
+                        *evidence.expected_dependencies,
+                        RecordDependencyV3("call_boundary_contracts", "unit:b"),
+                    )
+                )
+            ),
+        )
+
+        result = check_parametric_scc_proposal_v3(
+            _proposal(
+                evidence,
+                call_effects=(_direct_call_effect(PRESERVED_REGISTERS),),
+            ),
+            evidence,
+        )
+
+        self.assertEqual(result.status, "complete")
+        self.assertTrue(result.call_preserves_register("unit:a", 3, "ebx"))
+
+    def test_checked_import_thunk_composes_call_preservation(self) -> None:
+        direct = DirectCallEvidenceV3("unit:a", 3, "unit:b")
+        profile = ExternalProfileV3.create(
+            profile_id="kernel32:Example:jump",
+            profile_sha256="b" * 64,
+            identity={"dll": "kernel32.dll", "symbol": "Example"},
+            allowed_transfers=("jump",),
+            allowed_dispositions=("returns",),
+            argument_words=0,
+            memory_effect="none",
+            world_effect="none",
+            callback_effect="none",
+            machine_contract={"abi_template": "pe32-stdcall-v1"},
+        )
+        evidence = _evidence(
+            direct_calls=(direct,),
+            profiles=(profile,),
+            program_units=(
+                _program_unit("unit:a", direct_calls=(direct,)),
+                _program_unit("unit:b", indirect=True),
+            ),
+        )
+        evidence = replace(
+            evidence,
+            checked_indirect_targets=(
+                CheckedIndirectTargetEvidenceV3(
+                    "exit:unit:b",
+                    (ValueOriginV3("import_target", profile.record_id, 0),),
+                    (),
+                    (profile.record_id,),
+                    ("unit:b",),
+                    (profile.record_id,),
+                ),
+            ),
+        )
+
+        result = check_parametric_scc_proposal_v3(
+            _proposal(
+                evidence,
+                call_effects=(_direct_call_effect(PRESERVED_REGISTERS),),
+            ),
+            evidence,
+        )
+
+        self.assertEqual(result.status, "complete")
+
+    def test_checked_internal_indirect_target_composes_call_preservation(self) -> None:
+        direct = DirectCallEvidenceV3("unit:a", 3, "unit:b")
+        evidence = _evidence(
+            direct_calls=(direct,),
+            program_units=(
+                _program_unit("unit:a", direct_calls=(direct,)),
+                _program_unit("unit:b", indirect=True),
+                _program_unit("unit:c", returns=True),
+            ),
+        )
+        evidence = replace(
+            evidence,
+            checked_indirect_targets=(
+                CheckedIndirectTargetEvidenceV3(
+                    "exit:unit:b",
+                    (ValueOriginV3("static_code_target", "unit:c", 0),),
+                    ("unit:c",),
+                    (),
+                    ("unit:b", "unit:c"),
+                    (),
+                ),
+            ),
+        )
+
+        result = check_parametric_scc_proposal_v3(
+            _proposal(
+                evidence,
+                call_effects=(_direct_call_effect(PRESERVED_REGISTERS),),
+            ),
+            evidence,
+        )
+
+        self.assertEqual(result.status, "complete")
+
+    def test_exact_partial_catalog_contract_closes_only_preservation(self) -> None:
+        direct = DirectCallEvidenceV3("unit:a", 3, "unit:b")
+        contract = _partial_catalog_contract()
+        evidence = _evidence(
+            direct_calls=(direct,),
+            program_units=(
+                _program_unit("unit:a", direct_calls=(direct,)),
+                _program_unit("unit:b", returns=True, indirect=True),
+            ),
+        )
+        evidence = replace(
+            evidence,
+            catalog_call_contracts=(contract,),
+            expected_dependencies=tuple(
+                sorted(
+                    (
+                        *evidence.expected_dependencies,
+                        RecordDependencyV3(
+                            "catalog_call_contracts", contract.contract_id
+                        ),
+                    )
+                )
+            ),
+        )
+
+        result = check_parametric_scc_proposal_v3(
+            _proposal(
+                evidence,
+                call_effects=(
+                    _direct_call_effect(
+                        PRESERVED_REGISTERS,
+                        catalog_contract_id=contract.contract_id,
+                    ),
+                ),
+            ),
+            evidence,
+        )
+
+        self.assertEqual(result.status, "complete")
+        self.assertTrue(result.call_preserves_register("unit:a", 3, "ebx"))
+
+    def test_contradicted_partial_catalog_contract_is_violated(self) -> None:
+        direct = DirectCallEvidenceV3("unit:a", 3, "unit:b")
+        contract = _partial_catalog_contract()
+        evidence = _evidence(
+            direct_calls=(direct,),
+            program_units=(
+                _program_unit("unit:a", direct_calls=(direct,)),
+                _program_unit("unit:b", returns=True),
+            ),
+        )
+        evidence = replace(
+            evidence,
+            catalog_call_contracts=(contract,),
+            invalid_catalog_call_contract_ids=(contract.contract_id,),
+            expected_dependencies=tuple(
+                sorted(
+                    (
+                        *evidence.expected_dependencies,
+                        RecordDependencyV3(
+                            "catalog_call_contracts", contract.contract_id
+                        ),
+                    )
+                )
+            ),
+        )
+
+        result = check_parametric_scc_proposal_v3(
+            _proposal(
+                evidence,
+                call_effects=(_direct_call_effect(PRESERVED_REGISTERS),),
+            ),
+            evidence,
+        )
+
+        self.assertEqual(result.status, "violated")
+        self.assertEqual(
+            result.primary_blocker.code,
+            "catalog_call_contract_machine_contradiction",
         )
 
     def test_nested_external_cdecl_and_stdcall_preserve_nonvolatile(self) -> None:

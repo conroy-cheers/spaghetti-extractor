@@ -73,7 +73,7 @@ def _aggregate_interface(
         return f"{type_prefix}_{name}"
 
     return {
-        "format": "spaghetti-extractor-component-interface-ir-v2",
+        "format": "spaghetti-extractor-component-interface-ir-v3",
         "id": component_id,
         "types": [
             {"id": type_id("word"), "kind": "scalar", "c_type": "uint32_t"},
@@ -94,7 +94,8 @@ def _aggregate_interface(
             {
                 "id": type_id("completion"),
                 "kind": "callback",
-                "abi": "logical_c",
+                "ownership": "borrowed",
+                "nullable": False,
                 "parameter_type_ids": [type_id("status"), type_id("handle")],
                 "result_type_id": type_id("word"),
             },
@@ -213,6 +214,66 @@ def _aggregate_component_graph(
 
 
 class ServiceGraphTests(unittest.TestCase):
+    def test_accepts_structurally_compatible_checked_views(self) -> None:
+        def interface(component_id: str, *, service: bool) -> dict[str, object]:
+            prefix = "consumer" if service else "provider"
+            types = [
+                {"id": f"{prefix}_u8", "kind": "scalar", "c_type": "uint8_t"},
+                {"id": f"{prefix}_u32", "kind": "scalar", "c_type": "uint32_t"},
+                {
+                    "id": f"{prefix}_span",
+                    "kind": "view",
+                    "element_type_id": f"{prefix}_u8",
+                    "access": "read",
+                    "extent": {"kind": "parameter", "parameter_id": "count"},
+                    "ownership": "borrowed",
+                },
+            ]
+            return {
+                "format": "spaghetti-extractor-component-interface-ir-v4",
+                "id": component_id,
+                "types": types,
+                "state": [],
+                "operations": [{
+                    "id": "run" if service else "compare",
+                    "kind": "operation",
+                    "parameters": [
+                        {"id": "span", "type_id": f"{prefix}_span"},
+                        {"id": "count", "type_id": f"{prefix}_u32"},
+                    ],
+                    "results": [],
+                    "effect_ids": [],
+                    "allowed_service_ids": ["compare"] if service else [],
+                    "pre_states": ["ready"],
+                    "post_states": ["ready"],
+                }],
+                "effects": [],
+                "services": ([{
+                    "id": "compare",
+                    "parameter_type_ids": [
+                        f"{prefix}_span", f"{prefix}_u32"
+                    ],
+                    "result_type_id": None,
+                    "effect_ids": [],
+                }] if service else []),
+                "protocol": {"states": ["ready"], "initial_state": "ready"},
+            }
+
+        graph = build_service_graph(
+            interfaces={
+                "consumer": PortableComponentInterfaceV2.parse(
+                    interface("consumer", service=True)
+                ),
+                "provider": PortableComponentInterfaceV2.parse(
+                    interface("provider", service=False)
+                ),
+            },
+            configuration=_configuration(
+                _component_binding("consumer", "compare", "provider", "compare")
+            ),
+        )
+        self.assertEqual(graph.status, "checked")
+
     def test_accepts_compatible_component_provider_and_orders_provider_first(self) -> None:
         consumer = PortableComponentInterfaceV2.parse(
             _interface("consumer", "run", service_id="calculate")
@@ -408,9 +469,10 @@ class ServiceGraphTests(unittest.TestCase):
             {issue.code for issue in graph.issues},
         )
 
-    def test_rejects_nested_callback_abi_and_signature_mismatches(self) -> None:
+    def test_rejects_nested_callback_capability_and_signature_mismatches(self) -> None:
         cases = (
-            ("abi", "abi", "portable_c"),
+            ("ownership", "ownership", "retained"),
+            ("nullability", "nullable", True),
             ("parameters", "parameter_type_ids", ["provider_word"]),
             ("result", "result_type_id", None),
         )

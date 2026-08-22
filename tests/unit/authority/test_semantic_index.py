@@ -85,7 +85,7 @@ def _unit(
         control_kind = "indirect_jump"
         has_indirect_target = True
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": unit_id,
         "status": status,
@@ -181,6 +181,39 @@ def _run_layers(
 
 
 class SemanticIndexTests(unittest.TestCase):
+    def test_return_cleanup_comes_from_exact_ret_immediate(self) -> None:
+        ordinary = _unit("unit:ret", 0x1000)
+        ordinary["instructions"][-1] = {
+            "mnemonic": "ret",
+            "operands": [],
+            "rva_start": 0x1003,
+            "rva_end": 0x1008,
+            "size": 5,
+        }
+        callee_cleanup = _unit("unit:ret-12", 0x2000)
+        callee_cleanup["instructions"][-1] = {
+            "mnemonic": "ret",
+            "operands": [
+                {"kind": "immediate", "value": 12, "width_bits": 16}
+            ],
+            "rva_start": 0x2003,
+            "rva_end": 0x2008,
+            "size": 5,
+        }
+
+        with tempfile.TemporaryDirectory() as temporary:
+            _exact, output = _run_layers(
+                Path(temporary), (ordinary, callee_cleanup)
+            )
+            records = _records(output)
+            plain = SEMANTIC_INDEX_CODEC_V3.read(records["unit:ret"]).value
+            cleaned = SEMANTIC_INDEX_CODEC_V3.read(
+                records["unit:ret-12"]
+            ).value
+
+        self.assertEqual(plain.return_cleanup_bytes, 0)
+        self.assertEqual(cleaned.return_cleanup_bytes, 12)
+
     def test_projects_exact_facts_and_uses_stable_native_indirect_exit_ids(self) -> None:
         unit = _unit("unit:rich", 0x1000, rich_semantics=True)
 

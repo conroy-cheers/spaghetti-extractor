@@ -1,0 +1,102 @@
+# spaghetti-extractor-python-role: expert
+{
+  pkgs,
+  pythonEnv,
+  pythonSource,
+  namePrefix,
+  protocols ? { },
+}:
+
+let
+  lib = pkgs.lib;
+  checked = lib.mapAttrs (id: spec:
+    assert builtins.isPath spec.intent || builtins.isString spec.intent;
+    assert builtins.isPath spec.layouts || builtins.isString spec.layouts;
+    assert builtins.isPath spec.machineIr || builtins.isString spec.machineIr;
+    assert (builtins.isList (spec.machineEvidence or [ ])
+      && ((spec.machineEvidence or [ ]) != [ ] || spec ? callbackAuthority));
+    pkgs.runCommand
+      "${namePrefix}-${id}-checked-call-protocol"
+      {
+        nativeBuildInputs = [ pythonEnv ];
+        __contentAddressed = true;
+      }
+      ''
+        set -euo pipefail
+        export PYTHONPATH=${pythonSource}/src
+        ${pythonEnv}/bin/python3 -m spaghetti_extractor expert call-protocol-check \
+          --intent ${lib.escapeShellArg "${spec.intent}"} \
+          --layouts ${lib.escapeShellArg "${spec.layouts}"} \
+          ${lib.optionalString (spec ? frame)
+            "--frame ${lib.escapeShellArg "${spec.frame}"}"} \
+          --machine-ir ${lib.escapeShellArg "${spec.machineIr}"} \
+          ${lib.concatMapStringsSep " "
+            (value: "--interaction-contract-id ${lib.escapeShellArg value}")
+            (spec.interactionContractIds or [ ])} \
+          ${lib.concatMapStringsSep " "
+            (value: "--machine-evidence ${lib.escapeShellArg "${value}"}")
+            (spec.machineEvidence or [ ])} \
+          ${lib.optionalString (spec ? callbackAuthority) ''
+            --callback-authority ${lib.escapeShellArg "${spec.callbackAuthority}"} \
+            --callback-protocol-id ${lib.escapeShellArg spec.callbackProtocolId} \
+            --binary ${lib.escapeShellArg "${spec.binary}"}''} \
+          ${lib.optionalString (spec ? compilerProposal)
+            "--compiler-proposal ${lib.escapeShellArg "${spec.compilerProposal}"}"} \
+          --out "$out"
+      '') protocols;
+  intentTemplates = lib.mapAttrs (id: spec:
+    pkgs.runCommand
+      "${namePrefix}-${id}-call-intent-template"
+      { __contentAddressed = true; }
+      ''
+        mkdir -p "$out"
+        cp ${lib.escapeShellArg "${spec.intent}"} "$out/call-intent.json"
+      '') protocols;
+  subjects = lib.mapAttrs (id: result: {
+    proposal = result;
+    inspection = result;
+    check = result;
+    intentTemplate = intentTemplates.${id};
+  }) checked;
+  assetInventory = lib.concatLists (lib.mapAttrsToList (id: spec: [
+    { path = spec.intent; role = "call_intent"; owner = id; }
+    { path = spec.layouts; role = "call_layout"; owner = id; }
+  ]) protocols);
+  status = pkgs.runCommand
+    "${namePrefix}-call-protocol-status"
+    {
+      nativeBuildInputs = [ pkgs.jq ];
+      __contentAddressed = true;
+    }
+    ''
+      set -euo pipefail
+      mkdir -p "$out"
+      ${lib.concatStringsSep "\n" (lib.mapAttrsToList (id: result: ''
+        jq --arg id ${lib.escapeShellArg id} '. + {id: $id}' \
+          ${result}/call-status.json > ${lib.escapeShellArg "subject-${id}.json"}
+      '') checked)}
+      jq -s '
+        sort_by(.id) as $subjects
+        | {
+            format: "spaghetti-extractor-call-status-v1",
+            status: (if any($subjects[]; .status == "violated") then "violated"
+                     elif any($subjects[]; .status != "complete") then "incomplete"
+                     else "complete" end),
+            counts: {
+              subjects: ($subjects | length),
+              complete: ([$subjects[] | select(.status == "complete")] | length),
+              incomplete: ([$subjects[] | select(.status == "incomplete")] | length),
+              violated: ([$subjects[] | select(.status == "violated")] | length)
+            },
+            subjects: $subjects
+          }
+      ' ${lib.concatStringsSep " " (map (id: lib.escapeShellArg "subject-${id}.json") (builtins.attrNames checked))} \
+        > "$out/call-status.json"
+    '';
+in
+{
+  configured = protocols != { };
+  inherit assetInventory checked intentTemplates status subjects;
+  check = pkgs.linkFarm "${namePrefix}-checked-call-protocols"
+    (lib.mapAttrsToList (name: path: { inherit name path; }) checked);
+}

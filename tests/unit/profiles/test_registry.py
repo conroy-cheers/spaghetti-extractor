@@ -17,6 +17,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 PROFILE_DIRECTORY = REPOSITORY_ROOT / "profiles"
 EXPECTED_PROFILES = {
     "i686-mingw-freestanding-c0-v1.json",
+    "interaction-contracts-v1.json",
     "pe32-kernel32-callable-resolvers-v1.json",
     "pe32-kernel32-console-lockstep-v1.json",
     "pe32-kernel32-lockstep-v1.json",
@@ -59,7 +60,7 @@ class ProfileRegistryTests(unittest.TestCase):
     def test_committed_catalog_validates_exact_inventory(self) -> None:
         registry = validate_profile_inventory(PROFILE_DIRECTORY)
 
-        self.assertEqual(len(registry.profiles), 17)
+        self.assertEqual(len(registry.profiles), 18)
         self.assertEqual(set(registry.by_path()), EXPECTED_PROFILES)
         for registration in registry.registrations:
             self.assertTrue(registration.role)

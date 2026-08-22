@@ -18,6 +18,11 @@ _LOWERING_FIELDS = frozenset({
     "runtime_header_sha256",
     "interpreter_header_sha256",
     "interpreter_internal_header_sha256",
+    "capability_backend_header_sha256",
+    "capability_backend_source_sha256",
+    "atomics_header_sha256",
+    "atomics_backend_header_sha256",
+    "atomics_source_sha256",
 })
 
 
@@ -83,6 +88,11 @@ class FallbackLoweringHashes:
     runtime_header_sha256: str
     interpreter_header_sha256: str
     interpreter_internal_header_sha256: str
+    capability_backend_header_sha256: str
+    capability_backend_source_sha256: str
+    atomics_header_sha256: str
+    atomics_backend_header_sha256: str
+    atomics_source_sha256: str
 
     @classmethod
     def from_payload(cls, value: Any) -> "FallbackLoweringHashes":
@@ -102,6 +112,15 @@ class FallbackLoweringHashes:
             "interpreter_internal_header_sha256": (
                 self.interpreter_internal_header_sha256
             ),
+            "capability_backend_header_sha256": (
+                self.capability_backend_header_sha256
+            ),
+            "capability_backend_source_sha256": (
+                self.capability_backend_source_sha256
+            ),
+            "atomics_header_sha256": self.atomics_header_sha256,
+            "atomics_backend_header_sha256": self.atomics_backend_header_sha256,
+            "atomics_source_sha256": self.atomics_source_sha256,
         }
 
 

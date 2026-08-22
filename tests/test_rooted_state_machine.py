@@ -231,7 +231,7 @@ class RootedDirectControlTests(unittest.TestCase):
 
 def _manifest() -> dict:
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "inputs": {
             "state_machine": {"sha256": "1" * 64},
             "original_pe": {"sha256": "2" * 64},

@@ -307,6 +307,7 @@ class CheckedInductiveSourceReceiptV1:
     relation_sha256: str
     implementation_sha256: str
     machine_receipt_sha256: str
+    component_service_contracts: CanonicalValueV3
     obligations: tuple[InductiveSourceObligationV1, ...]
     receipt_sha256: str
     payload: CanonicalValueV3
@@ -342,6 +343,7 @@ class CheckedInductiveSourceReceiptV1:
                 "relation_sha256",
                 "implementation_sha256",
                 "machine_receipt_sha256",
+                "component_service_contracts",
             },
             "inductive source receipt bindings",
         )
@@ -355,6 +357,39 @@ class CheckedInductiveSourceReceiptV1:
         _text(checker["version"], "inductive source checker version")
         _digest(checker["executable_sha256"], "inductive source checker digest")
         _digest(checker["output_sha256"], "inductive source checker output digest")
+        service_contracts = _rows(
+            bindings["component_service_contracts"],
+            "inductive component service contracts",
+        )
+        service_ids: list[str] = []
+        for index, contract in enumerate(service_contracts):
+            checked = _object(
+                contract,
+                {
+                    "service_id",
+                    "interface_sha256",
+                    "semantic_contract_sha256",
+                    "operation_sha256",
+                    "model_sha256",
+                },
+                f"inductive component service contract {index}",
+            )
+            service_ids.append(
+                _identifier(checked["service_id"], "component service id")
+            )
+            for field in (
+                "interface_sha256",
+                "semantic_contract_sha256",
+                "operation_sha256",
+                "model_sha256",
+            ):
+                _digest(checked[field], f"component service {field}")
+        if service_ids != sorted(service_ids) or len(service_ids) != len(
+            set(service_ids)
+        ):
+            raise InductiveReceiptError(
+                "component service contracts must be ordered and unique"
+            )
         obligations = tuple(
             InductiveSourceObligationV1.parse(item, f"source obligation {index}")
             for index, item in enumerate(_rows(row["obligations"], "source obligations"))
@@ -414,6 +449,7 @@ class CheckedInductiveSourceReceiptV1:
             _digest(bindings["relation_sha256"], "cutpoint relation digest"),
             _digest(bindings["implementation_sha256"], "source implementation digest"),
             _digest(bindings["machine_receipt_sha256"], "machine receipt digest"),
+            CanonicalValueV3.of(service_contracts),
             obligations,
             observed,
             CanonicalValueV3.of(row),

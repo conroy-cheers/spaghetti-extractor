@@ -78,7 +78,7 @@ def _unit() -> dict[str, object]:
         },
     }
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": "unit:entry",
         "status": "qualified",
@@ -110,11 +110,11 @@ class TransitionRecordV3Tests(unittest.TestCase):
         self.assertEqual(encoded["unit_ir_sha256"], exact.unit_ir_sha256)
         self.assertEqual(
             hashlib.sha256(canonical_json_bytes_v3(encoded)).hexdigest(),
-            "29f6035b618032d7ab1ba1f6b296cb4a0609bf294bedf231ba8f36bd37250313",
+            "91a0d83742de35e8a3c92d4dd8bca3bdf78d29633fe55bf3c3cbdb07430172b5",
         )
         self.assertEqual(
             native.summary_id,
-            "transition-summary:9f0cbba0569c3bbbfdbbceb3",
+            "transition-summary:af1df6823f6b7cf770ff2e0e",
         )
         self.assertEqual(
             tuple(row.input_id for row in native.inputs),
@@ -125,18 +125,18 @@ class TransitionRecordV3Tests(unittest.TestCase):
         )
         self.assertEqual(
             native.memory_accesses[0].access_id,
-            "transition-memory:f0af22cc1d848f744183e668",
+            "transition-memory:6dea46e907e0df949e9f5135",
         )
         self.assertEqual(
             tuple(row.exit_id for row in native.exits),
             (
-                "transition-exit:0343dc8fb9b645b91fba86ff",
+                "transition-exit:b6982f67893ef876f4757bc0",
                 "transition-exit:ce9f54df0ddcb1f759f5f75e",
             ),
         )
         self.assertEqual(
             native.faults[0].fault_id,
-            "transition-fault:618a723d760ed10e49cb22b6",
+            "transition-fault:3265ba73de4b08ba1c0de9d4",
         )
         self.assertEqual(
             native.ordered_events[0].record_id,
@@ -152,6 +152,19 @@ class TransitionRecordV3Tests(unittest.TestCase):
         self.assertIsInstance(decoded, TransitionSummaryRecordV3)
         self.assertIsInstance(decoded.memory_accesses[0], TransitionMemoryAccessV3)
         self.assertIsInstance(decoded.exits[0], TransitionExitV3)
+
+    def test_checked_memory_action_metadata_is_not_a_transition_effect(self) -> None:
+        unit = _unit()
+        unit["semantics"]["memory_actions"] = {
+            "format": "spaghetti-extractor-machine-memory-action-graph-v1",
+            "status": "complete",
+            "actions": [],
+            "edges": [],
+        }
+        native = _derive_summary(ExactUnitV3.create(unit, pe_sha256=PE_SHA256))
+
+        self.assertEqual(native.status, "complete")
+        self.assertEqual(native.unsupported_effects, ())
 
     def test_nested_schema_and_identity_corruption_fail_closed(self) -> None:
         _exact, native = self._exact_and_native()

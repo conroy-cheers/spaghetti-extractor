@@ -1,0 +1,133 @@
+{
+  "format": "spaghetti-extractor-interaction-contract-catalog-v1",
+  "contracts": [
+    {
+      "format": "spaghetti-extractor-interaction-contract-v1",
+      "id": "c-runtime.strrchr.borrowed-interior-v1",
+      "subject": {
+        "kind": "external_import",
+        "dll": "msvcrt.dll",
+        "symbol": "strrchr"
+      },
+      "primitive_id": "service.invoke",
+      "type_parameters": [
+        {
+          "id": "character",
+          "kind": "reference",
+          "width": null,
+          "element_width": 8,
+          "access": "read",
+          "nullable": true,
+          "nul_terminated": null
+        },
+        {
+          "id": "needle",
+          "kind": "scalar",
+          "width": 8,
+          "element_width": null,
+          "access": null,
+          "nullable": null,
+          "nul_terminated": null
+        },
+        {
+          "id": "string",
+          "kind": "view",
+          "width": null,
+          "element_width": 8,
+          "access": "read",
+          "nullable": null,
+          "nul_terminated": true
+        }
+      ],
+      "ports": [
+        {"id": "argument.0", "direction": "input", "type_parameter": "string"},
+        {"id": "argument.1", "direction": "input", "type_parameter": "needle"},
+        {"id": "result", "direction": "output", "type_parameter": "character"}
+      ],
+      "requires": [],
+      "ensures": [
+        {
+          "op": "or",
+          "args": [
+            {
+              "op": "ref_is_null",
+              "args": [
+                {"op": "port", "direction": "output", "id": "result"}
+              ]
+            },
+            {
+              "op": "same_origin",
+              "args": [
+                {"op": "port", "direction": "output", "id": "result"},
+                {"op": "port", "direction": "input", "id": "argument.0"}
+              ]
+            }
+          ]
+        },
+        {
+          "op": "or",
+          "args": [
+            {
+              "op": "ref_is_null",
+              "args": [
+                {
+                  "op": "port",
+                  "direction": "output",
+                  "id": "result"
+                }
+              ]
+            },
+            {
+              "op": "or",
+              "args": [
+                {
+                  "op": "eq",
+                  "args": [
+                    {
+                      "op": "port",
+                      "direction": "input",
+                      "id": "argument.1"
+                    },
+                    {
+                      "op": "const",
+                      "value": 0,
+                      "width": 8
+                    }
+                  ]
+                },
+                {
+                  "op": "ult",
+                  "args": [
+                    {
+                      "op": "const",
+                      "value": 1,
+                      "width": 64
+                    },
+                    {
+                      "op": "ref_remaining",
+                      "args": [
+                        {
+                          "op": "port",
+                          "direction": "output",
+                          "id": "result"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "effects": [],
+      "provenance": {
+        "kind": "reviewed_provider_contract",
+        "source": "ISO C strrchr result relationship specialized to the checked msvcrt import",
+        "reviewed": true
+      },
+      "contract_sha256": "269fd22cbe4f7e9c29737304bf8ee9b31fc807bf90374b7d4ea5d9ce8f8c1ab6"
+    }
+  ],
+  "catalog_sha256": "6cc057074b2f964a5f8cf35a549e9c1f703512bdac73b76c32d2dcce01b57efa"
+}

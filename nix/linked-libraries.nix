@@ -5,17 +5,20 @@
   pythonSource,
   original,
   machineIr,
+  parametricSummaries ? null,
   namePrefix,
   artifactInputs ? null,
   artifactRoot ? null,
   catalogIndexes ? [ ],
   abiCatalogs ? [ ],
+  physicalAbiCatalogs ? [ ],
   catalogLock ? null,
   implementations ? { },
   adoptionIntents ? { },
   canonicalExternalSites ? null,
   targetCertificates ? null,
   targetId ? namePrefix,
+  binaryIdentity ? targetId,
 }:
 
 assert (artifactInputs == null) == (artifactRoot == null);
@@ -61,6 +64,15 @@ let
   releaseSource = mkPhaseSource "release-hypotheses" "proposal" [
     "spaghetti_extractor.libraries.v4_matching"
   ];
+  abiExtractionSource = mkPhaseSource "abi-extraction" "authority" [
+    "spaghetti_extractor.abi.extraction"
+  ];
+  abiMatchingSource = mkPhaseSource "abi-matching" "authority" [
+    "spaghetti_extractor.abi.matching"
+  ];
+  catalogCallContractSource = mkPhaseSource "catalog-call-contracts" "authority" [
+    "spaghetti_extractor.authority.catalog_call_contracts"
+  ];
   emptyReleaseSource = mkPhaseSource "empty-release-hypotheses" "proposal" [
     "spaghetti_extractor.libraries.v4_record_support"
     "spaghetti_extractor.util"
@@ -69,6 +81,8 @@ let
   artifactRootInput = asStoreInput "library-artifact-root" artifactRoot;
   catalogIndexInputs = map (asStoreInput "library-artifact-index.json") catalogIndexes;
   abiCatalogInputs = map (asStoreInput "library-abi-catalog-v3.json") abiCatalogs;
+  physicalAbiCatalogInputs = map
+    (asStoreInput "physical-abi-catalog-v1.json") physicalAbiCatalogs;
   catalogLockInput = asStoreInput "library-catalog-lock.json" catalogLock;
   implementationInputs = lib.mapAttrs
     (id: value: asStoreInput "${id}-reusable-library-implementation-v1.json" value)
@@ -241,6 +255,116 @@ let
         ' "$out/manifest.json" >/dev/null
       '';
 
+  catalogCallContracts =
+    if catalogSearchIndex == null || physicalAbiCatalogInputs == [ ] then null else
+    pkgs.runCommand "${namePrefix}-catalog-call-contracts-v3" commonAttrs ''
+      set -euo pipefail
+      ${environment catalogCallContractSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${lib.escapeShellArg original} \
+        ${lib.escapeShellArg binaryIdentity} \
+        ${targetSignatureGraph}/target-signature-graph.json \
+        ${catalogSearchIndex}/catalog-search-index.json \
+        "$out/artifact" \
+        ${lib.escapeShellArgs physicalAbiCatalogInputs} <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.authority.catalog_call_contracts import (
+          build_checked_catalog_call_contracts_v1,
+      )
+      from spaghetti_extractor.artifacts.artifact_set import canonical_json_bytes_v3
+      from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
+
+      records = build_checked_catalog_call_contracts_v1(
+          binary=pathlib.Path(sys.argv[1]),
+          binary_identity=sys.argv[2],
+          target_signature_graph=pathlib.Path(sys.argv[3]),
+          catalog_search_index=pathlib.Path(sys.argv[4]),
+          out=pathlib.Path(sys.argv[5]),
+          physical_abi_catalogs=[pathlib.Path(value) for value in sys.argv[6:]],
+      )
+      reader = ArtifactSetReaderV3(pathlib.Path(sys.argv[5]))
+      (pathlib.Path(sys.argv[5]).parent / "metadata.json").write_bytes(canonical_json_bytes_v3({
+          "format": "spaghetti-extractor-catalog-call-contract-set-v1",
+          "artifact_kind": reader.manifest.artifact_kind,
+          "artifact_id": reader.manifest.artifact_id,
+          "status": reader.manifest.status,
+          "record_ids": [row.contract_id for row in records],
+      }) + b"\n")
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-catalog-call-contract-set-v1" and
+        .artifact_kind == "catalog-call-contracts-v3" and
+        .status == "complete"
+      ' "$out/metadata.json" >/dev/null
+    '';
+
+  targetAbiEvidence =
+    if parametricSummaries == null || canonicalExternalSites == null then null else
+    pkgs.runCommand "${namePrefix}-target-abi-evidence-v1" commonAttrs ''
+      set -euo pipefail
+      ${environment abiExtractionSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${lib.escapeShellArg parametricSummaries} \
+        ${lib.escapeShellArg canonicalExternalSites} \
+        ${lib.escapeShellArg original} \
+        "$out/abi-evidence.json" <<'PY'
+      import hashlib
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.abi.extraction import (
+          extract_checked_abi_evidence_from_artifacts,
+      )
+
+      binary = pathlib.Path(sys.argv[3])
+      extract_checked_abi_evidence_from_artifacts(
+          parametric_summaries=pathlib.Path(sys.argv[1]),
+          canonical_external_sites=pathlib.Path(sys.argv[2]),
+          binary_sha256=hashlib.sha256(binary.read_bytes()).hexdigest(),
+          out=pathlib.Path(sys.argv[4]),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-abi-analysis-bundle-v1" and
+        (.status == "complete" or .status == "incomplete" or .status == "violated")
+      ' "$out/abi-evidence.json" >/dev/null
+    '';
+
+  abiMatchResolution =
+    if targetAbiEvidence == null || physicalAbiCatalogInputs == [ ] then null else
+    pkgs.runCommand "${namePrefix}-abi-match-resolution-v1" commonAttrs ''
+      set -euo pipefail
+      ${environment abiMatchingSource}
+      mkdir -p "$out"
+      ${python} - \
+        ${targetAbiEvidence}/abi-evidence.json \
+        ${releaseHypotheses} \
+        ${targetSignatureGraph}/target-signature-graph.json \
+        "$out/abi-match-resolution.json" \
+        ${lib.escapeShellArgs physicalAbiCatalogInputs} <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.abi.matching import resolve_library_match_abis
+
+      resolve_library_match_abis(
+          target_abi_evidence=pathlib.Path(sys.argv[1]),
+          release_hypotheses=pathlib.Path(sys.argv[2]),
+          target_signature_graph=pathlib.Path(sys.argv[3]),
+          out=pathlib.Path(sys.argv[4]),
+          physical_abi_catalogs=[pathlib.Path(value) for value in sys.argv[5:]],
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-abi-match-resolution-v1" and
+        (.status == "complete" or .status == "incomplete" or .status == "violated")
+      ' "$out/abi-match-resolution.json" >/dev/null
+    '';
+
   checkedIslands = lib.mapAttrs
     (selectionId: intent:
       let
@@ -270,6 +394,9 @@ let
         behaviorPack = implementation;
         catalogSearchIndex =
           "${catalogSearchIndex}/catalog-search-index.json";
+        abiMatchResolution =
+          if abiMatchResolution == null then null
+          else "${abiMatchResolution}/abi-match-resolution.json";
       })
     adoptionIntents;
   nonNullCheckedIslands = lib.filterAttrs (_: value: value != null) checkedIslands;
@@ -286,6 +413,9 @@ let
         behaviorPack = implementation;
         catalogSearchIndex =
           "${catalogSearchIndex}/catalog-search-index.json";
+        abiMatchResolution =
+          if abiMatchResolution == null then null
+          else "${abiMatchResolution}/abi-match-resolution.json";
       })
     nonNullCheckedIslands;
   checks = lib.mapAttrs
@@ -310,8 +440,9 @@ assert lib.assertMsg (builtins.all (value: builtins.isString value && value != "
 assert lib.assertMsg (builtins.all identifier (builtins.attrNames adoptionIntents))
   "library adoption keys must be identifiers";
 {
-  inherit artifactIndex catalogSearchIndex generatedCatalogLock targetSignatureGraph
-    releaseHypotheses checkedIslands generatedComponents checks;
+  inherit artifactIndex catalogSearchIndex generatedCatalogLock effectiveCatalogLock targetSignatureGraph
+    releaseHypotheses catalogCallContracts targetAbiEvidence abiMatchResolution checkedIslands
+    generatedComponents checks;
   implementations = implementationInputs;
   adoptionIntents = intentInputs;
 }

@@ -16,6 +16,7 @@ from ..artifacts.formats import (
     CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
 )
 from ..artifacts.phases import RecordCodecV3
+from ..artifacts.callback_protocols import callback_protocol_from_machine_contract
 from ._schema import (
     canonical_strings,
     digest,
@@ -655,6 +656,19 @@ class CallbackRequirementV3:
         return result
 
 
+def callback_requirement_order_key_v3(
+    value: CallbackRequirementV3,
+) -> tuple[int, int, str, str]:
+    """Canonical callback order follows its semantic registration ordinal."""
+
+    return (
+        value.ordinal,
+        value.target_rva,
+        value.target_unit_id,
+        value.callback_id,
+    )
+
+
 @dataclass(frozen=True)
 class CallbackSourceDecisionV3:
     """Checked classification of one recovered callback-source word."""
@@ -665,11 +679,15 @@ class CallbackSourceDecisionV3:
     sentinel_word: int | None = None
 
     def __post_init__(self) -> None:
-        if self.kind not in {"callback_target", "non_callback_sentinel"}:
+        if self.kind not in {
+            "callback_target",
+            "non_callback_sentinel",
+            "parametric_entry_word",
+        }:
             fail(
                 "record_schema_mismatch",
                 f"callback-source decision kind is {self.kind!r}",
-                "use callback_target or non_callback_sentinel",
+                "use callback_target, non_callback_sentinel, or parametric_entry_word",
             )
         uint(self.argument_index, "callback-source argument index", maximum=255)
         mapping(
@@ -769,6 +787,23 @@ class ExternalCallbackSourceV3:
         *,
         argument_words: int,
     ) -> "ExternalCallbackSourceV3":
+        protocol = callback_protocol_from_machine_contract(
+            machine_contract, context="external callback protocol"
+        )
+        if protocol is not None:
+            source = protocol.source
+            if source is None:
+                fail(
+                    "external_profile_callback_source_malformed",
+                    "callback protocol has no registration source",
+                    "bind register or replace to one exact source",
+                )
+            return cls(
+                source.kind,
+                source.argument,
+                source.offset,
+                tuple(row.word for row in source.sentinels),
+            )
         raw = mapping(
             machine_contract.get("callback_source"),
             "external callback source",
@@ -885,15 +920,23 @@ class ExternalContractV3:
                 "use none or registers",
             )
         mapping(self.machine_contract.to_value(), "external machine contract")
-        if self.callbacks != tuple(sorted(set(self.callbacks))):
+        if self.callbacks != tuple(
+            sorted(set(self.callbacks), key=callback_requirement_order_key_v3)
+        ) or tuple(row.ordinal for row in self.callbacks) != tuple(
+            range(len(self.callbacks))
+        ):
             fail(
                 "noncanonical_record_order",
-                "external callback requirements are duplicated or unsorted",
-                "sort and deduplicate callback requirements",
+                "external callback requirements are duplicated, unsorted, or have non-contiguous ordinals",
+                "sort callbacks by contiguous registration ordinal",
             )
         sentinel_decision = (
             self.callback_source_decision is not None
             and self.callback_source_decision.kind == "non_callback_sentinel"
+        )
+        parametric_decision = (
+            self.callback_source_decision is not None
+            and self.callback_source_decision.kind == "parametric_entry_word"
         )
         if self.callback_effect == "none" and (
             self.callbacks or self.callback_source_decision is not None
@@ -903,17 +946,28 @@ class ExternalContractV3:
                 "non-callback contract carries callback evidence",
                 "clear callback requirements and source decisions",
             )
-        if self.callback_effect == "registers" and not self.callbacks and not sentinel_decision:
+        if (
+            self.callback_effect == "registers"
+            and not self.callbacks
+            and not sentinel_decision
+            and not parametric_decision
+        ):
             fail(
                 "external_callback_contradiction",
                 "callback registration has neither targets nor a checked sentinel",
-                "supply finite callback targets or a checked sentinel decision",
+                "supply finite callback targets, a checked sentinel, or a parametric entry-word decision",
             )
         if sentinel_decision and self.callbacks:
             fail(
                 "external_callback_contradiction",
                 "non-callback sentinel also registers callback targets",
                 "clear callback targets for the sentinel site",
+            )
+        if parametric_decision and self.callbacks:
+            fail(
+                "external_callback_contradiction",
+                "parametric callback source also carries concrete callback targets",
+                "clear callback targets until rooted call-frame instantiation closes",
             )
         require_stable_id(
             self.contract_id,
@@ -982,7 +1036,9 @@ class ExternalContractV3:
             label="external contract arity",
         )
         canonical_identity = CanonicalValueV3.of(identity)
-        ordered_callbacks = tuple(sorted(set(callbacks)))
+        ordered_callbacks = tuple(
+            sorted(set(callbacks), key=callback_requirement_order_key_v3)
+        )
         canonical_machine_contract = CanonicalValueV3.of(
             machine_contract
             if machine_contract is not None
@@ -1508,5 +1564,6 @@ __all__ = [
     "ExternalProfileV3",
     "ExternalSiteEvidenceV3",
     "VARIADIC_STACK_SUFFIX_FORWARDING_KIND_V3",
+    "callback_requirement_order_key_v3",
     "external_site_id_v3",
 ]

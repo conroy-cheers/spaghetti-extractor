@@ -50,6 +50,7 @@ class ComponentIntent:
     verification: ComponentEvidencePlan | None
     machine_binding: PurePosixPath | None = None
     induction: PurePosixPath | None = None
+    relation: PurePosixPath | None = None
 
 
 @dataclass(frozen=True)
@@ -63,6 +64,7 @@ class ComponentGroupIntent:
     verification: ComponentEvidencePlan | None
     machine_binding: PurePosixPath | None = None
     induction: PurePosixPath | None = None
+    relation: PurePosixPath | None = None
 
 
 @dataclass(frozen=True)

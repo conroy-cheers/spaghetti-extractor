@@ -3,7 +3,7 @@
 let
   binary = pkgs.writeText "authority-source-plan-fixture.exe" "MZfixture";
   unit = id: start: end: targets: marker: {
-    format = "spaghetti-extractor-machine-ir-v2";
+    format = "spaghetti-extractor-machine-ir-v3";
     record_kind = "unit";
     inherit id;
     status = "qualified";

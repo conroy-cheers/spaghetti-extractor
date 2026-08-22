@@ -192,6 +192,7 @@ def _static_jump_table_recovery_fixed_point(
                     "source_rva": exit_record["source_rva"],
                     "source_event_index": exit_record.get("source_event_index"),
                     "kind": exit_record["kind"],
+                    "target_expression": copy.deepcopy(target_expression),
                     "finite_index_domain": finite_domain,
                     "target_unit_ids": [
                         starts[rva]["id"] for rva in resolved_target_rvas

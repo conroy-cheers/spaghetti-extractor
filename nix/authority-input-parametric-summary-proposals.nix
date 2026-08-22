@@ -8,6 +8,8 @@
   structuralTargets,
   externalProfiles,
   staticValueOrigins,
+  catalogCallContracts,
+  callBoundaryContracts,
   name,
   contentAddressed ? true,
 }:
@@ -48,6 +50,8 @@ pkgs.runCommand name (
     --structural-targets ${structuralTargets} \
     --external-profiles ${externalProfiles} \
     --static-value-origins ${staticValueOrigins} \
+    --catalog-call-contracts ${catalogCallContracts} \
+    --call-boundary-contracts ${callBoundaryContracts} \
     --out "$out/artifact"
 
   ${pythonEnv}/bin/python3 - "$out/artifact" "$out/metadata.json" <<'PY'

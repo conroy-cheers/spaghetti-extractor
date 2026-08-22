@@ -10,11 +10,12 @@ from pathlib import Path
 from spaghetti_extractor.candidate.interpreter import (
     SPX_INTERPRETER_DEFINEDNESS_USE_FORMAT,
     CandidateInterpreterError,
-    compile_spx_interpreter_machine_ir,
+    compile_spx_interpreter_machine_ir as _compile_spx_interpreter_machine_ir,
     compile_spx_interpreter_program,
-    write_fallback_capability_analysis,
+    write_fallback_capability_analysis as _write_fallback_capability_analysis,
     write_spx_interpreter_package as _write_spx_interpreter_package,
 )
+from spaghetti_extractor.machine_ir.memory_actions import build_memory_action_graph
 
 
 _SHA_A = "a" * 64
@@ -73,47 +74,43 @@ def _write_machine(path: Path, rows: list[dict[str, object]]) -> None:
 
 
 def _test_machine_ir_unit(row: dict[str, object]) -> dict[str, object]:
-    if row.get("format") == "spaghetti-extractor-machine-ir-v2":
-        return row
-    original = dict(row.get("original", {}))
-    semantics = {
-        name: row.get(name)
-        for name in (
-            "pre_state",
-            "register_writes",
-            "flag_writes",
-            "memory_events",
-            "external_events",
-            "faults",
-            "ordered_events",
-            "edge_conditions",
-            "outcome",
-            "stack_delta",
-            "counts",
-            "fpu_state",
-            "instruction_effect_schedule",
+    if row.get("format") == "spaghetti-extractor-machine-ir-v3":
+        unit = json.loads(json.dumps(row))
+    else:
+        original = dict(row.get("original", {}))
+        semantics = {
+            name: row.get(name)
+            for name in (
+                "pre_state", "register_writes", "flag_writes", "memory_events",
+                "external_events", "faults", "ordered_events", "edge_conditions",
+                "outcome", "stack_delta", "counts", "fpu_state",
+                "instruction_effect_schedule",
+            )
+        }
+        unit = {
+            "format": "spaghetti-extractor-machine-ir-v3",
+            "record_kind": "unit",
+            "id": row["id"],
+            "status": "incomplete" if row.get("status") == "incomplete" else "qualified",
+            "reachable": row.get("reachable", True),
+            "source": {
+                "original": original,
+                "contract_sha256": row.get("contract_sha256", _SHA_A),
+                "instruction_bytes_sha256": row.get("instruction_bytes_sha256", _SHA_B),
+                "semantic_export": None,
+            },
+            "instructions": _without_raw_instruction_material(row.get("instructions", [])),
+            "x87_micro_ops": row.get("x87_micro_ops", []),
+            "semantics": semantics,
+        }
+    unit_semantics = unit["semantics"]
+    if not isinstance(unit_semantics.get("memory_actions"), dict):
+        unit_semantics["memory_actions"] = build_memory_action_graph(
+            instructions=unit.get("instructions", []),
+            memory_events=unit_semantics.get("memory_events") or [],
+            ordered_events=unit_semantics.get("ordered_events") or [],
         )
-    }
-    return {
-        "format": "spaghetti-extractor-machine-ir-v2",
-        "record_kind": "unit",
-        "id": row["id"],
-        "status": "incomplete" if row.get("status") == "incomplete" else "qualified",
-        "reachable": row.get("reachable", True),
-        "source": {
-            "original": original,
-            "contract_sha256": row.get("contract_sha256", _SHA_A),
-            "instruction_bytes_sha256": row.get(
-                "instruction_bytes_sha256", _SHA_B
-            ),
-            "semantic_export": None,
-        },
-        "instructions": _without_raw_instruction_material(
-            row.get("instructions", [])
-        ),
-        "x87_micro_ops": row.get("x87_micro_ops", []),
-        "semantics": semantics,
-    }
+    return unit
 
 
 def _without_raw_instruction_material(value):
@@ -141,17 +138,30 @@ def write_spx_interpreter_package(*, machine_ir: Path, out: Path):
         for line in Path(machine_ir).read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    if all(row.get("format") == "spaghetti-extractor-machine-ir-v2" for row in rows):
-        strict_input = Path(machine_ir)
-    else:
-        strict_input = Path(machine_ir).with_name(
-            f"{Path(machine_ir).stem}-strict.jsonl"
-        )
-        _write_machine(
-            strict_input,
-            [_test_machine_ir_unit(row) for row in rows],
-        )
+    strict_input = Path(machine_ir).with_name(f"{Path(machine_ir).stem}-strict.jsonl")
+    _write_machine(strict_input, [_test_machine_ir_unit(row) for row in rows])
     return _write_spx_interpreter_package(machine_ir=strict_input, out=out)
+
+
+def _strict_machine_input(machine_ir: Path) -> Path:
+    rows = [
+        json.loads(line)
+        for line in Path(machine_ir).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    strict = Path(machine_ir).with_name(f"{Path(machine_ir).stem}-strict-v3.jsonl")
+    _write_machine(strict, [_test_machine_ir_unit(row) for row in rows])
+    return strict
+
+
+def compile_spx_interpreter_machine_ir(machine_ir: Path):
+    return _compile_spx_interpreter_machine_ir(_strict_machine_input(machine_ir))
+
+
+def write_fallback_capability_analysis(*, machine_ir: Path, out: Path):
+    return _write_fallback_capability_analysis(
+        machine_ir=_strict_machine_input(machine_ir), out=out
+    )
 
 
 def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
@@ -227,7 +237,7 @@ def _machine_ir_pre_call_tail_unit() -> dict[str, object]:
         },
     ]
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": "semantic-transfer:pre-call-tail",
         "status": "qualified",
@@ -474,7 +484,7 @@ def _machine_ir_stack_call_after_register_reuse_unit() -> dict[str, object]:
         },
     ]
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": "semantic-transfer:stack-call-after-register-reuse",
         "status": "qualified",
@@ -603,7 +613,7 @@ def _machine_ir_load_compare_branch_unit() -> dict[str, object]:
         },
     ]
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": "semantic-transfer:load-compare-branch",
         "status": "qualified",

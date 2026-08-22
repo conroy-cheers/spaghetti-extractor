@@ -204,6 +204,24 @@ class StaticTestManifestTests(unittest.TestCase):
         files = [path for shard in manifest["shards"] for path in shard["files"]]
         self.assertNotIn("targets", files)
 
+    def test_generic_manifest_includes_explicit_target_resource(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = _repository(Path(temporary))
+            resource = root / "targets/example/target.json"
+            resource.parent.mkdir(parents=True)
+            resource.write_text("{}\n", encoding="ascii")
+            test = root / "tests/unit/core/test_base.py"
+            test.write_text(
+                test.read_text(encoding="ascii")
+                + 'TESTKIT = {"resources": ("targets/example/target.json",)}\n',
+                encoding="ascii",
+            )
+
+            manifest = build_static_test_manifest(root)
+
+        files = [path for shard in manifest["shards"] for path in shard["files"]]
+        self.assertIn("targets/example/target.json", files)
+
     def test_live_plan_filters_target_resources_and_prebuilt_smoke(self) -> None:
         plan = SuitePlan(
             mode="affected",
@@ -212,13 +230,14 @@ class StaticTestManifestTests(unittest.TestCase):
             selected_tests=("tests/smoke/test_one", "tests/unit/core/test_two"),
             selection_reasons=(),
             shards=(
-                PlannedShard("smoke", "small", (), (), (), (), "1" * 64),
+                PlannedShard("smoke", "small", (), (), (), (), (), "1" * 64),
                 PlannedShard(
                     "pure-one",
                     "small",
                     ("tests/unit/core/test_two",),
                     ("tests/unit/core/test_two.py",),
                     ("src/spaghetti_extractor/value.py", "targets/example"),
+                    (),
                     (),
                     "2" * 64,
                 ),

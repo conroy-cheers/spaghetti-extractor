@@ -1,7 +1,6 @@
 {
-  "format": "spaghetti-extractor-static-machine-import-profile-v1",
+  "format": "spaghetti-extractor-static-machine-import-profile-v2",
   "id": "pe32-msvcrt-machine-runtime-v1",
-  "default_callback_effect": "none",
   "includes": [
     "pe32-kernel32-lockstep-v1.json",
     "pe32-kernel32-runtime-v1.json",
@@ -83,18 +82,30 @@
       "result_register_relations": [
         {"register": "eax", "relation": "exact"}
       ],
-      "callback_behavior": "registration",
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
-      "callback_effect": "explicit",
-      "callback_source": {"kind": "argument_word", "argument": 0},
-      "callback_lifetime": "until_invoked_or_process_exit",
-      "callback_abi": {
-        "kind": "generic_callback",
-        "argument_words": 0,
-        "stack_cleanup_bytes": 0,
-        "nullable": false
+      "callback_protocol": {
+        "format": "spaghetti-extractor-callback-protocol-v1",
+        "id": "msvcrt-atexit-handler",
+        "action": "register",
+        "source": {"kind": "argument_word", "argument": 0, "sentinels": []},
+        "signature": {
+          "abi_template": "pe32-cdecl-v1",
+          "argument_words": 0,
+          "stack_cleanup_bytes": 0,
+          "result": {"kind": "void"}
+        },
+        "instance": {"kind": "registration_sequence"},
+        "previous_result": null,
+        "lifetime": {"kind": "one_shot_or_process_exit"},
+        "delivery": {"timing": "deferred", "thread": "provider_serialized"},
+        "cardinality": {
+          "minimum": 0,
+          "maximum": 1,
+          "scope": "registration_generation"
+        },
+        "provider_behavior": null
       }
     },
     {
@@ -162,18 +173,34 @@
       "result_register_relations": [
         {"register": "eax", "relation": "related_word"}
       ],
-      "callback_behavior": "registration",
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
-      "callback_effect": "explicit",
-      "callback_source": {"kind": "argument_word", "argument": 0},
-      "callback_lifetime": "until_replaced_or_process_exit",
-      "callback_abi": {
-        "kind": "generic_callback",
-        "argument_words": 1,
-        "stack_cleanup_bytes": 0,
-        "nullable": true
+      "callback_protocol": {
+        "format": "spaghetti-extractor-callback-protocol-v1",
+        "id": "msvcrt-user-math-error-handler",
+        "action": "replace",
+        "source": {
+          "kind": "argument_word",
+          "argument": 0,
+          "sentinels": [{"word": 0, "kind": "null"}]
+        },
+        "signature": {
+          "abi_template": "pe32-cdecl-v1",
+          "argument_words": 1,
+          "stack_cleanup_bytes": 0,
+          "result": {"kind": "word", "register": "eax"}
+        },
+        "instance": {"kind": "singleton"},
+        "previous_result": null,
+        "lifetime": {"kind": "until_replaced_or_process_exit"},
+        "delivery": {"timing": "deferred", "thread": "external_concurrent"},
+        "cardinality": {
+          "minimum": 0,
+          "maximum": null,
+          "scope": "registration_generation"
+        },
+        "provider_behavior": null
       }
     },
     {
@@ -235,6 +262,15 @@
         "format_argument": 1,
         "format_unit_bytes": 1
       },
+      "raw_caller_stack_suffix_forwarding": {
+        "kind": "exact_raw_caller_stack_suffix_v1",
+        "minimum_argument_words": 2,
+        "source": "caller_argument_stack",
+        "destination": "same_library_machine_ir_callthrough",
+        "extent": "all_words_after_minimum_prefix",
+        "word_relation": "exact_u32",
+        "order_relation": "preserved"
+      },
       "result_register_relations": [
         {"register": "eax", "relation": "exact"}
       ],
@@ -272,6 +308,15 @@
         "minimum_words": 2,
         "format_argument": 1,
         "format_unit_bytes": 2
+      },
+      "raw_caller_stack_suffix_forwarding": {
+        "kind": "exact_raw_caller_stack_suffix_v1",
+        "minimum_argument_words": 2,
+        "source": "caller_argument_stack",
+        "destination": "same_library_machine_ir_callthrough",
+        "extent": "all_words_after_minimum_prefix",
+        "word_relation": "exact_u32",
+        "order_relation": "preserved"
       },
       "result_register_relations": [
         {"register": "eax", "relation": "exact"}
@@ -341,22 +386,44 @@
       "result_register_relations": [
         {"register": "eax", "relation": "related_word"}
       ],
-      "callback_behavior": "registration",
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
-      "callback_effect": "explicit",
-      "callback_source": {
-        "kind": "argument_word",
-        "argument": 1,
-        "non_callback_sentinel_words": [0, 1]
-      },
-      "callback_lifetime": "until_replaced_or_process_exit",
-      "callback_abi": {
-        "kind": "generic_callback",
-        "argument_words": 1,
-        "stack_cleanup_bytes": 0,
-        "nullable": false
+      "callback_protocol": {
+        "format": "spaghetti-extractor-callback-protocol-v1",
+        "id": "msvcrt-signal-handler",
+        "action": "replace",
+        "source": {
+          "kind": "argument_word",
+          "argument": 1,
+          "sentinels": [
+            {"word": 0, "kind": "default"},
+            {"word": 1, "kind": "ignore"}
+          ]
+        },
+        "signature": {
+          "abi_template": "pe32-cdecl-v1",
+          "argument_words": 1,
+          "stack_cleanup_bytes": 0,
+          "result": {"kind": "void"}
+        },
+        "instance": {"kind": "argument", "argument": 0},
+        "previous_result": {
+          "register": "eax",
+          "nullable": false,
+          "sentinels": [
+            {"word": 0, "kind": "default"},
+            {"word": 1, "kind": "ignore"}
+          ]
+        },
+        "lifetime": {"kind": "until_replaced_or_process_exit"},
+        "delivery": {"timing": "deferred", "thread": "external_concurrent"},
+        "cardinality": {
+          "minimum": 0,
+          "maximum": null,
+          "scope": "registration_generation"
+        },
+        "provider_behavior": null
       }
     },
     {

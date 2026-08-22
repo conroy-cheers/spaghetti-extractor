@@ -7,6 +7,7 @@
   machineIrManifest,
   fallbackCapabilityAnalysis,
   activationPlan,
+  rootedBehavioralProjection,
   structuralArtifacts,
 }:
 
@@ -54,6 +55,7 @@ pkgs.runCommand "${namePrefix}-structural-executable-receipt-v1" {
     ${activationPlan}/activation-plan.json \
     ${machineIr} \
     ${machineIrManifest} \
+    ${rootedBehavioralProjection}/rooted-behavioral-projection-v1.json \
     "$out/structural-executable.json" <<'PY'
   import json
   import pathlib
@@ -64,7 +66,7 @@ pkgs.runCommand "${namePrefix}-structural-executable-receipt-v1" {
       write_policy_receipt,
   )
 
-  artifacts, fallback, activation, machine_ir, manifest, output = sys.argv[1:]
+  artifacts, fallback, activation, machine_ir, manifest, projection, output = sys.argv[1:]
   receipt = build_structural_executable_receipt(
       artifacts={
           key: pathlib.Path(value)
@@ -74,6 +76,7 @@ pkgs.runCommand "${namePrefix}-structural-executable-receipt-v1" {
       activation_plan=pathlib.Path(activation),
       machine_ir=pathlib.Path(machine_ir),
       machine_ir_manifest=pathlib.Path(manifest),
+      rooted_projection=pathlib.Path(projection),
   )
   write_policy_receipt(pathlib.Path(output), receipt)
   PY
@@ -84,6 +87,8 @@ pkgs.runCommand "${namePrefix}-structural-executable-receipt-v1" {
     (.release_accepted | not) and
     (.bindings.machine_ir_sha256 | test("^[0-9a-f]{64}$")) and
     (.bindings.machine_ir_manifest_sha256 | test("^[0-9a-f]{64}$")) and
-    (.families | length) == 9
+    (.families | length) == 10 and
+    (.bindings.rooted_behavioral_projection.projection_sha256 |
+      test("^[0-9a-f]{64}$"))
   ' "$out/structural-executable.json" >/dev/null
 ''

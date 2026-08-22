@@ -14,6 +14,152 @@
       "path": "src/spaghetti_extractor/__main__.py",
       "resources": []
     },
+    "spaghetti_extractor.abi": {
+      "dependencies": [
+        "spaghetti_extractor"
+      ],
+      "path": "src/spaghetti_extractor/abi/__init__.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.catalog": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.declarations",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.abi.solver",
+        "spaghetti_extractor.abi.symbols",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.libraries.abi_catalog"
+      ],
+      "path": "src/spaghetti_extractor/abi/catalog.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.compatibility": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.model"
+      ],
+      "path": "src/spaghetti_extractor/abi/compatibility.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.declaration_spec": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.declarations",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.artifacts.formats"
+      ],
+      "path": "src/spaghetti_extractor/abi/declaration_spec.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.declarations": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.artifacts.formats"
+      ],
+      "path": "src/spaghetti_extractor/abi/declarations.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.extraction": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.abi.solver",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.artifacts.io",
+        "spaghetti_extractor.authority.external_site_records",
+        "spaghetti_extractor.authority.parametric_summary_records"
+      ],
+      "path": "src/spaghetti_extractor/abi/extraction.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.ingestion": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.declarations",
+        "spaghetti_extractor.abi.extraction",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.abi.solver",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.formats"
+      ],
+      "path": "src/spaghetti_extractor/abi/ingestion.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.legacy": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.libraries.abi_records"
+      ],
+      "path": "src/spaghetti_extractor/abi/legacy.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.matching": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.catalog",
+        "spaghetti_extractor.abi.compatibility",
+        "spaghetti_extractor.abi.extraction",
+        "spaghetti_extractor.abi.legacy",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.abi.solver",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.libraries.signature_graph",
+        "spaghetti_extractor.libraries.v4_release_set"
+      ],
+      "path": "src/spaghetti_extractor/abi/matching.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.model": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.artifacts.formats"
+      ],
+      "path": "src/spaghetti_extractor/abi/model.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.native_solver": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.abi.solver"
+      ],
+      "path": "src/spaghetti_extractor/abi/native_solver.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.solver": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.abi.native_solver",
+        "spaghetti_extractor.artifacts.formats"
+      ],
+      "path": "src/spaghetti_extractor/abi/solver.py",
+      "resources": []
+    },
+    "spaghetti_extractor.abi.symbols": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.authority.parametric_summary_records"
+      ],
+      "path": "src/spaghetti_extractor/abi/symbols.py",
+      "resources": []
+    },
     "spaghetti_extractor.artifacts": {
       "dependencies": [
         "spaghetti_extractor"
@@ -27,6 +173,26 @@
         "spaghetti_extractor.artifacts"
       ],
       "path": "src/spaghetti_extractor/artifacts/artifact_set.py",
+      "resources": []
+    },
+    "spaghetti_extractor.artifacts.boundary_claims": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.io"
+      ],
+      "path": "src/spaghetti_extractor/artifacts/boundary_claims.py",
+      "resources": []
+    },
+    "spaghetti_extractor.artifacts.callback_protocols": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.errors"
+      ],
+      "path": "src/spaghetti_extractor/artifacts/callback_protocols.py",
       "resources": []
     },
     "spaghetti_extractor.artifacts.formats": {
@@ -52,6 +218,14 @@
         "spaghetti_extractor.artifacts.artifact_set"
       ],
       "path": "src/spaghetti_extractor/artifacts/io.py",
+      "resources": []
+    },
+    "spaghetti_extractor.artifacts.machine_abi": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts"
+      ],
+      "path": "src/spaghetti_extractor/artifacts/machine_abi.py",
       "resources": []
     },
     "spaghetti_extractor.artifacts.phases": {
@@ -101,7 +275,7 @@
       "path": "src/spaghetti_extractor/authority/authority_common.py",
       "resources": []
     },
-    "spaghetti_extractor.authority.callbacks": {
+    "spaghetti_extractor.authority.call_boundary_contracts": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
@@ -109,11 +283,43 @@
         "spaghetti_extractor.artifacts.phases",
         "spaghetti_extractor.authority",
         "spaghetti_extractor.authority._schema",
+        "spaghetti_extractor.authority.incoming_call_frames",
+        "spaghetti_extractor.authority.normal_call_abi"
+      ],
+      "path": "src/spaghetti_extractor/authority/call_boundary_contracts.py",
+      "resources": []
+    },
+    "spaghetti_extractor.authority.callbacks": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.callback_protocols",
+        "spaghetti_extractor.artifacts.io",
+        "spaghetti_extractor.artifacts.phases",
+        "spaghetti_extractor.authority",
+        "spaghetti_extractor.authority._schema",
         "spaghetti_extractor.authority.authority_common",
         "spaghetti_extractor.authority.external_site_records",
-        "spaghetti_extractor.authority.semantic_index"
+        "spaghetti_extractor.authority.incoming_call_frames"
       ],
       "path": "src/spaghetti_extractor/authority/callbacks.py",
+      "resources": []
+    },
+    "spaghetti_extractor.authority.catalog_call_contracts": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.abi.catalog",
+        "spaghetti_extractor.abi.model",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.artifacts.phases",
+        "spaghetti_extractor.authority",
+        "spaghetti_extractor.authority._schema",
+        "spaghetti_extractor.libraries.abi_catalog",
+        "spaghetti_extractor.libraries.signature_graph",
+        "spaghetti_extractor.libraries.span_matching"
+      ],
+      "path": "src/spaghetti_extractor/authority/catalog_call_contracts.py",
       "resources": []
     },
     "spaghetti_extractor.authority.diagnostics": {
@@ -165,6 +371,7 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.callback_protocols",
         "spaghetti_extractor.artifacts.io",
         "spaghetti_extractor.artifacts.phases",
         "spaghetti_extractor.authority",
@@ -173,7 +380,9 @@
         "spaghetti_extractor.authority.external_abi",
         "spaghetti_extractor.authority.external_site_records",
         "spaghetti_extractor.authority.identities",
+        "spaghetti_extractor.authority.incoming_call_frames",
         "spaghetti_extractor.authority.semantic_index",
+        "spaghetti_extractor.authority.static_value_records",
         "spaghetti_extractor.authority.target_certificate_records",
         "spaghetti_extractor.authority.transition_records"
       ],
@@ -184,6 +393,7 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.callback_protocols",
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.artifacts.phases",
         "spaghetti_extractor.authority",
@@ -248,6 +458,20 @@
         "spaghetti_extractor.authority"
       ],
       "path": "src/spaghetti_extractor/authority/identities.py",
+      "resources": []
+    },
+    "spaghetti_extractor.authority.incoming_call_frames": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.io",
+        "spaghetti_extractor.artifacts.phases",
+        "spaghetti_extractor.authority",
+        "spaghetti_extractor.authority._schema",
+        "spaghetti_extractor.authority.semantic_index",
+        "spaghetti_extractor.authority.transition_records"
+      ],
+      "path": "src/spaghetti_extractor/authority/incoming_call_frames.py",
       "resources": []
     },
     "spaghetti_extractor.authority.inductive": {
@@ -320,6 +544,18 @@
       "path": "src/spaghetti_extractor/authority/memory_versions.py",
       "resources": []
     },
+    "spaghetti_extractor.authority.normal_call_abi": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.machine_abi",
+        "spaghetti_extractor.artifacts.phases",
+        "spaghetti_extractor.authority",
+        "spaghetti_extractor.authority._schema"
+      ],
+      "path": "src/spaghetti_extractor/authority/normal_call_abi.py",
+      "resources": []
+    },
     "spaghetti_extractor.authority.parametric_summary_checker": {
       "dependencies": [
         "spaghetti_extractor",
@@ -329,6 +565,8 @@
         "spaghetti_extractor.authority",
         "spaghetti_extractor.authority._schema",
         "spaghetti_extractor.authority.authority_common",
+        "spaghetti_extractor.authority.call_boundary_contracts",
+        "spaghetti_extractor.authority.catalog_call_contracts",
         "spaghetti_extractor.authority.external_site_records",
         "spaghetti_extractor.authority.memory_records",
         "spaghetti_extractor.authority.parametric_summary_checks",
@@ -349,6 +587,8 @@
         "spaghetti_extractor.authority",
         "spaghetti_extractor.authority._schema",
         "spaghetti_extractor.authority.authority_common",
+        "spaghetti_extractor.authority.call_boundary_contracts",
+        "spaghetti_extractor.authority.catalog_call_contracts",
         "spaghetti_extractor.authority.external_site_records",
         "spaghetti_extractor.authority.memory_records",
         "spaghetti_extractor.authority.parametric_summary_records",
@@ -402,12 +642,14 @@
         "spaghetti_extractor.artifacts.phases",
         "spaghetti_extractor.authority",
         "spaghetti_extractor.authority._schema",
+        "spaghetti_extractor.authority.call_boundary_contracts",
         "spaghetti_extractor.authority.callbacks",
         "spaghetti_extractor.authority.exact_units",
         "spaghetti_extractor.authority.exceptional_transitions",
         "spaghetti_extractor.authority.external_site_checker",
         "spaghetti_extractor.authority.fallback_coverage",
         "spaghetti_extractor.authority.final_authority",
+        "spaghetti_extractor.authority.incoming_call_frames",
         "spaghetti_extractor.authority.inductive",
         "spaghetti_extractor.authority.isa_qualification",
         "spaghetti_extractor.authority.memory_versions",
@@ -432,6 +674,7 @@
         "spaghetti_extractor.authority._schema",
         "spaghetti_extractor.authority.authority_common",
         "spaghetti_extractor.authority.callbacks",
+        "spaghetti_extractor.authority.external_site_records",
         "spaghetti_extractor.authority.semantic_index",
         "spaghetti_extractor.authority.target_certificate_records"
       ],
@@ -569,6 +812,20 @@
       "path": "src/spaghetti_extractor/authority_inputs/bindings.py",
       "resources": []
     },
+    "spaghetti_extractor.authority_inputs.callback_evidence": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.io",
+        "spaghetti_extractor.authority.authority_common",
+        "spaghetti_extractor.authority.callbacks",
+        "spaghetti_extractor.authority.external_site_records",
+        "spaghetti_extractor.authority.incoming_call_frames",
+        "spaghetti_extractor.authority_inputs"
+      ],
+      "path": "src/spaghetti_extractor/authority_inputs/callback_evidence.py",
+      "resources": []
+    },
     "spaghetti_extractor.authority_inputs.control_disposition": {
       "dependencies": [
         "spaghetti_extractor",
@@ -607,6 +864,7 @@
         "spaghetti_extractor.authority.static_value_records",
         "spaghetti_extractor.authority_inputs",
         "spaghetti_extractor.errors",
+        "spaghetti_extractor.external.callback_protocols",
         "spaghetti_extractor.external.callbacks",
         "spaghetti_extractor.external.machine_import_profiles",
         "spaghetti_extractor.pe32.behavioral_roots",
@@ -626,10 +884,12 @@
         "spaghetti_extractor.authority.external_abi",
         "spaghetti_extractor.authority.external_site_records",
         "spaghetti_extractor.authority.semantic_index",
+        "spaghetti_extractor.authority.static_value_records",
         "spaghetti_extractor.authority.target_certificate_records",
         "spaghetti_extractor.authority.transition_records",
         "spaghetti_extractor.authority_inputs",
-        "spaghetti_extractor.authority_inputs.control_disposition"
+        "spaghetti_extractor.authority_inputs.control_disposition",
+        "spaghetti_extractor.external.callback_protocols"
       ],
       "path": "src/spaghetti_extractor/authority_inputs/external_site_evidence.py",
       "resources": []
@@ -772,6 +1032,8 @@
         "spaghetti_extractor.artifacts.io",
         "spaghetti_extractor.authority._schema",
         "spaghetti_extractor.authority.authority_common",
+        "spaghetti_extractor.authority.call_boundary_contracts",
+        "spaghetti_extractor.authority.catalog_call_contracts",
         "spaghetti_extractor.authority.external_site_records",
         "spaghetti_extractor.authority.memory_records",
         "spaghetti_extractor.authority.parametric_summary_records",
@@ -815,6 +1077,82 @@
         "spaghetti_extractor.authority_inputs.bindings"
       ],
       "path": "src/spaghetti_extractor/authority_inputs/target_dependencies.py",
+      "resources": []
+    },
+    "spaghetti_extractor.boundary": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.boundary._canonical",
+        "spaghetti_extractor.boundary.evidence",
+        "spaghetti_extractor.boundary.lifecycle",
+        "spaghetti_extractor.boundary.model",
+        "spaghetti_extractor.boundary.projection",
+        "spaghetti_extractor.boundary.source"
+      ],
+      "path": "src/spaghetti_extractor/boundary/__init__.py",
+      "resources": []
+    },
+    "spaghetti_extractor.boundary._canonical": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.boundary"
+      ],
+      "path": "src/spaghetti_extractor/boundary/_canonical.py",
+      "resources": []
+    },
+    "spaghetti_extractor.boundary.evidence": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.boundary._canonical"
+      ],
+      "path": "src/spaghetti_extractor/boundary/evidence.py",
+      "resources": []
+    },
+    "spaghetti_extractor.boundary.lifecycle": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.boundary._canonical",
+        "spaghetti_extractor.boundary.model"
+      ],
+      "path": "src/spaghetti_extractor/boundary/lifecycle.py",
+      "resources": []
+    },
+    "spaghetti_extractor.boundary.model": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.boundary._canonical"
+      ],
+      "path": "src/spaghetti_extractor/boundary/model.py",
+      "resources": []
+    },
+    "spaghetti_extractor.boundary.projection": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.boundary._canonical",
+        "spaghetti_extractor.boundary.lifecycle",
+        "spaghetti_extractor.boundary.model"
+      ],
+      "path": "src/spaghetti_extractor/boundary/projection.py",
+      "resources": []
+    },
+    "spaghetti_extractor.boundary.source": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.boundary._canonical",
+        "spaghetti_extractor.boundary.model"
+      ],
+      "path": "src/spaghetti_extractor/boundary/source.py",
       "resources": []
     },
     "spaghetti_extractor.build_support": {
@@ -868,6 +1206,228 @@
       "path": "src/spaghetti_extractor/build_support/python_module_index.py",
       "resources": []
     },
+    "spaghetti_extractor.calls": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.calls.callback",
+        "spaghetti_extractor.calls.callback_v3",
+        "spaghetti_extractor.calls.compatibility",
+        "spaghetti_extractor.calls.evidence",
+        "spaghetti_extractor.calls.frame",
+        "spaghetti_extractor.calls.intent",
+        "spaghetti_extractor.calls.lifecycle",
+        "spaghetti_extractor.calls.protocol",
+        "spaghetti_extractor.calls.protocol_v2",
+        "spaghetti_extractor.calls.relation",
+        "spaghetti_extractor.calls.source",
+        "spaghetti_extractor.calls.types"
+      ],
+      "path": "src/spaghetti_extractor/calls/__init__.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls._canonical": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.calls"
+      ],
+      "path": "src/spaghetti_extractor/calls/_canonical.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.boundary_adapter": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls.evidence",
+        "spaghetti_extractor.calls.frame",
+        "spaghetti_extractor.calls.lifecycle",
+        "spaghetti_extractor.calls.types"
+      ],
+      "path": "src/spaghetti_extractor/calls/boundary_adapter.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.callback": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.calls.lifecycle",
+        "spaghetti_extractor.calls.protocol"
+      ],
+      "path": "src/spaghetti_extractor/calls/callback.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.callback_v3": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.calls.callback",
+        "spaghetti_extractor.calls.protocol_v2"
+      ],
+      "path": "src/spaghetti_extractor/calls/callback_v3.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.compatibility": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.calls.frame",
+        "spaghetti_extractor.calls.lifecycle",
+        "spaghetti_extractor.calls.types"
+      ],
+      "path": "src/spaghetti_extractor/calls/compatibility.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.compiler_proposal": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical"
+      ],
+      "path": "src/spaghetti_extractor/calls/compiler_proposal.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.dialects": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls.dialects.ia32"
+      ],
+      "path": "src/spaghetti_extractor/calls/dialects/__init__.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.dialects.ia32": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.calls.boundary_adapter",
+        "spaghetti_extractor.calls.dialects",
+        "spaghetti_extractor.calls.evidence",
+        "spaghetti_extractor.calls.frame",
+        "spaghetti_extractor.calls.types"
+      ],
+      "path": "src/spaghetti_extractor/calls/dialects/ia32.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.evidence": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.calls.frame"
+      ],
+      "path": "src/spaghetti_extractor/calls/evidence.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.frame": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical"
+      ],
+      "path": "src/spaghetti_extractor/calls/frame.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.intent": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.calls.frame",
+        "spaghetti_extractor.calls.types"
+      ],
+      "path": "src/spaghetti_extractor/calls/intent.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.lifecycle": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/calls/lifecycle.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.protocol": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.calls.frame",
+        "spaghetti_extractor.calls.lifecycle",
+        "spaghetti_extractor.calls.relation",
+        "spaghetti_extractor.calls.types"
+      ],
+      "path": "src/spaghetti_extractor/calls/protocol.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.protocol_v2": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.calls.frame"
+      ],
+      "path": "src/spaghetti_extractor/calls/protocol_v2.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.relation": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.calls.frame",
+        "spaghetti_extractor.calls.types",
+        "spaghetti_extractor.components.relation_ir",
+        "spaghetti_extractor.components.relation_solver"
+      ],
+      "path": "src/spaghetti_extractor/calls/relation.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.source": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical",
+        "spaghetti_extractor.calls.protocol",
+        "spaghetti_extractor.calls.types"
+      ],
+      "path": "src/spaghetti_extractor/calls/source.py",
+      "resources": []
+    },
+    "spaghetti_extractor.calls.types": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.calls",
+        "spaghetti_extractor.calls._canonical"
+      ],
+      "path": "src/spaghetti_extractor/calls/types.py",
+      "resources": []
+    },
     "spaghetti_extractor.candidate": {
       "dependencies": [
         "spaghetti_extractor"
@@ -882,6 +1442,15 @@
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/candidate/api_catalog.py",
+      "resources": []
+    },
+    "spaghetti_extractor.candidate.atomics": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.components.atomics"
+      ],
+      "path": "src/spaghetti_extractor/candidate/atomics.py",
       "resources": []
     },
     "spaghetti_extractor.candidate.authority": {
@@ -907,7 +1476,8 @@
         "spaghetti_extractor.candidate.authority.io",
         "spaghetti_extractor.candidate.authority.model",
         "spaghetti_extractor.components.formats",
-        "spaghetti_extractor.machine_ir.coverage"
+        "spaghetti_extractor.machine_ir.coverage",
+        "spaghetti_extractor.machine_ir.memory_actions"
       ],
       "path": "src/spaghetti_extractor/candidate/authority/checker.py",
       "resources": []
@@ -945,6 +1515,19 @@
         "spaghetti_extractor.candidate.authority"
       ],
       "path": "src/spaghetti_extractor/candidate/authority/model.py",
+      "resources": []
+    },
+    "spaghetti_extractor.candidate.authority.rooted_projection": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.io",
+        "spaghetti_extractor.authority.root_closure",
+        "spaghetti_extractor.authority.semantic_index",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.authority"
+      ],
+      "path": "src/spaghetti_extractor/candidate/authority/rooted_projection.py",
       "resources": []
     },
     "spaghetti_extractor.candidate.binding": {
@@ -1058,8 +1641,11 @@
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.candidate",
         "spaghetti_extractor.candidate.api_catalog",
+        "spaghetti_extractor.candidate.atomics",
         "spaghetti_extractor.candidate.c_domains",
         "spaghetti_extractor.candidate.c_render",
+        "spaghetti_extractor.components.capabilities",
+        "spaghetti_extractor.machine_ir.memory_actions",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/candidate/c_backend.py",
@@ -1077,9 +1663,31 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.candidate",
-        "spaghetti_extractor.candidate.c_domains"
+        "spaghetti_extractor.candidate.c_domains",
+        "spaghetti_extractor.machine_ir.memory_actions"
       ],
       "path": "src/spaghetti_extractor/candidate/c_render.py",
+      "resources": []
+    },
+    "spaghetti_extractor.candidate.callback_authority": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.io",
+        "spaghetti_extractor.authority.callbacks",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.errors"
+      ],
+      "path": "src/spaghetti_extractor/candidate/callback_authority.py",
+      "resources": []
+    },
+    "spaghetti_extractor.candidate.callbacks": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.components.capabilities",
+        "spaghetti_extractor.external.callback_protocols"
+      ],
+      "path": "src/spaghetti_extractor/candidate/callbacks.py",
       "resources": []
     },
     "spaghetti_extractor.candidate.engine": {
@@ -1088,6 +1696,7 @@
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.candidate",
         "spaghetti_extractor.candidate.authority.execution",
+        "spaghetti_extractor.candidate.callback_authority",
         "spaghetti_extractor.candidate.engine_analysis",
         "spaghetti_extractor.candidate.engine_components",
         "spaghetti_extractor.candidate.engine_model",
@@ -1095,6 +1704,7 @@
         "spaghetti_extractor.candidate.engine_x87",
         "spaghetti_extractor.candidate.x87",
         "spaghetti_extractor.errors",
+        "spaghetti_extractor.external.callback_protocols",
         "spaghetti_extractor.external.callbacks",
         "spaghetti_extractor.external.contracts",
         "spaghetti_extractor.external.runtime_projection",
@@ -1114,6 +1724,7 @@
         "spaghetti_extractor.errors",
         "spaghetti_extractor.external.callbacks",
         "spaghetti_extractor.external.contracts",
+        "spaghetti_extractor.machine_ir.memory_actions",
         "spaghetti_extractor.machine_ir.schema",
         "spaghetti_extractor.util"
       ],
@@ -1226,11 +1837,22 @@
       "path": "src/spaghetti_extractor/candidate/interpreter.py",
       "resources": []
     },
+    "spaghetti_extractor.candidate.interpreter_atomics": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.interpreter_model",
+        "spaghetti_extractor.candidate.interpreter_values"
+      ],
+      "path": "src/spaghetti_extractor/candidate/interpreter_atomics.py",
+      "resources": []
+    },
     "spaghetti_extractor.candidate.interpreter_compiler": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.interpreter_atomics",
         "spaghetti_extractor.candidate.interpreter_model",
         "spaghetti_extractor.candidate.interpreter_values",
         "spaghetti_extractor.candidate.x87",
@@ -1255,13 +1877,16 @@
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.atomics",
         "spaghetti_extractor.candidate.interpreter_compiler",
         "spaghetti_extractor.candidate.interpreter_model",
         "spaghetti_extractor.candidate.interpreter_render",
         "spaghetti_extractor.candidate.interpreter_values",
         "spaghetti_extractor.candidate.x87",
+        "spaghetti_extractor.components.capabilities",
         "spaghetti_extractor.machine_ir.definedness",
         "spaghetti_extractor.machine_ir.fallback_capability",
+        "spaghetti_extractor.machine_ir.memory_actions",
         "spaghetti_extractor.machine_ir.schema",
         "spaghetti_extractor.util"
       ],
@@ -1349,6 +1974,7 @@
         "spaghetti_extractor.authority.semantic_index",
         "spaghetti_extractor.authority.target_certificate_records",
         "spaghetti_extractor.candidate",
+        "spaghetti_extractor.candidate.authority.rooted_projection",
         "spaghetti_extractor.components.formats",
         "spaghetti_extractor.components.lifecycle_records",
         "spaghetti_extractor.machine_ir.fallback_capability"
@@ -1496,6 +2122,42 @@
         "spaghetti_extractor.commands.common"
       ],
       "path": "src/spaghetti_extractor/commands/authority.py",
+      "resources": []
+    },
+    "spaghetti_extractor.commands.boundaries": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.calls.dialects.ia32",
+        "spaghetti_extractor.commands",
+        "spaghetti_extractor.commands.common"
+      ],
+      "path": "src/spaghetti_extractor/commands/boundaries.py",
+      "resources": []
+    },
+    "spaghetti_extractor.commands.call_protocols": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.io",
+        "spaghetti_extractor.authority.callbacks",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.calls.boundary_adapter",
+        "spaghetti_extractor.calls.compiler_proposal",
+        "spaghetti_extractor.calls.dialects.ia32",
+        "spaghetti_extractor.calls.evidence",
+        "spaghetti_extractor.calls.frame",
+        "spaghetti_extractor.calls.intent",
+        "spaghetti_extractor.calls.lifecycle",
+        "spaghetti_extractor.calls.protocol",
+        "spaghetti_extractor.calls.protocol_v2",
+        "spaghetti_extractor.calls.relation",
+        "spaghetti_extractor.calls.source",
+        "spaghetti_extractor.calls.types",
+        "spaghetti_extractor.commands",
+        "spaghetti_extractor.commands.common",
+        "spaghetti_extractor.util"
+      ],
+      "path": "src/spaghetti_extractor/commands/call_protocols.py",
       "resources": []
     },
     "spaghetti_extractor.commands.common": {
@@ -1685,6 +2347,57 @@
       "path": "src/spaghetti_extractor/components/adapter.py",
       "resources": []
     },
+    "spaghetti_extractor.components.atomics": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components"
+      ],
+      "path": "src/spaghetti_extractor/components/atomics.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.boundary_evaluator": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.capabilities",
+        "spaghetti_extractor.components.object_authority",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/boundary_evaluator.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.boundary_plan": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.boundary_primitives",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.relation_ir",
+        "spaghetti_extractor.components.relation_receipt"
+      ],
+      "path": "src/spaghetti_extractor/components/boundary_plan.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.boundary_primitives": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/boundary_primitives.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.capabilities": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components"
+      ],
+      "path": "src/spaghetti_extractor/components/capabilities.py",
+      "resources": []
+    },
     "spaghetti_extractor.components.cbmc_backend": {
       "dependencies": [
         "spaghetti_extractor",
@@ -1711,6 +2424,8 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.components",
+        "spaghetti_extractor.components.atomics",
+        "spaghetti_extractor.components.capabilities",
         "spaghetti_extractor.components.inductive_source",
         "spaghetti_extractor.components.interface_ir"
       ],
@@ -1990,8 +2705,10 @@
         "spaghetti_extractor.components.inductive_receipts",
         "spaghetti_extractor.components.inductive_relation",
         "spaghetti_extractor.components.inductive_source",
+        "spaghetti_extractor.components.inductive_world",
         "spaghetti_extractor.components.interface_ir",
         "spaghetti_extractor.components.semantic_contract",
+        "spaghetti_extractor.components.semantic_path_errors",
         "spaghetti_extractor.components.semantic_paths",
         "spaghetti_extractor.components.source"
       ],
@@ -2022,6 +2739,15 @@
       "path": "src/spaghetti_extractor/components/inductive_source.py",
       "resources": []
     },
+    "spaghetti_extractor.components.inductive_world": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.interface_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/inductive_world.py",
+      "resources": []
+    },
     "spaghetti_extractor.components.intent": {
       "dependencies": [
         "spaghetti_extractor",
@@ -2030,6 +2756,30 @@
         "spaghetti_extractor.components.model"
       ],
       "path": "src/spaghetti_extractor/components/intent.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.interaction_contract": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.interface_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/interaction_contract.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.interaction_inventory": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.interaction_contract",
+        "spaghetti_extractor.components.interface_ir",
+        "spaghetti_extractor.components.machine_binding"
+      ],
+      "path": "src/spaghetti_extractor/components/interaction_inventory.py",
       "resources": []
     },
     "spaghetti_extractor.components.interface": {
@@ -2072,6 +2822,7 @@
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.components",
+        "spaghetti_extractor.components.atomics",
         "spaghetti_extractor.components.formats"
       ],
       "path": "src/spaghetti_extractor/components/interface_ir.py",
@@ -2084,6 +2835,18 @@
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/components/interface_schema.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.interface_v5": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.boundary",
+        "spaghetti_extractor.boundary._canonical",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats"
+      ],
+      "path": "src/spaghetti_extractor/components/interface_v5.py",
       "resources": []
     },
     "spaghetti_extractor.components.lifecycle_records": {
@@ -2108,6 +2871,9 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.boundary_claims",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.artifacts.io",
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.interface_ir",
         "spaghetti_extractor.components.machine_binding_checks",
@@ -2121,6 +2887,7 @@
     "spaghetti_extractor.components.machine_binding_checks": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.interface_ir",
         "spaghetti_extractor.components.value_codec"
@@ -2143,6 +2910,19 @@
         "spaghetti_extractor.components"
       ],
       "path": "src/spaghetti_extractor/components/model.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.object_authority": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.capabilities",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.interface_ir",
+        "spaghetti_extractor.components.machine_binding"
+      ],
+      "path": "src/spaghetti_extractor/components/object_authority.py",
       "resources": []
     },
     "spaghetti_extractor.components.ownership": {
@@ -2202,6 +2982,9 @@
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.components",
+        "spaghetti_extractor.components.atomics",
+        "spaghetti_extractor.components.boundary_plan",
+        "spaghetti_extractor.components.capabilities",
         "spaghetti_extractor.components.cbmc_backend",
         "spaghetti_extractor.components.formats",
         "spaghetti_extractor.components.interface_ir",
@@ -2256,6 +3039,104 @@
       "path": "src/spaghetti_extractor/components/region_replacement_schema.py",
       "resources": []
     },
+    "spaghetti_extractor.components.relation_checker": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.boundary_primitives",
+        "spaghetti_extractor.components.interaction_contract",
+        "spaghetti_extractor.components.interaction_inventory",
+        "spaghetti_extractor.components.interface_ir",
+        "spaghetti_extractor.components.relation_ir",
+        "spaghetti_extractor.components.relation_receipt",
+        "spaghetti_extractor.components.relation_solver"
+      ],
+      "path": "src/spaghetti_extractor/components/relation_checker.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.relation_declaration": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.interaction_inventory"
+      ],
+      "path": "src/spaghetti_extractor/components/relation_declaration.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.relation_ir": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats"
+      ],
+      "path": "src/spaghetti_extractor/components/relation_ir.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.relation_lean": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.interaction_contract",
+        "spaghetti_extractor.components.interaction_inventory",
+        "spaghetti_extractor.components.interface_ir",
+        "spaghetti_extractor.components.relation_checker",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/relation_lean.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.relation_projection": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.interface_ir",
+        "spaghetti_extractor.components.machine_binding",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/relation_projection.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.relation_proposal": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.interaction_contract",
+        "spaghetti_extractor.components.interaction_inventory",
+        "spaghetti_extractor.components.interface_ir",
+        "spaghetti_extractor.components.machine_binding",
+        "spaghetti_extractor.components.relation_ir",
+        "spaghetti_extractor.components.relation_projection"
+      ],
+      "path": "src/spaghetti_extractor/components/relation_proposal.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.relation_receipt": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.formats",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/relation_receipt.py",
+      "resources": []
+    },
+    "spaghetti_extractor.components.relation_solver": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.components",
+        "spaghetti_extractor.components.relation_ir"
+      ],
+      "path": "src/spaghetti_extractor/components/relation_solver.py",
+      "resources": []
+    },
     "spaghetti_extractor.components.resolution": {
       "dependencies": [
         "spaghetti_extractor",
@@ -2289,6 +3170,8 @@
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.activation_receipt",
         "spaghetti_extractor.components.adapter",
+        "spaghetti_extractor.components.atomics",
+        "spaghetti_extractor.components.boundary_plan",
         "spaghetti_extractor.components.formats",
         "spaghetti_extractor.components.implementation",
         "spaghetti_extractor.components.intent",
@@ -2325,6 +3208,8 @@
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
         "spaghetti_extractor.components",
+        "spaghetti_extractor.components.atomics",
+        "spaghetti_extractor.components.boundary_plan",
         "spaghetti_extractor.components.interface_ir",
         "spaghetti_extractor.components.machine_binding",
         "spaghetti_extractor.components.semantic_paths"
@@ -2369,10 +3254,12 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.boundary_claims",
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.formats",
         "spaghetti_extractor.components.interface_ir",
         "spaghetti_extractor.components.machine_binding",
+        "spaghetti_extractor.external.machine_abi",
         "spaghetti_extractor.external.site_authority"
       ],
       "path": "src/spaghetti_extractor/components/semantic_contract.py",
@@ -2494,6 +3381,8 @@
         "spaghetti_extractor.components",
         "spaghetti_extractor.components.formats",
         "spaghetti_extractor.components.machine_binding",
+        "spaghetti_extractor.components.relation_ir",
+        "spaghetti_extractor.components.relation_receipt",
         "spaghetti_extractor.components.semantic_contract",
         "spaghetti_extractor.components.universal_contract"
       ],
@@ -2536,11 +3425,21 @@
       "path": "src/spaghetti_extractor/external/__init__.py",
       "resources": []
     },
+    "spaghetti_extractor.external.callback_protocols": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.callback_protocols",
+        "spaghetti_extractor.external"
+      ],
+      "path": "src/spaghetti_extractor/external/callback_protocols.py",
+      "resources": []
+    },
     "spaghetti_extractor.external.callbacks": {
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.errors",
-        "spaghetti_extractor.external"
+        "spaghetti_extractor.external",
+        "spaghetti_extractor.external.callback_protocols"
       ],
       "path": "src/spaghetti_extractor/external/callbacks.py",
       "resources": []
@@ -2550,6 +3449,7 @@
         "spaghetti_extractor",
         "spaghetti_extractor.errors",
         "spaghetti_extractor.external",
+        "spaghetti_extractor.external.callback_protocols",
         "spaghetti_extractor.external.callbacks"
       ],
       "path": "src/spaghetti_extractor/external/contracts.py",
@@ -2598,6 +3498,7 @@
     "spaghetti_extractor.external.machine_abi": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.machine_abi",
         "spaghetti_extractor.external"
       ],
       "path": "src/spaghetti_extractor/external/machine_abi.py",
@@ -2609,6 +3510,7 @@
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.errors",
         "spaghetti_extractor.external",
+        "spaghetti_extractor.external.callback_protocols",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/external/machine_import_profiles.py",
@@ -3297,6 +4199,7 @@
     "spaghetti_extractor.libraries.v4_activation": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.abi.matching",
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.artifacts.io",
         "spaghetti_extractor.authority.target_certificate_records",
@@ -3347,15 +4250,31 @@
         "spaghetti_extractor.components.source",
         "spaghetti_extractor.libraries",
         "spaghetti_extractor.libraries.v4_adoption_records",
+        "spaghetti_extractor.libraries.v4_behavior_records",
         "spaghetti_extractor.libraries.v4_record_support",
         "spaghetti_extractor.util"
       ],
       "path": "src/spaghetti_extractor/libraries/v4_behavior_pack.py",
       "resources": []
     },
+    "spaghetti_extractor.libraries.v4_behavior_records": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.artifact_set",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.components.interface_ir",
+        "spaghetti_extractor.libraries",
+        "spaghetti_extractor.libraries.v4_record_support"
+      ],
+      "path": "src/spaghetti_extractor/libraries/v4_behavior_records.py",
+      "resources": []
+    },
     "spaghetti_extractor.libraries.v4_component": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.abi.legacy",
+        "spaghetti_extractor.abi.matching",
+        "spaghetti_extractor.abi.model",
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.components.machine_binding",
         "spaghetti_extractor.components.semantic_contract",
@@ -3466,6 +4385,15 @@
         "spaghetti_extractor.machine_ir"
       ],
       "path": "src/spaghetti_extractor/machine_ir/fallback_capability.py",
+      "resources": []
+    },
+    "spaghetti_extractor.machine_ir.memory_actions": {
+      "dependencies": [
+        "spaghetti_extractor",
+        "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.machine_ir"
+      ],
+      "path": "src/spaghetti_extractor/machine_ir/memory_actions.py",
       "resources": []
     },
     "spaghetti_extractor.machine_ir.schema": {
@@ -3592,6 +4520,7 @@
     "spaghetti_extractor.profiles.registry": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.components.interaction_contract",
         "spaghetti_extractor.external.machine_abi",
         "spaghetti_extractor.external.machine_import_profiles",
         "spaghetti_extractor.profiles"
@@ -3618,6 +4547,9 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.formats",
+        "spaghetti_extractor.errors",
+        "spaghetti_extractor.external.callback_protocols",
+        "spaghetti_extractor.machine_ir.memory_actions",
         "spaghetti_extractor.reconstruction"
       ],
       "path": "src/spaghetti_extractor/reconstruction/contract_analysis.py",
@@ -3785,6 +4717,7 @@
       "dependencies": [
         "spaghetti_extractor",
         "spaghetti_extractor.authority_inputs.machine_ir_authority",
+        "spaghetti_extractor.machine_ir.memory_actions",
         "spaghetti_extractor.pe32.image",
         "spaghetti_extractor.pe32.model",
         "spaghetti_extractor.reconstruction",
@@ -3853,6 +4786,7 @@
         "spaghetti_extractor",
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.errors",
+        "spaghetti_extractor.external.callback_protocols",
         "spaghetti_extractor.external.callbacks",
         "spaghetti_extractor.external.machine_import_profiles",
         "spaghetti_extractor.reconstruction",
@@ -4184,6 +5118,7 @@
     "spaghetti_extractor.target_bundles.library_status_v4": {
       "dependencies": [
         "spaghetti_extractor",
+        "spaghetti_extractor.abi.matching",
         "spaghetti_extractor.artifacts.formats",
         "spaghetti_extractor.libraries.abi_catalog",
         "spaghetti_extractor.libraries.v4_adoption_records",
@@ -4428,8 +5363,43 @@
   "production_roots": [
     {
       "module": "spaghetti_extractor.__main__",
+      "owner": "nix/boundary-schema-workflow.nix",
+      "role": "expert"
+    },
+    {
+      "module": "spaghetti_extractor.__main__",
+      "owner": "nix/call-protocol-workflow.nix",
+      "role": "expert"
+    },
+    {
+      "module": "spaghetti_extractor.__main__",
       "owner": "declared-module-entrypoint",
       "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.abi.catalog",
+      "owner": "nix/library-catalog-pack.nix",
+      "role": "proposal"
+    },
+    {
+      "module": "spaghetti_extractor.abi.declaration_spec",
+      "owner": "nix/library-catalog-pack.nix",
+      "role": "proposal"
+    },
+    {
+      "module": "spaghetti_extractor.abi.extraction",
+      "owner": "nix/linked-libraries.nix",
+      "role": "proposal"
+    },
+    {
+      "module": "spaghetti_extractor.abi.ingestion",
+      "owner": "declared-module-entrypoint",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.abi.matching",
+      "owner": "nix/linked-libraries.nix",
+      "role": "proposal"
     },
     {
       "module": "spaghetti_extractor.artifacts.artifact_set",
@@ -4468,7 +5438,17 @@
     },
     {
       "module": "spaghetti_extractor.artifacts.artifact_set",
+      "owner": "nix/authority-input-callback-evidence.nix",
+      "role": "authority"
+    },
+    {
+      "module": "spaghetti_extractor.artifacts.artifact_set",
       "owner": "nix/authority-input-external-site-evidence.nix",
+      "role": "authority"
+    },
+    {
+      "module": "spaghetti_extractor.artifacts.artifact_set",
+      "owner": "nix/authority-input-normal-call-abi-premise.nix",
       "role": "authority"
     },
     {
@@ -4495,6 +5475,11 @@
       "module": "spaghetti_extractor.artifacts.artifact_set",
       "owner": "nix/authority-diagnostics.nix",
       "role": "diagnostic"
+    },
+    {
+      "module": "spaghetti_extractor.artifacts.artifact_set",
+      "owner": "nix/linked-libraries.nix",
+      "role": "proposal"
     },
     {
       "module": "spaghetti_extractor.artifacts.formats",
@@ -4528,13 +5513,28 @@
     },
     {
       "module": "spaghetti_extractor.artifacts.io",
+      "owner": "nix/authority-input-callback-evidence.nix",
+      "role": "authority"
+    },
+    {
+      "module": "spaghetti_extractor.artifacts.io",
       "owner": "nix/authority-input-external-site-evidence.nix",
+      "role": "authority"
+    },
+    {
+      "module": "spaghetti_extractor.artifacts.io",
+      "owner": "nix/authority-input-normal-call-abi-premise.nix",
       "role": "authority"
     },
     {
       "module": "spaghetti_extractor.artifacts.io",
       "owner": "nix/authority-input-parametric-summary-proposals.nix",
       "role": "authority"
+    },
+    {
+      "module": "spaghetti_extractor.artifacts.io",
+      "owner": "nix/linked-libraries.nix",
+      "role": "proposal"
     },
     {
       "module": "spaghetti_extractor.artifacts.phases",
@@ -4545,6 +5545,11 @@
       "module": "spaghetti_extractor.artifacts.scheduling",
       "owner": "nix/authority-graph-v3-packs.nix",
       "role": "authority"
+    },
+    {
+      "module": "spaghetti_extractor.authority.catalog_call_contracts",
+      "owner": "nix/linked-libraries.nix",
+      "role": "proposal"
     },
     {
       "module": "spaghetti_extractor.authority.diagnostics",
@@ -4559,6 +5564,11 @@
     {
       "module": "spaghetti_extractor.authority.graph",
       "owner": "nix/authority-graph-manifest.nix",
+      "role": "authority"
+    },
+    {
+      "module": "spaghetti_extractor.authority.normal_call_abi",
+      "owner": "nix/authority-input-normal-call-abi-premise.nix",
       "role": "authority"
     },
     {
@@ -4585,6 +5595,11 @@
       "module": "spaghetti_extractor.authority.target_certificate_records",
       "owner": "nix/tests/components.nix",
       "role": "developer"
+    },
+    {
+      "module": "spaghetti_extractor.authority_inputs.callback_evidence",
+      "owner": "nix/authority-input-callback-evidence.nix",
+      "role": "authority"
     },
     {
       "module": "spaghetti_extractor.authority_inputs.control_disposition",
@@ -4662,6 +5677,21 @@
       "role": "authority"
     },
     {
+      "module": "spaghetti_extractor.candidate.authority.rooted_projection",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.candidate.authority.rooted_projection",
+      "owner": "nix/rooted-behavioral-projection.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.candidate.authority.rooted_projection",
+      "owner": "nix/tests/components.nix",
+      "role": "developer"
+    },
+    {
       "module": "spaghetti_extractor.candidate.build",
       "owner": "nix/candidate-hybrid.nix",
       "role": "candidate"
@@ -4670,6 +5700,11 @@
       "module": "spaghetti_extractor.candidate.build",
       "owner": "nix/candidate-native-object-graph.nix",
       "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.candidate.callbacks",
+      "owner": "declared-module-entrypoint",
+      "role": "operator"
     },
     {
       "module": "spaghetti_extractor.candidate.engine",
@@ -4734,6 +5769,16 @@
     {
       "module": "spaghetti_extractor.commands.authority",
       "owner": "command:expert candidate-authority-check",
+      "role": "expert"
+    },
+    {
+      "module": "spaghetti_extractor.commands.boundaries",
+      "owner": "command:expert boundary-check",
+      "role": "expert"
+    },
+    {
+      "module": "spaghetti_extractor.commands.call_protocols",
+      "owner": "command:expert call-protocol-check",
       "role": "expert"
     },
     {
@@ -4863,6 +5908,31 @@
     },
     {
       "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:call adopt",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:call check",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:call inspect",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:call propose",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:call status",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
       "owner": "command:candidate build",
       "role": "operator"
     },
@@ -4904,6 +5974,11 @@
     {
       "module": "spaghetti_extractor.commands.workflows",
       "owner": "command:component list",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.commands.workflows",
+      "owner": "command:component relation",
       "role": "operator"
     },
     {
@@ -4953,6 +6028,21 @@
     },
     {
       "module": "spaghetti_extractor.components.adapter",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.boundary_evaluator",
+      "owner": "declared-module-entrypoint",
+      "role": "operator"
+    },
+    {
+      "module": "spaghetti_extractor.components.boundary_plan",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.boundary_primitives",
       "owner": "nix/component-workflow.nix",
       "role": "candidate"
     },
@@ -5032,6 +6122,16 @@
       "role": "candidate"
     },
     {
+      "module": "spaghetti_extractor.components.interaction_contract",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.interaction_inventory",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
       "module": "spaghetti_extractor.components.interface_ir",
       "owner": "nix/component-workflow.nix",
       "role": "candidate"
@@ -5042,6 +6142,11 @@
       "role": "developer"
     },
     {
+      "module": "spaghetti_extractor.components.interface_v5",
+      "owner": "declared-module-entrypoint",
+      "role": "operator"
+    },
+    {
       "module": "spaghetti_extractor.components.machine_binding",
       "owner": "nix/component-workflow.nix",
       "role": "candidate"
@@ -5050,6 +6155,11 @@
       "module": "spaghetti_extractor.components.machine_binding",
       "owner": "nix/tests/components.nix",
       "role": "developer"
+    },
+    {
+      "module": "spaghetti_extractor.components.object_authority",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
     },
     {
       "module": "spaghetti_extractor.components.ownership",
@@ -5078,6 +6188,46 @@
     },
     {
       "module": "spaghetti_extractor.components.refinement",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.relation_checker",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.relation_declaration",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.relation_ir",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.relation_lean",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.relation_projection",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.relation_proposal",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.relation_receipt",
+      "owner": "nix/component-workflow.nix",
+      "role": "candidate"
+    },
+    {
+      "module": "spaghetti_extractor.components.relation_solver",
       "owner": "nix/component-workflow.nix",
       "role": "candidate"
     },
@@ -5420,17 +6570,32 @@
   "role_closures": {
     "authority": [
       "spaghetti_extractor",
+      "spaghetti_extractor.abi",
+      "spaghetti_extractor.abi.catalog",
+      "spaghetti_extractor.abi.compatibility",
+      "spaghetti_extractor.abi.declarations",
+      "spaghetti_extractor.abi.extraction",
+      "spaghetti_extractor.abi.legacy",
+      "spaghetti_extractor.abi.matching",
+      "spaghetti_extractor.abi.model",
+      "spaghetti_extractor.abi.native_solver",
+      "spaghetti_extractor.abi.solver",
+      "spaghetti_extractor.abi.symbols",
       "spaghetti_extractor.artifacts",
       "spaghetti_extractor.artifacts.artifact_set",
+      "spaghetti_extractor.artifacts.callback_protocols",
       "spaghetti_extractor.artifacts.formats",
       "spaghetti_extractor.artifacts.identity",
       "spaghetti_extractor.artifacts.io",
+      "spaghetti_extractor.artifacts.machine_abi",
       "spaghetti_extractor.artifacts.phases",
       "spaghetti_extractor.artifacts.scheduling",
       "spaghetti_extractor.authority",
       "spaghetti_extractor.authority._schema",
       "spaghetti_extractor.authority.authority_common",
+      "spaghetti_extractor.authority.call_boundary_contracts",
       "spaghetti_extractor.authority.callbacks",
+      "spaghetti_extractor.authority.catalog_call_contracts",
       "spaghetti_extractor.authority.exact_units",
       "spaghetti_extractor.authority.exceptional_transitions",
       "spaghetti_extractor.authority.external_abi",
@@ -5440,11 +6605,13 @@
       "spaghetti_extractor.authority.final_authority",
       "spaghetti_extractor.authority.graph",
       "spaghetti_extractor.authority.identities",
+      "spaghetti_extractor.authority.incoming_call_frames",
       "spaghetti_extractor.authority.inductive",
       "spaghetti_extractor.authority.inductive_records",
       "spaghetti_extractor.authority.isa_qualification",
       "spaghetti_extractor.authority.memory_records",
       "spaghetti_extractor.authority.memory_versions",
+      "spaghetti_extractor.authority.normal_call_abi",
       "spaghetti_extractor.authority.parametric_summary_checker",
       "spaghetti_extractor.authority.parametric_summary_checks",
       "spaghetti_extractor.authority.parametric_summary_records",
@@ -5462,6 +6629,7 @@
       "spaghetti_extractor.authority.transition_summaries",
       "spaghetti_extractor.authority_inputs",
       "spaghetti_extractor.authority_inputs.address_expressions",
+      "spaghetti_extractor.authority_inputs.callback_evidence",
       "spaghetti_extractor.authority_inputs.control_disposition",
       "spaghetti_extractor.authority_inputs.exception_evidence",
       "spaghetti_extractor.authority_inputs.external_inputs",
@@ -5478,9 +6646,13 @@
       "spaghetti_extractor.build_support",
       "spaghetti_extractor.build_support.lean_runner",
       "spaghetti_extractor.components",
+      "spaghetti_extractor.components.atomics",
       "spaghetti_extractor.components.formats",
+      "spaghetti_extractor.components.interaction_contract",
+      "spaghetti_extractor.components.interface_ir",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
+      "spaghetti_extractor.external.callback_protocols",
       "spaghetti_extractor.external.callbacks",
       "spaghetti_extractor.external.contracts",
       "spaghetti_extractor.external.interface_ast",
@@ -5531,6 +6703,8 @@
       "spaghetti_extractor.libraries.contracts",
       "spaghetti_extractor.libraries.matching_support",
       "spaghetti_extractor.libraries.model",
+      "spaghetti_extractor.libraries.signature_graph",
+      "spaghetti_extractor.libraries.span_matching",
       "spaghetti_extractor.libraries.v4_activation",
       "spaghetti_extractor.libraries.v4_adoption_records",
       "spaghetti_extractor.libraries.v4_behavior_manifest",
@@ -5558,10 +6732,24 @@
     ],
     "candidate": [
       "spaghetti_extractor",
+      "spaghetti_extractor.abi",
+      "spaghetti_extractor.abi.catalog",
+      "spaghetti_extractor.abi.compatibility",
+      "spaghetti_extractor.abi.declarations",
+      "spaghetti_extractor.abi.extraction",
+      "spaghetti_extractor.abi.legacy",
+      "spaghetti_extractor.abi.matching",
+      "spaghetti_extractor.abi.model",
+      "spaghetti_extractor.abi.native_solver",
+      "spaghetti_extractor.abi.solver",
+      "spaghetti_extractor.abi.symbols",
       "spaghetti_extractor.artifacts",
       "spaghetti_extractor.artifacts.artifact_set",
+      "spaghetti_extractor.artifacts.boundary_claims",
+      "spaghetti_extractor.artifacts.callback_protocols",
       "spaghetti_extractor.artifacts.formats",
       "spaghetti_extractor.artifacts.io",
+      "spaghetti_extractor.artifacts.machine_abi",
       "spaghetti_extractor.artifacts.phases",
       "spaghetti_extractor.artifacts.scheduling",
       "spaghetti_extractor.authority",
@@ -5574,6 +6762,7 @@
       "spaghetti_extractor.authority.fallback_coverage",
       "spaghetti_extractor.authority.final_authority",
       "spaghetti_extractor.authority.identities",
+      "spaghetti_extractor.authority.incoming_call_frames",
       "spaghetti_extractor.authority.inductive",
       "spaghetti_extractor.authority.inductive_records",
       "spaghetti_extractor.authority.isa_qualification",
@@ -5585,11 +6774,13 @@
       "spaghetti_extractor.authority.transition_records",
       "spaghetti_extractor.candidate",
       "spaghetti_extractor.candidate.api_catalog",
+      "spaghetti_extractor.candidate.atomics",
       "spaghetti_extractor.candidate.authority",
       "spaghetti_extractor.candidate.authority.checker",
       "spaghetti_extractor.candidate.authority.execution",
       "spaghetti_extractor.candidate.authority.io",
       "spaghetti_extractor.candidate.authority.model",
+      "spaghetti_extractor.candidate.authority.rooted_projection",
       "spaghetti_extractor.candidate.binding",
       "spaghetti_extractor.candidate.build",
       "spaghetti_extractor.candidate.build_model",
@@ -5601,6 +6792,7 @@
       "spaghetti_extractor.candidate.c_backend",
       "spaghetti_extractor.candidate.c_domains",
       "spaghetti_extractor.candidate.c_render",
+      "spaghetti_extractor.candidate.callback_authority",
       "spaghetti_extractor.candidate.engine",
       "spaghetti_extractor.candidate.engine_analysis",
       "spaghetti_extractor.candidate.engine_components",
@@ -5612,6 +6804,7 @@
       "spaghetti_extractor.candidate.functional",
       "spaghetti_extractor.candidate.image",
       "spaghetti_extractor.candidate.interpreter",
+      "spaghetti_extractor.candidate.interpreter_atomics",
       "spaghetti_extractor.candidate.interpreter_compiler",
       "spaghetti_extractor.candidate.interpreter_model",
       "spaghetti_extractor.candidate.interpreter_package",
@@ -5634,6 +6827,10 @@
       "spaghetti_extractor.components",
       "spaghetti_extractor.components.activation_receipt",
       "spaghetti_extractor.components.adapter",
+      "spaghetti_extractor.components.atomics",
+      "spaghetti_extractor.components.boundary_plan",
+      "spaghetti_extractor.components.boundary_primitives",
+      "spaghetti_extractor.components.capabilities",
       "spaghetti_extractor.components.cbmc_backend",
       "spaghetti_extractor.components.compile_receipt",
       "spaghetti_extractor.components.compiler",
@@ -5656,7 +6853,10 @@
       "spaghetti_extractor.components.inductive_refinement",
       "spaghetti_extractor.components.inductive_relation",
       "spaghetti_extractor.components.inductive_source",
+      "spaghetti_extractor.components.inductive_world",
       "spaghetti_extractor.components.intent",
+      "spaghetti_extractor.components.interaction_contract",
+      "spaghetti_extractor.components.interaction_inventory",
       "spaghetti_extractor.components.interface",
       "spaghetti_extractor.components.interface_coordinates",
       "spaghetti_extractor.components.interface_external",
@@ -5668,6 +6868,7 @@
       "spaghetti_extractor.components.machine_binding_checks",
       "spaghetti_extractor.components.machine_binding_schema",
       "spaghetti_extractor.components.model",
+      "spaghetti_extractor.components.object_authority",
       "spaghetti_extractor.components.ownership",
       "spaghetti_extractor.components.proposal_package",
       "spaghetti_extractor.components.proposal_selection",
@@ -5677,6 +6878,14 @@
       "spaghetti_extractor.components.region_replacement_model",
       "spaghetti_extractor.components.region_replacement_render",
       "spaghetti_extractor.components.region_replacement_schema",
+      "spaghetti_extractor.components.relation_checker",
+      "spaghetti_extractor.components.relation_declaration",
+      "spaghetti_extractor.components.relation_ir",
+      "spaghetti_extractor.components.relation_lean",
+      "spaghetti_extractor.components.relation_projection",
+      "spaghetti_extractor.components.relation_proposal",
+      "spaghetti_extractor.components.relation_receipt",
+      "spaghetti_extractor.components.relation_solver",
       "spaghetti_extractor.components.resolution",
       "spaghetti_extractor.components.retirement",
       "spaghetti_extractor.components.runtime",
@@ -5701,8 +6910,10 @@
       "spaghetti_extractor.components.value_codec",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
+      "spaghetti_extractor.external.callback_protocols",
       "spaghetti_extractor.external.callbacks",
       "spaghetti_extractor.external.contracts",
+      "spaghetti_extractor.external.machine_abi",
       "spaghetti_extractor.external.machine_import_profiles",
       "spaghetti_extractor.external.runtime_projection",
       "spaghetti_extractor.external.site_authority",
@@ -5713,8 +6924,10 @@
       "spaghetti_extractor.libraries.contracts",
       "spaghetti_extractor.libraries.matching_support",
       "spaghetti_extractor.libraries.model",
+      "spaghetti_extractor.libraries.signature_graph",
       "spaghetti_extractor.libraries.v4_adoption_records",
       "spaghetti_extractor.libraries.v4_behavior_pack",
+      "spaghetti_extractor.libraries.v4_behavior_records",
       "spaghetti_extractor.libraries.v4_component",
       "spaghetti_extractor.libraries.v4_identity_records",
       "spaghetti_extractor.libraries.v4_record_support",
@@ -5724,6 +6937,7 @@
       "spaghetti_extractor.machine_ir.definedness",
       "spaghetti_extractor.machine_ir.entry_coordinates",
       "spaghetti_extractor.machine_ir.fallback_capability",
+      "spaghetti_extractor.machine_ir.memory_actions",
       "spaghetti_extractor.machine_ir.schema",
       "spaghetti_extractor.pe32",
       "spaghetti_extractor.pe32.image",
@@ -5742,27 +6956,49 @@
       "spaghetti_extractor",
       "spaghetti_extractor.artifacts",
       "spaghetti_extractor.artifacts.artifact_set",
+      "spaghetti_extractor.artifacts.boundary_claims",
+      "spaghetti_extractor.artifacts.callback_protocols",
       "spaghetti_extractor.artifacts.formats",
       "spaghetti_extractor.artifacts.io",
+      "spaghetti_extractor.artifacts.machine_abi",
       "spaghetti_extractor.artifacts.phases",
       "spaghetti_extractor.artifacts.scheduling",
       "spaghetti_extractor.authority",
       "spaghetti_extractor.authority._schema",
       "spaghetti_extractor.authority.authority_common",
+      "spaghetti_extractor.authority.callbacks",
       "spaghetti_extractor.authority.exact_units",
+      "spaghetti_extractor.authority.exceptional_transitions",
+      "spaghetti_extractor.authority.external_site_records",
+      "spaghetti_extractor.authority.fallback_coverage",
+      "spaghetti_extractor.authority.final_authority",
       "spaghetti_extractor.authority.identities",
+      "spaghetti_extractor.authority.incoming_call_frames",
+      "spaghetti_extractor.authority.inductive",
+      "spaghetti_extractor.authority.inductive_records",
+      "spaghetti_extractor.authority.isa_qualification",
+      "spaghetti_extractor.authority.memory_records",
+      "spaghetti_extractor.authority.root_closure",
       "spaghetti_extractor.authority.semantic_index",
       "spaghetti_extractor.authority.target_certificate_records",
+      "spaghetti_extractor.authority.transition_records",
       "spaghetti_extractor.build_support",
       "spaghetti_extractor.build_support.architecture_manifest",
       "spaghetti_extractor.build_support.nix_invocation",
       "spaghetti_extractor.build_support.python_module_index",
       "spaghetti_extractor.candidate",
       "spaghetti_extractor.candidate.api_catalog",
+      "spaghetti_extractor.candidate.atomics",
+      "spaghetti_extractor.candidate.authority",
+      "spaghetti_extractor.candidate.authority.checker",
+      "spaghetti_extractor.candidate.authority.io",
+      "spaghetti_extractor.candidate.authority.model",
+      "spaghetti_extractor.candidate.authority.rooted_projection",
       "spaghetti_extractor.candidate.c_backend",
       "spaghetti_extractor.candidate.c_domains",
       "spaghetti_extractor.candidate.c_render",
       "spaghetti_extractor.candidate.interpreter",
+      "spaghetti_extractor.candidate.interpreter_atomics",
       "spaghetti_extractor.candidate.interpreter_compiler",
       "spaghetti_extractor.candidate.interpreter_model",
       "spaghetti_extractor.candidate.interpreter_package",
@@ -5776,6 +7012,8 @@
       "spaghetti_extractor.components",
       "spaghetti_extractor.components.activation_receipt",
       "spaghetti_extractor.components.adapter",
+      "spaghetti_extractor.components.atomics",
+      "spaghetti_extractor.components.capabilities",
       "spaghetti_extractor.components.configuration",
       "spaghetti_extractor.components.formats",
       "spaghetti_extractor.components.implementation",
@@ -5788,6 +7026,8 @@
       "spaghetti_extractor.components.machine_binding_schema",
       "spaghetti_extractor.components.model",
       "spaghetti_extractor.components.proposal_package",
+      "spaghetti_extractor.components.relation_ir",
+      "spaghetti_extractor.components.relation_receipt",
       "spaghetti_extractor.components.semantic_contract",
       "spaghetti_extractor.components.source",
       "spaghetti_extractor.components.universal_binding",
@@ -5795,8 +7035,10 @@
       "spaghetti_extractor.components.value_codec",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
+      "spaghetti_extractor.external.callback_protocols",
       "spaghetti_extractor.external.callbacks",
       "spaghetti_extractor.external.contracts",
+      "spaghetti_extractor.external.machine_abi",
       "spaghetti_extractor.external.site_authority",
       "spaghetti_extractor.extraction",
       "spaghetti_extractor.extraction.binary_inventory",
@@ -5819,8 +7061,10 @@
       "spaghetti_extractor.libraries.v4_record_support",
       "spaghetti_extractor.libraries.v4_release_set",
       "spaghetti_extractor.machine_ir",
+      "spaghetti_extractor.machine_ir.coverage",
       "spaghetti_extractor.machine_ir.definedness",
       "spaghetti_extractor.machine_ir.fallback_capability",
+      "spaghetti_extractor.machine_ir.memory_actions",
       "spaghetti_extractor.machine_ir.schema",
       "spaghetti_extractor.pe32",
       "spaghetti_extractor.pe32.image",
@@ -5860,19 +7104,23 @@
       "spaghetti_extractor",
       "spaghetti_extractor.artifacts",
       "spaghetti_extractor.artifacts.artifact_set",
+      "spaghetti_extractor.artifacts.callback_protocols",
       "spaghetti_extractor.artifacts.formats",
       "spaghetti_extractor.artifacts.io",
+      "spaghetti_extractor.artifacts.machine_abi",
       "spaghetti_extractor.authority",
       "spaghetti_extractor.authority.diagnostics",
       "spaghetti_extractor.authority_inputs",
       "spaghetti_extractor.authority_inputs.isa_requirements",
       "spaghetti_extractor.candidate",
       "spaghetti_extractor.candidate.api_catalog",
+      "spaghetti_extractor.candidate.atomics",
       "spaghetti_extractor.candidate.c_backend",
       "spaghetti_extractor.candidate.c_domains",
       "spaghetti_extractor.candidate.c_render",
       "spaghetti_extractor.candidate.functional",
       "spaghetti_extractor.candidate.interpreter",
+      "spaghetti_extractor.candidate.interpreter_atomics",
       "spaghetti_extractor.candidate.interpreter_compiler",
       "spaghetti_extractor.candidate.interpreter_model",
       "spaghetti_extractor.candidate.interpreter_package",
@@ -5884,8 +7132,12 @@
       "spaghetti_extractor.commands.manifest",
       "spaghetti_extractor.commands.source",
       "spaghetti_extractor.commands.validation",
+      "spaghetti_extractor.components",
+      "spaghetti_extractor.components.atomics",
+      "spaghetti_extractor.components.capabilities",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
+      "spaghetti_extractor.external.callback_protocols",
       "spaghetti_extractor.external.callbacks",
       "spaghetti_extractor.external.contracts",
       "spaghetti_extractor.external.interface_profiles",
@@ -5908,6 +7160,7 @@
       "spaghetti_extractor.machine_ir",
       "spaghetti_extractor.machine_ir.definedness",
       "spaghetti_extractor.machine_ir.fallback_capability",
+      "spaghetti_extractor.machine_ir.memory_actions",
       "spaghetti_extractor.machine_ir.schema",
       "spaghetti_extractor.target_bundles",
       "spaghetti_extractor.target_bundles.lint",
@@ -5918,10 +7171,14 @@
     ],
     "expert": [
       "spaghetti_extractor",
+      "spaghetti_extractor.__main__",
       "spaghetti_extractor.artifacts",
       "spaghetti_extractor.artifacts.artifact_set",
+      "spaghetti_extractor.artifacts.boundary_claims",
+      "spaghetti_extractor.artifacts.callback_protocols",
       "spaghetti_extractor.artifacts.formats",
       "spaghetti_extractor.artifacts.io",
+      "spaghetti_extractor.artifacts.machine_abi",
       "spaghetti_extractor.artifacts.phases",
       "spaghetti_extractor.artifacts.scheduling",
       "spaghetti_extractor.authority",
@@ -5934,6 +7191,7 @@
       "spaghetti_extractor.authority.fallback_coverage",
       "spaghetti_extractor.authority.final_authority",
       "spaghetti_extractor.authority.identities",
+      "spaghetti_extractor.authority.incoming_call_frames",
       "spaghetti_extractor.authority.inductive",
       "spaghetti_extractor.authority.inductive_records",
       "spaghetti_extractor.authority.isa_qualification",
@@ -5943,11 +7201,37 @@
       "spaghetti_extractor.authority.semantic_index",
       "spaghetti_extractor.authority.target_certificate_records",
       "spaghetti_extractor.authority.transition_records",
+      "spaghetti_extractor.boundary",
+      "spaghetti_extractor.boundary._canonical",
+      "spaghetti_extractor.boundary.evidence",
+      "spaghetti_extractor.boundary.lifecycle",
+      "spaghetti_extractor.boundary.model",
+      "spaghetti_extractor.boundary.projection",
+      "spaghetti_extractor.boundary.source",
       "spaghetti_extractor.build_support",
       "spaghetti_extractor.build_support.nix_invocation",
       "spaghetti_extractor.build_support.nix_support",
+      "spaghetti_extractor.calls",
+      "spaghetti_extractor.calls._canonical",
+      "spaghetti_extractor.calls.boundary_adapter",
+      "spaghetti_extractor.calls.callback",
+      "spaghetti_extractor.calls.callback_v3",
+      "spaghetti_extractor.calls.compatibility",
+      "spaghetti_extractor.calls.compiler_proposal",
+      "spaghetti_extractor.calls.dialects",
+      "spaghetti_extractor.calls.dialects.ia32",
+      "spaghetti_extractor.calls.evidence",
+      "spaghetti_extractor.calls.frame",
+      "spaghetti_extractor.calls.intent",
+      "spaghetti_extractor.calls.lifecycle",
+      "spaghetti_extractor.calls.protocol",
+      "spaghetti_extractor.calls.protocol_v2",
+      "spaghetti_extractor.calls.relation",
+      "spaghetti_extractor.calls.source",
+      "spaghetti_extractor.calls.types",
       "spaghetti_extractor.candidate",
       "spaghetti_extractor.candidate.api_catalog",
+      "spaghetti_extractor.candidate.atomics",
       "spaghetti_extractor.candidate.authority",
       "spaghetti_extractor.candidate.authority.checker",
       "spaghetti_extractor.candidate.authority.execution",
@@ -5956,6 +7240,7 @@
       "spaghetti_extractor.candidate.c_backend",
       "spaghetti_extractor.candidate.c_domains",
       "spaghetti_extractor.candidate.c_render",
+      "spaghetti_extractor.candidate.callback_authority",
       "spaghetti_extractor.candidate.engine",
       "spaghetti_extractor.candidate.engine_analysis",
       "spaghetti_extractor.candidate.engine_components",
@@ -5965,6 +7250,7 @@
       "spaghetti_extractor.candidate.engine_render",
       "spaghetti_extractor.candidate.engine_x87",
       "spaghetti_extractor.candidate.interpreter",
+      "spaghetti_extractor.candidate.interpreter_atomics",
       "spaghetti_extractor.candidate.interpreter_compiler",
       "spaghetti_extractor.candidate.interpreter_model",
       "spaghetti_extractor.candidate.interpreter_package",
@@ -5980,8 +7266,11 @@
       "spaghetti_extractor.candidate.runtime_render_entry",
       "spaghetti_extractor.candidate.runtime_values",
       "spaghetti_extractor.candidate.x87",
+      "spaghetti_extractor.cli",
       "spaghetti_extractor.commands",
       "spaghetti_extractor.commands.authority",
+      "spaghetti_extractor.commands.boundaries",
+      "spaghetti_extractor.commands.call_protocols",
       "spaghetti_extractor.commands.common",
       "spaghetti_extractor.commands.expert_components",
       "spaghetti_extractor.commands.expert_isa",
@@ -5990,6 +7279,10 @@
       "spaghetti_extractor.components",
       "spaghetti_extractor.components.activation_receipt",
       "spaghetti_extractor.components.adapter",
+      "spaghetti_extractor.components.atomics",
+      "spaghetti_extractor.components.boundary_plan",
+      "spaghetti_extractor.components.boundary_primitives",
+      "spaghetti_extractor.components.capabilities",
       "spaghetti_extractor.components.compiler",
       "spaghetti_extractor.components.configuration",
       "spaghetti_extractor.components.contracts",
@@ -6024,6 +7317,9 @@
       "spaghetti_extractor.components.region_replacement_model",
       "spaghetti_extractor.components.region_replacement_render",
       "spaghetti_extractor.components.region_replacement_schema",
+      "spaghetti_extractor.components.relation_ir",
+      "spaghetti_extractor.components.relation_receipt",
+      "spaghetti_extractor.components.relation_solver",
       "spaghetti_extractor.components.resolution",
       "spaghetti_extractor.components.runtime",
       "spaghetti_extractor.components.runtime_expressions",
@@ -6044,8 +7340,10 @@
       "spaghetti_extractor.components.value_codec",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
+      "spaghetti_extractor.external.callback_protocols",
       "spaghetti_extractor.external.callbacks",
       "spaghetti_extractor.external.contracts",
+      "spaghetti_extractor.external.machine_abi",
       "spaghetti_extractor.external.machine_import_profiles",
       "spaghetti_extractor.external.runtime_projection",
       "spaghetti_extractor.external.site_authority",
@@ -6058,6 +7356,7 @@
       "spaghetti_extractor.machine_ir.definedness",
       "spaghetti_extractor.machine_ir.entry_coordinates",
       "spaghetti_extractor.machine_ir.fallback_capability",
+      "spaghetti_extractor.machine_ir.memory_actions",
       "spaghetti_extractor.machine_ir.schema",
       "spaghetti_extractor.pe32",
       "spaghetti_extractor.pe32.model",
@@ -6067,25 +7366,83 @@
     "operator": [
       "spaghetti_extractor",
       "spaghetti_extractor.__main__",
+      "spaghetti_extractor.abi",
+      "spaghetti_extractor.abi.catalog",
+      "spaghetti_extractor.abi.compatibility",
+      "spaghetti_extractor.abi.declarations",
+      "spaghetti_extractor.abi.extraction",
+      "spaghetti_extractor.abi.ingestion",
+      "spaghetti_extractor.abi.legacy",
+      "spaghetti_extractor.abi.matching",
+      "spaghetti_extractor.abi.model",
+      "spaghetti_extractor.abi.native_solver",
+      "spaghetti_extractor.abi.solver",
+      "spaghetti_extractor.abi.symbols",
       "spaghetti_extractor.artifacts",
+      "spaghetti_extractor.artifacts.artifact_set",
+      "spaghetti_extractor.artifacts.boundary_claims",
+      "spaghetti_extractor.artifacts.callback_protocols",
       "spaghetti_extractor.artifacts.formats",
+      "spaghetti_extractor.artifacts.io",
+      "spaghetti_extractor.artifacts.phases",
+      "spaghetti_extractor.artifacts.scheduling",
+      "spaghetti_extractor.authority",
+      "spaghetti_extractor.authority._schema",
+      "spaghetti_extractor.authority.authority_common",
+      "spaghetti_extractor.authority.external_site_records",
+      "spaghetti_extractor.authority.parametric_summary_records",
+      "spaghetti_extractor.boundary",
+      "spaghetti_extractor.boundary._canonical",
+      "spaghetti_extractor.boundary.evidence",
+      "spaghetti_extractor.boundary.lifecycle",
+      "spaghetti_extractor.boundary.model",
+      "spaghetti_extractor.boundary.projection",
+      "spaghetti_extractor.boundary.source",
       "spaghetti_extractor.build_support",
       "spaghetti_extractor.build_support.nix_invocation",
+      "spaghetti_extractor.candidate",
+      "spaghetti_extractor.candidate.callbacks",
       "spaghetti_extractor.cli",
       "spaghetti_extractor.commands",
       "spaghetti_extractor.commands.common",
       "spaghetti_extractor.commands.manifest",
       "spaghetti_extractor.commands.workflows",
       "spaghetti_extractor.components",
+      "spaghetti_extractor.components.atomics",
+      "spaghetti_extractor.components.boundary_evaluator",
+      "spaghetti_extractor.components.capabilities",
       "spaghetti_extractor.components.formats",
+      "spaghetti_extractor.components.interface_ir",
+      "spaghetti_extractor.components.interface_v5",
+      "spaghetti_extractor.components.machine_binding",
+      "spaghetti_extractor.components.machine_binding_checks",
+      "spaghetti_extractor.components.machine_binding_schema",
+      "spaghetti_extractor.components.object_authority",
+      "spaghetti_extractor.components.relation_ir",
+      "spaghetti_extractor.components.value_codec",
+      "spaghetti_extractor.errors",
+      "spaghetti_extractor.external",
+      "spaghetti_extractor.external.callback_protocols",
+      "spaghetti_extractor.external.callbacks",
+      "spaghetti_extractor.external.contracts",
+      "spaghetti_extractor.external.site_authority",
       "spaghetti_extractor.libraries",
       "spaghetti_extractor.libraries.abi_catalog",
       "spaghetti_extractor.libraries.abi_records",
+      "spaghetti_extractor.libraries.contracts",
+      "spaghetti_extractor.libraries.matching_support",
+      "spaghetti_extractor.libraries.model",
+      "spaghetti_extractor.libraries.signature_graph",
       "spaghetti_extractor.libraries.v4_adoption_records",
       "spaghetti_extractor.libraries.v4_behavior_manifest",
       "spaghetti_extractor.libraries.v4_identity_records",
       "spaghetti_extractor.libraries.v4_record_support",
       "spaghetti_extractor.libraries.v4_release_set",
+      "spaghetti_extractor.pe32",
+      "spaghetti_extractor.pe32.image",
+      "spaghetti_extractor.pe32.loader",
+      "spaghetti_extractor.pe32.model",
+      "spaghetti_extractor.pe32.pe",
       "spaghetti_extractor.target_bundles",
       "spaghetti_extractor.target_bundles.candidate_status",
       "spaghetti_extractor.target_bundles.library_status_v4",
@@ -6097,10 +7454,32 @@
     ],
     "proposal": [
       "spaghetti_extractor",
+      "spaghetti_extractor.abi",
+      "spaghetti_extractor.abi.catalog",
+      "spaghetti_extractor.abi.compatibility",
+      "spaghetti_extractor.abi.declaration_spec",
+      "spaghetti_extractor.abi.declarations",
+      "spaghetti_extractor.abi.extraction",
+      "spaghetti_extractor.abi.legacy",
+      "spaghetti_extractor.abi.matching",
+      "spaghetti_extractor.abi.model",
+      "spaghetti_extractor.abi.native_solver",
+      "spaghetti_extractor.abi.solver",
+      "spaghetti_extractor.abi.symbols",
       "spaghetti_extractor.artifacts",
       "spaghetti_extractor.artifacts.artifact_set",
+      "spaghetti_extractor.artifacts.callback_protocols",
       "spaghetti_extractor.artifacts.formats",
       "spaghetti_extractor.artifacts.io",
+      "spaghetti_extractor.artifacts.machine_abi",
+      "spaghetti_extractor.artifacts.phases",
+      "spaghetti_extractor.artifacts.scheduling",
+      "spaghetti_extractor.authority",
+      "spaghetti_extractor.authority._schema",
+      "spaghetti_extractor.authority.authority_common",
+      "spaghetti_extractor.authority.catalog_call_contracts",
+      "spaghetti_extractor.authority.external_site_records",
+      "spaghetti_extractor.authority.parametric_summary_records",
       "spaghetti_extractor.authority_inputs",
       "spaghetti_extractor.authority_inputs.bindings",
       "spaghetti_extractor.authority_inputs.finite_values",
@@ -6132,6 +7511,7 @@
       "spaghetti_extractor.components.proposal_selection",
       "spaghetti_extractor.errors",
       "spaghetti_extractor.external",
+      "spaghetti_extractor.external.callback_protocols",
       "spaghetti_extractor.external.callbacks",
       "spaghetti_extractor.external.contracts",
       "spaghetti_extractor.external.import_abi",
@@ -6180,6 +7560,9 @@
       "spaghetti_extractor.libraries.v4_identity_records",
       "spaghetti_extractor.libraries.v4_matching",
       "spaghetti_extractor.libraries.v4_record_support",
+      "spaghetti_extractor.libraries.v4_release_set",
+      "spaghetti_extractor.machine_ir",
+      "spaghetti_extractor.machine_ir.memory_actions",
       "spaghetti_extractor.pe32",
       "spaghetti_extractor.pe32.behavioral_roots",
       "spaghetti_extractor.pe32.image",

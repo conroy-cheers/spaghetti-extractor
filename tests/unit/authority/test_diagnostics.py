@@ -49,7 +49,7 @@ class AuthorityDiagnosticsV3Tests(unittest.TestCase):
             )
             family = _write(
                 root / "family",
-                "callback-authority-v3",
+                "callback-authority-v4",
                 (
                     ArtifactRecordV3.create(
                         "unit:one",
@@ -71,7 +71,7 @@ class AuthorityDiagnosticsV3Tests(unittest.TestCase):
                 family_bundle,
                 (family,),
                 ("unit:one",),
-                expected_kind="callback-authority-v3",
+                expected_kind="callback-authority-v4",
             )
             final = _write(
                 root / "final",
@@ -94,14 +94,14 @@ class AuthorityDiagnosticsV3Tests(unittest.TestCase):
 
             report = summarize_authority_artifacts_v3(
                 {
-                    "callback-authority-v3": family_bundle,
+                    "callback-authority-v4": family_bundle,
                     "final-authority-v3": final,
                     "semantic-index-v3": semantic,
                 },
                 graph_manifest={
                     "phases": [
                         {
-                            "phase_id": "callback-authority-v3",
+                            "phase_id": "callback-authority-v4",
                             "inputs": {
                                 "callback_evidence": {
                                     "source": "external",

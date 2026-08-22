@@ -32,7 +32,7 @@ def _unit(
     instruction_digest: str,
 ) -> dict[str, object]:
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",

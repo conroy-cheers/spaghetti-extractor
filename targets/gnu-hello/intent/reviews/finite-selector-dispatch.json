@@ -1,0 +1,58 @@
+{
+  "format": "spaghetti-extractor-component-boundary-review-v2",
+  "lift_unit_id": "finite-selector-dispatch",
+  "accept_derived_machine_boundary": true,
+  "overrides": {
+    "portable_interface_ir": {
+      "format": "spaghetti-extractor-component-interface-ir-v2",
+      "id": "finite_selector_dispatch",
+      "types": [
+        {
+          "id": "selector",
+          "kind": "scalar",
+          "c_type": "uint8_t"
+        },
+        {
+          "id": "route",
+          "kind": "enum",
+          "c_type": "uint32_t"
+        }
+      ],
+      "state": [],
+      "operations": [
+        {
+          "id": "select",
+          "kind": "operation",
+          "parameters": [
+            {
+              "id": "selector",
+              "type_id": "selector"
+            }
+          ],
+          "results": [
+            {
+              "id": "route",
+              "type_id": "route"
+            }
+          ],
+          "effect_ids": [],
+          "allowed_service_ids": [],
+          "pre_states": [
+            "ready"
+          ],
+          "post_states": [
+            "ready"
+          ]
+        }
+      ],
+      "effects": [],
+      "services": [],
+      "protocol": {
+        "states": [
+          "ready"
+        ],
+        "initial_state": "ready"
+      }
+    }
+  }
+}

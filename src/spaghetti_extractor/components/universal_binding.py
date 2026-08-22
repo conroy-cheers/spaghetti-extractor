@@ -8,9 +8,14 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
-from .formats import COMPONENT_MACHINE_BINDING_V3_FORMAT
+from .formats import (
+    COMPONENT_MACHINE_BINDING_V3_FORMAT,
+    COMPONENT_MACHINE_BINDING_V4_FORMAT,
+)
 from .machine_binding import ComponentMachineBindingV1
 from .semantic_contract import ComponentSemanticContractV1
+from .relation_ir import ComponentRelationIRV1
+from .relation_receipt import ComponentRelationReceiptV1
 from .universal_contract import (
     ComponentContractV3,
     normalized_semantic_operation_sha256,
@@ -38,6 +43,9 @@ class ComponentMachineBindingV3:
     status: str
     issues: tuple[Mapping[str, object], ...]
     binding_sha256: str
+    format_version: str = COMPONENT_MACHINE_BINDING_V3_FORMAT
+    relation_ir_sha256: str | None = None
+    relation_receipt_sha256: str | None = None
 
     @property
     def authorizing(self) -> bool:
@@ -46,9 +54,7 @@ class ComponentMachineBindingV3:
     @classmethod
     def parse(cls, value: object) -> "ComponentMachineBindingV3":
         row = _object(value, "universal component machine binding")
-        _exact(
-            row,
-            {
+        common_fields = {
                 "format",
                 "status",
                 "component_id",
@@ -60,10 +66,13 @@ class ComponentMachineBindingV3:
                 "issues",
                 "policy",
                 "binding_sha256",
-            },
-            "universal component machine binding",
-        )
-        if row["format"] != COMPONENT_MACHINE_BINDING_V3_FORMAT:
+            }
+        _exact(row, common_fields, "universal component machine binding")
+        binding_format = row["format"]
+        if binding_format not in {
+            COMPONENT_MACHINE_BINDING_V3_FORMAT,
+            COMPONENT_MACHINE_BINDING_V4_FORMAT,
+        }:
             raise UniversalComponentBindingError(
                 "unsupported universal machine-binding format"
             )
@@ -72,15 +81,16 @@ class ComponentMachineBindingV3:
             "universal machine-binding status",
         )
         source = _object(row["source_artifacts"], "machine-binding sources")
-        _exact(
-            source,
-            {
+        source_fields = {
                 "machine_binding_sha256",
                 "machine_binding_receipt_sha256",
                 "semantic_contract_sha256",
-            },
-            "machine-binding sources",
-        )
+            }
+        if binding_format == COMPONENT_MACHINE_BINDING_V4_FORMAT:
+            source_fields.update(
+                {"relation_ir_sha256", "relation_receipt_sha256"}
+            )
+        _exact(source, source_fields, "machine-binding sources")
         machine = _object(row["exact_machine"], "exact component machine")
         _exact(
             machine,
@@ -150,20 +160,44 @@ class ComponentMachineBindingV3:
             status=status,
             issues=issues,
             binding_sha256=observed,
+            format_version=str(binding_format),
+            relation_ir_sha256=(
+                None
+                if binding_format == COMPONENT_MACHINE_BINDING_V3_FORMAT
+                else _digest(
+                    source["relation_ir_sha256"], "relation IR digest"
+                )
+            ),
+            relation_receipt_sha256=(
+                None
+                if binding_format == COMPONENT_MACHINE_BINDING_V3_FORMAT
+                else _digest(
+                    source["relation_receipt_sha256"],
+                    "relation receipt digest",
+                )
+            ),
         )
 
     def to_payload(self) -> dict[str, object]:
+        source_artifacts = {
+            "machine_binding_sha256": self.machine_binding_sha256,
+            "machine_binding_receipt_sha256": self.machine_binding_receipt_sha256,
+            "semantic_contract_sha256": self.semantic_contract_sha256,
+        }
+        if self.format_version == COMPONENT_MACHINE_BINDING_V4_FORMAT:
+            source_artifacts.update(
+                {
+                    "relation_ir_sha256": self.relation_ir_sha256,
+                    "relation_receipt_sha256": self.relation_receipt_sha256,
+                }
+            )
         core = {
-            "format": COMPONENT_MACHINE_BINDING_V3_FORMAT,
+            "format": self.format_version,
             "status": self.status,
             "component_id": self.component_id,
             "contract_sha256": self.contract_sha256,
             "interface_sha256": self.interface_sha256,
-            "source_artifacts": {
-                "machine_binding_sha256": self.machine_binding_sha256,
-                "machine_binding_receipt_sha256": self.machine_binding_receipt_sha256,
-                "semantic_contract_sha256": self.semantic_contract_sha256,
-            },
+            "source_artifacts": source_artifacts,
             "exact_machine": {
                 "pe_sha256": self.pe_sha256,
                 "machine_ir_sha256": self.machine_ir_sha256,
@@ -296,6 +330,123 @@ def build_component_machine_binding_v3(
             key=lambda item: (
                 str(item.get("status", "")), str(item.get("code", "")),
                 str(item.get("operation_id", "")),
+            ),
+        ),
+        "policy": _policy(),
+    }
+    payload = {**core, "binding_sha256": canonical_sha256_v3(core)}
+    result = ComponentMachineBindingV3.parse(payload)
+    if out is not None:
+        _write(Path(out), payload)
+    return result
+
+
+def build_component_machine_binding_v4(
+    *,
+    binding: ComponentMachineBindingV3 | Path | str | Mapping[str, object],
+    relation: ComponentRelationIRV1 | Path | str | Mapping[str, object],
+    relation_receipt: ComponentRelationReceiptV1 | Path | str | Mapping[str, object],
+    out: Path | str | None = None,
+) -> ComponentMachineBindingV3:
+    """Bind an authorizing constructive relation to an exact V3 binding."""
+
+    base = (
+        binding
+        if isinstance(binding, ComponentMachineBindingV3)
+        else read_component_machine_binding_v3(binding)
+    )
+    checked_relation = (
+        relation
+        if isinstance(relation, ComponentRelationIRV1)
+        else ComponentRelationIRV1.parse(
+            _load(relation, "component relation IR", "relation-ir.json")
+        )
+    )
+    checked_receipt = (
+        relation_receipt
+        if isinstance(relation_receipt, ComponentRelationReceiptV1)
+        else ComponentRelationReceiptV1.parse(
+            _load(
+                relation_receipt,
+                "component relation receipt",
+                "relation-receipt.json",
+            )
+        )
+    )
+    issues = [dict(item) for item in base.issues]
+    if base.format_version != COMPONENT_MACHINE_BINDING_V3_FORMAT:
+        issues.append(_issue("violated", "relation_binding_upgrade_source_is_not_v3"))
+    try:
+        checked_receipt.validate_for(checked_relation)
+    except ValueError:
+        issues.append(_issue("violated", "relation_receipt_stale"))
+    if not checked_receipt.authorizing:
+        issues.append(_issue("incomplete", "relation_receipt_not_checked"))
+    expected = {
+        "component_id": base.component_id,
+        "interface_sha256": base.interface_sha256,
+        "machine_binding_sha256": base.machine_binding_sha256,
+        "semantic_contract_sha256": base.semantic_contract_sha256,
+        "machine_ir_sha256": base.machine_ir_sha256,
+    }
+    observed = {
+        "component_id": checked_relation.component_id,
+        **{
+            key: checked_relation.bindings.get(key)
+            for key in expected
+            if key != "component_id"
+        },
+    }
+    for key, value in expected.items():
+        if observed.get(key) != value:
+            issues.append(
+                _issue("violated", "relation_binding_stale", binding_id=key)
+            )
+    if {item.operation_id for item in checked_relation.operations} != {
+        item[0] for item in base.operation_bindings
+    }:
+        issues.append(_issue("violated", "relation_operation_inventory_mismatch"))
+    status = (
+        "violated"
+        if any(item["status"] == "violated" for item in issues)
+        else "incomplete"
+        if issues
+        else "checked"
+    )
+    source_artifacts = {
+        "machine_binding_sha256": base.machine_binding_sha256,
+        "machine_binding_receipt_sha256": base.machine_binding_receipt_sha256,
+        "semantic_contract_sha256": base.semantic_contract_sha256,
+        "relation_ir_sha256": checked_relation.relation_sha256,
+        "relation_receipt_sha256": checked_receipt.receipt_sha256,
+    }
+    core: dict[str, object] = {
+        "format": COMPONENT_MACHINE_BINDING_V4_FORMAT,
+        "status": status,
+        "component_id": base.component_id,
+        "contract_sha256": base.contract_sha256,
+        "interface_sha256": base.interface_sha256,
+        "source_artifacts": source_artifacts,
+        "exact_machine": {
+            "pe_sha256": base.pe_sha256,
+            "machine_ir_sha256": base.machine_ir_sha256,
+            "machine_ir_manifest_sha256": base.machine_ir_manifest_sha256,
+            "unit_ids": list(base.unit_ids),
+        },
+        "operation_bindings": [
+            {
+                "id": operation_id,
+                "projection_sha256": projection_sha256,
+                "semantic_sha256": semantic_sha256,
+            }
+            for operation_id, projection_sha256, semantic_sha256 in base.operation_bindings
+        ],
+        "issues": sorted(
+            issues,
+            key=lambda item: (
+                str(item.get("status", "")),
+                str(item.get("code", "")),
+                str(item.get("binding_id", "")),
             ),
         ),
         "policy": _policy(),
@@ -452,5 +603,6 @@ __all__ = [
     "ComponentMachineBindingV3",
     "UniversalComponentBindingError",
     "build_component_machine_binding_v3",
+    "build_component_machine_binding_v4",
     "read_component_machine_binding_v3",
 ]

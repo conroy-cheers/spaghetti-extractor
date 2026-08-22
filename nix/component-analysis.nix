@@ -304,7 +304,7 @@ let
       PY
       expected_sha256="$(sha256sum ${lib.escapeShellArg (toString original)} | cut -d ' ' -f 1)"
       if ! jq -e --arg expected_sha256 "$expected_sha256" '
-        .format == "spaghetti-extractor-machine-ir-v2" and
+        .format == "spaghetti-extractor-machine-ir-v3" and
         (.status == "qualified" or .status == "incomplete" or .status == "violated") and
         .binary.sha256 == $expected_sha256 and
         .counts.units > 0 and .counts.instructions > 0 and
@@ -398,7 +398,7 @@ let
   };
 
   machineIr = mkMachineIr {
-    name = "${namePrefix}-machine-ir-v2";
+    name = "${namePrefix}-machine-ir-v3";
     stateMachineInput = "${directStateMachine}/state-machine.jsonl";
     preparedMachineIr = directPreparedMachineIr;
   };

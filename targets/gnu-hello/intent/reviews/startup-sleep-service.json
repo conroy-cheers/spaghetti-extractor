@@ -1,0 +1,54 @@
+{
+  "format": "spaghetti-extractor-component-boundary-review-v2",
+  "lift_unit_id": "startup-sleep-service",
+  "accept_derived_machine_boundary": true,
+  "overrides": {
+    "portable_interface_ir": {
+      "format": "spaghetti-extractor-component-interface-ir-v2",
+      "id": "startup_sleep_service",
+      "types": [
+        {
+          "id": "u32",
+          "kind": "scalar",
+          "c_type": "uint32_t"
+        }
+      ],
+      "state": [],
+      "operations": [
+        {
+          "id": "delay",
+          "kind": "operation",
+          "parameters": [],
+          "results": [],
+          "effect_ids": [],
+          "allowed_service_ids": [
+            "sleep_milliseconds"
+          ],
+          "pre_states": [
+            "ready"
+          ],
+          "post_states": [
+            "ready"
+          ]
+        }
+      ],
+      "effects": [],
+      "services": [
+        {
+          "id": "sleep_milliseconds",
+          "parameter_type_ids": [
+            "u32"
+          ],
+          "result_type_id": null,
+          "effect_ids": []
+        }
+      ],
+      "protocol": {
+        "states": [
+          "ready"
+        ],
+        "initial_state": "ready"
+      }
+    }
+  }
+}

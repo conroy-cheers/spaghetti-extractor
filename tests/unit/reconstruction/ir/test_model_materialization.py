@@ -283,6 +283,7 @@ class ReconstructionIRMaterializationModelTests(unittest.TestCase):
         )
         self.assertEqual(recovery["unit_binding"]["status"], "complete")
         self.assertEqual(recovery["target_unit_ids"], [materialized["id"]])
+        self.assertEqual(recovery["target_expression"], target_expression)
         self.assertEqual(manifest["counts"]["materialized_target_units"], 1)
         self.assertEqual(
             manifest["control"]["target_cutpoint_materialization"]["status"],

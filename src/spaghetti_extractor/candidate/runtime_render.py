@@ -305,7 +305,7 @@ typedef struct spx_native_callable_binding {{
 }} spx_native_callable_binding;
 
 typedef struct spx_native_external_range {{
-  uint32_t start, size, producer_rva, producer_action, generation;
+  uint32_t start, size, producer_rva, producer_action, generation, object_id;
 }} spx_native_external_range;
 
 typedef struct spx_native_external_lifecycle_event {{
@@ -337,6 +337,8 @@ typedef struct spx_native_context {{
   uint32_t external_lifecycle_count;
   uint32_t external_lifecycle_next;
   uint32_t external_lifecycle_sequence;
+  uint32_t external_object_sequence;
+  uint32_t invocation_generation;
   spx_native_callable_binding callable_bindings[{max(1, callable_binding_count)}U];
 }} spx_native_context;
 

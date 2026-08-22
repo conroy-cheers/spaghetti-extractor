@@ -13,12 +13,14 @@ from ..artifacts.formats import (
 )
 from ..errors import ToolkitInputError
 from ..util import sha256_file
+from .callback_protocols import callback_protocol_from_contract
 
 
 MACHINE_IMPORT_PROFILE_FORMATS = frozenset({
     "spaghetti-extractor-external-environment-profile-v1",
     "spaghetti-extractor-external-interface-profile-v1",
     "spaghetti-extractor-static-machine-import-profile-v1",
+    "spaghetti-extractor-static-machine-import-profile-v2",
 })
 NATIVE_DLL_CALLTHROUGH_EFFECT_MODEL = "exact_native_dll_callthrough_v1"
 NATIVE_DLL_CALLTHROUGH_PREREQUISITES = frozenset({
@@ -40,7 +42,13 @@ _CALLER_MEMORY_FRAME_ASSUMPTIONS = [
 ]
 
 _PE32_ABI_TEMPLATES = frozenset({"pe32-cdecl-v1", "pe32-stdcall-v1"})
-_NATIVE_CALLTHROUGH_CALLBACK_FIELDS = frozenset({
+_LEGACY_CALLBACK_FIELDS = frozenset({
+    "callback_abi",
+    "callback_lifetime",
+    "callback_result",
+    "callback_source",
+})
+_NATIVE_CALLTHROUGH_LEGACY_CALLBACK_FIELDS = frozenset({
     "callback_abi",
     "callback_lifetime",
     "callback_source",
@@ -193,7 +201,14 @@ def load_machine_import_profile_set(
     selected: dict[MachineImportIdentity, SelectedMachineImportContract] = {}
     ambiguous: set[MachineImportIdentity] = set()
     for profile in profiles:
+        profile_format = profile.payload.get("format")
         default_callback_effect = profile.payload.get("default_callback_effect")
+        if profile_format == "spaghetti-extractor-static-machine-import-profile-v2" and (
+            "default_callback_effect" in profile.payload
+        ):
+            raise MachineImportProfileError(
+                f"{profile.path} V2 profiles derive callback effects from callback_protocol"
+            )
         if default_callback_effect not in {"none", None}:
             raise MachineImportProfileError(
                 f"{profile.path} default_callback_effect must be exactly 'none'"
@@ -222,11 +237,18 @@ def load_machine_import_profile_set(
                     context=f"{profile.path} {entry_key}[{entry_index}].import",
                 )
                 arity_kind, arity_words = _arity(raw)
+                _validate_callback_contract(
+                    raw,
+                    profile_format=str(profile_format),
+                    argument_words=arity_words,
+                    context=f"{profile.path} {entry_key}[{entry_index}]",
+                )
                 _validate_effect_model(
                     raw,
                     imported=imported,
                     arity_kind=arity_kind,
                     argument_words=arity_words,
+                    profile_format=str(profile_format),
                     context=f"{profile.path} {entry_key}[{entry_index}]",
                 )
                 candidate = SelectedMachineImportContract(
@@ -242,6 +264,7 @@ def load_machine_import_profile_set(
                         entry_key=entry_key,
                         entry_index=entry_index,
                         default_callback_effect=default_callback_effect,
+                        profile_format=str(profile_format),
                     ),
                     arity_kind=arity_kind,
                     argument_words=(
@@ -302,6 +325,7 @@ def _validate_effect_model(
     imported: Mapping[str, Any],
     arity_kind: str | None,
     argument_words: int | None,
+    profile_format: str,
     context: str,
 ) -> None:
     if "effect_model" not in entry:
@@ -401,6 +425,7 @@ def _validate_effect_model(
     _validate_native_callthrough_callback(
         entry,
         argument_words=argument_words,
+        profile_format=profile_format,
         context=context,
     )
     if "caller_memory_frame" in entry:
@@ -456,7 +481,9 @@ def _validate_same_library_callthrough_effect(
         entry.get("memory_effect") != "sameNativeTargetCallThrough"
         or entry.get("memory_footprints") != []
         or entry.get("world_effect") != "sameNativeTargetCallThrough"
-        or entry.get("callback_effect") != "none"
+        or entry.get("callback_protocol") is not None
+        or entry.get("callback_effect") not in {None, "none"}
+        or bool(_LEGACY_CALLBACK_FIELDS & set(entry))
     ):
         raise MachineImportProfileError(
             f"{context} same-library callthrough has incomplete effect categories"
@@ -574,6 +601,31 @@ def _validate_native_callthrough_results(
 
 
 def _validate_native_callthrough_callback(
+    entry: Mapping[str, Any],
+    *,
+    argument_words: int,
+    profile_format: str,
+    context: str,
+) -> None:
+    if (
+        profile_format == "spaghetti-extractor-static-machine-import-profile-v2"
+        and entry.get("callback_protocol") is None
+    ):
+        return
+    if entry.get("callback_protocol") is None:
+        _validate_legacy_native_callthrough_callback(
+            entry, argument_words=argument_words, context=context
+        )
+        return
+    try:
+        callback_protocol_from_contract(
+            entry, argument_words=argument_words, context=context
+        )
+    except ToolkitInputError as exc:
+        raise MachineImportProfileError(str(exc)) from exc
+
+
+def _validate_legacy_native_callthrough_callback(
     entry: Mapping[str, Any], *, argument_words: int, context: str
 ) -> None:
     category = entry.get("callback_effect")
@@ -581,14 +633,14 @@ def _validate_native_callthrough_callback(
         raise MachineImportProfileError(
             f"{context} native callthrough requires a declared callback category"
         )
-    present_fields = _NATIVE_CALLTHROUGH_CALLBACK_FIELDS & set(entry)
+    present_fields = _LEGACY_CALLBACK_FIELDS & set(entry)
     if category == "none":
         if present_fields:
             raise MachineImportProfileError(
                 f"{context} non-callback callthrough attaches callback metadata"
             )
         return
-    if present_fields != _NATIVE_CALLTHROUGH_CALLBACK_FIELDS:
+    if present_fields != _NATIVE_CALLTHROUGH_LEGACY_CALLBACK_FIELDS:
         raise MachineImportProfileError(
             f"{context} callback-bearing callthrough requires source, ABI, and lifetime"
         )
@@ -656,6 +708,7 @@ def _normalize_entry(
     entry_key: str,
     entry_index: int,
     default_callback_effect: Any,
+    profile_format: str,
 ) -> dict[str, Any]:
     result = dict(entry)
     arity_kind, words = _arity(entry)
@@ -670,11 +723,17 @@ def _normalize_entry(
             "effect_model",
             "memory_effect",
             "world_effect",
+            "callback_protocol",
             "callback_source",
             "callback_abi",
         )
     )
-    if (
+    if profile_format == "spaghetti-extractor-static-machine-import-profile-v2":
+        if result.get("callback_protocol") is not None:
+            result["callback_effect"] = "explicit"
+        else:
+            result.pop("callback_effect", None)
+    elif (
         "callback_effect" not in result
         and default_callback_effect is not None
         and has_external_effect_contract
@@ -682,3 +741,39 @@ def _normalize_entry(
         result["callback_effect"] = default_callback_effect
     result["profile_id"] = profile_id
     return result
+
+
+def _validate_callback_contract(
+    entry: Mapping[str, Any],
+    *,
+    profile_format: str,
+    argument_words: int | None,
+    context: str,
+) -> None:
+    protocol = entry.get("callback_protocol")
+    legacy = _LEGACY_CALLBACK_FIELDS & set(entry)
+    if profile_format == "spaghetti-extractor-static-machine-import-profile-v2":
+        if legacy:
+            raise MachineImportProfileError(
+                f"{context} uses retired callback fields {sorted(legacy)!r}"
+            )
+        if "callback_effect" in entry:
+            raise MachineImportProfileError(
+                f"{context} must derive callback_effect from callback_protocol"
+            )
+        if protocol is not None:
+            if argument_words is None:
+                raise MachineImportProfileError(
+                    f"{context} callback protocol requires a fixed arity"
+                )
+            try:
+                callback_protocol_from_contract(
+                    entry, argument_words=argument_words, context=context
+                )
+            except ToolkitInputError as exc:
+                raise MachineImportProfileError(str(exc)) from exc
+        return
+    if protocol is not None:
+        raise MachineImportProfileError(
+            f"{context} callback_protocol requires static machine-import profile V2"
+        )

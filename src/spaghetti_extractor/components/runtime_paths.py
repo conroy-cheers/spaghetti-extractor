@@ -7,6 +7,8 @@ import re
 from collections.abc import Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
+from .atomics import ATOMIC_OBJECT_RESOURCE_KIND
+from .boundary_plan import BoundaryOperationPlanV2
 from .interface_ir import PortableComponentInterfaceV2, PortableOperationV2
 from .machine_binding import OperationMachineBindingV1
 from .semantic_paths import SemanticPathError
@@ -25,12 +27,36 @@ def render_finite_path_operation(
     source_symbol: str,
     adapter_symbol: str,
     model: Mapping[str, object],
+    boundary_plan: BoundaryOperationPlanV2 | None = None,
 ) -> str:
     """Render one source operation and its exact external-event protocol."""
 
-    if operation.effect_ids or binding.effects or binding.callback_operation_ids:
+    if boundary_plan is not None:
+        clause_ids = {item.identity for item in boundary_plan.actions}
+        expected_clause_ids = {
+            f"parameter.{item.identity}" for item in operation.parameters
+        } | {
+            f"result.{item.identity}" for item in operation.results
+        } | {
+            f"state.{item.identity}" for item in interface.state
+        } | {
+            f"effect.{item.identity}" for item in binding.effects
+        }
+        if not expected_clause_ids <= clause_ids:
+            raise SemanticPathError(
+                "checked boundary plan does not cover the runtime operation boundary"
+            )
+
+    atomic_actions = _rows(model.get("atomic_actions", []), "atomic actions")
+    if binding.callback_operation_ids:
         raise SemanticPathError(
-            "finite runtime lowering requires operations without direct effects or callbacks"
+            "finite runtime lowering requires operations without callbacks"
+        )
+    if bool(operation.effect_ids or binding.effects) != bool(atomic_actions) or {
+        row.effect_id for row in binding.effects
+    } != set(operation.effect_ids):
+        raise SemanticPathError(
+            "finite runtime direct effects require an exact atomic world model"
         )
     paths = _rows(model.get("paths"), "finite runtime paths")
     if not paths:
@@ -57,10 +83,30 @@ def render_finite_path_operation(
         for value in operation.parameters
         if type_index[value.type_id].kind == "bytes"
     ]
+    view_parameters = [
+        value
+        for value in operation.parameters
+        if type_index[value.type_id].kind == "view"
+    ]
+    callback_types = [
+        logical_type
+        for logical_type in interface.types
+        if logical_type.kind == "callback"
+    ]
     state_positions = {
         value.identity: index for index, value in enumerate(interface.state)
     }
-    state_bindings = {value.identity: value for value in binding.state}
+    state_bindings = (
+        _plan_state_bindings(boundary_plan)
+        if boundary_plan is not None
+        else {
+            value.identity: {
+                "entry": value.entry.payload,
+                "exit": value.exit.payload,
+            }
+            for value in binding.state
+        }
+    )
     if set(state_bindings) != set(state_positions):
         raise SemanticPathError("runtime state binding inventory differs")
     service_numbers = {
@@ -75,15 +121,52 @@ def render_finite_path_operation(
     service_binding_index = attach_service_bindings(model, service_bindings)
     candidates = _service_candidates(paths)
 
-    lines = [
+    lines: list[str] = []
+    for logical_type in callback_types:
+        callback_name = f"spx_callback_{logical_type.identity}_v2"
+        type_tag = int(canonical_sha256_v3({
+            "component": interface.identity,
+            "callback_type": logical_type.identity,
+        })[:8], 16)
+        lines.extend([
+            f"struct {callback_name} {{",
+            "  spx_capability_core capability;",
+            "  uint32_t machine_word;",
+            "};",
+            f"static void {prefix}_{logical_type.identity}_bind(",
+            f"    {callback_name} *handle, uint32_t machine_word, uint64_t generation) {{",
+            "  if (handle == 0) return;",
+            f"  spx_capability_bind(&handle->capability, UINT32_C({type_tag}), "
+            "UINT32_C(2), machine_word, generation);",
+            "  handle->machine_word = machine_word;",
+            "}",
+            f"static uint32_t {prefix}_{logical_type.identity}_word(",
+            f"    {callback_name} *handle) {{",
+            "  spx_capability_status status;",
+            "  if (handle == 0) return UINT32_C(0);",
+            "  status = spx_capability_begin(",
+            f"      &handle->capability, UINT32_C({type_tag}), handle->capability.generation);",
+            "  if (status != SPX_CAPABILITY_OK) return UINT32_C(0);",
+            "  spx_capability_finish(&handle->capability, SPX_CAPABILITY_OK);",
+            "  return handle->machine_word;",
+            "}",
+            "",
+        ])
+    lines.extend([
         f"typedef struct {prefix}_service_context {{",
         "  spx_runtime *runtime;",
         "  spx_machine_state entry;",
         f"  spx_machine_state call_outputs[{max_events}];",
         f"  uint64_t parameters[{max(1, len(operation.parameters))}];",
+        f"  uint32_t atomic_observed[{max(1, len(operation.parameters))}];",
         f"  const spx_bytes_view_v2 *byte_views[{max(1, len(operation.parameters))}];",
         f"  uint64_t state_values[{max(1, len(interface.state))}];",
         f"  uint64_t logical_results[{max_events}];",
+        *[
+            f"  spx_callback_{logical_type.identity}_v2 "
+            f"callback_{logical_type.identity}_results[{max_events}];"
+            for logical_type in callback_types
+        ],
         f"  uint32_t service_ids[{max_events}];",
         f"  uint32_t argument_counts[{max_events}];",
         f"  uint64_t arguments[{max_events}][{max_arguments}];",
@@ -91,7 +174,7 @@ def render_finite_path_operation(
         "  spx_call_status fault;",
         f"}} {prefix}_service_context;",
         "",
-    ]
+    ])
     if byte_parameters:
         lines.extend(
             [
@@ -114,6 +197,58 @@ def render_finite_path_operation(
                 "",
             ]
         )
+    if view_parameters:
+        lines.extend(
+            [
+                f"static uint32_t {prefix}_view_read(",
+                "    void *opaque, spx_ref_v1 base, uint64_t byte_offset,",
+                "    uint32_t width, uint64_t *result) {",
+                "  spx_runtime *rt = (spx_runtime *)opaque;",
+                "  spx_ref_v1 derived;",
+                "  spx_machine_reference_v1 machine;",
+                "  uint32_t address = UINT32_C(0), fault = UINT32_C(0);",
+                "  if (result == 0 || width == 0U || width > 4U || base.offset > base.extent ||",
+                "      byte_offset > base.extent - base.offset ||",
+                "      (uint64_t)width > base.extent - base.offset - byte_offset ||",
+                "      spx_ref_derive(base, byte_offset, 0U, &derived) != SPX_REF_OK)",
+                "    return UINT32_C(1);",
+                "  machine = (spx_machine_reference_v1){",
+                "    derived.domain, derived.object, derived.generation, derived.offset,",
+                "    derived.extent, derived.permissions",
+                "  };",
+                "  if (rt == 0 || rt->realize_reference == 0 ||",
+                "      rt->realize_reference(rt->context, &machine, UINT32_C(1),",
+                "          UINT32_C(0), UINT32_C(0), &address) != SPX_BOUNDARY_OK)",
+                "    return UINT32_C(1);",
+                "  *result = component_read(rt, address, width, &fault);",
+                "  return fault == 0U ? UINT32_C(0) : UINT32_C(1);",
+                "}",
+                f"static uint32_t {prefix}_view_write(",
+                "    void *opaque, spx_ref_v1 base, uint64_t byte_offset,",
+                "    uint32_t width, uint64_t value) {",
+                "  spx_runtime *rt = (spx_runtime *)opaque;",
+                "  spx_ref_v1 derived;",
+                "  spx_machine_reference_v1 machine;",
+                "  uint32_t address = UINT32_C(0), fault = UINT32_C(0);",
+                "  if (width == 0U || width > 4U || base.offset > base.extent ||",
+                "      byte_offset > base.extent - base.offset ||",
+                "      (uint64_t)width > base.extent - base.offset - byte_offset ||",
+                "      spx_ref_derive(base, byte_offset, 0U, &derived) != SPX_REF_OK)",
+                "    return UINT32_C(1);",
+                "  machine = (spx_machine_reference_v1){",
+                "    derived.domain, derived.object, derived.generation, derived.offset,",
+                "    derived.extent, derived.permissions",
+                "  };",
+                "  if (rt == 0 || rt->realize_reference == 0 ||",
+                "      rt->realize_reference(rt->context, &machine, UINT32_C(2),",
+                "          UINT32_C(0), UINT32_C(0), &address) != SPX_BOUNDARY_OK)",
+                "    return UINT32_C(1);",
+                "  component_write(rt, address, width, (uint32_t)value, &fault);",
+                "  return fault == 0U ? UINT32_C(0) : UINT32_C(1);",
+                "}",
+                "",
+            ]
+        )
     for service in interface.services:
         if service.identity not in set(model.get("service_ids", [])):
             continue
@@ -122,6 +257,10 @@ def render_finite_path_operation(
             if service.result_type_id is None
             else _logical_c_type(type_index[service.result_type_id])
         )
+        result_logical_type = (
+            None if service.result_type_id is None else type_index[service.result_type_id]
+        )
+        failure_return = _service_failure_return(result_type, result_logical_type)
         parameters = ["void *opaque"] + [
             f"{_logical_c_type(type_index[type_id])} argument_{index}"
             for index, type_id in enumerate(service.parameter_type_ids)
@@ -136,8 +275,35 @@ def render_finite_path_operation(
                 "    service_context->fault = SPX_CALL_UNIMPLEMENTED;",
             ]
         )
-        lines.append("    return;" if result_type == "void" else f"    return ({result_type})0;")
+        lines.append(f"    {failure_return}")
         lines.append("  }")
+        for index, type_id in enumerate(service.parameter_type_ids):
+            argument_type = type_index[type_id]
+            if getattr(argument_type, "kind") not in {"reference", "view"}:
+                continue
+            reference = (
+                f"argument_{index}"
+                if getattr(argument_type, "kind") == "reference"
+                else f"argument_{index}->base"
+            )
+            permissions, nullable, allow_one_past = _origin_policy(argument_type)
+            lines.extend(
+                [
+                    f"  spx_machine_reference_v1 argument_{index}_machine = {{",
+                    f"    {reference}.domain, {reference}.object, {reference}.generation,",
+                    f"    {reference}.offset, {reference}.extent, {reference}.permissions",
+                    "  };",
+                    f"  uint32_t argument_{index}_word = UINT32_C(0);",
+                    "  if (service_context->runtime == 0 ||",
+                    "      service_context->runtime->realize_reference == 0 ||",
+                    f"      service_context->runtime->realize_reference(service_context->runtime->context, &argument_{index}_machine,",
+                    f"          UINT32_C({permissions}), UINT32_C({nullable}), UINT32_C({allow_one_past}),",
+                    f"          &argument_{index}_word) != SPX_BOUNDARY_OK) {{",
+                    "    service_context->fault = SPX_CALL_MEMORY_FAULT;",
+                    f"    {failure_return}",
+                    "  }",
+                ]
+            )
         for candidate_index, candidate in enumerate(candidates.get(service.identity, ())):
             condition = _candidate_condition(
                 candidate,
@@ -146,6 +312,7 @@ def render_finite_path_operation(
                 parameter_positions=parameter_positions,
                 service_parameter_type_ids=service.parameter_type_ids,
                 type_index=type_index,
+                prefix=prefix,
             )
             keyword = "if" if candidate_index == 0 else "else if"
             lines.append(f"  {keyword} ({condition}) {{")
@@ -165,13 +332,15 @@ def render_finite_path_operation(
                         )
                     ],
                     result_type=result_type,
+                    service_result_type_id=service.result_type_id,
+                    prefix=prefix,
                 )
             )
             lines.append("  }")
         lines.extend(
             [
                 "  service_context->fault = SPX_CALL_UNIMPLEMENTED;",
-                "  return;" if result_type == "void" else f"  return ({result_type})0;",
+                f"  {failure_return}",
                 "}",
                 "",
             ]
@@ -211,20 +380,45 @@ def render_finite_path_operation(
         "return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };"
     )
     for state_id, position in state_positions.items():
-        state_type = _logical_c_type(
-            type_index[next(row.type_id for row in interface.state if row.identity == state_id)]
-        )
-        projection = state_bindings[state_id].entry.payload
-        lines.extend(
-            [
-                f"  {state_type} logical_state_{position} = ({state_type})"
-                f"({_projection_read(projection, state='state')});",
-                f"  component_context.state.{state_id} = logical_state_{position};",
-                f"  service_context.state_values[{position}] = "
-                f"(uint64_t)logical_state_{position};",
-            ]
-        )
-    parameter_bindings = {value.identity: value for value in binding.parameters}
+        logical_type = type_index[
+            next(row.type_id for row in interface.state if row.identity == state_id)
+        ]
+        state_type = _logical_c_type(logical_type)
+        projection = state_bindings[state_id]["entry"]
+        if getattr(logical_type, "kind") == "reference":
+            lines.extend(
+                _origin_import_lines(
+                    logical_type=logical_type,
+                    projection=projection,
+                    name=f"logical_state_{position}",
+                    state="state",
+                    c_type="spx_ref_v1",
+                    type_index=type_index,
+                    prefix=prefix,
+                )
+            )
+            lines.extend(
+                [
+                    f"  component_context.state.{state_id} = logical_state_{position};",
+                    f"  service_context.state_values[{position}] = "
+                    f"(uint64_t)logical_state_{position}_word;",
+                ]
+            )
+        else:
+            lines.extend(
+                [
+                    f"  {state_type} logical_state_{position} = ({state_type})"
+                    f"({_projection_read(projection, state='state')});",
+                    f"  component_context.state.{state_id} = logical_state_{position};",
+                    f"  service_context.state_values[{position}] = "
+                    f"(uint64_t)logical_state_{position};",
+                ]
+            )
+    parameter_bindings = (
+        _plan_parameter_bindings(boundary_plan)
+        if boundary_plan is not None
+        else {value.identity: value.projection.payload for value in binding.parameters}
+    )
     if set(parameter_bindings) != set(parameter_positions):
         raise SemanticPathError("runtime parameter binding inventory differs")
     arguments_by_id: dict[str, str] = {}
@@ -235,7 +429,73 @@ def render_finite_path_operation(
         index = parameter_positions[logical.identity]
         projected = parameter_bindings[logical.identity]
         c_type = _logical_c_type(logical_type)
-        value = _projection_read(projected.projection.payload, state="state")
+        if (
+            logical_type.kind == "resource"
+            and logical_type.resource_kind == ATOMIC_OBJECT_RESOURCE_KIND
+        ):
+            payload = projected
+            if payload.get("kind") != "atomic_object":
+                raise SemanticPathError(
+                    "runtime atomic parameter requires an atomic-object projection"
+                )
+            source = _object(payload.get("source"), "runtime atomic source")
+            if source.get("kind") != "constant":
+                raise SemanticPathError(
+                    "runtime atomic object currently requires a proved constant address"
+                )
+            lines.extend(
+                [
+                    f"  spx_atomic_object argument_{index}_object;",
+                    f"  spx_atomic_object_bind(&argument_{index}_object, rt, "
+                    f"UINT32_C({int(source.get('value', 0))}), "
+                    f"UINT32_C({int(payload.get('width', 0))}));",
+                    f"  spx_atomic_object *argument_{index} = &argument_{index}_object;",
+                    f"  service_context.parameters[{index}] = UINT64_C(0);",
+                ]
+            )
+            arguments_by_id[logical.identity] = f"argument_{index}"
+            continue
+        if logical_type.kind == "callback":
+            payload = projected
+            if payload.get("kind") != "callback_handle":
+                raise SemanticPathError(
+                    "runtime callback parameter requires a callback-handle projection"
+                )
+            word = _projection_read(
+                _object(payload.get("source"), "runtime callback source"),
+                state="state",
+            )
+            callback_name = f"spx_callback_{logical_type.identity}_v2"
+            lines.extend([
+                f"  uint32_t argument_{index}_word = (uint32_t)({word});",
+                f"  {callback_name} argument_{index}_object;",
+                f"  {prefix}_{logical_type.identity}_bind(&argument_{index}_object, "
+                f"argument_{index}_word, UINT64_C(1));",
+                f"  {callback_name} *argument_{index} = "
+                f"argument_{index}_word == UINT32_C(0) ? 0 : &argument_{index}_object;",
+                f"  service_context.parameters[{index}] = (uint64_t)argument_{index}_word;",
+            ])
+            arguments_by_id[logical.identity] = f"argument_{index}"
+            continue
+        if logical_type.kind in {"reference", "view"}:
+            lines.extend(
+                _origin_import_lines(
+                    logical_type=logical_type,
+                    projection=projected,
+                    name=f"argument_{index}",
+                    state="state",
+                    c_type=c_type,
+                    type_index=type_index,
+                    prefix=prefix,
+                )
+            )
+            lines.append(
+                f"  service_context.parameters[{index}] = "
+                f"(uint64_t)argument_{index}_word;"
+            )
+            arguments_by_id[logical.identity] = f"argument_{index}"
+            continue
+        value = _projection_read(projected, state="state")
         lines.extend(
             [
                 f"  {c_type} argument_{index} = ({c_type})({value});",
@@ -248,7 +508,7 @@ def render_finite_path_operation(
         if logical_type.kind != "bytes":
             continue
         index = parameter_positions[logical.identity]
-        projected = parameter_bindings[logical.identity].projection.payload
+        projected = parameter_bindings[logical.identity]
         if projected.get("kind") != "bytes_view":
             raise SemanticPathError("runtime byte parameter requires a byte-view projection")
         extent_id = logical_type.extent_parameter_id
@@ -281,6 +541,43 @@ def render_finite_path_operation(
         lines.append(f"  {result_type} logical_result = {call};")
     else:
         lines.append(f"  {call};")
+    origin_result_words: dict[str, str] = {}
+    for result in operation.results:
+        logical_type = type_index[result.type_id]
+        if getattr(logical_type, "kind") not in {"reference", "view"}:
+            continue
+        observed = (
+            "logical_result"
+            if len(operation.results) == 1
+            else f"logical_result.{result.identity}"
+        )
+        reference = observed if getattr(logical_type, "kind") == "reference" else f"{observed}.base"
+        word_name = f"logical_result_{_c_identifier(result.identity)}_word"
+        lines.extend(
+            _origin_realize_lines(
+                logical_type=logical_type,
+                reference=reference,
+                word_name=word_name,
+            )
+        )
+        origin_result_words[result.identity] = word_name
+    for action in atomic_actions:
+        parameter_id = str(action.get("parameter_id"))
+        if parameter_id not in parameter_positions:
+            raise SemanticPathError("runtime atomic model references an unknown parameter")
+        index = parameter_positions[parameter_id]
+        lines.extend(
+            [
+                f"  if (spx_atomic_object_call_count(&argument_{index}_object) != UINT32_C(1)) ",
+                "    return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };",
+                f"  if (spx_atomic_object_status(&argument_{index}_object) == SPX_ATOMIC_FAULT) ",
+                "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
+                f"  if (spx_atomic_object_status(&argument_{index}_object) != SPX_ATOMIC_OK) ",
+                "    return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };",
+                f"  service_context.atomic_observed[{index}] = "
+                f"spx_atomic_object_observation(&argument_{index}_object)->observed;",
+            ]
+        )
     lines.extend(
         [
             "  if (service_context.fault != SPX_CALL_OK) return (spx_step_result){",
@@ -298,6 +595,22 @@ def render_finite_path_operation(
         "  if (!(" + " || ".join(post_states) + ")) "
         "return (spx_step_result){ SPX_UNIMPLEMENTED, 0U, 0U };"
     )
+    origin_state_words: dict[str, str] = {}
+    for state_id in state_positions:
+        logical_type = type_index[
+            next(row.type_id for row in interface.state if row.identity == state_id)
+        ]
+        if getattr(logical_type, "kind") != "reference":
+            continue
+        word_name = f"logical_state_{_c_identifier(state_id)}_word"
+        lines.extend(
+            _origin_realize_lines(
+                logical_type=logical_type,
+                reference=f"component_context.state.{state_id}",
+                word_name=word_name,
+            )
+        )
+        origin_state_words[state_id] = word_name
     completion_renderer = _ExpressionRenderer(
         parameter_positions,
         state_positions=state_positions,
@@ -310,6 +623,9 @@ def render_finite_path_operation(
             service_numbers=service_numbers,
             operation=operation,
             type_index=type_index,
+            prefix=prefix,
+            origin_result_words=origin_result_words,
+            origin_state_words=origin_state_words,
         )
         keyword = "if" if path_index == 0 else "else if"
         lines.append(f"  {keyword} ({condition}) {{")
@@ -331,10 +647,13 @@ def render_finite_path_operation(
         )
         lines.extend(outcome_setup)
         for state_id, position in state_positions.items():
+            state_expression = origin_state_words.get(
+                state_id, f"component_context.state.{state_id}"
+            )
             lines.extend(
                 _projection_write(
-                    state_bindings[state_id].exit.payload,
-                    f"component_context.state.{state_id}",
+                    state_bindings[state_id]["exit"],
+                    state_expression,
                     state="state",
                 )
             )
@@ -392,6 +711,173 @@ def attach_service_bindings(
     return result
 
 
+def _plan_parameter_bindings(
+    plan: BoundaryOperationPlanV2,
+) -> dict[str, Mapping[str, object]]:
+    result: dict[str, Mapping[str, object]] = {}
+    for action in plan.actions:
+        clause = _object(action.clause, "boundary parameter action")
+        path = clause.get("logical_path")
+        if not isinstance(path, Mapping) or path.get("root") != "parameter":
+            continue
+        observe = _object(clause.get("observe"), "boundary parameter observer")
+        result[str(path.get("id"))] = _observer_projection(observe)
+    return result
+
+
+def _plan_state_bindings(
+    plan: BoundaryOperationPlanV2,
+) -> dict[str, dict[str, Mapping[str, object]]]:
+    result: dict[str, dict[str, Mapping[str, object]]] = {}
+    for action in plan.actions:
+        clause = _object(action.clause, "boundary state action")
+        path = clause.get("logical_path")
+        if not isinstance(path, Mapping) or path.get("root") != "state":
+            continue
+        observe = _object(clause.get("observe"), "boundary state observer")
+        realizers = _rows(clause.get("realize"), "boundary state realizers")
+        entry = _observer_projection(observe)
+        result[str(path.get("id"))] = {
+            "entry": entry,
+            "exit": _realizer_projection(entry, realizers),
+        }
+    return result
+
+
+def _observer_projection(
+    expression: Mapping[str, object],
+) -> Mapping[str, object]:
+    if expression.get("op") == "machine":
+        attributes = _object(expression.get("attributes"), "boundary observer attributes")
+        place = _object(attributes.get("place"), "boundary observer place")
+        return _object(place.get("selector"), "boundary observer selector")
+    if expression.get("op") == "authority_call":
+        attributes = _object(expression.get("attributes"), "authority observer attributes")
+        primitive = attributes.get("primitive")
+        if primitive == "origin.resolve":
+            return _origin_observer_projection(expression, kind="reference")
+        if primitive == "capability.import":
+            args = _array(expression.get("args"), "capability observer arguments")
+            sort = _object(expression.get("sort"), "capability observer sort")
+            if not args or sort.get("kind") not in {"resource", "callback"}:
+                raise SemanticPathError("capability observer shape is invalid")
+            source = _expression_projection(args[0], "capability machine word")
+            if sort.get("kind") == "callback":
+                return {
+                    "kind": "callback_handle",
+                    "protocol_id": str(sort.get("type_id")),
+                    "authority_id": str(attributes.get("binding")),
+                    "source": source,
+                }
+            return {
+                "kind": "resource",
+                "resource_kind": str(attributes.get("binding")),
+                "source": source,
+            }
+    if expression.get("op") == "make_view":
+        args = _array(expression.get("args"), "boundary view observer arguments")
+        if len(args) != 2 or not all(isinstance(item, Mapping) for item in args):
+            raise SemanticPathError("boundary view observer shape is invalid")
+        result = dict(_origin_observer_projection(args[0], kind="view"))
+        extent_expression = _object(args[1], "view extent")
+        if extent_expression.get("op") == "ref_remaining":
+            extent_args = _array(
+                extent_expression.get("args"), "view origin-remainder arguments"
+            )
+            if len(extent_args) != 1 or extent_args[0] != args[0]:
+                raise SemanticPathError(
+                    "view origin remainder must be derived from its resolved base"
+                )
+            result["extent"] = {"kind": "origin_remainder"}
+        else:
+            result["extent"] = _expression_projection(extent_expression, "view extent")
+        return result
+    raise SemanticPathError(
+        "runtime lowering requires a registered executable boundary observer"
+    )
+
+
+def _origin_observer_projection(
+    expression: Mapping[str, object], *, kind: str
+) -> Mapping[str, object]:
+    attributes = _object(expression.get("attributes"), "origin observer attributes")
+    if expression.get("op") != "authority_call" or attributes.get("primitive") != "origin.resolve":
+        raise SemanticPathError("origin observer does not use origin.resolve")
+    args = _array(expression.get("args"), "origin observer arguments")
+    if len(args) != 2 or not all(isinstance(item, Mapping) for item in args):
+        raise SemanticPathError("origin observer shape is invalid")
+    return {
+        "kind": kind,
+        "source" if kind == "reference" else "base": _expression_projection(
+            args[0], "origin address"
+        ),
+        "requested_extent": _expression_projection(args[1], "origin requested extent"),
+        "authority_id": str(attributes.get("binding")),
+    }
+
+
+def _expression_projection(
+    expression: object, context: str
+) -> Mapping[str, object]:
+    row = _object(expression, context)
+    if row.get("op") == "machine":
+        attributes = _object(row.get("attributes"), f"{context} attributes")
+        place = _object(attributes.get("place"), f"{context} place")
+        return _object(place.get("selector"), f"{context} selector")
+    if row.get("op") == "const":
+        attributes = _object(row.get("attributes"), f"{context} attributes")
+        sort = _object(row.get("sort"), f"{context} sort")
+        return {
+            "kind": "constant",
+            "value": int(attributes.get("value", 0)),
+            "width": int(sort.get("width", 32)),
+        }
+    raise SemanticPathError(f"{context} is not directly executable")
+
+
+def _realizer_projection(
+    observer: Mapping[str, object],
+    realizers: Sequence[Mapping[str, object]],
+) -> Mapping[str, object]:
+    kind = observer.get("kind")
+    if kind in {"resource", "callback_handle"}:
+        if len(realizers) != 1:
+            raise SemanticPathError("capability binding requires one realization")
+        value = _object(realizers[0].get("value"), "capability realization value")
+        attributes = _object(value.get("attributes"), "capability realization attributes")
+        if value.get("op") != "authority_call" or attributes.get("primitive") != "capability.export":
+            raise SemanticPathError("capability realization does not use capability.export")
+        place = _object(realizers[0].get("place"), "capability realization place")
+        result = dict(observer)
+        result["source"] = _object(place.get("selector"), "capability realization selector")
+        return result
+    if kind not in {"reference", "view"}:
+        if len(realizers) != 1:
+            raise SemanticPathError("runtime scalar binding requires one realization")
+        place = _object(realizers[0].get("place"), "boundary realization place")
+        return _object(place.get("selector"), "boundary realization selector")
+    result = dict(observer)
+    address_field = "source" if kind == "reference" else "base"
+    address_rows = []
+    extent_rows = []
+    for realizer in realizers:
+        value = _object(realizer.get("value"), "boundary realization value")
+        if value.get("op") == "authority_call" and _object(
+            value.get("attributes"), "origin realizer attributes"
+        ).get("primitive") == "origin.address":
+            address_rows.append(realizer)
+        elif value.get("op") == "view_extent":
+            extent_rows.append(realizer)
+    if len(address_rows) != 1 or (kind == "view" and len(extent_rows) != 1):
+        raise SemanticPathError("origin realization inventory is invalid")
+    address_place = _object(address_rows[0].get("place"), "origin realization place")
+    result[address_field] = _object(address_place.get("selector"), "origin realization selector")
+    if kind == "view":
+        extent_place = _object(extent_rows[0].get("place"), "view extent realization place")
+        result["extent"] = _object(extent_place.get("selector"), "view extent realization selector")
+    return result
+
+
 def _service_candidates(
     paths: Sequence[Mapping[str, object]],
 ) -> dict[str, tuple[Mapping[str, object], ...]]:
@@ -445,16 +931,19 @@ def _candidate_condition(
     parameter_positions: Mapping[str, int],
     service_parameter_type_ids: Sequence[str],
     type_index: Mapping[str, object],
+    prefix: str,
 ) -> str:
     position = int(candidate["position"])
     conditions = [f"event_index == UINT32_C({position})"]
     trace_guards = _array(candidate.get("guards"), "service candidate guards")
     conditions.extend(renderer.render(value) for value in trace_guards)
     service_id = str(candidate["service_id"])
-    prefix = _array(candidate.get("prefix_service_ids"), "service candidate prefix")
-    if len(prefix) != position:
+    service_prefix = _array(
+        candidate.get("prefix_service_ids"), "service candidate prefix"
+    )
+    if len(service_prefix) != position:
         raise SemanticPathError("runtime service candidate prefix is stale")
-    for previous, previous_service in enumerate(prefix):
+    for previous, previous_service in enumerate(service_prefix):
         if previous_service not in service_numbers:
             raise SemanticPathError("runtime service prefix is unknown")
         conditions.append(
@@ -483,6 +972,16 @@ def _candidate_condition(
                 f"argument_{index} == service_context->byte_views["
                 f"{parameter_positions[name]}]"
             )
+        elif getattr(logical_type, "kind") == "callback":
+            conditions.append(
+                f"(uint64_t){prefix}_{getattr(logical_type, 'identity')}_word(argument_{index}) == "
+                f"(uint64_t)({renderer.render(expression)})"
+            )
+        elif getattr(logical_type, "kind") in {"reference", "view"}:
+            conditions.append(
+                f"(uint64_t)argument_{index}_word == "
+                f"(uint64_t)({renderer.render(expression)})"
+            )
         else:
             conditions.append(
                 f"(uint64_t)argument_{index} == "
@@ -504,12 +1003,16 @@ def _render_machine_call(
     parameter_positions: Mapping[str, int],
     result_projection: object,
     result_type: str,
+    service_result_type_id: str | None,
+    prefix: str,
 ) -> list[str]:
     event = _object(candidate.get("machine_event"), "runtime machine event")
     kind = event.get("kind")
     event_kind = {
         "external_call": "SPX_CALL_EXTERNAL_IMPORT",
         "indirect_call": "SPX_CALL_INDIRECT",
+        "component_call": "SPX_CALL_INTERNAL_DIRECT",
+        "internal_call": "SPX_CALL_INTERNAL_DIRECT",
     }.get(kind)
     if event_kind is None:
         raise SemanticPathError(f"logical service event kind {kind!r} is not executable")
@@ -568,7 +1071,7 @@ def _render_machine_call(
             "    };",
             "    if (memory_fault != 0U) {",
             "      service_context->fault = SPX_CALL_MEMORY_FAULT;",
-            "      return;" if result_type == "void" else f"      return ({result_type})0;",
+            f"      {_service_failure_return(result_type, None if service_result_type_id is None else type_index[service_result_type_id])}",
             "    }",
             f"    spx_machine_state *call_output = &service_context->call_outputs[{trace_position}];",
             "    *call_output = call_input;",
@@ -576,7 +1079,12 @@ def _render_machine_call(
             "    if (service_context->fault != SPX_CALL_OK) {",
         ]
     )
-    lines.append("      return;" if result_type == "void" else f"      return ({result_type})0;")
+    lines.append(
+        "      " + _service_failure_return(
+            result_type,
+            None if service_result_type_id is None else type_index[service_result_type_id],
+        )
+    )
     lines.extend(
         [
             "    }",
@@ -602,6 +1110,16 @@ def _render_machine_call(
                 f"    service_context->arguments[event_index][{index}] = "
                 f"service_context->parameters[{parameter_positions[name]}];"
             )
+        elif getattr(logical_type, "kind") == "callback":
+            lines.append(
+                f"    service_context->arguments[event_index][{index}] = "
+                f"(uint64_t){prefix}_{getattr(logical_type, 'identity')}_word(argument_{index});"
+            )
+        elif getattr(logical_type, "kind") in {"reference", "view"}:
+            lines.append(
+                f"    service_context->arguments[event_index][{index}] = "
+                f"(uint64_t)argument_{index}_word;"
+            )
         else:
             lines.append(
                 f"    service_context->arguments[event_index][{index}] = "
@@ -609,6 +1127,63 @@ def _render_machine_call(
             )
     if result_type != "void":
         result = _result_projection_read(result_projection, output="call_output")
+        result_logical_type = (
+            None
+            if service_result_type_id is None
+            else type_index[service_result_type_id]
+        )
+        if result_logical_type is not None and getattr(result_logical_type, "kind") == "callback":
+            identity = getattr(result_logical_type, "identity")
+            nullable = bool(getattr(result_logical_type, "nullable"))
+            lines.extend([
+                f"    uint32_t logical_service_word = (uint32_t)({result});",
+                f"    spx_callback_{identity}_v2 *logical_service_result = 0;",
+                *(
+                    ["    if (logical_service_word != UINT32_C(0)) {"]
+                    if nullable
+                    else ["    {"]
+                ),
+                f"      logical_service_result = &service_context->callback_{identity}_results[event_index];",
+                f"      {prefix}_{identity}_bind(logical_service_result, logical_service_word, "
+                "(uint64_t)event_index + UINT64_C(1));",
+                "    }",
+                "    service_context->logical_results[event_index] = (uint64_t)logical_service_word;",
+                "    service_context->count = event_index + UINT32_C(1);",
+                "    return logical_service_result;",
+            ])
+            return lines
+        if result_logical_type is not None and getattr(result_logical_type, "kind") == "reference":
+            permissions, nullable, allow_one_past = _origin_policy(result_logical_type)
+            requested_projection = _object(
+                _object(result_projection, "reference service result").get("requested_extent"),
+                "reference service result requested extent",
+            )
+            requested = _result_projection_read(requested_projection, output="call_output")
+            lines.extend(
+                [
+                    f"    uint32_t logical_service_word = (uint32_t)({result});",
+                    "    spx_machine_reference_v1 logical_service_machine = {0};",
+                    "    if (service_context->runtime == 0 ||",
+                    "        service_context->runtime->resolve_reference == 0 ||",
+                    "        service_context->runtime->resolve_reference(",
+                    "            service_context->runtime->context, logical_service_word,",
+                    f"            (uint32_t)({requested}), UINT32_C({permissions}),",
+                    f"            UINT32_C({nullable}), UINT32_C({allow_one_past}),",
+                    "            &logical_service_machine) != SPX_BOUNDARY_OK) {",
+                    "      service_context->fault = SPX_CALL_MEMORY_FAULT;",
+                    "      return (spx_ref_v1){0};",
+                    "    }",
+                    "    spx_ref_v1 logical_service_result = {",
+                    "      logical_service_machine.domain, logical_service_machine.object,",
+                    "      logical_service_machine.generation, logical_service_machine.offset,",
+                    "      logical_service_machine.extent, logical_service_machine.permissions",
+                    "    };",
+                    "    service_context->logical_results[event_index] = (uint64_t)logical_service_word;",
+                    "    service_context->count = event_index + UINT32_C(1);",
+                    "    return logical_service_result;",
+                ]
+            )
+            return lines
         lines.extend(
             [
                 f"    {result_type} logical_service_result = ({result_type})({result});",
@@ -635,6 +1210,9 @@ def _completion_condition(
     service_numbers: Mapping[str, int],
     operation: PortableOperationV2,
     type_index: Mapping[str, object],
+    prefix: str,
+    origin_result_words: Mapping[str, str],
+    origin_state_words: Mapping[str, str],
 ) -> str:
     trace = _rows(path.get("trace"), "completion trace")
     conditions = [f"service_context.count == UINT32_C({len(trace)})"]
@@ -651,13 +1229,28 @@ def _completion_condition(
             else f"logical_result.{result.identity}"
         )
         c_type = _logical_c_type(type_index[result.type_id])
-        conditions.append(
-            f"{observed} == ({c_type})({renderer.render(path_results[result.identity])})"
-        )
+        logical_type = type_index[result.type_id]
+        if result.identity in origin_result_words:
+            conditions.append(
+                f"{origin_result_words[result.identity]} == "
+                f"(uint32_t)({renderer.render(path_results[result.identity])})"
+            )
+        elif getattr(logical_type, "kind") == "callback":
+            conditions.append(
+                f"{prefix}_{getattr(logical_type, 'identity')}_word({observed}) == "
+                f"(uint32_t)({renderer.render(path_results[result.identity])})"
+            )
+        else:
+            conditions.append(
+                f"{observed} == ({c_type})({renderer.render(path_results[result.identity])})"
+            )
     path_state = _object(path.get("state"), "completion state")
     for state_id, expected in sorted(path_state.items()):
+        observed_state = origin_state_words.get(
+            state_id, f"component_context.state.{state_id}"
+        )
         conditions.append(
-            f"component_context.state.{state_id} == ({renderer.render(expected)})"
+            f"{observed_state} == ({renderer.render(expected)})"
         )
     for position, event in enumerate(trace):
         service_id = str(event["service_id"])
@@ -745,6 +1338,13 @@ class _ExpressionRenderer:
             if name not in self.state_positions:
                 raise SemanticPathError("runtime expression has an unknown state input")
             return f"{self.context}.state_values[{self.state_positions[name]}]"
+        if op == "atomic_observed":
+            name = str(row.get("name"))
+            if name not in self.parameters:
+                raise SemanticPathError(
+                    "runtime atomic observation has an unknown parameter"
+                )
+            return f"{self.context}.atomic_observed[{self.parameters[name]}]"
         if op == "symbol":
             name = str(row.get("name"))
             if not name.startswith("machine_"):
@@ -824,7 +1424,130 @@ def _projection_read(value: Mapping[str, object], *, state: str) -> str:
         )
     if kind == "resource":
         return _projection_read(_object(value.get("source"), "resource source"), state=state)
+    if kind == "callback_handle":
+        return _projection_read(
+            _object(value.get("source"), "callback-handle source"), state=state
+        )
+    if kind == "reference":
+        return _projection_read(
+            _object(value.get("source"), "reference source"), state=state
+        )
+    if kind == "view":
+        return _projection_read(
+            _object(value.get("base"), "view base"), state=state
+        )
     raise SemanticPathError(f"runtime parameter projection {kind!r} is unsupported")
+
+
+def _origin_import_lines(
+    *,
+    logical_type: object,
+    projection: Mapping[str, object],
+    name: str,
+    state: str,
+    c_type: str,
+    type_index: Mapping[str, object],
+    prefix: str,
+) -> list[str]:
+    kind = getattr(logical_type, "kind")
+    if projection.get("kind") != kind or kind not in {"reference", "view"}:
+        raise SemanticPathError("origin import projection kind differs")
+    address_field = "source" if kind == "reference" else "base"
+    address = _projection_read(
+        _object(projection.get(address_field), "origin address projection"),
+        state=state,
+    )
+    requested_extent = _projection_read(
+        _object(
+            projection.get("requested_extent"),
+            "origin requested-extent projection",
+        ),
+        state=state,
+    )
+    permissions, nullable, allow_one_past = _origin_policy(logical_type)
+    lines = [
+        f"  uint32_t {name}_word = (uint32_t)({address});",
+        f"  spx_machine_reference_v1 {name}_machine = {{0}};",
+        f"  if (rt->resolve_reference == 0 || rt->resolve_reference(",
+        f"      rt->context, {name}_word, (uint32_t)({requested_extent}),",
+        f"      UINT32_C({permissions}), UINT32_C({nullable}), "
+        f"UINT32_C({allow_one_past}), &{name}_machine) != SPX_BOUNDARY_OK)",
+        "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
+        f"  spx_ref_v1 {name}_reference = {{",
+        f"    {name}_machine.domain, {name}_machine.object,",
+        f"    {name}_machine.generation, {name}_machine.offset,",
+        f"    {name}_machine.extent, {name}_machine.permissions",
+        "  };",
+    ]
+    if kind == "reference":
+        lines.append(f"  {c_type} {name} = {name}_reference;")
+        return lines
+    extent_projection = _object(projection.get("extent"), "view extent projection")
+    extent = (
+        f"({name}_reference.extent - {name}_reference.offset)"
+        if extent_projection.get("kind") == "origin_remainder"
+        else _projection_read(extent_projection, state=state)
+    )
+    element_width = _logical_element_width(logical_type, type_index)
+    qualifier = "const " if str(c_type).startswith("const ") else ""
+    access = str(getattr(logical_type, "access"))
+    reader = "0" if access == "write" else f"{prefix}_view_read"
+    writer = "0" if access == "read" else f"{prefix}_view_write"
+    lines.extend(
+        [
+            f"  spx_view_v1 {name}_view = "
+            f"{{{name}_reference, (uint64_t)({extent}), UINT32_C({element_width}), "
+            f"rt, {reader}, {writer}}};",
+            f"  {qualifier}spx_view_v1 *{name} = &{name}_view;",
+        ]
+    )
+    return lines
+
+
+def _origin_policy(logical_type: object) -> tuple[int, int, int]:
+    permissions = {"read": 1, "write": 2, "read_write": 3}.get(
+        str(getattr(logical_type, "access"))
+    )
+    if permissions is None:
+        raise SemanticPathError("origin access policy is unsupported")
+    return (
+        permissions,
+        int(bool(getattr(logical_type, "nullable", False))),
+        int(bool(getattr(logical_type, "allow_one_past", False))),
+    )
+
+
+def _origin_realize_lines(
+    *, logical_type: object, reference: str, word_name: str
+) -> list[str]:
+    permissions, nullable, allow_one_past = _origin_policy(logical_type)
+    machine_name = f"{word_name}_reference"
+    return [
+        f"  spx_machine_reference_v1 {machine_name} = {{",
+        f"    {reference}.domain, {reference}.object, {reference}.generation,",
+        f"    {reference}.offset, {reference}.extent, {reference}.permissions",
+        "  };",
+        f"  uint32_t {word_name} = UINT32_C(0);",
+        f"  if (rt->realize_reference == 0 || rt->realize_reference(",
+        f"      rt->context, &{machine_name}, UINT32_C({permissions}),",
+        f"      UINT32_C({nullable}), UINT32_C({allow_one_past}), &{word_name}) "
+        "!= SPX_BOUNDARY_OK)",
+        "    return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };",
+    ]
+
+
+def _logical_element_width(
+    logical_type: object, type_index: Mapping[str, object]
+) -> int:
+    element_id = getattr(logical_type, "element_type_id", None)
+    element = type_index.get(str(element_id))
+    c_type = None if element is None else getattr(element, "c_type", None)
+    if not isinstance(c_type, str):
+        raise SemanticPathError("view element type has no concrete scalar width")
+    bits = int(c_type.removeprefix("uint").removeprefix("int").removesuffix("_t"))
+    if bits % 8 != 0:
+        raise SemanticPathError("view element width is not byte aligned")
+    return bits // 8
 
 
 def _projection_write(
@@ -855,6 +1578,24 @@ def _projection_write(
             expression,
             state=state,
         )
+    if kind == "callback_handle":
+        return _projection_write(
+            _object(value.get("source"), "runtime callback-handle projection"),
+            expression,
+            state=state,
+        )
+    if kind == "reference":
+        return _projection_write(
+            _object(value.get("source"), "runtime reference source"),
+            expression,
+            state=state,
+        )
+    if kind == "view":
+        return _projection_write(
+            _object(value.get("base"), "runtime view base"),
+            expression,
+            state=state,
+        )
     raise SemanticPathError(f"runtime state projection {kind!r} is unsupported")
 
 
@@ -866,7 +1607,13 @@ def _result_projection_read(value: object, *, output: str) -> str:
         if field not in _STATE_FIELDS:
             raise SemanticPathError("runtime service result register is invalid")
         return f"{output}->{field}"
+    if kind == "constant":
+        return f"UINT32_C({int(row.get('value', 0)) & 0xFFFFFFFF})"
     if kind == "resource":
+        return _result_projection_read(row.get("source"), output=output)
+    if kind == "callback_handle":
+        return _result_projection_read(row.get("source"), output=output)
+    if kind == "reference":
         return _result_projection_read(row.get("source"), output=output)
     raise SemanticPathError(f"runtime service result projection {kind!r} is unsupported")
 
@@ -874,6 +1621,8 @@ def _result_projection_read(value: object, *, output: str) -> str:
 def _logical_c_type(value: object) -> str:
     kind = getattr(value, "kind")
     if kind == "resource":
+        if getattr(value, "resource_kind") == ATOMIC_OBJECT_RESOURCE_KIND:
+            return "spx_atomic_object *"
         return "spx_resource_v2"
     c_type = getattr(value, "c_type")
     if kind in {"scalar", "enum"} and isinstance(c_type, str):
@@ -881,9 +1630,26 @@ def _logical_c_type(value: object) -> str:
     if kind == "bytes":
         qualifier = "const " if getattr(value, "access") == "read" else ""
         return f"{qualifier}spx_bytes_view_v2 *"
+    if kind == "callback":
+        return f"spx_callback_{getattr(value, 'identity')}_v2 *"
+    if kind == "reference":
+        return "spx_ref_v1"
+    if kind == "view":
+        qualifier = "const " if getattr(value, "access") == "read" else ""
+        return f"{qualifier}spx_view_v1 *"
     raise SemanticPathError(
-        "finite runtime values must be scalar, enum, resource, or byte view"
+        "finite runtime value kind is unsupported"
     )
+
+
+def _service_failure_return(result_type: str, logical_type: object | None) -> str:
+    if result_type == "void":
+        return "return;"
+    if logical_type is not None and getattr(logical_type, "kind") == "reference":
+        return "return (spx_ref_v1){0};"
+    if logical_type is not None and getattr(logical_type, "kind") == "view":
+        return "return (spx_view_v1){0};"
+    return f"return ({result_type})0;"
 
 
 def _c_identifier(value: str) -> str:

@@ -34,7 +34,17 @@
         "end_rva": 4173,
         "proposal_kind": "singleton"
       },
-      "evidence_profile": "structural-draft-v1"
+      "evidence_profile": "portable-component-v2",
+      "interface_review": "reviews/startup-sleep-service.json",
+      "machine_binding": "bindings/startup-sleep-service.json",
+      "source": {
+        "files": [
+          "source/components/startup-sleep-service.c"
+        ],
+        "operations": {
+          "delay": "gnu_hello_startup_sleep_service"
+        }
+      }
     },
     {
       "id": "static-word-initialization",
@@ -115,7 +125,17 @@
         "end_rva": 4188,
         "proposal_kind": "reconstruction_cluster_baseline"
       },
-      "evidence_profile": "structural-draft-v1"
+      "evidence_profile": "portable-component-v2",
+      "interface_review": "reviews/startup-atomic-compare-exchange.json",
+      "machine_binding": "bindings/startup-atomic-compare-exchange.json",
+      "source": {
+        "files": [
+          "source/components/startup-atomic-compare-exchange.c"
+        ],
+        "operations": {
+          "compare_exchange": "gnu_hello_startup_atomic_compare_exchange"
+        }
+      }
     },
     {
       "id": "startup-callback-registration",
@@ -125,7 +145,17 @@
         "end_rva": 4420,
         "proposal_kind": "singleton"
       },
-      "evidence_profile": "structural-draft-v1"
+      "evidence_profile": "portable-component-v2",
+      "interface_review": "reviews/startup-callback-registration.json",
+      "machine_binding": "bindings/startup-callback-registration.json",
+      "source": {
+        "files": [
+          "source/components/startup-callback-registration.c"
+        ],
+        "operations": {
+          "install": "gnu_hello_startup_callback_registration"
+        }
+      }
     },
     {
       "id": "finite-selector-dispatch",
@@ -135,7 +165,17 @@
         "end_rva": 14393,
         "proposal_kind": "singleton"
       },
-      "evidence_profile": "structural-draft-v1"
+      "evidence_profile": "portable-component-v2",
+      "interface_review": "reviews/finite-selector-dispatch.json",
+      "machine_binding": "bindings/finite-selector-dispatch.json",
+      "source": {
+        "files": [
+          "source/components/finite-selector-dispatch.c"
+        ],
+        "operations": {
+          "select": "gnu_hello_finite_selector_dispatch"
+        }
+      }
     },
     {
       "id": "alias-sensitive-word-update",
@@ -175,7 +215,18 @@
         "end_rva": 26639,
         "proposal_kind": "call_target_return_closure"
       },
-      "evidence_profile": "structural-draft-v1"
+      "evidence_profile": "portable-component-v2",
+      "interface_review": "reviews/ascii-string-compare.json",
+      "machine_binding": "bindings/ascii-string-compare.json",
+      "induction": "induction/ascii-string-compare.json",
+      "source": {
+        "files": [
+          "source/components/ascii-string-compare.c"
+        ],
+        "operations": {
+          "compare": "gnu_hello_ascii_string_compare"
+        }
+      }
     },
     {
       "id": "last-path-component",
@@ -226,7 +277,18 @@
         "end_rva": 11238,
         "proposal_kind": "call_target_return_closure"
       },
-      "evidence_profile": "structural-draft-v1"
+      "evidence_profile": "portable-component-v2",
+      "interface_review": "reviews/program-name-selection.json",
+      "machine_binding": "bindings/program-name-selection.json",
+      "relation": "relations/program-name-selection.json",
+      "source": {
+        "files": [
+          "source/components/program-name-selection.c"
+        ],
+        "operations": {
+          "select": "gnu_hello_program_name_selection"
+        }
+      }
     }
   ],
   "groups": [
@@ -453,12 +515,49 @@
         },
         {
           "kind": "component",
+          "id": "startup-sleep-service",
+          "activation": "enabled"
+        },
+        {
+          "kind": "component",
+          "id": "finite-selector-dispatch",
+          "activation": "enabled"
+        },
+        {
+          "kind": "component",
           "id": "last-path-component",
           "activation": "enabled"
         },
         {
           "kind": "component",
           "id": "memory-regions-equal",
+          "activation": "enabled"
+        },
+        {
+          "kind": "component",
+          "id": "ascii-string-compare",
+          "activation": "enabled"
+        }
+      ]
+    },
+    {
+      "id": "startup-atomic-enabled",
+      "label": "Verified atomic startup update with machine fallback",
+      "selections": [
+        {
+          "kind": "component",
+          "id": "startup-atomic-compare-exchange",
+          "activation": "enabled"
+        }
+      ]
+    },
+    {
+      "id": "startup-callback-enabled",
+      "label": "Verified unhandled-exception callback registration with machine fallback",
+      "selections": [
+        {
+          "kind": "component",
+          "id": "startup-callback-registration",
           "activation": "enabled"
         }
       ]

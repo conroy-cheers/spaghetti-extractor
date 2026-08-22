@@ -111,7 +111,7 @@ def _validate_candidate_authority_package_bindings(
         receipt, "machine_ir_manifest"
     )
     for package in (interpreter, engine):
-        if package.payload.get("input_mode") != "sanitized_machine_ir_v2":
+        if package.payload.get("input_mode") != "sanitized_machine_ir_v3":
             raise CandidateNativeBuildError(
                 f"{package.owner} package is not derived from strict machine IR"
             )
@@ -164,7 +164,7 @@ def _validate_structural_candidate_package_bindings(
     machine_ir_sha256 = sha256_file(machine_ir_path)
     manifest_sha256 = sha256_file(manifest_path)
     for package in (interpreter, engine):
-        if package.payload.get("input_mode") != "sanitized_machine_ir_v2":
+        if package.payload.get("input_mode") != "sanitized_machine_ir_v3":
             raise CandidateNativeBuildError(
                 f"{package.owner} package is not derived from strict machine IR"
             )

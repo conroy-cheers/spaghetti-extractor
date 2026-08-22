@@ -7,6 +7,9 @@
   snapshot,
   artifacts,
   abiCatalog ? null,
+  abiDeclarations ? null,
+  abiDeclarationSpec ? null,
+  decorationModel ? "pe32-coff-gnu-v1",
   implementations ? { },
 }:
 
@@ -79,6 +82,22 @@ let
         name = "${name}-library-abi-catalog-v3.json";
       }
     else abiCatalog;
+  abiDeclarationsInput =
+    if abiDeclarations == null then null
+    else if builtins.typeOf abiDeclarations == "path" then
+      builtins.path {
+        path = abiDeclarations;
+        name = "${name}-physical-abi-declarations-v1.json";
+      }
+    else abiDeclarations;
+  abiDeclarationSpecInput =
+    if abiDeclarationSpec == null then null
+    else if builtins.typeOf abiDeclarationSpec == "path" then
+      builtins.path {
+        path = abiDeclarationSpec;
+        name = "${name}-physical-abi-declaration-spec-v1.json";
+      }
+    else abiDeclarationSpec;
   implementationInputs = lib.mapAttrs
     (id: value:
       if builtins.typeOf value == "path" then
@@ -91,7 +110,7 @@ let
   implementationDirectoryNames = lib.mapAttrs
     (id: _: builtins.hashString "sha256" id)
     implementations;
-  phasePythonSource = import ./python-module-closure.nix {
+  catalogPythonSource = import ./python-module-closure.nix {
     phaseRole = "proposal";
     inherit pkgs;
     modules = [
@@ -102,6 +121,18 @@ let
     ];
     name = "${name}-library-catalog-python-closure";
   };
+  abiPythonSource = import ./python-module-closure.nix {
+    phaseRole = "proposal";
+    inherit pkgs;
+    modules = [ "spaghetti_extractor.abi.catalog" ];
+    name = "${name}-physical-abi-python-closure";
+  };
+  abiSpecPythonSource = import ./python-module-closure.nix {
+    phaseRole = "proposal";
+    inherit pkgs;
+    modules = [ "spaghetti_extractor.abi.declaration_spec" ];
+    name = "${name}-physical-abi-spec-python-closure";
+  };
 in
 assert lib.assertMsg (identifier name) "library catalog name must be an identifier";
 assert lib.assertMsg validSnapshot "library catalog snapshot is malformed";
@@ -111,6 +142,8 @@ assert lib.assertMsg (builtins.all validArtifact artifacts)
 assert lib.assertMsg
   (lib.length (lib.unique (map (artifact: artifact.id) artifacts)) == lib.length artifacts)
   "library catalog artifact IDs must be unique";
+assert lib.assertMsg (abiDeclarations == null || abiDeclarationSpec == null)
+  "provide canonical ABI declarations or an authored declaration spec, not both";
 let
   package = pkgs.runCommand "${name}-library-catalog-pack-v3" {
   nativeBuildInputs = [ pythonEnv pkgs.jq ];
@@ -121,7 +154,7 @@ let
   set -euo pipefail
   export PYTHONHASHSEED=0
   export PYTHONDONTWRITEBYTECODE=1
-  export PYTHONPATH=${phasePythonSource}/src
+  export PYTHONPATH=${catalogPythonSource}/src
   mkdir -p "$out/behavior-packs"
   ${pythonEnv}/bin/python3 - \
     ${declaration} ${artifactRoot} "$out/library-artifact-index.json" <<'PY'
@@ -186,8 +219,83 @@ let
   '') implementationInputs)}
   ln -s ${declaration} "$out/input-declaration.json"
   '';
+  generatedAbiDeclarations =
+    if abiDeclarationSpecInput == null then null else
+    pkgs.runCommand "${name}-physical-abi-declarations-v1" {
+      nativeBuildInputs = [ pythonEnv pkgs.jq ];
+      preferLocalBuild = false;
+      allowSubstitutes = true;
+      __contentAddressed = true;
+    } ''
+      set -euo pipefail
+      export PYTHONHASHSEED=0
+      export PYTHONDONTWRITEBYTECODE=1
+      export PYTHONPATH=${abiSpecPythonSource}/src
+      mkdir -p "$out"
+      ${pythonEnv}/bin/python3 - \
+        ${lib.escapeShellArg abiDeclarationSpecInput} \
+        "$out/physical-abi-declarations.json" <<'PY'
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.abi.declaration_spec import (
+          build_declaration_set_from_spec,
+      )
+
+      build_declaration_set_from_spec(
+          spec=pathlib.Path(sys.argv[1]),
+          out=pathlib.Path(sys.argv[2]),
+      )
+      PY
+      jq -e '
+        .format == "spaghetti-extractor-physical-abi-declarations-v1" and
+        .snapshot_id == ${builtins.toJSON snapshot.id}
+      ' "$out/physical-abi-declarations.json" >/dev/null
+    '';
+  effectiveAbiDeclarations =
+    if abiDeclarationsInput != null then abiDeclarationsInput
+    else if generatedAbiDeclarations != null then
+      "${generatedAbiDeclarations}/physical-abi-declarations.json"
+    else null;
+  physicalAbiPackage = pkgs.runCommand "${name}-physical-abi-catalog-v1" {
+    nativeBuildInputs = [ pythonEnv pkgs.jq ];
+    preferLocalBuild = false;
+    allowSubstitutes = true;
+    __contentAddressed = true;
+  } ''
+    set -euo pipefail
+    export PYTHONHASHSEED=0
+    export PYTHONDONTWRITEBYTECODE=1
+    export PYTHONPATH=${abiPythonSource}/src
+    mkdir -p "$out"
+    ${pythonEnv}/bin/python3 - \
+      ${package}/library-artifact-index.json \
+      "$out/physical-abi-catalog.json" \
+      ${lib.escapeShellArg decorationModel} \
+      ${if effectiveAbiDeclarations == null then "''" else lib.escapeShellArg effectiveAbiDeclarations} <<'PY'
+    import pathlib
+    import sys
+
+    from spaghetti_extractor.abi.catalog import build_physical_abi_catalog
+
+    build_physical_abi_catalog(
+        artifact_index=pathlib.Path(sys.argv[1]),
+        out=pathlib.Path(sys.argv[2]),
+        decoration_model=sys.argv[3],
+        declarations=(pathlib.Path(sys.argv[4]) if sys.argv[4] else None),
+    )
+    PY
+    jq -e '
+      .format == "spaghetti-extractor-physical-abi-catalog-v1" and
+      .catalog_id == ${builtins.toJSON name} and
+      (.status == "complete" or .status == "incomplete" or .status == "violated")
+    ' "$out/physical-abi-catalog.json" >/dev/null
+  '';
 in
 package // {
+  artifactIndex = "${package}/library-artifact-index.json";
+  physicalAbiCatalog = "${physicalAbiPackage}/physical-abi-catalog.json";
+  inherit physicalAbiPackage generatedAbiDeclarations;
   implementationPaths = lib.mapAttrs
     (id: _: "${package}/behavior-packs/${implementationDirectoryNames.${id}}")
     implementations;

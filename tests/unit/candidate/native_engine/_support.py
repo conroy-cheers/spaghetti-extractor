@@ -21,6 +21,8 @@ from spaghetti_extractor.artifacts.artifact_set import (
     CanonicalValueV3,
     canonical_sha256_v3,
 )
+from spaghetti_extractor.artifacts.formats import MACHINE_IR_FORMAT
+from spaghetti_extractor.machine_ir.memory_actions import build_memory_action_graph
 from spaghetti_extractor.authority.external_site_records import (
     CANONICAL_EXTERNAL_SITE_CODEC_V3,
     CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
@@ -29,6 +31,17 @@ from spaghetti_extractor.authority.external_site_records import (
     CallbackRequirementV3,
     ExternalContractV3,
     external_site_id_v3,
+)
+from spaghetti_extractor.authority.callbacks import (
+    CALLBACK_AUTHORITY_ARTIFACT_KIND_V4,
+    CALLBACK_AUTHORITY_CODEC_V4,
+    CallbackAuthorityRecordV3,
+    CallbackAuthorityV4,
+    derive_callback_entry_state_v3,
+)
+from spaghetti_extractor.external.callback_protocols import (
+    callback_lifetime_identity,
+    parse_callback_protocol,
 )
 from spaghetti_extractor.authority._schema import stable_id
 from spaghetti_extractor.authority.authority_common import PrimaryBlockerV3
@@ -112,8 +125,8 @@ def _machine_ir_transfer(
             **event,
         }]
     end = rva + size
-    return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+    unit = {
+        "format": MACHINE_IR_FORMAT,
         "record_kind": "unit",
         "id": f"semantic-transfer:typed-{rva:08x}",
         "status": "qualified",
@@ -158,20 +171,100 @@ def _machine_ir_transfer(
             "instruction_effect_schedule": None,
         },
     }
+    unit["semantics"]["memory_actions"] = build_memory_action_graph(
+        instructions=unit["instructions"], memory_events=[], ordered_events=ordered
+    )
+    return unit
 
 
 def _implementation_manifest(
     machine_ir: Path,
 ) -> dict:
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": MACHINE_IR_FORMAT,
         "artifacts": {
             "machine_ir": {
-                "format": "spaghetti-extractor-machine-ir-v2",
+                "format": MACHINE_IR_FORMAT,
                 "sha256": sha256_bytes(machine_ir.read_bytes()),
             },
         },
     }
+
+
+def _fixture_callback_protocol(contract):
+    adapter = contract.callback_adapter
+    if adapter is None:
+        return None
+    source = dict(adapter.source)
+    source["sentinels"] = (
+        [{"word": 0, "kind": "null"}]
+        if adapter.abi.get("nullable") is True
+        else []
+    )
+    words = int(adapter.abi["argument_words"])
+    cleanup = int(adapter.abi["stack_cleanup_bytes"])
+    legacy_lifetime = str(adapter.lifetime)
+    lifetime = (
+        {"kind": "during_call"}
+        if legacy_lifetime == "during_native_call"
+        else {
+            "kind": "until_resource_event_or_process_exit",
+            "end_event": "class_unregistered",
+        }
+        if legacy_lifetime == "until_class_unregistered_or_process_exit"
+        else {"kind": "until_replaced_or_process_exit"}
+    )
+    return parse_callback_protocol(
+        {
+            "format": "spaghetti-extractor-callback-protocol-v1",
+            "id": f"fixture-callback:{contract.contract_id}",
+            "action": "register",
+            "source": source,
+            "signature": {
+                "abi_template": (
+                    "pe32-stdcall-v1" if cleanup == words * 4 else "pe32-cdecl-v1"
+                ),
+                "argument_words": words,
+                "stack_cleanup_bytes": cleanup,
+                "result": {"kind": "word", "register": "eax"},
+            },
+            "instance": {"kind": "singleton"},
+            "previous_result": None,
+            "lifetime": lifetime,
+            "delivery": {
+                "timing": "nested_or_deferred",
+                "thread": "external_concurrent",
+            },
+            "cardinality": {
+                "minimum": 0,
+                "maximum": None,
+                "scope": "registration_generation",
+            },
+            "provider_behavior": None,
+        },
+        registration_argument_words=contract.argument_words,
+        context="fixture callback protocol",
+    )
+
+
+def _fixture_machine_contract(contract) -> dict[str, object]:
+    machine_contract: dict[str, object] = {
+        "abi_template": contract.abi_template,
+        "argument_words": contract.argument_words,
+        "result_register_relations": list(contract.result_register_relations),
+        "memory_footprints": list(contract.memory_footprints),
+        "out_pointer_relations": list(contract.out_pointer_relations),
+        "out_interface_relations": list(contract.out_interface_relations),
+    }
+    protocol = _fixture_callback_protocol(contract)
+    if protocol is not None:
+        machine_contract.update({
+            "callback_protocol": protocol.to_payload(),
+            "callback_activation": contract.callback_adapter.activation,
+            "resource_binding": contract.callback_adapter.resource_binding,
+            "instance_binding": contract.callback_adapter.instance_binding,
+        })
+    return machine_contract
 
 
 def _canonical_external_sites(
@@ -194,34 +287,19 @@ def _canonical_external_sites(
     site_id = external_site_id_v3(
         unit["id"], event_index, 0, identity
     )
+    machine_contract = _fixture_machine_contract(contract)
+    protocol = _fixture_callback_protocol(contract)
     callbacks = tuple(
         CallbackRequirementV3.create(
             site_id=site_id,
             ordinal=ordinal,
             target_unit_id=f"semantic-transfer:typed-{rva:08x}",
             target_rva=rva,
-            abi_sha256=canonical_sha256_v3(contract.callback_adapter.abi),
-            lifetime=str(contract.callback_adapter.lifetime),
+            abi_sha256=canonical_sha256_v3(protocol.signature.to_payload()),
+            lifetime=callback_lifetime_identity(protocol),
         )
         for ordinal, rva in enumerate(callback_target_rvas)
     )
-    machine_contract = {
-        "abi_template": contract.abi_template,
-        "result_register_relations": list(contract.result_register_relations),
-        "memory_footprints": list(contract.memory_footprints),
-        "out_pointer_relations": list(contract.out_pointer_relations),
-        "out_interface_relations": list(contract.out_interface_relations),
-    }
-    if contract.callback_adapter is not None:
-        machine_contract.update({
-            "callback_source": contract.callback_adapter.source,
-            "callback_abi": contract.callback_adapter.abi,
-            "callback_lifetime": contract.callback_adapter.lifetime,
-            "callback_behavior": contract.callback_adapter.behavior,
-            "callback_activation": contract.callback_adapter.activation,
-            "resource_binding": contract.callback_adapter.resource_binding,
-            "instance_binding": contract.callback_adapter.instance_binding,
-        })
     authority_contract = ExternalContractV3.create(
         identity=identity,
         transfer_kind=contract.transfer_kind,
@@ -277,6 +355,74 @@ def _canonical_external_sites(
         [ArtifactRecordV3.create(
             unit["id"], CANONICAL_EXTERNAL_SITE_CODEC_V3.encode(record)
         )],
+    )
+    return output
+
+
+def _canonical_callback_authority(
+    root: Path,
+    *,
+    registration_unit: dict,
+    event_index: int,
+    identity: dict,
+    contract,
+    target_units: tuple[dict, ...],
+) -> Path:
+    site_id = external_site_id_v3(
+        registration_unit["id"], event_index, 0, identity
+    )
+    protocol = _fixture_callback_protocol(contract)
+    if protocol is None:
+        raise AssertionError("callback authority fixture requires a callback protocol")
+    machine_contract = CanonicalValueV3.of(_fixture_machine_contract(contract))
+    callbacks = []
+    for ordinal, unit in enumerate(target_units):
+        target_rva = int(unit["source"]["original"]["rva_start"])
+        requirement = CallbackRequirementV3.create(
+            site_id=site_id,
+            ordinal=ordinal,
+            target_unit_id=str(unit["id"]),
+            target_rva=target_rva,
+            abi_sha256=canonical_sha256_v3(protocol.signature.to_payload()),
+            lifetime=callback_lifetime_identity(protocol),
+        )
+        entry_state, blocker = derive_callback_entry_state_v3(
+            external_site_id=site_id,
+            requirement=requirement,
+            machine_contract=machine_contract,
+        )
+        if blocker is not None or entry_state is None:
+            raise AssertionError("fixture callback entry state is incomplete")
+        callbacks.append(CallbackAuthorityV4(
+            callback_id=requirement.callback_id,
+            external_site_id=site_id,
+            target_unit_id=requirement.target_unit_id,
+            target_unit_sha256=canonical_sha256_v3(unit),
+            target_rva=target_rva,
+            abi_sha256=requirement.abi_sha256,
+            lifetime=requirement.lifetime,
+            status="complete",
+            authorizing=True,
+            entry_state=entry_state,
+            primary_blocker=None,
+            protocol=CanonicalValueV3.of(protocol.to_payload()),
+        ))
+    record = CallbackAuthorityRecordV3(
+        record_id=str(registration_unit["id"]),
+        unit_sha256=canonical_sha256_v3(registration_unit),
+        status="complete",
+        authorizing=True,
+        callbacks=tuple(sorted(callbacks, key=lambda row: row.callback_id)),
+        primary_blocker=None,
+        dependencies=(),
+    )
+    output = root / "callback-authority"
+    ArtifactSetWriterV3(
+        artifact_kind=CALLBACK_AUTHORITY_ARTIFACT_KIND_V4,
+        bindings=(),
+    ).write(
+        output,
+        (CALLBACK_AUTHORITY_CODEC_V4.write(record.record_id, record),),
     )
     return output
 
@@ -469,7 +615,11 @@ def _candidate_execution_artifacts(
     submitted = tuple(f"fixture-root:{unit_id}" for unit_id in root_ids)
     closure_id = stable_id(
         "launch-root-closure-v3",
-        {"submitted_root_ids": list(submitted), "dependency_records": []},
+        {
+            "submitted_root_ids": list(submitted),
+            "callback_root_ids": [],
+            "dependency_records": [],
+        },
     )
     closure = LaunchRootClosureV3(
         record_id=closure_id,
@@ -477,6 +627,7 @@ def _candidate_execution_artifacts(
         authorizing=complete,
         submitted_root_ids=submitted,
         admitted_root_ids=submitted,
+        callback_root_ids=(),
         root_unit_ids=root_ids,
         reachable_unit_ids=reachable_ids,
         edges=tuple(sorted(edges)),
@@ -572,6 +723,15 @@ def _candidate_execution_artifacts(
         bindings=(),
     ).write(summary_path, summaries)
     return root_path, target_path, summary_path
+
+
+def _empty_callback_authority(root: Path) -> Path:
+    output = root / "callback-authority"
+    ArtifactSetWriterV3(
+        artifact_kind=CALLBACK_AUTHORITY_ARTIFACT_KIND_V4,
+        bindings=(),
+    ).write(output, ())
+    return output
 
 
 def _machine_ir_x87_transfer(
@@ -885,10 +1045,12 @@ class NativeEngineTestCase(unittest.TestCase):
             reachable=reachable,
             complete=not potential,
         )
+        authority = (*authority, _empty_callback_authority(root))
         return machine_ir, manifest, sites, {
             "root_closure": authority[0],
             "target_certificates": authority[1],
             "parametric_summaries": authority[2],
+            "callback_authority": authority[3],
         }
 
 

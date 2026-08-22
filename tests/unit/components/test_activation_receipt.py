@@ -23,6 +23,70 @@ def _facets() -> dict[str, ActivationFacetV1]:
 
 
 class ActivationReceiptTests(unittest.TestCase):
+    def test_v4_interface_requires_relation_bound_machine_binding_v4(self) -> None:
+        interface = {
+            "format": "spaghetti-extractor-component-interface-ir-v4",
+            "id": "component",
+            "types": [{"id": "u32", "kind": "scalar", "c_type": "uint32_t"}],
+            "state": [],
+            "operations": [
+                {
+                    "id": "run",
+                    "kind": "operation",
+                    "parameters": [],
+                    "results": [],
+                    "effect_ids": [],
+                    "allowed_service_ids": [],
+                    "pre_states": ["ready"],
+                    "post_states": ["ready"],
+                }
+            ],
+            "effects": [],
+            "services": [],
+            "protocol": {"states": ["ready"], "initial_state": "ready"},
+        }
+        interface_sha256 = canonical_sha256_v3(interface)
+        core = {
+            "format": "spaghetti-extractor-component-machine-binding-v3",
+            "status": "checked",
+            "component_id": "component",
+            "contract_sha256": "1" * 64,
+            "interface_sha256": interface_sha256,
+            "source_artifacts": {
+                "machine_binding_sha256": "2" * 64,
+                "machine_binding_receipt_sha256": "3" * 64,
+                "semantic_contract_sha256": "4" * 64,
+            },
+            "exact_machine": {
+                "pe_sha256": "5" * 64,
+                "machine_ir_sha256": "6" * 64,
+                "machine_ir_manifest_sha256": "7" * 64,
+                "unit_ids": ["unit"],
+            },
+            "operation_bindings": [],
+            "issues": [],
+            "policy": {
+                "original_binary_executed": False,
+                "implementation_independent": True,
+            },
+        }
+        machine = {**core, "binding_sha256": canonical_sha256_v3(core)}
+        receipt = ActivationReceiptV1.from_receipts(
+            interface=interface,
+            source_profile=None,
+            source_compile=None,
+            machine_binding=machine,
+            semantic_refinement=None,
+            service_graph=None,
+            ownership=None,
+            component_id="component",
+        )
+        machine_facet = next(
+            item for item in receipt.facets if item.identity == "machine_binding"
+        )
+        self.assertEqual(machine_facet.status, "violated")
+        self.assertFalse(receipt.activation_authorized)
+
     def test_authorizes_only_with_all_exact_satisfied_facets(self) -> None:
         facets = _facets()
 

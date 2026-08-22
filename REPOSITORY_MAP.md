@@ -19,6 +19,10 @@ experiments remain available in Git history and are not supported interfaces.
 | `targets/flake.nix`, `targets/flake.lock` | Independent in-tree validation-consumer flake. |
 | `targets/registry.nix`, `targets/<id>/` | Explicit target registry and authored GNU Hello, jq, and DX-Ball bundles. |
 | `docs/` | Canonical architecture and workflow documentation. |
+| `docs/call-protocols.md` | Checked semantic, layout, transport, lifecycle, evidence, and source-view model for calls and callbacks. |
+| `docs/canonical-boundaries.md` | Shared type, data-layout, evidence, lifecycle, projection, call, callback, and component-boundary model. |
+| `docs/boundary-transducers.md` | Typed relations between logical component values, machine places, object authority, and checked effects. |
+| `docs/callbacks.md` | Provider-neutral callback registration, lifetime, delivery, cardinality, and invocation semantics. |
 | `private/` | Ignored operator inputs such as proprietary binaries. |
 | `build/`, `outputs/`, `result*` | Ignored generated workspaces or Nix links; never source inputs. |
 
@@ -74,6 +78,7 @@ definitions to reproducible realizations; either side rejects metadata drift.
 | `project` | `analyze`, `status`, `check` (`--acceptance` selects the strict gate) |
 | `component` | `list`, `status`, `build`, `check` with unit/group/configuration selectors |
 | `library` | `status`, `inspect`, `pin`, `check` for ABI-first constellation recognition and whole-island qualification |
+| `call` | `status`, `inspect`, `propose`, `adopt`, `check` for operator-reviewed checked call protocols |
 | `candidate` | `list`, `status`, `build`, `test` |
 | `expert` | Explicit low-level static analysis, ISA, reconstruction, authority, runtime, component, source, and validation leaves from `commands/*.py`. |
 
@@ -112,6 +117,8 @@ The active pipeline packages are ownership boundaries, not migration aliases:
 | `candidate/authority/` | Legacy detailed candidate-receipt recomputation retained as supporting diagnostics. | It consumes checked static artifacts, exact machine IR, fallback coverage, and component runtime completion; it cannot consume extraction or proposal machinery. |
 | `candidate/` | Runtime-independent candidate planning, machine-IR fallback rendering, PE composition, component dispatch, and candidate-only diagnostics. | It consumes canonical authority and neutral schemas; it never imports proposal discovery. |
 | `components/` | Target-neutral intent, resolution, portable interfaces, source binding, static machine-derived refinement, machine bindings, service graphs, activation receipts, total configurations, and runtime completion. | It remains neutral to extraction, authority, authority inputs, and candidate packages so the same contracts can be composed independently. |
+| `abi/` | Canonical physical ABI values, checked evidence, finite constraint solving, compatibility, pinned declarations, catalog binding, and exact target/library match resolution. | Machine transport, portable source prototypes, and boundary effects remain distinct; missing or contradictory evidence fails closed before library/component activation. |
+| `calls/` | Portable type graphs, target layouts, physical call frames, lifecycle facts, compiler proposals, dialect checks, and checked callback/call protocols. | Authored intent contains semantic choices only; generated transport and evidence remain content-bound and independently checked. |
 | `machine_ir/` | Neutral definedness and implementation-coverage checks shared across extraction, authority adapters, and candidate construction. | It owns cross-phase machine-IR schemas/checkers so no higher layer must be imported backwards. |
 | `external/` | Canonical ABI, interface, operation-profile, and external-site contract schemas plus candidate projection. | Proposal-only v2 profile/callable paths are removed; runtime construction consumes canonical v3 sites. |
 | `isa/` | Catalogs, corpus/oracle adapters, qualification, kernel selection, and frontier reporting. | Oracles veto qualification but cannot authorize candidate behavior. |
@@ -243,8 +250,9 @@ unique domain-local formats remain with their owner.
 | `isa/kernel_selection.py` | Binary-specific binding from reachable forms to qualified semantics and fallback capabilities. |
 | `authority_inputs/isa_catalog.py`, `authority_inputs/isa_requirements.py`, `authority_inputs/isa_selection.py` | Exact machine-IR ISA inventory, required-form extraction, and binary-bound qualification selection. |
 | `authority_inputs/launch_assumptions.py` | Content-stable, non-authorizing PE-bound assumption projection for root-independent SCC analysis. |
-| `candidate/policy_gates.py` | Canonical structural-executability and release-acceptance reducers. Structural execution checks closed transfers, fallback capability, and implementation ownership; release adds ISA and exact component receipts. Runtime tests remain non-authorizing. |
+| `candidate/policy_gates.py` | Canonical structural-executability and release-acceptance reducers. Structural execution checks whole-universe classification, fallback capability, and implementation ownership while behavioral families are root-projected; release adds rooted ISA and exact component receipts. Runtime tests remain non-authorizing. |
 | `candidate/authority/model.py`, `candidate/authority/io.py`, `candidate/authority/checker.py` | Detailed supporting candidate receipt model, canonical serialization, and independent consistency recomputation over exact machine IR, component runtime ownership, and fallback coverage. |
+| `candidate/authority/rooted_projection.py` | Typed, hash-bound projection of a complete root closure onto the exact structural unit inventory for behavioral acceptance and portable-lift policy. |
 | `reconstruction/control.py` | Stable facade for cluster proposals from decoded control structure. |
 | `reconstruction/control_common.py`, `reconstruction/control_jump_tables.py`, `reconstruction/control_reachability.py`, `reconstruction/control_clusters.py` | Shared control records, bounded jump-table recovery, structural reachability, and cluster construction. |
 | `reconstruction/composition.py` | Composes compatible machine units into larger reconstruction clusters. |
@@ -253,6 +261,7 @@ unique domain-local formats remain with their owner.
 | `static_program/model.py`, `static_program/codec.py`, `static_program/extraction.py` | Typed original-only static-program schema, strict parser, and exact extractor. |
 | `reconstruction/static_export.py` | Original-only static-program and canonical state-machine orchestration. |
 | `candidate/c_backend.py` | Shared low-level C runtime helpers used by the active interpreter fallback. |
+| `components/capabilities.py`, `components/atomics.py` | Shared checked capability lifecycle plus the typed portable atomic facade. |
 | `candidate/c_domains.py`, `candidate/c_render.py` | Shared closed semantic domains plus expression/transition C rendering isolated from package validation. |
 | `candidate/interpreter.py`, `candidate/interpreter_model.py`, `candidate/interpreter_compiler.py`, `candidate/interpreter_package.py`, `candidate/interpreter_render.py`, `candidate/interpreter_values.py` | Portable machine-IR interpreter model, lowering, rendering, packaging, and strict value decoding. |
 | `candidate/build.py`, `candidate/build_model.py`, `candidate/build_validation.py`, `candidate/build_sources.py`, `candidate/build_objects.py`, `candidate/build_workflow.py`, `candidate/build_values.py` | Freestanding PE32 build facade, package validation, source/object DAG, final workflow, and strict values. |
@@ -268,6 +277,7 @@ unique domain-local formats remain with their owner.
 | `authority_inputs/implementation_capabilities.py` | Binds fallback implementation capability IDs to the exact selected ISA forms. |
 | `candidate/engine_layout.py` | Structural engine layout tables. |
 | `candidate/engine.py`, `candidate/engine_model.py`, `candidate/engine_analysis.py`, `candidate/engine_components.py`, `candidate/engine_render.py`, `candidate/engine_x87.py`, `candidate/engine_package.py` | Candidate engine model, machine-IR analysis, component/callback synthesis, typed x87 support, rendering, and deterministic packaging. |
+| `candidate/callback_authority.py`, `candidate/callbacks.py` | Fail-closed callback-authority V4 loading and runtime-neutral generational callback state. |
 | `candidate/image.py` | Derives entry, callback, relocation, import, and zero-fill inputs from a checked load-image contract. |
 | `candidate/runtime.py`, `candidate/runtime_model.py`, `candidate/runtime_program_validation.py`, `candidate/runtime_plan_validation.py`, `candidate/runtime_receipts.py`, `candidate/runtime_render.py`, `candidate/runtime_render_core.py`, `candidate/runtime_render_entry.py`, `candidate/runtime_values.py` | Candidate external runtime model, input validation, receipts, C rendering, and strict values. |
 | `candidate/binding.py` | Runtime-boundary inventory and adapters. |
@@ -318,10 +328,14 @@ and interfaces; it does not erase unresolved whole-program reconstruction gaps.
 
 | Module | Purpose |
 |---|---|
+| `abi/model.py`, `abi/solver.py`, `abi/native_solver.py` | Typed physical call-boundary values and certificates plus deterministic finite-domain solving; the bounded Rust engine accelerates equality components while Python retains unresolved-frontier classification and fallback. |
+| `abi/extraction.py`, `abi/symbols.py` | Project checked parametric summaries and canonical external sites into ABI evidence, and derive only facts justified by a pinned PE32 symbol-decoration model. |
+| `abi/declarations.py`, `abi/declaration_spec.py`, `abi/catalog.py` | Bind reviewed header/debug declarations to exact source and library snapshot identities, then intersect them with catalog and machine facts. |
+| `abi/matching.py`, `abi/compatibility.py`, `abi/legacy.py` | Resolve exact library function-region/call-site boundaries, emit localized compatibility evidence, and adapt complete physical profiles at the retained component boundary. |
 | `external/machine_abi.py` | Machine-level calling conventions and the reviewed conditional normal-return register premise. |
 | `external/import_abi.py` | Expands reviewed ABI policy against exact PE imports. |
 | `external/machine_import_profiles.py` | Imported-call profile parsing and binding. |
-| `external/callbacks.py` | Callback registration, source, ABI, lifetime, and activation protocol validation. |
+| `external/callback_protocols.py`, `external/callbacks.py` | Canonical structured callback protocols plus the derived legacy adapter view. |
 | `external/contracts.py` | Canonical fail-closed machine contract shared by native external-call planning and runtime. |
 | `external/operation_model.py`, `external/operation_profiles.py` | Typed machine external-operation/environment models plus strict parsing and validation. |
 | `external/interface_profiles.py` | Interface/vtable catalogs and call identities. |
@@ -408,6 +422,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `toolkit-context.nix` | One reusable per-system source, package, kernel, oracle, and fixture context shared by the root flake and target SDK. |
 | `target-sdk.nix` | Stable v3 target interface and high-level `workflow.pe32` constructor for analysis, authority, components, candidates, and validation. |
 | `component-workflow.nix` | Content-addressed component DAG with an intent-only development-contract/compile branch and a separate proposal-backed machine-binding/refinement/activation/runtime branch. |
+| `call-protocol-workflow.nix` | Builds checked typed call protocols from authored intent, target layouts, machine IR, and exact machine/callback authority evidence. |
 | `component-proposal-input.nix` | Controlled-IFD boundary that checks the full proposal package once, then re-interns only reviewed selectors and selected resolution fields for downstream component phases. |
 | `component-runtime-package.nix` | Generates and cross-compiles the sole executable component runtime package. |
 | `flake-modules/toolkit.nix`, `flake-modules/checks.nix` | Focused `flake-parts` modules for generic packages/apps/shells and checks. |
@@ -431,6 +446,7 @@ enforce this with `xvfb-run` where Wine is used.
 | `authority-graph-manifest.nix`, `authority-workflow.nix` | Registry-derived graph-manifest realization and the reusable fail-closed target adapter that combines exact machine IR with typed external evidence artifacts. |
 | `authority-diagnostics.nix` | Non-authorizing checked-artifact summary for precise operator feedback across sharded authority families. |
 | `authority-input-exception-evidence.nix`, `authority-input-external-site-evidence.nix`, `authority-input-indexed-target-evidence.nix`, `authority-input-isa-evidence.nix`, `authority-input-standard-evidence.nix` | Content-addressed exact-evidence providers for exception, external-call, indirect-target, ISA, launch-root, callback, and invariant families. |
+| `authority-input-callback-evidence.nix`, `authority-input-normal-call-abi-premise.nix` | Content-bound callback-entry evidence and reviewed normal-call ABI premises consumed by the native authority graph. |
 | `authority-input-parametric-summary-proposals.nix` | Root-independent parametric unit and dependency-SCC proposal generation; all exported facts are subsequently checked by authority phases. |
 | `authority-input-implementation-capabilities.nix` | Exact, sparse fallback-capability projection over the selected binary-specific ISA inventory. Missing records remain localized incomplete authority. |
 | `machine-ir-support-package.nix` | Generates reusable interpreter source and headers from exact machine IR after non-executable lowering checks; component-local packages may consume it before whole-target structural closure. |
@@ -441,14 +457,18 @@ enforce this with `xvfb-run` where Wine is used.
 | `authority-graph-v3.nix`, `authority-graph-v3-boundaries.nix`, `authority-graph-v3-packs.nix`, `authority-resource-classes-v3.nix` | Manifest-driven v3 authority DAG, independently checked structural/dependency planning boundaries, stable schedule packs, and one shared resource policy used by dynamic preparation and standalone fixtures. |
 | `test-suite.nix`, `test-suite-plan.nix`, `test-suite-shard.nix`, `test-suite-fixtures.nix`, `test-fixture-catalog.nix`, `generated/test-suite-manifest.json` | Static, checked stable test shards and shared heavy fixtures; Nix evaluates no dynamic test discovery and unchanged shards substitute. |
 | `runtime-frontier-report.nix` | Emits a pure non-authorizing JSON projection of checked authority blockers; it cannot contain source, object code, a PE, runtime packages, or Wine. |
-| `candidate-policy-receipt.nix`, `candidate-policy-gate.nix` | Reduce and gate structural executability from exact static families, fallback capability, and implementation ownership. |
+| `candidate-policy-receipt.nix`, `candidate-policy-gate.nix` | Reduce and gate structural executability from whole-universe classification/fallback ownership plus root-scoped behavioral families. |
+| `rooted-behavioral-projection.nix` | Materializes the centrally checked root-reachable behavioral scope shared by candidate policy and portable-lift gates. |
 | `candidate-release-receipt.nix`, `candidate-release-gate.nix` | Add ISA qualification and the exact activation-bound universal component/dependency gate to produce static release acceptance. |
 | `candidate-test-suite.nix` | Binds a statically accepted candidate to optional curated veto cases and executes it through isolated headless Wine. |
 | `python-module-closure.nix` | Content-addressed transitive local-Python import closure with an explicit checked phase role. |
 | `generated/python-module-index.json` | Generated checked local-import/resource graph and role closures consumed by phase-specific Python closures. |
+| `library-recognition.nix` | Prepares target signatures, catalog matches, and call contracts before static authority and adoption decisions consume them. |
 | `linked-libraries.nix` | Canonical library-recognition facade over proposal discovery, V4 release/island hypotheses, tracked adoption intents, checked-island authority, and generated ordinary components. |
 | `library-catalog-pack.nix`, `library-behavior-pack.nix`, `library-island-check.nix`, `library-component-generation.nix`, `library-status.nix` | Immutable target-neutral catalog and behavior packs, role-separated authority/candidate phases, and compact operator status/check leaves. A selected island is ready only after exact checked-island authority and generated-component validation; unselected application code remains machine-IR fallback. |
 | `native-extension.nix` | Pinned PyO3 build for bounded native proposal kernels such as sparse library indexing; Python checkers retain schema and authority ownership. |
+| `boundary-schema-workflow.nix` | Validates canonical boundary schemas, lowers checked IA-32 frames, and compiles their portable C projections for target consumers. |
+| `relation-kernel.nix` | Compiles the reusable Lean kernel for boundary relations and checked state/effect composition. |
 | `fallback-coverage-receipt.nix` | Checks one implementation kind for every structural machine-IR unit without claiming rooted reachability. |
 | `candidate-test-aggregate.nix`, `candidate-test-suite.nix` | Structural-gated expected-exit and bounded-liveness tests under isolated headless Wine. |
 | `profile-registry-check.nix` | Exact-inventory, role, schema, and semantic validation for every reviewed reusable profile. |
@@ -525,6 +545,7 @@ active reviewed profiles are:
 - `pe32-winmm-runtime-v1.json`
 - `pe32-win32-gui-launch-assumptions-v1.json`
 - `pe32-win32-console-launch-assumptions-v1.json`
+- `interaction-contracts-v1.json`
 
 The launch-assumption template is deliberately non-authorizing. The Nix
 analysis phase binds it to the exact PE, checked static roots, and checked
@@ -537,9 +558,10 @@ machine-generated catalogs belong in Nix outputs.
 ## Documentation
 
 `docs/README.md` is the documentation index. The active design references are
-`architecture.md`, `components.md`, `external-operations.md`,
-`isa-qualification.md`, `static-roundtrip-qualification.md`, and
-`target-bundles.md`, and `performance-and-invalidation.md`. Historical plans
+`architecture.md`, `abi-analysis.md`, `components.md`, `external-operations.md`,
+`isa-qualification.md`, `atomics.md`, `static-roundtrip-qualification.md`, and
+`target-bundles.md`, `library-behavior-packs.md`, and
+`performance-and-invalidation.md`. Historical plans
 and experiment reports remain in Git history rather than competing with the
 current design.
 

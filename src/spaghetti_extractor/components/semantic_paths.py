@@ -38,6 +38,8 @@ class _State:
     trace: list[dict[str, object]]
     visited: set[str]
     private_stack_writes: set[tuple[int, int]]
+    pending_service_stack_writes: set[tuple[int, int]]
+    service_argument_stack_writes: set[tuple[int, int]]
 
     def clone(self) -> "_State":
         return _State(
@@ -48,6 +50,8 @@ class _State:
             copy.deepcopy(self.trace),
             set(self.visited),
             set(self.private_stack_writes),
+            set(self.pending_service_stack_writes),
+            set(self.service_argument_stack_writes),
         )
 
 
@@ -64,6 +68,7 @@ def build_operation_path_model(
     interface: PortableComponentInterfaceV2,
     service_bindings: object,
     *,
+    boundary_operation: object | None = None,
     max_paths: int = 256,
     max_events_per_path: int = 64,
 ) -> dict[str, object]:
@@ -72,13 +77,18 @@ def build_operation_path_model(
     operation_id = _text(operation.get("operation_id"), "operation id")
     logical = interface.operation_index()[operation_id]
     types = interface.type_index()
-    if operation.get("effects") or operation.get("callback_operation_ids"):
+    interaction_references = _checked_interaction_reference_constraints(
+        boundary_operation, operation_id
+    )
+    if operation.get("callback_operation_ids"):
         raise SemanticPathError(
-            "direct effects and callbacks require a world model"
+            "legacy callback-operation inventories are unsupported; bind callback effects"
         )
     for value in logical.parameters:
         logical_type = types[value.type_id]
-        if logical_type.kind not in {"scalar", "enum", "resource", "bytes"}:
+        if logical_type.kind not in {
+            "scalar", "enum", "resource", "bytes", "callback", "reference", "view"
+        }:
             raise SemanticPathError(
                 "finite path refinement currently requires scalar, resource, or byte-view parameters"
             )
@@ -87,7 +97,9 @@ def build_operation_path_model(
                 "NUL-terminated byte views require an inductive extent contract"
             )
     for value in (*logical.results, *interface.state):
-        if types[value.type_id].kind not in {"scalar", "enum", "resource"}:
+        if types[value.type_id].kind not in {
+            "scalar", "enum", "resource", "callback", "reference"
+        }:
             raise SemanticPathError(
                 "finite path refinement currently requires scalar or resource results and state"
             )
@@ -144,6 +156,28 @@ def build_operation_path_model(
         _write_projection(entry, value, env, memory)
     for parameter in logical.parameters:
         logical_type = types[parameter.type_id]
+        projection = parameters[parameter.identity]
+        if (
+            logical_type.kind == "resource"
+            and logical_type.resource_kind == "atomic_object"
+        ):
+            if projection.kind != "atomic_object":
+                raise SemanticPathError(
+                    "atomic resource requires an exact atomic-object projection"
+                )
+            location = _projection_memory_location(projection, env)
+            if location is None:
+                raise SemanticPathError("atomic-object projection has no memory cell")
+            key, width = location
+            if key in state_write_locations:
+                raise SemanticPathError("atomic-object projection aliases component state")
+            state_write_locations[key] = (f"atomic:{parameter.identity}", width)
+            memory[key] = {
+                "op": "atomic_observed",
+                "name": parameter.identity,
+                "width": width * 8,
+            }
+            continue
         value = (
             {
                 "op": "bytes_address",
@@ -153,7 +187,14 @@ def build_operation_path_model(
             if logical_type.kind == "bytes"
             else {"op": "parameter", "name": parameter.identity}
         )
-        _write_projection(parameters[parameter.identity], value, env, memory)
+        _write_projection(projection, value, env, memory)
+
+    parameter_machine_words = {
+        parameter.identity: _parameter_machine_word(
+            parameter.identity, parameters[parameter.identity]
+        )
+        for parameter in logical.parameters
+    }
 
     units = {
         _text(row.get("id"), "semantic unit id"): row
@@ -169,12 +210,25 @@ def build_operation_path_model(
     if len(by_rva) != len(units):
         raise SemanticPathError("operation units have duplicate RVAs")
 
+    atomic_actions = _atomic_action_models(
+        operation=operation,
+        interface=interface,
+        logical=logical,
+        parameter_projections=parameters,
+        units=units,
+        env=env,
+        flags=flags,
+        memory=memory,
+    )
+
     service_index = {row.identity: row for row in interface.services}
     for service_id in logical.allowed_service_ids:
         service = service_index[service_id]
         parameter_types = [types[type_id] for type_id in service.parameter_type_ids]
         if any(
-            logical_type.kind not in {"scalar", "enum", "resource", "bytes"}
+            logical_type.kind not in {
+                "scalar", "enum", "resource", "bytes", "callback", "reference", "view"
+            }
             for logical_type in parameter_types
         ) or any(
             logical_type.kind == "bytes" and logical_type.nul_terminated
@@ -182,7 +236,7 @@ def build_operation_path_model(
         ) or (
             service.result_type_id is not None
             and types[service.result_type_id].kind
-            not in {"scalar", "enum", "resource"}
+            not in {"scalar", "enum", "resource", "callback", "reference"}
         ):
             raise SemanticPathError(
                 f"service {service_id} requires an unsupported world value"
@@ -197,9 +251,10 @@ def build_operation_path_model(
             "operation service inventory differs from exact machine-event bindings"
         )
 
-    initial = _State(env, flags, memory, [], [], set(), set())
+    initial = _State(env, flags, memory, [], [], set(), set(), set(), set())
     pending: list[tuple[str, _State]] = [(entries[0], initial)]
     paths: list[dict[str, object]] = []
+    entry_preconditions: list[dict[str, object]] = []
     while pending:
         unit_id, state = pending.pop()
         if unit_id in state.visited:
@@ -219,29 +274,131 @@ def build_operation_path_model(
         call_results = execution.call_results
 
         if unit_id in exits:
-            expected_results = {
-                result.identity: _decode_result_value(
-                    results[result.identity],
-                    _read_result_projection(
-                        results[result.identity]["projection"],
-                        execution,
-                        state.env,
-                        state.flags,
-                        state.memory,
-                        call_results,
-                    ),
+            if state.pending_service_stack_writes:
+                raise SemanticPathError(
+                    "machine stack write is not consumed by a checked service argument"
                 )
+            finite_results = [
+                result
                 for result in logical.results
-            }
-            for result_id, expected_result in expected_results.items():
-                _require_logical_expression(
-                    expected_result, f"operation result {result_id}"
+                if results[result.identity]["projection"].kind
+                == "finite_control_target"
+            ]
+            if finite_results:
+                if len(logical.results) != 1 or len(finite_results) != 1:
+                    raise SemanticPathError(
+                        "finite control target must be the operation's only result"
+                    )
+                result = finite_results[0]
+                binding = results[result.identity]
+                if binding.get("decoding") is not None:
+                    raise SemanticPathError(
+                        "finite control target does not support result decoding"
+                    )
+                projection = binding["projection"]
+                projection_payload = projection.payload
+                if (
+                    projection_payload.get("unit_id") != unit_id
+                    or execution.outcome.get("kind") != "indirect_jump"
+                ):
+                    raise SemanticPathViolation(
+                        "finite control target does not project this machine exit"
+                    )
+                selector_id = _text(
+                    projection_payload.get("selector_parameter_id"),
+                    "finite control selector parameter",
                 )
+                if selector_id not in parameters:
+                    raise SemanticPathError(
+                        "finite control selector is not an operation parameter"
+                    )
+                variants = []
+                for raw_route in _rows(
+                    projection_payload.get("routes"), "finite control routes"
+                ):
+                    route = _object(raw_route, "finite control route")
+                    guard = {
+                        "op": "eq",
+                        "args": [
+                            {
+                                "op": "parameter",
+                                "name": selector_id,
+                                "width": 32,
+                            },
+                            {
+                                "op": "const",
+                                "value": int(route["selector_value"]),
+                                "width": 32,
+                            },
+                        ],
+                    }
+                    entry_preconditions.append(copy.deepcopy(guard))
+                    variants.append(
+                        (
+                            {result.identity: {
+                                "op": "const",
+                                "value": int(route["logical_value"]),
+                                "width": 32,
+                            }},
+                            guard,
+                            {
+                                "kind": "indirect_jump",
+                                "target": {
+                                    "op": "const",
+                                    "value": int(route["target_address"]),
+                                    "width": 32,
+                                },
+                            },
+                        )
+                    )
+            else:
+                expected_results = {
+                    result.identity: _decode_result_value(
+                        results[result.identity],
+                        _read_result_projection(
+                            results[result.identity]["projection"],
+                            execution,
+                            state.env,
+                            state.flags,
+                            state.memory,
+                            call_results,
+                        ),
+                    )
+                    for result in logical.results
+                }
+                variants = [
+                    (
+                        expected_results,
+                        None,
+                        copy.deepcopy(execution.outcome),
+                    )
+                ]
+            reference_constraints = _trace_reference_constraints(
+                state.trace, interaction_references
+            )
+            reference_origins = {
+                index: int(constraint["input_argument_index"])
+                for index, constraint in reference_constraints.items()
+            }
+            logical_memory_authority = {
+                "parameters": sorted(
+                    parameter.identity
+                    for parameter in logical.parameters
+                    if types[parameter.type_id].kind in {"reference", "view"}
+                ),
+                "service_results": sorted(reference_origins),
+            }
             for guard in state.guards:
-                _require_logical_expression(guard, "path guard")
+                _require_logical_expression(
+                    guard, "path guard", memory_authority=logical_memory_authority
+                )
             for event in state.trace:
                 for argument in event["arguments"]:
-                    _require_logical_expression(argument, "service argument")
+                    _require_logical_expression(
+                        argument,
+                        "service argument",
+                        memory_authority=logical_memory_authority,
+                    )
             state_outputs = {
                 field.identity: _read_projection(
                     state_bindings[field.identity]["exit"],
@@ -253,7 +410,9 @@ def build_operation_path_model(
             }
             for state_id, expected_state in state_outputs.items():
                 _require_logical_expression(
-                    expected_state, f"component state {state_id}"
+                    expected_state,
+                    f"component state {state_id}",
+                    memory_authority=logical_memory_authority,
                 )
                 if (
                     state_id in preserved_state_ids
@@ -263,24 +422,46 @@ def build_operation_path_model(
                     raise SemanticPathViolation(
                         f"preserved component state {state_id} is modified by the machine path"
                     )
-            paths.append(
-                {
-                    "guards": state.guards,
-                    "results": expected_results,
-                    "state": state_outputs,
-                    "trace": state.trace,
-                    "exit_unit_id": unit_id,
-                    "completion": {
-                        "registers": copy.deepcopy(state.env),
-                        "flags": copy.deepcopy(state.flags),
-                        "outcome": copy.deepcopy(execution.outcome),
-                    },
-                    "private_stack_writes": [
-                        {"offset": offset, "width": width}
-                        for offset, width in sorted(state.private_stack_writes)
-                    ],
-                }
-            )
+            for expected_results, route_guard, completion_outcome in variants:
+                for result_id, expected_result in expected_results.items():
+                    _require_logical_expression(
+                        expected_result,
+                        f"operation result {result_id}",
+                        memory_authority=logical_memory_authority,
+                    )
+                path_guards = copy.deepcopy(state.guards)
+                if route_guard is not None:
+                    path_guards.append(copy.deepcopy(route_guard))
+                paths.append(
+                    {
+                        "guards": path_guards,
+                        "results": expected_results,
+                        "state": state_outputs,
+                        "trace": state.trace,
+                        "reference_origins": [
+                            {"trace_index": index, **copy.deepcopy(constraint)}
+                            for index, constraint in sorted(
+                                reference_constraints.items()
+                            )
+                        ],
+                        "exit_unit_id": unit_id,
+                        "completion": {
+                            "registers": copy.deepcopy(state.env),
+                            "flags": copy.deepcopy(state.flags),
+                            "outcome": completion_outcome,
+                        },
+                        "private_stack_writes": [
+                            {"offset": offset, "width": width}
+                            for offset, width in sorted(state.private_stack_writes)
+                        ],
+                        "service_argument_stack_writes": [
+                            {"offset": offset, "width": width}
+                            for offset, width in sorted(
+                                state.service_argument_stack_writes
+                            )
+                        ],
+                    }
+                )
             if len(paths) > max_paths:
                 raise SemanticPathError("finite operation path budget exceeded")
             continue
@@ -296,12 +477,294 @@ def build_operation_path_model(
     if not paths:
         raise SemanticPathError("operation has no path to a declared exit")
     return {
+        "entry_preconditions": sorted(
+            {
+                canonical_sha256_v3(item): item
+                for item in entry_preconditions
+            }.values(),
+            key=canonical_sha256_v3,
+        ),
         "result_ids": [row.identity for row in logical.results],
         "paths": sorted(paths, key=canonical_sha256_v3),
         "service_ids": list(logical.allowed_service_ids),
+        "atomic_actions": atomic_actions,
+        "callback_parameters": [
+            {
+                "parameter_id": parameter.identity,
+                "type_id": parameter.type_id,
+                "machine_word": _constant_callback_word(
+                    parameters[parameter.identity]
+                ),
+            }
+            for parameter in logical.parameters
+            if types[parameter.type_id].kind == "callback"
+        ],
         "state_ids": [row.identity for row in interface.state],
+        "parameter_machine_words": parameter_machine_words,
         "max_events": max(len(path["trace"]) for path in paths),
     }
+
+
+def _parameter_machine_word(
+    parameter_id: str, projection: MachineProjectionV1
+) -> dict[str, object]:
+    current = projection
+    while current.kind in {"view", "bytes_view", "reference", "resource"}:
+        field = "base" if current.kind in {"view", "bytes_view"} else "source"
+        current = _projection(
+            current.payload.get(field), f"{parameter_id} machine-word source"
+        )
+    if current.kind == "constant":
+        return {
+            "op": "const",
+            "value": int(current.payload.get("value", 0)),
+            "width": int(current.payload.get("width", 32)),
+        }
+    return {"op": "parameter", "name": parameter_id, "width": 32}
+
+
+def _checked_interaction_reference_constraints(
+    boundary_operation: object | None, operation_id: str
+) -> dict[tuple[str, int, str], dict[str, object]]:
+    """Index checked reference results and their reusable contract constraints."""
+
+    if boundary_operation is None:
+        return {}
+    operation = _object(boundary_operation, "boundary operation")
+    if operation.get("operation_id") != operation_id:
+        raise SemanticPathError("boundary operation identity differs")
+    result: dict[tuple[str, int, str], dict[str, object]] = {}
+    for interaction in _rows(
+        operation.get("interactions"), "boundary operation interactions"
+    ):
+        if interaction.get("contract_id") is None:
+            continue
+        machine_event = _object(
+            interaction.get("machine_event"), "boundary interaction machine event"
+        )
+        invocation = _object(
+            interaction.get("invoke_action"), "boundary interaction invocation"
+        )
+        clause = _object(invocation.get("clause"), "boundary interaction clause")
+        input_index = _nullable_same_origin_input(
+            clause.get("ensures"), str(interaction.get("id", ""))
+        )
+        if input_index is None:
+            continue
+        constraint: dict[str, object] = {
+            "input_argument_index": input_index,
+        }
+        remaining = _nonnull_minimum_remaining(
+            clause.get("ensures"), str(interaction.get("id", ""))
+        )
+        if remaining is not None:
+            argument_index, minimum = remaining
+            constraint["nonnull_min_remaining"] = {
+                "nonzero_argument_index": argument_index,
+                "minimum": minimum,
+            }
+        key = (
+            _text(machine_event.get("unit_id"), "interaction unit id"),
+            _uint(machine_event.get("event_index"), "interaction event index"),
+            _text(machine_event.get("event_sha256"), "interaction event digest"),
+        )
+        if key in result:
+            raise SemanticPathError("boundary interaction machine event is ambiguous")
+        result[key] = constraint
+    return result
+
+
+def _nullable_same_origin_input(value: object, interaction_id: str) -> int | None:
+    ensures = _rows(value, "interaction ensures")
+
+    def logical_path(expression: Mapping[str, object]) -> tuple[str, tuple[str, ...]] | None:
+        if expression.get("op") != "logical":
+            return None
+        attributes = expression.get("attributes")
+        if not isinstance(attributes, Mapping):
+            return None
+        path = attributes.get("path")
+        if not isinstance(path, Mapping) or path.get("root") != "interaction":
+            return None
+        if path.get("id") != interaction_id:
+            return None
+        fields = path.get("fields")
+        if not isinstance(fields, list) or any(not isinstance(item, str) for item in fields):
+            return None
+        return interaction_id, tuple(fields)
+
+    def ref_is_null(expression: Mapping[str, object]) -> bool:
+        args = expression.get("args")
+        return (
+            expression.get("op") == "ref_is_null"
+            and isinstance(args, list)
+            and len(args) == 1
+            and isinstance(args[0], Mapping)
+            and logical_path(args[0]) == (interaction_id, ("output", "result"))
+        )
+
+    def same_origin_input(expression: Mapping[str, object]) -> int | None:
+        args = expression.get("args")
+        if expression.get("op") != "same_origin" or not isinstance(args, list) or len(args) != 2:
+            return None
+        paths = [logical_path(item) if isinstance(item, Mapping) else None for item in args]
+        output = (interaction_id, ("output", "result"))
+        for left, right in ((paths[0], paths[1]), (paths[1], paths[0])):
+            if left != output or right is None:
+                continue
+            fields = right[1]
+            if len(fields) == 2 and fields[0] == "input" and fields[1].startswith("argument."):
+                suffix = fields[1].removeprefix("argument.")
+                if suffix.isdigit():
+                    return int(suffix)
+        return None
+
+    def guarantee(expression: Mapping[str, object]) -> int | None:
+        direct = same_origin_input(expression)
+        if direct is not None:
+            return direct
+        args = expression.get("args")
+        if not isinstance(args, list) or any(not isinstance(item, Mapping) for item in args):
+            return None
+        if expression.get("op") == "and":
+            candidates = [guarantee(item) for item in args]
+            return next((item for item in candidates if item is not None), None)
+        if expression.get("op") == "or" and len(args) == 2:
+            if ref_is_null(args[0]):
+                return same_origin_input(args[1])
+            if ref_is_null(args[1]):
+                return same_origin_input(args[0])
+        return None
+
+    candidates = [guarantee(item) for item in ensures]
+    selected = {item for item in candidates if item is not None}
+    if len(selected) > 1:
+        raise SemanticPathError("interaction output has ambiguous origin guarantees")
+    return next(iter(selected), None)
+
+
+def _nonnull_minimum_remaining(
+    value: object, interaction_id: str
+) -> tuple[int, int] | None:
+    """Recognize a checked conditional lower bound on a reference result."""
+
+    ensures = _rows(value, "interaction ensures")
+
+    def path(expression: Mapping[str, object]) -> tuple[str, ...] | None:
+        if expression.get("op") != "logical":
+            return None
+        attributes = expression.get("attributes")
+        raw = None if not isinstance(attributes, Mapping) else attributes.get("path")
+        if not isinstance(raw, Mapping) or raw.get("root") != "interaction":
+            return None
+        if raw.get("id") != interaction_id:
+            return None
+        fields = raw.get("fields")
+        if not isinstance(fields, list) or any(not isinstance(item, str) for item in fields):
+            return None
+        return tuple(fields)
+
+    def arguments(expression: Mapping[str, object], op: str) -> list[Mapping[str, object]] | None:
+        raw = expression.get("args")
+        if expression.get("op") != op or not isinstance(raw, list):
+            return None
+        if any(not isinstance(item, Mapping) for item in raw):
+            return None
+        return list(raw)
+
+    def output_null(expression: Mapping[str, object]) -> bool:
+        args = arguments(expression, "ref_is_null")
+        return args is not None and len(args) == 1 and path(args[0]) == ("output", "result")
+
+    def zero_input(expression: Mapping[str, object]) -> int | None:
+        args = arguments(expression, "eq")
+        if args is None or len(args) != 2:
+            return None
+        for logical, constant in ((args[0], args[1]), (args[1], args[0])):
+            fields = path(logical)
+            if (
+                fields is not None
+                and len(fields) == 2
+                and fields[0] == "input"
+                and fields[1].startswith("argument.")
+                and constant.get("op") == "const"
+                and constant.get("attributes", {}).get("value") == 0
+            ):
+                suffix = fields[1].removeprefix("argument.")
+                if suffix.isdigit():
+                    return int(suffix)
+        return None
+
+    def remaining_bound(expression: Mapping[str, object]) -> int | None:
+        args = arguments(expression, "ult")
+        if args is None or len(args) != 2 or args[0].get("op") != "const":
+            return None
+        remaining = arguments(args[1], "ref_remaining")
+        if remaining is None or len(remaining) != 1:
+            return None
+        if path(remaining[0]) != ("output", "result"):
+            return None
+        value = args[0].get("attributes", {}).get("value")
+        return value + 1 if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def conditional(expression: Mapping[str, object]) -> tuple[int, int] | None:
+        args = arguments(expression, "or")
+        if args is None or len(args) != 2:
+            return None
+        for zero, bound in ((args[0], args[1]), (args[1], args[0])):
+            argument_index = zero_input(zero)
+            minimum = remaining_bound(bound)
+            if argument_index is not None and minimum is not None:
+                return argument_index, minimum
+        return None
+
+    matches: set[tuple[int, int]] = set()
+    for ensure in ensures:
+        args = arguments(ensure, "or")
+        if args is None or len(args) != 2:
+            continue
+        for null, condition in ((args[0], args[1]), (args[1], args[0])):
+            match = conditional(condition) if output_null(null) else None
+            if match is not None:
+                matches.add(match)
+    if len(matches) > 1:
+        raise SemanticPathError("interaction output has ambiguous extent guarantees")
+    return next(iter(matches), None)
+
+
+def _trace_reference_constraints(
+    trace: list[dict[str, object]],
+    interaction_references: Mapping[
+        tuple[str, int, str], Mapping[str, object]
+    ],
+) -> dict[int, dict[str, object]]:
+    result: dict[int, dict[str, object]] = {}
+    for trace_index, event in enumerate(trace):
+        key = (
+            str(event.get("unit_id", "")),
+            int(event.get("event_index", -1)),
+            str(event.get("event_sha256", "")),
+        )
+        if key in interaction_references:
+            result[trace_index] = copy.deepcopy(
+                dict(interaction_references[key])
+            )
+    return result
+
+
+def _constant_callback_word(projection: MachineProjectionV1) -> int:
+    if projection.kind != "callback_handle":
+        raise SemanticPathError(
+            "callback parameter is not bound through a callback handle"
+        )
+    source = _projection(
+        projection.payload.get("source"), "callback parameter source"
+    )
+    if source.kind != "constant":
+        raise SemanticPathError(
+            "finite callback refinement requires an authority-bound constant word"
+        )
+    return int(source.payload["value"])
 
 
 def build_inductive_segment_models(
@@ -404,7 +867,7 @@ def build_inductive_segment_models(
             }
             for name in ("cf", "zf", "sf", "of", "pf", "df")
         }
-        state = _State(env, flags, {}, [], [], set(), set())
+        state = _State(env, flags, {}, [], [], set(), set(), set(), set())
         source_kind = _text(source.get("kind"), "segment source kind")
         source_id = _text(source.get("id"), "segment source id")
         if source_kind == "operation_entry":
@@ -485,6 +948,10 @@ def build_inductive_segment_models(
                 state.guards.append(copy.deepcopy(guard))
         if last_execution is None:
             raise SemanticPathError("exact segment contains no machine units")
+        if state.pending_service_stack_writes:
+            raise SemanticPathError(
+                "machine stack write crosses an inductive cutpoint without a frame relation"
+            )
         if set(edge_by_source) - set(unit_ids):
             raise SemanticPathError("segment edge source is absent from its unit path")
 
@@ -645,6 +1112,12 @@ def build_inductive_segment_models(
                     {"offset": offset, "width": width}
                     for offset, width in sorted(state.private_stack_writes)
                 ],
+                "service_argument_stack_writes": [
+                    {"offset": offset, "width": width}
+                    for offset, width in sorted(
+                        state.service_argument_stack_writes
+                    )
+                ],
             }
         )
     return {
@@ -785,6 +1258,8 @@ def _execute_semantic_unit(
         semantics.get("external_events", []), "machine external events"
     )
     event_memory = copy.deepcopy(old_memory)
+    ordered_service_writes: set[tuple[int, int]] = set()
+    consumed_service_writes: set[tuple[int, int]] = set()
 
     def process_external_event(machine_event_index: int) -> None:
         machine_event = external_events[machine_event_index]
@@ -795,6 +1270,27 @@ def _execute_semantic_unit(
             )
         if len(state.trace) >= max_events:
             raise SemanticPathError("service-event budget exceeded")
+        for expression in _service_argument_load_expressions(bound, machine_event):
+            for load in _collect_ops(expression, "load"):
+                address = _substitute(
+                    load.get("address"),
+                    old_env,
+                    old_flags,
+                    event_memory,
+                    call_results,
+                )
+                width = load.get("width")
+                offset = _private_stack_offset(address)
+                if (
+                    isinstance(width, int)
+                    and not isinstance(width, bool)
+                    and offset is not None
+                    and 0 <= offset <= 65536 - width
+                    and (offset, width) in state.pending_service_stack_writes
+                ):
+                    state.pending_service_stack_writes.remove((offset, width))
+                    state.service_argument_stack_writes.add((offset, width))
+                    consumed_service_writes.add((offset, width))
         arguments = (
             [
                 _substitute(
@@ -829,6 +1325,9 @@ def _execute_semantic_unit(
         )
         if bound.argument_expressions:
             normalized_event["arguments"] = copy.deepcopy(arguments)
+        register_inputs = _object(
+            machine_event.get("register_inputs"), "external register inputs"
+        )
         for register in (
             "eax",
             "ebx",
@@ -839,12 +1338,37 @@ def _execute_semantic_unit(
             "ebp",
             "esp",
         ):
-            call_results[(machine_event_index, register)] = {
-                "op": "service_machine_result",
-                "index": trace_index,
-                "register": register,
-                "width": 32,
-            }
+            if register in bound.preserved_registers or (
+                register == "esp"
+                and bound.stack_pointer_adjustment is not None
+            ):
+                preserved_value = _substitute(
+                    register_inputs[register],
+                    old_env,
+                    old_flags,
+                    event_memory,
+                    call_results,
+                )
+                if register == "esp" and bound.stack_pointer_adjustment:
+                    preserved_value = _simplify_logical_arithmetic({
+                        "op": "add32",
+                        "args": [
+                            preserved_value,
+                            {
+                                "op": "const",
+                                "value": bound.stack_pointer_adjustment,
+                                "width": 32,
+                            },
+                        ],
+                    })
+                call_results[(machine_event_index, register)] = preserved_value
+            else:
+                call_results[(machine_event_index, register)] = {
+                    "op": "service_machine_result",
+                    "index": trace_index,
+                    "register": register,
+                    "width": 32,
+                }
         for flag in ("cf", "zf", "sf", "of", "pf", "df"):
             call_results[(machine_event_index, f"flag:{flag}")] = {
                 "op": "service_machine_flag",
@@ -903,6 +1427,18 @@ def _execute_semantic_unit(
                     call_results,
                 )
                 event_memory[_expression_key(address)] = value
+                width = ordered_event.get("width")
+                offset = _private_stack_offset(address)
+                owner = state_write_locations.get(_expression_key(address))
+                if (
+                    owner is None
+                    and isinstance(width, int)
+                    and not isinstance(width, bool)
+                    and offset is not None
+                    and 0 <= offset <= 65536 - width
+                ):
+                    state.pending_service_stack_writes.add((offset, width))
+                    ordered_service_writes.add((offset, width))
             elif family == "external":
                 if external_cursor >= len(external_events):
                     raise SemanticPathError(
@@ -922,7 +1458,7 @@ def _execute_semantic_unit(
 
     # Every expression in a unit observes the same unit-entry state.  Final
     # writes become visible only to the next unit.
-    expression_memory = copy.deepcopy(state.memory)
+    expression_memory = copy.deepcopy(old_memory)
     for raw in _rows(semantics.get("memory_events", []), "memory events"):
         if raw.get("kind") != "write":
             continue
@@ -949,17 +1485,33 @@ def _execute_semantic_unit(
             state.memory[key] = value
             continue
         private_offset = _private_stack_offset(address)
+        if private_offset is not None and -65536 <= private_offset < 0:
+            if private_offset + width > 0:
+                raise SemanticPathError(
+                    "machine memory write crosses the component stack-frame boundary"
+                )
+            state.private_stack_writes.add((private_offset, width))
+            state.memory[key] = value
+            continue
+        stack_write = (private_offset, width)
         if (
-            private_offset is None
-            or private_offset >= 0
-            or private_offset + width > 0
-            or private_offset < -65536
+            private_offset is not None
+            and 0 <= private_offset <= 65536 - width
+            and stack_write in ordered_service_writes
+            and (
+                stack_write in state.pending_service_stack_writes
+                or stack_write in consumed_service_writes
+            )
         ):
+            state.memory[key] = value
+            continue
+        if private_offset is None or private_offset < -65536:
             raise SemanticPathError(
                 "machine memory write is outside the checked component-state frame"
             )
-        state.private_stack_writes.add((private_offset, width))
-        state.memory[key] = value
+        raise SemanticPathError(
+            "machine stack write is not ordered as a checked service argument"
+        )
 
     normalized_edge_guards: dict[int, dict[str, object]] = {}
     raw_edges = _rows(semantics.get("edge_conditions", []), "edge conditions")
@@ -1077,6 +1629,32 @@ def _write_projection(
     if projection.kind == "resource":
         _write_projection(_projection(payload.get("source"), "resource source"), value, env, memory)
         return
+    if projection.kind == "atomic_object":
+        return
+    if projection.kind == "callback_handle":
+        _write_projection(
+            _projection(payload.get("source"), "callback-handle source"),
+            value,
+            env,
+            memory,
+        )
+        return
+    if projection.kind == "reference":
+        _write_projection(
+            _projection(payload.get("source"), "reference source"),
+            value,
+            env,
+            memory,
+        )
+        return
+    if projection.kind == "view":
+        _write_projection(
+            _projection(payload.get("base"), "view base"),
+            value,
+            env,
+            memory,
+        )
+        return
     if projection.kind == "bytes_view":
         _write_projection(
             _projection(payload.get("base"), "byte-view base"), value, env, memory
@@ -1103,6 +1681,28 @@ def _projection_memory_location(
     if projection.kind == "resource":
         return _projection_memory_location(
             _projection(payload.get("source"), "resource source"), env
+        )
+    if projection.kind == "atomic_object":
+        source = _projection(payload.get("source"), "atomic-object source")
+        if source.kind != "constant":
+            return None
+        address = {
+            "op": "const",
+            "value": int(source.payload["value"]),
+            "width": int(source.payload["width"]),
+        }
+        return _expression_key(address), int(payload.get("width", 0))
+    if projection.kind == "callback_handle":
+        return _projection_memory_location(
+            _projection(payload.get("source"), "callback-handle source"), env
+        )
+    if projection.kind == "reference":
+        return _projection_memory_location(
+            _projection(payload.get("source"), "reference source"), env
+        )
+    if projection.kind == "view":
+        return _projection_memory_location(
+            _projection(payload.get("base"), "view base"), env
         )
     return None
 
@@ -1148,6 +1748,30 @@ def _read_projection(
             flags,
             call_results,
         )
+    if projection.kind == "callback_handle":
+        return _read_projection(
+            _projection(payload.get("source"), "callback-handle source"),
+            env,
+            memory,
+            flags,
+            call_results,
+        )
+    if projection.kind == "reference":
+        return _read_projection(
+            _projection(payload.get("source"), "reference source"),
+            env,
+            memory,
+            flags,
+            call_results,
+        )
+    if projection.kind == "view":
+        return _read_projection(
+            _projection(payload.get("base"), "view base"),
+            env,
+            memory,
+            flags,
+            call_results,
+        )
     if projection.kind == "bytes_view":
         return _read_projection(
             _projection(payload.get("base"), "byte-view base"),
@@ -1181,18 +1805,79 @@ def _read_call_projection(
             for row in _rows(event.get("stack_inputs", []), "external stack inputs")
             if row.get("offset") == offset
         ]
-        if len(matches) != 1:
+        if len(matches) > 1:
             raise SemanticPathError(
-                f"external event stack offset {offset} is unavailable or ambiguous"
+                f"external event stack offset {offset} is ambiguous"
             )
-        return _substitute(
-            matches[0].get("value"), env, flags, memory, call_results
-        )
-    if projection.kind in {"constant", "static_slot", "resource"}:
+        if matches:
+            return _substitute(
+                matches[0].get("value"), env, flags, memory, call_results
+            )
+        # Machine events intentionally carry only the stack words observed by
+        # the unit that contains the call.  Call arguments are commonly
+        # prepared by preceding units, so a checked service projection may
+        # name a call-time stack word that is absent from that local capture.
+        # Reconstruct it from the event's exact call-time ESP and the
+        # persistent symbolic memory instead of treating unit boundaries as
+        # argument-lifetime boundaries.
+        inputs = _object(event.get("register_inputs"), "external register inputs")
+        if "esp" not in inputs:
+            raise SemanticPathError(
+                f"external event stack offset {offset} has no call-time ESP"
+            )
+        call_esp = _substitute(inputs["esp"], env, flags, memory, call_results)
+        return _memory_value(memory, _stack_address(call_esp, offset))
+    if projection.kind in {
+        "constant", "static_slot", "resource", "reference", "view"
+    }:
         return _read_projection(projection, env, memory, flags, call_results)
     raise SemanticPathError(
         f"service argument projection {projection.kind!r} is unsupported"
     )
+
+
+def _service_argument_load_expressions(
+    binding: _BoundServiceEvent,
+    event: Mapping[str, object],
+) -> tuple[Mapping[str, object], ...]:
+    """Return exact expressions whose loads supply a bound service argument."""
+
+    if binding.argument_expressions:
+        return binding.argument_expressions
+    result: list[Mapping[str, object]] = []
+    stack_inputs = _rows(event.get("stack_inputs", []), "external stack inputs")
+    register_inputs = _object(
+        event.get("register_inputs"), "external register inputs"
+    )
+    for projection in binding.argument_projections:
+        if projection.kind != "stack":
+            continue
+        offset = int(projection.payload.get("offset", 0))
+        matches = [row for row in stack_inputs if row.get("offset") == offset]
+        if len(matches) > 1:
+            raise SemanticPathError(
+                f"external event stack offset {offset} is ambiguous"
+            )
+        if matches:
+            result.append(
+                _object(matches[0].get("value"), "external stack input")
+            )
+            continue
+        call_esp = register_inputs.get("esp")
+        if not isinstance(call_esp, Mapping):
+            raise SemanticPathError(
+                f"external event stack offset {offset} has no call-time ESP"
+            )
+        result.append(
+            {
+                "op": "load",
+                "address": _stack_address(
+                    _object(call_esp, "external call-time ESP"), offset
+                ),
+                "width": int(projection.payload.get("width", 32)) // 8,
+            }
+        )
+    return tuple(result)
 
 
 def _read_result_projection(
@@ -1243,6 +1928,19 @@ def _bind_call_result(
     if projection.kind == "resource":
         _bind_call_result(
             _projection(payload.get("source"), "resource result source"),
+            event_index,
+            value,
+            call_results,
+            memory,
+            env,
+            flags,
+            old_memory,
+        )
+        return
+    if projection.kind in {"callback_handle", "reference", "view"}:
+        source_field = "base" if projection.kind == "view" else "source"
+        _bind_call_result(
+            _projection(payload.get(source_field), f"{projection.kind} result source"),
             event_index,
             value,
             call_results,
@@ -1418,14 +2116,18 @@ def _normalize_outcome(
     return result
 
 
-def _require_logical_expression(value: object, context: str) -> None:
+def _require_logical_expression(
+    value: object,
+    context: str,
+    *,
+    memory_authority: Mapping[str, object] | None = None,
+) -> None:
     for unsupported in (
         "symbol",
         "call_response",
         "call_flag",
         "service_machine_result",
         "service_machine_flag",
-        "load",
         "reg",
         "flag",
     ):
@@ -1437,6 +2139,171 @@ def _require_logical_expression(value: object, context: str) -> None:
             raise SemanticPathError(
                 f"{context} depends on unmapped machine values: {', '.join(names)}"
             )
+    for load in _collect_ops(value, "load"):
+        if not _logical_load_is_authorized(load, memory_authority):
+            raise SemanticPathError(
+                f"{context} depends on unmapped machine values: load"
+            )
+
+
+def _logical_load_is_authorized(
+    load: Mapping[str, object], memory_authority: Mapping[str, object] | None
+) -> bool:
+    if memory_authority is None:
+        return False
+    width = load.get("width")
+    address = load.get("address")
+    if width not in {1, 2, 4, 8} or not isinstance(address, Mapping):
+        return False
+    if any(
+        _collect_ops(address, op)
+        for op in (
+            "load", "symbol", "call_response", "call_flag",
+            "service_machine_result", "service_machine_flag", "reg", "flag",
+        )
+    ):
+        return False
+    parameters = {
+        str(item) for item in memory_authority.get("parameters", [])
+    }
+    service_results = {
+        int(item) for item in memory_authority.get("service_results", [])
+        if isinstance(item, int) and not isinstance(item, bool)
+    }
+    parameter_anchors = {
+        str(item.get("name"))
+        for item in _collect_ops(address, "parameter")
+        if isinstance(item.get("name"), str)
+    }
+    service_anchors = {
+        int(item.get("index"))
+        for item in _collect_ops(address, "service_result")
+        if isinstance(item.get("index"), int)
+        and not isinstance(item.get("index"), bool)
+    }
+    return bool(
+        (parameter_anchors and parameter_anchors <= parameters)
+        or (service_anchors and service_anchors <= service_results)
+    )
+
+
+def _atomic_action_models(
+    *,
+    operation: Mapping[str, object],
+    interface: PortableComponentInterfaceV2,
+    logical: object,
+    parameter_projections: Mapping[str, MachineProjectionV1],
+    units: Mapping[str, Mapping[str, object]],
+    env: Mapping[str, dict[str, object]],
+    flags: Mapping[str, dict[str, object]],
+    memory: Mapping[str, dict[str, object]],
+) -> list[dict[str, object]]:
+    """Project exact authoritative RMW actions into the logical world model."""
+
+    logical_effects = {
+        row.identity: row
+        for row in interface.effects
+        if row.identity in set(getattr(logical, "effect_ids"))
+    }
+    bound_effects = _rows(operation.get("effects", []), "operation effects")
+    if not logical_effects and not bound_effects:
+        if any(item.kind == "atomic_object" for item in parameter_projections.values()):
+            raise SemanticPathError("atomic-object parameter has no direct atomic effect")
+        return []
+    if set(logical_effects) != set(getattr(logical, "effect_ids")):
+        raise SemanticPathError("operation effect inventory is stale")
+    by_effect: dict[str, list[Mapping[str, object]]] = {
+        effect_id: [] for effect_id in logical_effects
+    }
+    for row in bound_effects:
+        effect_id = _text(row.get("effect_id"), "bound effect id")
+        if effect_id not in by_effect:
+            raise SemanticPathError("machine binding contains an unknown direct effect")
+        by_effect[effect_id].append(row)
+
+    models: list[dict[str, object]] = []
+    seen_parameters: set[str] = set()
+    for effect_id, effect in logical_effects.items():
+        parameter_id = effect.target_id
+        if (
+            effect.kind != "memory"
+            or effect.operation not in {"compare_exchange", "exchange"}
+            or parameter_id is None
+            or parameter_id not in parameter_projections
+        ):
+            raise SemanticPathError(
+                "direct effects require a checked atomic RMW world model"
+            )
+        projection = parameter_projections[parameter_id]
+        if projection.kind != "atomic_object" or parameter_id in seen_parameters:
+            raise SemanticPathError("atomic effect target projection is invalid")
+        seen_parameters.add(parameter_id)
+        payload = projection.payload
+        unit_id = _text(payload.get("unit_id"), "atomic projection unit")
+        unit = units.get(unit_id)
+        if unit is None:
+            raise SemanticPathError("atomic projection unit is outside the operation")
+        semantics = _object(unit.get("semantics"), "atomic unit semantics")
+        graph = _object(semantics.get("memory_actions"), "memory-action graph")
+        authority = _object(graph.get("authority"), "memory-action authority")
+        if graph.get("status") != "complete" or authority.get("authoritative") is not True:
+            raise SemanticPathError("atomic projection graph is not authoritative")
+        matches = [
+            row
+            for row in _rows(graph.get("actions"), "memory actions")
+            if row.get("id") == payload.get("action_id")
+        ]
+        if len(matches) != 1:
+            raise SemanticPathError("atomic projection action is stale")
+        action = matches[0]
+        operation_kind = action.get("operation")
+        if (
+            action.get("kind") != "rmw"
+            or operation_kind not in {"compare_exchange", "exchange"}
+            or action.get("width_bytes") != payload.get("width")
+            or graph.get("profile_id") != payload.get("profile_id")
+        ):
+            raise SemanticPathError("atomic projection action shape is stale")
+        raw_source_indices = action.get("source_memory_event_indices")
+        if not isinstance(raw_source_indices, list) or any(
+            not isinstance(index, int) or isinstance(index, bool) or index < 0
+            for index in raw_source_indices
+        ):
+            raise SemanticPathError("atomic source event indices are malformed")
+        expected_refs = {(unit_id, index) for index in raw_source_indices}
+        observed_refs = {
+            (
+                _text(row.get("unit_id"), "atomic effect unit"),
+                int(row.get("index", -1)),
+            )
+            for row in by_effect[effect_id]
+            if row.get("family") == "memory_event"
+        }
+        if observed_refs != expected_refs or len(observed_refs) != len(by_effect[effect_id]):
+            raise SemanticPathError("atomic effect does not bind the exact RMW events")
+        if operation_kind == "compare_exchange":
+            transition = _object(action.get("compare"), "compare/exchange operands")
+            expected = _substitute(transition.get("expected"), env, flags, memory, {})
+            desired = _substitute(transition.get("desired"), env, flags, memory, {})
+            _require_logical_expression(expected, "atomic expected value")
+        else:
+            transition = _object(action.get("transition"), "exchange transition")
+            expected = None
+            desired = _substitute(transition.get("written"), env, flags, memory, {})
+        _require_logical_expression(desired, "atomic desired value")
+        models.append(
+            {
+                "effect_id": effect_id,
+                "parameter_id": parameter_id,
+                "action_id": action["id"],
+                "profile_id": graph["profile_id"],
+                "width": action["width_bytes"],
+                "operation": operation_kind,
+                "expected": expected,
+                "desired": desired,
+            }
+        )
+    return sorted(models, key=canonical_sha256_v3)
 
 
 def _unit_rva(unit: Mapping[str, object]) -> int:

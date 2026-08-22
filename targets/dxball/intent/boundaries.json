@@ -1,0 +1,90 @@
+{
+  "format": "spaghetti-extractor-boundary-check-spec-v1",
+  "schema_id": "dxball-1.09-pe32-window-boundaries",
+  "types": [
+    {"id": "unit", "kind": "void"},
+    {"id": "i8", "kind": "integer", "width_bits": 8, "signed": true},
+    {"id": "u16", "kind": "integer", "width_bits": 16, "signed": false},
+    {"id": "i32", "kind": "integer", "width_bits": 32, "signed": true},
+    {"id": "u32", "kind": "integer", "width_bits": 32, "signed": false},
+    {"id": "hwnd-object", "kind": "opaque", "nominal_id": "HWND-object"},
+    {"id": "instance-object", "kind": "opaque", "nominal_id": "HINSTANCE-object"},
+    {"id": "icon-object", "kind": "opaque", "nominal_id": "HICON-object"},
+    {"id": "cursor-object", "kind": "opaque", "nominal_id": "HCURSOR-object"},
+    {"id": "brush-object", "kind": "opaque", "nominal_id": "HBRUSH-object"},
+    {"id": "p-i8", "kind": "pointer", "pointee_type_id": "i8", "qualifiers": ["const"]},
+    {"id": "hwnd", "kind": "pointer", "pointee_type_id": "hwnd-object", "qualifiers": []},
+    {"id": "hinstance", "kind": "pointer", "pointee_type_id": "instance-object", "qualifiers": []},
+    {"id": "hicon", "kind": "pointer", "pointee_type_id": "icon-object", "qualifiers": []},
+    {"id": "hcursor", "kind": "pointer", "pointee_type_id": "cursor-object", "qualifiers": []},
+    {"id": "hbrush", "kind": "pointer", "pointee_type_id": "brush-object", "qualifiers": []},
+    {"id": "wndproc-fn", "kind": "function", "result_type_id": "i32", "parameter_type_ids": ["hwnd", "u32", "u32", "i32"], "variadic": false, "calling_convention": "stdcall"},
+    {"id": "wndproc", "kind": "pointer", "pointee_type_id": "wndproc-fn", "qualifiers": []},
+    {
+      "id": "wndclassa",
+      "kind": "record",
+      "nominal_id": "WNDCLASSA",
+      "fields": [
+        {"id": "style", "type_id": "u32", "bit_width": null},
+        {"id": "lpfnWndProc", "type_id": "wndproc", "bit_width": null},
+        {"id": "cbClsExtra", "type_id": "i32", "bit_width": null},
+        {"id": "cbWndExtra", "type_id": "i32", "bit_width": null},
+        {"id": "hInstance", "type_id": "hinstance", "bit_width": null},
+        {"id": "hIcon", "type_id": "hicon", "bit_width": null},
+        {"id": "hCursor", "type_id": "hcursor", "bit_width": null},
+        {"id": "hbrBackground", "type_id": "hbrush", "bit_width": null},
+        {"id": "lpszMenuName", "type_id": "p-i8", "bit_width": null},
+        {"id": "lpszClassName", "type_id": "p-i8", "bit_width": null}
+      ]
+    },
+    {"id": "p-wndclassa", "kind": "pointer", "pointee_type_id": "wndclassa", "qualifiers": ["const"]},
+    {"id": "register-class-fn", "kind": "function", "result_type_id": "u16", "parameter_type_ids": ["p-wndclassa"], "variadic": false, "calling_convention": "stdcall"}
+  ],
+  "signatures": [
+    {
+      "id": "wndproc-callback", "function_type_id": "wndproc-fn",
+      "parameters": [
+        {"id": "window", "type_id": "hwnd", "interpretation": "resource", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": "window", "provider_domain": "user32"},
+        {"id": "message", "type_id": "u32", "interpretation": "value", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null},
+        {"id": "wparam", "type_id": "u32", "interpretation": "value", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null},
+        {"id": "lparam", "type_id": "i32", "interpretation": "value", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null}
+      ],
+      "results": [{"id": "result", "type_id": "i32", "interpretation": "value", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null}]
+    },
+    {
+      "id": "register-class", "function_type_id": "register-class-fn",
+      "parameters": [{"id": "class", "type_id": "p-wndclassa", "interpretation": "reference", "nullable": false, "access": "read", "extent": {"kind": "fixed", "bytes": 40, "value_id": null}, "resource_kind": null, "provider_domain": null}],
+      "results": [{"id": "atom", "type_id": "u16", "interpretation": "value", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null}]
+    }
+  ],
+  "layout": {
+    "target": "i686-pc-windows-pe32",
+    "abi_dialect": "pe32-i386-ms-v1",
+    "byte_order": "little",
+    "pointer_width_bits": 32,
+    "packing": "msvc-natural",
+    "layouts": [
+      {"type_id": "i8", "size_bits": 8, "alignment_bits": 8, "value_bits": 8, "abi_class": "integer", "fields": [], "padding": []},
+      {"type_id": "u16", "size_bits": 16, "alignment_bits": 16, "value_bits": 16, "abi_class": "integer", "fields": [], "padding": []},
+      {"type_id": "i32", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "integer", "fields": [], "padding": []},
+      {"type_id": "u32", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "integer", "fields": [], "padding": []},
+      {"type_id": "p-i8", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "hwnd", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "hinstance", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "hicon", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "hcursor", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "hbrush", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "wndproc", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "wndclassa", "size_bits": 320, "alignment_bits": 32, "value_bits": 320, "abi_class": "aggregate-memory", "fields": [{"id": "style", "offset_bits": 0, "storage_bits": 32, "value_bits": 32}, {"id": "lpfnWndProc", "offset_bits": 32, "storage_bits": 32, "value_bits": 32}, {"id": "cbClsExtra", "offset_bits": 64, "storage_bits": 32, "value_bits": 32}, {"id": "cbWndExtra", "offset_bits": 96, "storage_bits": 32, "value_bits": 32}, {"id": "hInstance", "offset_bits": 128, "storage_bits": 32, "value_bits": 32}, {"id": "hIcon", "offset_bits": 160, "storage_bits": 32, "value_bits": 32}, {"id": "hCursor", "offset_bits": 192, "storage_bits": 32, "value_bits": 32}, {"id": "hbrBackground", "offset_bits": 224, "storage_bits": 32, "value_bits": 32}, {"id": "lpszMenuName", "offset_bits": 256, "storage_bits": 32, "value_bits": 32}, {"id": "lpszClassName", "offset_bits": 288, "storage_bits": 32, "value_bits": 32}], "padding": []},
+      {"type_id": "p-wndclassa", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []}
+    ]
+  },
+  "frames": [
+    {"id": "wndproc", "subject": {"kind": "callback", "id": "win32-window-procedure", "image_selector": "main-image"}, "signature_id": "wndproc-callback", "transfer_kind": "callback"},
+    {"id": "register-class", "subject": {"kind": "import", "id": "user32.RegisterClassA", "image_selector": "main-image"}, "signature_id": "register-class", "transfer_kind": "import"}
+  ],
+  "source_names": {
+    "types": {"i8": "spx_i8", "u16": "ATOM", "i32": "LONG", "u32": "DWORD", "hwnd-object": "HWND_object", "instance-object": "HINSTANCE_object", "icon-object": "HICON_object", "cursor-object": "HCURSOR_object", "brush-object": "HBRUSH_object", "p-i8": "LPCSTR", "hwnd": "HWND", "hinstance": "HINSTANCE", "hicon": "HICON", "hcursor": "HCURSOR", "hbrush": "HBRUSH", "wndproc-fn": "spx_WNDPROC_fn", "wndproc": "WNDPROC", "wndclassa": "WNDCLASSA", "p-wndclassa": "WNDCLASSA_ptr", "register-class-fn": "spx_RegisterClassA_fn"},
+    "signatures": {"wndproc-callback": "dxball_window_proc", "register-class": "RegisterClassA"}
+  }
+}

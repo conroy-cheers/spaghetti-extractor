@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from spaghetti_extractor.artifacts.formats import MACHINE_IR_FORMAT
+
 from spaghetti_extractor.libraries.abi_catalog import LibraryAbiCatalogV3
 from spaghetti_extractor.libraries.abi_records import (
     BehaviorBoundaryV3,
@@ -67,7 +69,7 @@ def machine_unit(
     extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
     row: dict[str, object] = {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": MACHINE_IR_FORMAT,
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",
@@ -115,7 +117,7 @@ def write_machine(
     write_json(
         package / "machine-ir-manifest.json",
         {
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": MACHINE_IR_FORMAT,
             "binary": {"sha256": sha256_file(binary)},
             "artifacts": {
                 "machine_ir": {

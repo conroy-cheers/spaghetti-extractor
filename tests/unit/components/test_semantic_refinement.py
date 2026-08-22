@@ -11,6 +11,7 @@ from pathlib import Path
 from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.components.machine_binding import (
     ComponentMachineBindingV1,
+    MachineProjectionV1,
     create_component_machine_binding_v1,
 )
 from spaghetti_extractor.components.interface_ir import PortableComponentInterfaceV2
@@ -23,6 +24,8 @@ from spaghetti_extractor.components.semantic_contract import (
 from spaghetti_extractor.components.semantic_paths import (
     SemanticPathError,
     SemanticPathViolation,
+    _expression_key,
+    _read_call_projection,
     build_operation_path_model,
 )
 from spaghetti_extractor.components.runtime_paths import render_finite_path_operation
@@ -51,6 +54,140 @@ def _interface() -> dict[str, object]:
 
 
 class SemanticRefinementTests(unittest.TestCase):
+    def test_call_projection_reads_argument_prepared_by_prior_unit(self) -> None:
+        projection = MachineProjectionV1.parse({
+            "kind": "stack", "offset": 4, "width": 32, "at": "call",
+        })
+        entry_esp = {"op": "symbol", "name": "machine_esp", "width": 32}
+        address = {
+            "op": "add32",
+            "args": [
+                entry_esp,
+                {"op": "const", "value": 4, "width": 32},
+            ],
+        }
+        expected = {"op": "const", "value": 47, "width": 32}
+        observed = _read_call_projection(
+            projection,
+            {
+                "register_inputs": {
+                    "esp": {"op": "reg", "name": "esp", "width": 32}
+                },
+                "stack_inputs": [],
+            },
+            {"esp": entry_esp},
+            {},
+            {_expression_key(address): expected},
+            {},
+        )
+        self.assertEqual(observed, expected)
+
+    def test_finite_control_target_becomes_checked_route_paths(self) -> None:
+        interface = PortableComponentInterfaceV2.parse({
+            "format": "spaghetti-extractor-component-interface-ir-v2",
+            "id": "selector_dispatch",
+            "types": [
+                {"id": "selector", "kind": "scalar", "c_type": "uint8_t"},
+                {"id": "route", "kind": "enum", "c_type": "uint32_t"},
+            ],
+            "state": [],
+            "operations": [{
+                "id": "select", "kind": "operation",
+                "parameters": [{"id": "selector", "type_id": "selector"}],
+                "results": [{"id": "route", "type_id": "route"}],
+                "effect_ids": [], "allowed_service_ids": [],
+                "pre_states": ["ready"], "post_states": ["ready"],
+            }],
+            "effects": [], "services": [],
+            "protocol": {"states": ["ready"], "initial_state": "ready"},
+        })
+        address = {
+            "op": "add32",
+            "args": [
+                {"op": "const", "value": 0x402000, "width": 32},
+                {"op": "mul32", "args": [
+                    {"op": "and32", "args": [
+                        {"op": "const", "value": 0xff, "width": 32},
+                        {"op": "reg", "name": "eax", "width": 32},
+                    ]},
+                    {"op": "const", "value": 4, "width": 32},
+                ]},
+            ],
+        }
+        unit = {
+            "id": "unit:dispatch", "status": "qualified",
+            "source": {"original": {"rva_start": 0x1000, "rva_end": 0x100a}},
+            "semantics": {
+                "outcome": {"kind": "indirect_jump", "target": {
+                    "op": "load", "width": 4, "address": address,
+                }},
+                "memory_events": [{"kind": "read", "width": 4, "address": address}],
+                "external_events": [], "faults": [], "flag_writes": [],
+                "register_writes": [{"register": "edx", "value": {
+                    "op": "and32", "args": [
+                        {"op": "const", "value": 0xff, "width": 32},
+                        {"op": "reg", "name": "eax", "width": 32},
+                    ],
+                }}],
+            },
+        }
+        operation = {
+            "operation_id": "select",
+            "entry_unit_ids": ["unit:dispatch"],
+            "exit_unit_ids": ["unit:dispatch"],
+            "parameters": [{"id": "selector", "projection": {
+                "kind": "register", "register": "eax", "width": 8,
+                "at": "entry",
+            }}],
+            "results": [{"id": "route", "projection": {
+                "kind": "finite_control_target", "at": "exit",
+                "unit_id": "unit:dispatch",
+                "selector_parameter_id": "selector",
+                "target_inventory_sha256": "d" * 64,
+                "routes": [
+                    {"selector_value": 0, "logical_value": 7,
+                     "target_rva": 0x1100, "target_address": 0x401100},
+                    {"selector_value": 1, "logical_value": 9,
+                     "target_rva": 0x1200, "target_address": 0x401200},
+                ],
+            }}],
+            "state": [], "preserved_state_ids": [], "effects": [],
+            "callback_operation_ids": [], "continuation_unit_ids": [],
+            "units": [unit],
+        }
+
+        model = build_operation_path_model(operation, interface, [])
+
+        self.assertEqual(len(model["entry_preconditions"]), 2)
+        routes = {
+            path["guards"][-1]["args"][1]["value"]: (
+                path["results"]["route"]["value"],
+                path["completion"]["outcome"]["target"]["value"],
+            )
+            for path in model["paths"]
+        }
+        self.assertEqual(routes, {0: (7, 0x401100), 1: (9, 0x401200)})
+        binding = ComponentMachineBindingV1.parse(create_component_machine_binding_v1(
+            id="selector-dispatch",
+            binary={"pe_sha256": "a" * 64, "machine_ir_sha256": "b" * 64},
+            interface={"id": interface.identity, "sha256": interface.sha256},
+            unit_ids=["unit:dispatch"],
+            operations=[{key: value for key, value in operation.items() if key != "units"}],
+            services=[],
+        )).operations[0]
+        rendered = render_finite_path_operation(
+            interface=interface,
+            operation=interface.operations[0],
+            binding=binding,
+            service_bindings=[],
+            source_symbol="component_select",
+            adapter_symbol="component_select_adapter",
+            model=model,
+        )
+        self.assertIn("SPX_INDIRECT_JUMP", rendered)
+        self.assertIn("UINT32_C(4198656)", rendered)
+        self.assertIn("UINT32_C(4198912)", rendered)
+
     def _fixture(
         self,
         root: Path,
@@ -68,7 +205,7 @@ class SemanticRefinementTests(unittest.TestCase):
         interface_path = root / "interface.json"
         interface_path.write_text(json.dumps(interface), encoding="ascii")
         unit = {
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v3",
             "record_kind": "unit", "id": "unit:increment", "status": "qualified",
             "source": {
                 "contract_sha256": "b" * 64,
@@ -97,7 +234,7 @@ class SemanticRefinementTests(unittest.TestCase):
         machine_sha256 = hashlib.sha256(machine.read_bytes()).hexdigest()
         manifest = root / "machine-ir-manifest.json"
         manifest.write_text(json.dumps({
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v3",
             "binary": {"sha256": "a" * 64},
             "artifacts": {"machine_ir": {"sha256": machine_sha256}},
         }), encoding="ascii")
@@ -212,7 +349,7 @@ class SemanticRefinementTests(unittest.TestCase):
         }
         units = [
             {
-                "format": "spaghetti-extractor-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v3",
                 "record_kind": "unit", "id": "unit:call", "status": "qualified",
                 "source": {
                     "contract_sha256": "b" * 64,
@@ -240,7 +377,7 @@ class SemanticRefinementTests(unittest.TestCase):
                 },
             },
             {
-                "format": "spaghetti-extractor-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v3",
                 "record_kind": "unit", "id": "unit:success", "status": "qualified",
                 "source": {
                     "contract_sha256": "d" * 64,
@@ -260,7 +397,7 @@ class SemanticRefinementTests(unittest.TestCase):
                 },
             },
             {
-                "format": "spaghetti-extractor-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v3",
                 "record_kind": "unit", "id": "unit:failure", "status": "qualified",
                 "source": {
                     "contract_sha256": "f" * 64,
@@ -285,7 +422,7 @@ class SemanticRefinementTests(unittest.TestCase):
         machine_sha256 = hashlib.sha256(machine.read_bytes()).hexdigest()
         manifest = root / "machine-ir-manifest.json"
         manifest.write_text(json.dumps({
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v3",
             "binary": {"sha256": "a" * 64},
             "artifacts": {"machine_ir": {"sha256": machine_sha256}},
         }), encoding="ascii")
@@ -403,7 +540,7 @@ class SemanticRefinementTests(unittest.TestCase):
             identity: str, start: int, end: int, semantics: dict[str, object]
         ) -> dict[str, object]:
             return {
-                "format": "spaghetti-extractor-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v3",
                 "record_kind": "unit", "id": identity, "status": "qualified",
                 "source": {
                     "contract_sha256": "b" * 64,
@@ -480,7 +617,7 @@ class SemanticRefinementTests(unittest.TestCase):
         machine_sha256 = hashlib.sha256(machine.read_bytes()).hexdigest()
         manifest = root / "machine-ir-manifest.json"
         manifest.write_text(json.dumps({
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v3",
             "binary": {"sha256": "a" * 64},
             "artifacts": {"machine_ir": {"sha256": machine_sha256}},
         }), encoding="ascii")
@@ -583,7 +720,7 @@ class SemanticRefinementTests(unittest.TestCase):
             ],
         }
         unit = {
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v3",
             "record_kind": "unit", "id": "unit:add", "status": "qualified",
             "source": {
                 "contract_sha256": "b" * 64,
@@ -610,7 +747,7 @@ class SemanticRefinementTests(unittest.TestCase):
         machine_sha256 = hashlib.sha256(machine.read_bytes()).hexdigest()
         manifest = root / "machine-ir-manifest.json"
         manifest.write_text(json.dumps({
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v3",
             "binary": {"sha256": "a" * 64},
             "artifacts": {"machine_ir": {"sha256": machine_sha256}},
         }), encoding="ascii")
@@ -733,6 +870,82 @@ class SemanticRefinementTests(unittest.TestCase):
                     {"op": "parameter", "name": "value"},
                 ],
             )
+
+    def test_service_argument_stack_staging_is_a_checked_call_frame(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self._service_fixture(Path(temporary))
+            contract = ComponentSemanticContractV1.parse(
+                json.loads(paths["contract"].read_text(encoding="ascii"))
+            )
+            operation = contract.payload["operations"][0]
+            semantics = operation["units"][0]["semantics"]
+            event = semantics["external_events"][0]
+            stack_address = {"op": "reg", "name": "esp", "width": 32}
+            stack_load = {"op": "load", "width": 4, "address": stack_address}
+            stack_write = {
+                "kind": "write",
+                "width": 4,
+                "address": stack_address,
+                "value": {"op": "reg", "name": "ecx", "width": 32},
+            }
+            semantics["memory_events"] = [stack_write]
+            semantics["ordered_events"] = [
+                {"family": "memory", **stack_write},
+                {"family": "external"},
+            ]
+            event["arguments"] = [stack_load]
+            event["stack_inputs"] = [
+                {"offset": 0, "width": 4, "value": stack_load}
+            ]
+            contract.payload["services"][0]["provider"]["events"][0][
+                "arguments"
+            ] = [{"kind": "stack", "offset": 0, "width": 32, "at": "call"}]
+
+            model = build_operation_path_model(
+                operation,
+                PortableComponentInterfaceV2.parse(
+                    json.loads(paths["interface"].read_text(encoding="ascii"))
+                ),
+                contract.payload["services"],
+            )
+
+        for path in model["paths"]:
+            self.assertEqual(
+                path["service_argument_stack_writes"],
+                [{"offset": 0, "width": 4}],
+            )
+            self.assertEqual(
+                path["trace"][0]["arguments"],
+                [{"op": "parameter", "name": "value"}],
+            )
+
+    def test_unconsumed_nonnegative_stack_write_remains_unsupported(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = self._service_fixture(Path(temporary))
+            contract = ComponentSemanticContractV1.parse(
+                json.loads(paths["contract"].read_text(encoding="ascii"))
+            )
+            operation = contract.payload["operations"][0]
+            semantics = operation["units"][0]["semantics"]
+            stack_write = {
+                "kind": "write",
+                "width": 4,
+                "address": {"op": "reg", "name": "esp", "width": 32},
+                "value": {"op": "reg", "name": "ecx", "width": 32},
+            }
+            semantics["memory_events"] = [stack_write]
+            semantics["ordered_events"] = [
+                {"family": "memory", **stack_write},
+                {"family": "external"},
+            ]
+            with self.assertRaisesRegex(SemanticPathError, "not consumed"):
+                build_operation_path_model(
+                    operation,
+                    PortableComponentInterfaceV2.parse(
+                        json.loads(paths["interface"].read_text(encoding="ascii"))
+                    ),
+                    contract.payload["services"],
+                )
 
     def test_edge_guard_uses_unit_entry_state_before_register_writes(self) -> None:
         register = {"op": "reg", "name": "ecx", "width": 32}

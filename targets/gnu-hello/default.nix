@@ -91,9 +91,7 @@ let
     binaryIdentity = "hello.exe";
     externalProfile = runtimeProfile;
     machineImportProfiles = [ runtimeProfile ];
-    libraryCatalogIndexes = [
-      "${mingwRuntimeCatalog}/library-artifact-index.json"
-    ];
+    libraryCatalogPacks = [ mingwRuntimeCatalog ];
     libraryAdoptionIntentRoot = ./intent/libraries;
     launchProfileTemplate =
       "${sdk.profiles}/pe32-win32-console-launch-assumptions-v1.json";
@@ -102,6 +100,16 @@ let
     componentSourceRoot = ./source;
     componentBindingRoot = ./intent/bindings;
     componentInductionRoot = ./intent/induction;
+    componentRelationRoot = ./intent/relations;
+    callProtocols.unhandled-exception-filter = {
+      intent = ./intent/calls/unhandled-exception-filter.json;
+      layouts = ./intent/calls/unhandled-exception-filter-layouts.json;
+      machineIr = "${workflow.analysis.machineIr}/machine-ir.jsonl";
+      callbackAuthority =
+        workflow.authority.graph.phases."callback-authority-v4".artifact;
+      callbackProtocolId = "win32-unhandled-exception-filter";
+      binary = originalPe;
+    };
     namePrefix = "spaghetti-extractor-gnu-hello-2.12.3";
   };
   defaultConfiguration = target.workflow.default_configuration;
@@ -125,12 +133,22 @@ sdk.target.pe32Bundle {
     ascii-to-lower-semantic-contract = components.semanticContracts.ascii-to-lower;
     ascii-to-lower-semantic-refinement = components.refinementReceipts.ascii-to-lower;
     ascii-to-lower-activation = components.activationCheckGates.ascii-to-lower;
+    ascii-string-compare-contract = components.contracts.ascii-string-compare;
+    ascii-string-compare-machine-binding = components.machineBindingReceipts.ascii-string-compare;
+    ascii-string-compare-semantic-contract = components.semanticContracts.ascii-string-compare;
+    ascii-string-compare-semantic-refinement = components.refinementReceipts.ascii-string-compare;
+    ascii-string-compare-activation = components.activationCheckGates.ascii-string-compare;
     bounded-string-length-contract = components.contracts.bounded-string-length;
     bounded-string-length-machine-binding = components.machineBindingReceipts.bounded-string-length;
     bounded-string-length-semantic-contract = components.semanticContracts.bounded-string-length;
     bounded-string-length-induction = components.inductionPackages.bounded-string-length;
     bounded-string-length-semantic-refinement = components.refinementReceipts.bounded-string-length;
     bounded-string-length-activation = components.activationCheckGates.bounded-string-length;
+    finite-selector-dispatch-contract = components.contracts.finite-selector-dispatch;
+    finite-selector-dispatch-machine-binding = components.machineBindingReceipts.finite-selector-dispatch;
+    finite-selector-dispatch-semantic-contract = components.semanticContracts.finite-selector-dispatch;
+    finite-selector-dispatch-semantic-refinement = components.refinementReceipts.finite-selector-dispatch;
+    finite-selector-dispatch-activation = components.activationCheckGates.finite-selector-dispatch;
     last-path-component-contract = components.contracts.last-path-component;
     last-path-component-machine-binding = components.machineBindingReceipts.last-path-component;
     last-path-component-semantic-contract = components.semanticContracts.last-path-component;
@@ -142,6 +160,12 @@ sdk.target.pe32Bundle {
     memory-regions-equal-semantic-contract = components.semanticContracts.memory-regions-equal;
     memory-regions-equal-semantic-refinement = components.refinementReceipts.memory-regions-equal;
     memory-regions-equal-activation = components.activationCheckGates.memory-regions-equal;
+    program-name-selection-contract = components.contracts.program-name-selection;
+    program-name-selection-machine-binding = components.machineBindingReceipts.program-name-selection;
+    program-name-selection-semantic-contract = components.semanticContracts.program-name-selection;
+    program-name-selection-relation = components.relationCheckGates.program-name-selection;
+    program-name-selection-semantic-refinement = components.refinementReceipts.program-name-selection;
+    program-name-selection-activation = components.activationCheckGates.program-name-selection;
     short-option-classifier-contract = components.contracts.short-option-classifier;
     short-option-classifier-machine-binding = components.machineBindingReceipts.short-option-classifier;
     short-option-classifier-semantic-contract = components.semanticContracts.short-option-classifier;
@@ -152,5 +176,22 @@ sdk.target.pe32Bundle {
     startup-compare-route-semantic-contract = components.semanticContracts.startup-compare-route;
     startup-compare-route-semantic-refinement = components.refinementReceipts.startup-compare-route;
     startup-compare-route-activation = components.activationCheckGates.startup-compare-route;
+    startup-atomic-compare-exchange-contract = components.contracts.startup-atomic-compare-exchange;
+    startup-atomic-compare-exchange-machine-binding = components.machineBindingReceipts.startup-atomic-compare-exchange;
+    startup-atomic-compare-exchange-semantic-contract = components.semanticContracts.startup-atomic-compare-exchange;
+    startup-atomic-compare-exchange-semantic-refinement = components.refinementReceipts.startup-atomic-compare-exchange;
+    startup-atomic-compare-exchange-activation = components.activationCheckGates.startup-atomic-compare-exchange;
+    startup-atomic-enabled-runtime = components.runtimePackages.startup-atomic-enabled;
+    startup-callback-registration-contract = components.contracts.startup-callback-registration;
+    startup-callback-registration-machine-binding = components.machineBindingReceipts.startup-callback-registration;
+    startup-callback-registration-semantic-contract = components.semanticContracts.startup-callback-registration;
+    startup-callback-registration-semantic-refinement = components.refinementReceipts.startup-callback-registration;
+    startup-callback-registration-activation = components.activationCheckGates.startup-callback-registration;
+    startup-callback-enabled-runtime = components.runtimePackages.startup-callback-enabled;
+    startup-sleep-service-contract = components.contracts.startup-sleep-service;
+    startup-sleep-service-machine-binding = components.machineBindingReceipts.startup-sleep-service;
+    startup-sleep-service-semantic-contract = components.semanticContracts.startup-sleep-service;
+    startup-sleep-service-semantic-refinement = components.refinementReceipts.startup-sleep-service;
+    startup-sleep-service-activation = components.activationCheckGates.startup-sleep-service;
   };
 }

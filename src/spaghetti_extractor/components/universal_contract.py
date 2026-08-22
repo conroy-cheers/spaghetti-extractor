@@ -16,7 +16,12 @@ from typing import Mapping, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
 from .formats import COMPONENT_CONTRACT_V3_FORMAT
-from .interface_ir import PortableComponentInterfaceV2
+from .interface_ir import (
+    COMPONENT_INTERFACE_IR_V2,
+    COMPONENT_INTERFACE_IR_V3,
+    COMPONENT_INTERFACE_IR_V4,
+    PortableComponentInterfaceV2,
+)
 from .machine_binding import ComponentMachineBindingV1
 from .semantic_contract import ComponentSemanticContractV1
 
@@ -138,6 +143,7 @@ class ComponentServiceContractV3:
 class ComponentContractV3:
     component_id: str
     status: str
+    interface_format: str
     interface_id: str
     interface_sha256: str
     type_hashes: tuple[tuple[str, str], ...]
@@ -182,6 +188,17 @@ class ComponentContractV3:
             raise UniversalComponentContractError("invalid component contract status")
         interface = _object(row["interface"], "component contract interface")
         _exact(interface, {"format", "id", "sha256"}, "component contract interface")
+        interface_format = _text(
+            interface["format"], "component contract interface format"
+        )
+        if interface_format not in {
+            COMPONENT_INTERFACE_IR_V2,
+            COMPONENT_INTERFACE_IR_V3,
+            COMPONENT_INTERFACE_IR_V4,
+        }:
+            raise UniversalComponentContractError(
+                "unsupported component contract interface format"
+            )
         semantics = _object(row["semantics"], "component contract semantics")
         _exact(semantics, {"format"}, "component contract semantics")
         protocol = _object(row["protocol"], "component contract protocol")
@@ -286,6 +303,7 @@ class ComponentContractV3:
         return cls(
             component_id=_identifier(row["component_id"], "component id"),
             status=status,
+            interface_format=interface_format,
             interface_id=_identifier(interface["id"], "component interface id"),
             interface_sha256=_digest(interface["sha256"], "component interface digest"),
             type_hashes=type_rows,
@@ -305,7 +323,7 @@ class ComponentContractV3:
             "status": self.status,
             "component_id": self.component_id,
             "interface": {
-                "format": "spaghetti-extractor-component-interface-ir-v2",
+                "format": self.interface_format,
                 "id": self.interface_id,
                 "sha256": self.interface_sha256,
             },
@@ -457,7 +475,7 @@ def build_component_contract_v3(
         "status": status,
         "component_id": binding.identity,
         "interface": {
-            "format": "spaghetti-extractor-component-interface-ir-v2",
+            "format": portable.format_version,
             "id": portable.identity,
             "sha256": portable.sha256,
         },

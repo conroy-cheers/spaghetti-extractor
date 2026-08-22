@@ -11,6 +11,10 @@ from ..artifacts.formats import (
 )
 from ..errors import ToolkitInputError
 from ..util import sha256_bytes
+from .interpreter_atomics import (
+    atomic_action_for_rva,
+    compile_atomic_action,
+)
 from .interpreter_model import (
     CandidateInterpreterError,
     _AF_FLAG_INDEX,
@@ -83,6 +87,7 @@ class _TransferCompiler:
     )
     available_calls: set[int] = field(default_factory=set)
     scheduled_word_evaluations: set[int] = field(default_factory=set)
+    consumed_atomic_action_ids: set[str] = field(default_factory=set)
     word_compile_depth: int = 0
     instruction_local: bool = False
     scheduled_outcome: _Action | None = None
@@ -118,6 +123,19 @@ class _TransferCompiler:
         else:
             self._compile_symbolic_transfer()
 
+        graph = self.row.get("memory_actions")
+        graph_actions = graph.get("actions") if isinstance(graph, Mapping) else []
+        expected_atomic_ids = {
+            str(action.get("id"))
+            for action in graph_actions
+            if isinstance(action, Mapping) and action.get("kind") == "rmw"
+        }
+        if self.consumed_atomic_action_ids != expected_atomic_ids:
+            raise CandidateInterpreterError(
+                f"{self.identity}: RMW action coverage differs from instruction lowering",
+                code="atomic_action_coverage_mismatch",
+            )
+
         outcome = _object(self.row.get("outcome"), f"{self.identity} outcome")
         if native_x87_replay and not scheduled_x87_replay:
             self._check_x87_replay_outcome(outcome)
@@ -146,6 +164,21 @@ class _TransferCompiler:
         original_start = _u32(original.get("rva_start"), "machine-IR start RVA")
         original_end = _u32(original.get("rva_end"), "machine-IR end RVA")
         if schedule is None:
+            graph = self.row.get("memory_actions")
+            graph_actions = (
+                graph.get("actions") if isinstance(graph, Mapping) else []
+            )
+            if isinstance(graph_actions, list) and any(
+                isinstance(action, Mapping) and action.get("kind") == "rmw"
+                for action in graph_actions
+            ):
+                raise CandidateInterpreterError(
+                    f"{self.identity}: atomic RMW requires instruction-local ordering",
+                    code="atomic_instruction_schedule_missing",
+                    next_action=(
+                        "regenerate Machine IR with a complete instruction effect schedule"
+                    ),
+                )
             if not micro_ops:
                 self._compile_symbolic_transfer()
                 return
@@ -290,7 +323,7 @@ class _TransferCompiler:
                 self._reset_instruction_expression_cache()
                 self.instruction_local = True
                 try:
-                    self._compile_instruction_effects(effects)
+                    self._compile_instruction_effects(effects, instruction_rva=rva)
                     if index + 1 == len(records):
                         self.scheduled_outcome = self._outcome(control_object)
                 finally:
@@ -965,7 +998,9 @@ class _TransferCompiler:
         self.x87_memo.clear()
         self.x87_memo_memory_dependencies.clear()
 
-    def _compile_instruction_effects(self, effects: Mapping[str, Any]) -> None:
+    def _compile_instruction_effects(
+        self, effects: Mapping[str, Any], *, instruction_rva: int | None = None
+    ) -> None:
         ordered = _optional_list(effects.get("ordered_events"))
         owned_register_outputs, owned_flag_outputs = self._rep_scas_owned_outputs(
             ordered
@@ -1012,6 +1047,9 @@ class _TransferCompiler:
                     "set_flag", (self.word(write.get("value")),), _FLAG_INDEX[name]
                 ))
 
+        atomic = atomic_action_for_rva(self, instruction_rva)
+        if atomic is not None:
+            compile_atomic_action(self, atomic, ordered)
         if not call_event:
             compile_updates()
         external_index = len(self.available_calls)
@@ -1019,7 +1057,8 @@ class _TransferCompiler:
             event = _object(raw, f"{self.identity} instruction ordered event")
             family = event.get("family")
             if family == "memory":
-                self._memory_event(event)
+                if atomic is None:
+                    self._memory_event(event)
             elif family == "fault":
                 self._fault_event(event)
             elif family == "external":

@@ -452,6 +452,7 @@ class CallEffectV3:
     argument_fact_ids: tuple[str, ...]
     result_fact_id: str | None
     preserved_registers: tuple[str, ...] | None
+    catalog_contract_id: str | None = None
 
     def __post_init__(self) -> None:
         text(self.call_id, "parametric call ID")
@@ -494,6 +495,14 @@ class CallEffectV3:
                     f"call preservation claims unsupported registers {sorted(unsupported)!r}",
                     "claim only checked PE32 nonvolatile general registers",
                 )
+        if self.catalog_contract_id is not None:
+            text(self.catalog_contract_id, "catalog call-contract ID")
+            if self.kind == "external_profile":
+                fail(
+                    "record_schema_mismatch",
+                    "external call carries an internal catalog contract",
+                    "bind catalog contracts only to matched internal callees",
+                )
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -510,13 +519,14 @@ class CallEffectV3:
                 if self.preserved_registers is None
                 else list(self.preserved_registers)
             ),
+            "catalog_contract_id": self.catalog_contract_id,
         }
 
     @classmethod
     def parse(cls, value: Any) -> "CallEffectV3":
         row = strict_object(
             value,
-            {"id", "source_unit_id", "event_index", "kind", "target_unit_ids", "external_profile_record_id", "argument_fact_ids", "result_fact_id", "preserved_registers"},
+            {"id", "source_unit_id", "event_index", "kind", "target_unit_ids", "external_profile_record_id", "argument_fact_ids", "result_fact_id", "preserved_registers", "catalog_contract_id"},
             "parametric call effect",
         )
         return cls(
@@ -536,6 +546,9 @@ class CallEffectV3:
                     "parametric call preserved registers",
                 )
             ),
+            None
+            if row["catalog_contract_id"] is None
+            else text(row["catalog_contract_id"], "catalog call-contract ID"),
         )
 
 

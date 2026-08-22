@@ -21,7 +21,7 @@ assert builtins.length selectedShards == builtins.length modePayload.shard_ids;
 {
   inherit manifest payload;
   planPayload = {
-    format = "spaghetti-extractor-test-suite-plan-v3";
+    format = "spaghetti-extractor-test-suite-plan-v4";
     inherit mode;
     identity = modePayload.identity;
     selected_test_count = modePayload.selected_test_count;

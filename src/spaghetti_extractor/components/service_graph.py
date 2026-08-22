@@ -882,6 +882,39 @@ def _types_compatible(
             and expected.extent_parameter_id == observed.extent_parameter_id
             and expected.nul_terminated == observed.nul_terminated
         )
+    if expected.kind == "reference":
+        return (
+            expected.access == observed.access
+            and expected.nullable == observed.nullable
+            and expected.allow_one_past == observed.allow_one_past
+            and expected.lifetime == observed.lifetime
+            and expected.element_type_id is not None
+            and observed.element_type_id is not None
+            and _types_compatible(
+                expected.element_type_id,
+                observed.element_type_id,
+                expected_types,
+                observed_types,
+                compared,
+            )
+        )
+    if expected.kind == "view":
+        return (
+            expected.access == observed.access
+            and expected.extent_kind == observed.extent_kind
+            and expected.extent_parameter_id == observed.extent_parameter_id
+            and expected.fixed_extent == observed.fixed_extent
+            and expected.ownership == observed.ownership
+            and expected.element_type_id is not None
+            and observed.element_type_id is not None
+            and _types_compatible(
+                expected.element_type_id,
+                observed.element_type_id,
+                expected_types,
+                observed_types,
+                compared,
+            )
+        )
     if expected.kind == "record":
         return (
             expected.access == observed.access
@@ -907,7 +940,8 @@ def _types_compatible(
         )
     if expected.kind == "callback":
         if (
-            expected.abi != observed.abi
+            expected.ownership != observed.ownership
+            or expected.nullable != observed.nullable
             or len(expected.parameter_type_ids) != len(observed.parameter_type_ids)
             or (expected.result_type_id is None) != (observed.result_type_id is None)
         ):

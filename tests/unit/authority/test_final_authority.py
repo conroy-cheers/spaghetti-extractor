@@ -279,6 +279,7 @@ class FinalAuthorityV3Tests(unittest.TestCase):
                 authorizing=False,
                 submitted_root_ids=closure.submitted_root_ids,
                 admitted_root_ids=closure.admitted_root_ids,
+                callback_root_ids=closure.callback_root_ids,
                 root_unit_ids=closure.root_unit_ids,
                 reachable_unit_ids=closure.reachable_unit_ids,
                 edges=closure.edges,

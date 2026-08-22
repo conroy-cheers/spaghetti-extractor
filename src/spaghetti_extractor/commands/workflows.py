@@ -402,6 +402,216 @@ def _component_check(args: argparse.Namespace) -> int:
     )
 
 
+def _component_relation(args: argparse.Namespace) -> int:
+    index = _component_index(args)
+    units = index.get("units")
+    row = units.get(args.unit) if isinstance(units, Mapping) else None
+    if not isinstance(row, Mapping):
+        available = ", ".join(sorted(units)) if isinstance(units, Mapping) else "none"
+        raise ValueError(f"unknown component unit {args.unit!r}; available: {available}")
+    if row.get("hasMachineBinding") is not True:
+        raise ValueError(f"component {args.unit!r} has no exact machine binding")
+    suffix = f"components.units.{_attr_segment(args.unit)}"
+    if args.relation_action == "check":
+        return _build(args, f"{suffix}.relationCheck", no_link=True)
+    status = _realize_json(
+        args,
+        f"{suffix}.relation",
+        "relation-status.json",
+    )
+    if args.relation_action == "status":
+        if args.json:
+            print(json.dumps(status, indent=2, sort_keys=True))
+        else:
+            print(f"{args.unit}: relation={status.get('status')} [{status.get('code')}]")
+            if status.get("detail"):
+                print(f"  next: {status.get('detail')}")
+        return 0
+    relation = _realize_json(
+        args,
+        f"{suffix}.relation",
+        "relation-ir.json",
+    )
+    if args.relation_action in {"inspect", "propose"}:
+        if args.json:
+            print(json.dumps(relation, indent=2, sort_keys=True))
+        else:
+            print(
+                f"{args.unit}: backend={relation.get('machine_backend')} "
+                f"operations={len(relation.get('operations', []))}"
+            )
+            for operation in relation.get("operations", []):
+                if not isinstance(operation, Mapping):
+                    continue
+                clauses = operation.get("clauses", [])
+                print(f"  {operation.get('operation_id')}: {len(clauses)} clauses")
+                for clause in clauses:
+                    if isinstance(clause, Mapping):
+                        path = clause.get("logical_path")
+                        logical = ""
+                        if isinstance(path, Mapping):
+                            logical = f" -> {path.get('root')}.{path.get('id')}"
+                        print(
+                            f"    {clause.get('id')}: {clause.get('kind')}"
+                            f" phase={clause.get('phase')}{logical}"
+                        )
+        return 0
+    if args.output is None:
+        raise ValueError("component relation adopt requires --output FILE")
+    declaration = _relation_declaration(relation)
+    output = args.output.resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(output.name + ".tmp")
+    temporary.write_text(
+        json.dumps(declaration, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    temporary.replace(output)
+    print(f"adopted relation declaration: {output}")
+    return 0
+
+
+def _relation_declaration(relation: Mapping[str, Any]) -> dict[str, object]:
+    operations = []
+    for operation in relation.get("operations", []):
+        if not isinstance(operation, Mapping):
+            continue
+        clauses = []
+        for clause in operation.get("clauses", []):
+            if not isinstance(clause, Mapping):
+                continue
+            clauses.append(
+                {
+                    "id": clause.get("id"),
+                    "proposal_id": clause.get("id"),
+                    "kind": clause.get("kind"),
+                    "logical_path": clause.get("logical_path"),
+                }
+            )
+        operations.append(
+            {"operation_id": operation.get("operation_id"), "clauses": clauses}
+        )
+    return {
+        "format": "spaghetti-extractor-component-relation-declaration-v1",
+        "component_id": relation.get("component_id"),
+        "machine_backend": relation.get("machine_backend"),
+        "operations": operations,
+    }
+
+
+def _call_index(args: argparse.Namespace) -> Mapping[str, Any]:
+    calls = _operator_index(args).get("calls")
+    if not isinstance(calls, Mapping) or calls.get("configured") is not True:
+        raise ValueError(
+            "target has no typed call-protocol workflow; run project analyze after "
+            "configuring call declarations"
+        )
+    return calls
+
+
+def _call_subject(args: argparse.Namespace) -> Mapping[str, Any]:
+    calls = _call_index(args)
+    subjects = calls.get("subjects")
+    row = subjects.get(args.subject) if isinstance(subjects, Mapping) else None
+    if not isinstance(row, Mapping):
+        available = ", ".join(sorted(subjects)) if isinstance(subjects, Mapping) else "none"
+        raise ValueError(f"unknown call subject {args.subject!r}; available: {available}")
+    return row
+
+
+def _call_status(args: argparse.Namespace) -> int:
+    _call_index(args)
+    payload = _realize_json(args, "calls.status", "call-status.json")
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    counts = payload.get("counts", {})
+    print(
+        f"{args.target}: calls={counts.get('subjects', 0)} "
+        f"complete={counts.get('complete', 0)} "
+        f"incomplete={counts.get('incomplete', 0)} "
+        f"violated={counts.get('violated', 0)}"
+    )
+    for row in payload.get("subjects", []):
+        if not isinstance(row, Mapping):
+            continue
+        layers = row.get("layers", {})
+        print(
+            f"{row.get('status'):10} {row.get('id')} "
+            f"transport={layers.get('transport')} types={layers.get('types')} "
+            f"lifecycle={layers.get('lifecycle')} idiom={layers.get('idiomatic_view')}"
+        )
+        if row.get("next_action"):
+            print(f"  next: {row.get('next_action')}")
+    return 0
+
+
+def _call_inspect(args: argparse.Namespace) -> int:
+    _call_subject(args)
+    payload = _realize_json(
+        args,
+        f"calls.subjects.{_attr_segment(args.subject)}.inspection",
+        "call-inspection.json",
+    )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    print(
+        f"{args.subject}: status={payload.get('status')} "
+        f"dialect={payload.get('abi_dialect')} "
+        f"convention={payload.get('calling_convention')}"
+    )
+    faithful = payload.get("faithful_prototype")
+    if faithful:
+        print(f"  faithful: {faithful}")
+    idiomatic = payload.get("idiomatic_prototype")
+    if idiomatic:
+        print(f"  idiomatic: {idiomatic}")
+    for issue in payload.get("issues", []):
+        print(f"  blocker: {issue}")
+    return 0
+
+
+def _call_propose(args: argparse.Namespace) -> int:
+    _call_subject(args)
+    return _build(
+        args,
+        f"calls.subjects.{_attr_segment(args.subject)}.proposal",
+        no_link=True,
+    )
+
+
+def _call_adopt(args: argparse.Namespace) -> int:
+    _call_subject(args)
+    if args.output is None:
+        raise ValueError("call adopt requires --output FILE")
+    payload = _realize_json(
+        args,
+        f"calls.subjects.{_attr_segment(args.subject)}.intentTemplate",
+        "call-intent.json",
+    )
+    forbidden = {"status", "proposal_id", "evidence_ids"}
+    forbidden.update(key for key in payload if key.endswith("_sha256"))
+    if set(payload) & forbidden:
+        raise ValueError("generated call intent contains authority or digest fields")
+    output = args.output.resolve()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(output.name + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(output)
+    print(f"adopted call intent: {output}")
+    return 0
+
+
+def _call_check(args: argparse.Namespace) -> int:
+    _call_subject(args)
+    return _build(
+        args,
+        f"calls.subjects.{_attr_segment(args.subject)}.check",
+        no_link=True,
+    )
+
+
 def _library_status_payload(args: argparse.Namespace) -> dict[str, Any]:
     return _realize_json(args, "libraries.status", "library-status.json")
 
@@ -825,6 +1035,29 @@ def configure_command(name: str, parser: argparse.ArgumentParser) -> Handler:
         if name == "component bind":
             return _component_bind
         return _component_check
+    if name == "component relation":
+        parser.add_argument("unit", type=_identifier, help="component leaf or group id")
+        parser.add_argument(
+            "relation_action",
+            choices=("status", "propose", "inspect", "adopt", "check"),
+        )
+        parser.add_argument("--json", action="store_true")
+        parser.add_argument("--output", type=Path, metavar="FILE")
+        return _component_relation
+    if name == "call status":
+        parser.add_argument("--json", action="store_true")
+        return _call_status
+    if name in {"call inspect", "call propose", "call adopt", "call check"}:
+        parser.add_argument("subject", type=_opaque_identity)
+        if name == "call inspect":
+            parser.add_argument("--json", action="store_true")
+            return _call_inspect
+        if name == "call propose":
+            return _call_propose
+        if name == "call adopt":
+            parser.add_argument("--output", type=Path, metavar="FILE")
+            return _call_adopt
+        return _call_check
     if name == "library status":
         parser.add_argument("--json", action="store_true")
         return _library_status

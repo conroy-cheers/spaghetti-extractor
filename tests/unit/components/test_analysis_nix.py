@@ -141,6 +141,9 @@ class ComponentAnalysisNixTests(unittest.TestCase):
             "runtime_header_sha256",
             "interpreter_header_sha256",
             "interpreter_internal_header_sha256",
+            "atomics_header_sha256",
+            "atomics_backend_header_sha256",
+            "atomics_source_sha256",
         ):
             self.assertIn(digest, module)
         self.assertIn("__contentAddressed = true;", module)
@@ -462,6 +465,21 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         self.assertIn("region_override_package=optional_path", module)
         self.assertNotIn("proposal-only external-site evidence", module)
 
+    def test_candidate_policy_and_portable_gate_share_rooted_projection(self) -> None:
+        projection = (
+            ROOT / "nix" / "rooted-behavioral-projection.nix"
+        ).read_text(encoding="utf-8")
+        workflow = (ROOT / "nix" / "component-workflow.nix").read_text(
+            encoding="utf-8"
+        )
+        sdk = (ROOT / "nix" / "target-sdk.nix").read_text(encoding="utf-8")
+
+        self.assertIn("derive_rooted_behavioral_projection_v1", projection)
+        self.assertIn("load_rooted_behavioral_projection_v1", workflow)
+        self.assertIn("rooted_projection=", workflow)
+        self.assertIn("rootedBehavioralProjection", sdk)
+        self.assertNotIn("wine", projection.lower())
+
     def test_checked_external_sites_and_callbacks_are_native_v3_phases(self) -> None:
         external = (
             ROOT / "src" / "spaghetti_extractor" / "authority"
@@ -565,7 +583,15 @@ class ComponentAnalysisNixTests(unittest.TestCase):
         authority_workflow = (ROOT / "nix" / "authority-workflow.nix").read_text(
             encoding="utf-8"
         )
-        self.assertIn('graph.outputs."canonical-external-sites-v3"', candidate)
+        self.assertIn(
+            'graph.phases."canonical-external-sites-v3".artifact', candidate
+        )
+        for phase in (
+            "launch-root-closure-v3",
+            "indirect-target-certificates-v3",
+            "parametric-scc-summaries-v3",
+        ):
+            self.assertIn(f'graph.phases."{phase}".artifact', candidate)
         self.assertIn(
             'outputs ? [ "canonical-external-sites-v3" "final-authority-v3" ]',
             authority_workflow,

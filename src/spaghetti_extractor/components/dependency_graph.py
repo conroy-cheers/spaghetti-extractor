@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, Protocol, Sequence
 
 from ..artifacts.artifact_set import canonical_sha256_v3
 from .formats import (
@@ -28,6 +28,12 @@ from .service_graph import (
 
 class ComponentDependencyGraphError(ValueError):
     """A component dependency graph is malformed or contradictory."""
+
+
+class RootedUnitProjection(Protocol):
+    reachable_unit_ids: tuple[str, ...]
+    structural_unit_count: int
+    projection_sha256: str
 
 
 @dataclass(frozen=True, order=True)
@@ -533,6 +539,7 @@ def build_component_release_gate_v1(
     *,
     graph: ComponentDependencyGraphV3 | Path | str | Mapping[str, object],
     activation_plan: ComponentActivationPlanRecordV3 | Path | str | Mapping[str, object],
+    rooted_projection: RootedUnitProjection,
     mode: str,
     out: Path | str | None = None,
 ) -> dict[str, object]:
@@ -554,10 +561,23 @@ def build_component_release_gate_v1(
     )
     if mode not in {"hybrid", "portable"}:
         raise ComponentDependencyGraphError("release mode must be hybrid or portable")
+    rooted_unit_ids = rooted_projection.reachable_unit_ids
+    if (
+        not rooted_unit_ids
+        or rooted_unit_ids != tuple(sorted(set(rooted_unit_ids)))
+        or not isinstance(rooted_projection.structural_unit_count, int)
+        or isinstance(rooted_projection.structural_unit_count, bool)
+        or rooted_projection.structural_unit_count < len(rooted_unit_ids)
+        or not _is_digest(rooted_projection.projection_sha256)
+    ):
+        raise ComponentDependencyGraphError(
+            "release gate rooted behavioral projection is malformed"
+        )
+    rooted_units = frozenset(rooted_unit_ids)
     allowed = (
         {"portable_c", "pinned_binary", "machine_ir", "external_environment"}
         if mode == "hybrid"
-        else {"portable_c", "external_environment"}
+        else {"portable_c", "machine_ir", "external_environment"}
     )
     issues = [dict(item) for item in checked_graph.issues]
     if checked_graph.status != "checked" and not issues:
@@ -629,6 +649,31 @@ def build_component_release_gate_v1(
         entry.implementation_kind == "machine_ir_fallback"
         for entry in checked_activation.entries
     )
+    activation_units = {entry.unit_id for entry in checked_activation.entries}
+    if len(activation_units) != rooted_projection.structural_unit_count:
+        issues.append(
+            _issue(
+                "violated",
+                "structural_activation_inventory_mismatch",
+                expected_units=rooted_projection.structural_unit_count,
+                activation_units=len(activation_units),
+            )
+        )
+    missing_rooted_units = sorted(rooted_units - activation_units)
+    if missing_rooted_units:
+        issues.append(
+            _issue(
+                "violated",
+                "rooted_behavioral_activation_coverage_missing",
+                missing_unit_ids=missing_rooted_units,
+            )
+        )
+    rooted_fallback_units = sum(
+        entry.unit_id in rooted_units
+        and entry.implementation_kind == "machine_ir_fallback"
+        for entry in checked_activation.entries
+    )
+    unreachable_fallback_units = fallback_units - rooted_fallback_units
     blocked_units = sum(
         entry.implementation_kind == "blocked"
         for entry in checked_activation.entries
@@ -641,12 +686,13 @@ def build_component_release_gate_v1(
                 blocked_units=blocked_units,
             )
         )
-    if mode == "portable" and fallback_units:
+    if mode == "portable" and rooted_fallback_units:
         issues.append(
             _issue(
                 "incomplete",
-                "machine_ir_fallback_forbidden_by_portable_release",
-                fallback_units=fallback_units,
+                "root_reachable_machine_ir_fallback_forbidden_by_portable_release",
+                rooted_fallback_units=rooted_fallback_units,
+                unreachable_fallback_units=unreachable_fallback_units,
             )
         )
     counts = {
@@ -656,6 +702,9 @@ def build_component_release_gate_v1(
         )
     }
     counts["machine_ir_fallback_units"] = fallback_units
+    counts["root_reachable_units"] = len(rooted_units)
+    counts["root_reachable_machine_ir_fallback_units"] = rooted_fallback_units
+    counts["unreachable_machine_ir_fallback_units"] = unreachable_fallback_units
     counts["blocked_units"] = blocked_units
     for component_id, _implementation_id, kind, _digest_value in checked_graph.implementations:
         if kind not in allowed:
@@ -679,6 +728,7 @@ def build_component_release_gate_v1(
         "ready": status == "ready",
         "graph_sha256": checked_graph.graph_sha256,
         "activation_plan_sha256": checked_activation.activation_plan_sha256,
+        "rooted_behavioral_projection_sha256": rooted_projection.projection_sha256,
         "counts": counts,
         "issues": sorted(
             issues,
@@ -691,7 +741,8 @@ def build_component_release_gate_v1(
             "original_binary_executed": False,
             "handwritten_behavior_tests_required": False,
             "hybrid_allows_qualified_pinned_implementations": mode == "hybrid",
-            "portable_requires_no_pinned_or_machine_implementations": mode == "portable",
+            "portable_requires_no_pinned_implementations": mode == "portable",
+            "portable_requires_no_root_reachable_machine_ir_fallback": mode == "portable",
         },
     }
     result = {**core, "gate_sha256": canonical_sha256_v3(core)}
@@ -1082,6 +1133,14 @@ def _digest(value: object, description: str) -> str:
     if len(result) != 64 or any(character not in "0123456789abcdef" for character in result):
         raise ComponentDependencyGraphError(f"{description} is not a SHA-256 digest")
     return result
+
+
+def _is_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
 
 
 def _strings(

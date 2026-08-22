@@ -1,0 +1,85 @@
+{
+  "format": "spaghetti-extractor-component-boundary-review-v2",
+  "lift_unit_id": "program-name-selection",
+  "accept_derived_machine_boundary": true,
+  "overrides": {
+    "portable_interface_ir": {
+      "format": "spaghetti-extractor-component-interface-ir-v4",
+      "id": "program_name_selection",
+      "types": [
+        {"id": "u8", "kind": "scalar", "c_type": "uint8_t"},
+        {"id": "u32", "kind": "scalar", "c_type": "uint32_t"},
+        {
+          "id": "cstring",
+          "kind": "view",
+          "element_type_id": "u8",
+          "access": "read",
+          "extent": {"kind": "nul_terminated"},
+          "ownership": "borrowed"
+        },
+        {
+          "id": "byte_span",
+          "kind": "view",
+          "element_type_id": "u8",
+          "access": "read",
+          "extent": {"kind": "parameter", "parameter_id": "count"},
+          "ownership": "borrowed"
+        },
+        {
+          "id": "char_ref",
+          "kind": "reference",
+          "element_type_id": "u8",
+          "access": "read",
+          "nullable": true,
+          "allow_one_past": false,
+          "lifetime": "origin"
+        }
+      ],
+      "state": [
+        {
+          "id": "program_name",
+          "type_id": "char_ref",
+          "initial": {
+            "domain": 0,
+            "object": 0,
+            "generation": 0,
+            "offset": 0,
+            "extent": 0,
+            "permissions": 0
+          }
+        }
+      ],
+      "operations": [
+        {
+          "id": "select",
+          "kind": "operation",
+          "parameters": [
+            {"id": "program", "type_id": "cstring"},
+            {"id": "wrapper_prefix", "type_id": "cstring"}
+          ],
+          "results": [],
+          "effect_ids": [],
+          "allowed_service_ids": ["find_last_character", "memory_equal"],
+          "pre_states": ["ready"],
+          "post_states": ["ready"]
+        }
+      ],
+      "effects": [],
+      "services": [
+        {
+          "id": "find_last_character",
+          "parameter_type_ids": ["cstring", "u8"],
+          "result_type_id": "char_ref",
+          "effect_ids": []
+        },
+        {
+          "id": "memory_equal",
+          "parameter_type_ids": ["byte_span", "byte_span", "u32"],
+          "result_type_id": "u8",
+          "effect_ids": []
+        }
+      ],
+      "protocol": {"states": ["ready"], "initial_state": "ready"}
+    }
+  }
+}

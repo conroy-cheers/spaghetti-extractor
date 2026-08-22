@@ -214,6 +214,7 @@ def _component(
             "verification",
             "machine_binding",
             "induction",
+            "relation",
         },
         f"component {index}",
         optional={
@@ -222,6 +223,7 @@ def _component(
             "verification",
             "machine_binding",
             "induction",
+            "relation",
         },
     )
     result = ComponentIntent(
@@ -258,6 +260,12 @@ def _component(
             f"component {index} induction declaration",
             require_exists=require_references,
         ),
+        relation=_optional_path(
+            row.get("relation"),
+            root,
+            f"component {index} relation declaration",
+            require_exists=require_references,
+        ),
     )
     _check_evidence_plan(result.evidence_profile, result.verification, f"component {index}")
     return result
@@ -282,6 +290,7 @@ def _group(
             "verification",
             "machine_binding",
             "induction",
+            "relation",
         },
         f"group {index}",
         optional={
@@ -290,6 +299,7 @@ def _group(
             "verification",
             "machine_binding",
             "induction",
+            "relation",
         },
     )
     members = tuple(
@@ -330,6 +340,12 @@ def _group(
             row.get("induction"),
             root,
             f"group {index} induction declaration",
+            require_exists=require_references,
+        ),
+        relation=_optional_path(
+            row.get("relation"),
+            root,
+            f"group {index} relation declaration",
             require_exists=require_references,
         ),
     )

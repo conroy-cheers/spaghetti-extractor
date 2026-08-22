@@ -1,7 +1,6 @@
 {
-  "format": "spaghetti-extractor-static-machine-import-profile-v1",
+  "format": "spaghetti-extractor-static-machine-import-profile-v2",
   "id": "pe32-win32-windowing-runtime-v1",
-  "default_callback_effect": "none",
   "machine_import_signatures": [
     {
       "import": {"dll": "user32.dll", "symbol": "LoadIconA"},
@@ -76,18 +75,39 @@
         }
       ],
       "world_effect": "callbackRegistration",
-      "callback_effect": "explicit",
-      "callback_source": {
-        "kind": "argument_pointee",
-        "argument": 0,
-        "offset": 4
-      },
-      "callback_lifetime": "until_class_unregistered_or_process_exit",
-      "callback_abi": {
-        "kind": "generic_callback",
-        "argument_words": 4,
-        "stack_cleanup_bytes": 16,
-        "nullable": false
+      "callback_protocol": {
+        "format": "spaghetti-extractor-callback-protocol-v1",
+        "id": "win32-window-procedure-ansi",
+        "action": "register",
+        "source": {
+          "kind": "argument_pointee",
+          "argument": 0,
+          "offset": 4,
+          "sentinels": []
+        },
+        "signature": {
+          "abi_template": "pe32-stdcall-v1",
+          "argument_words": 4,
+          "stack_cleanup_bytes": 16,
+          "result": {"kind": "word", "register": "eax"}
+        },
+        "instance": {
+          "kind": "provider_resource",
+          "argument": 0,
+          "callback_argument": 0
+        },
+        "previous_result": null,
+        "lifetime": {
+          "kind": "until_resource_event_or_process_exit",
+          "end_event": "user32.dll!UnregisterClassA"
+        },
+        "delivery": {"timing": "nested_or_deferred", "thread": "external_concurrent"},
+        "cardinality": {
+          "minimum": 0,
+          "maximum": null,
+          "scope": "registration_generation"
+        },
+        "provider_behavior": {"instance_relation": "registered_class_for_window"}
       }
     },
     {
@@ -108,18 +128,39 @@
         }
       ],
       "world_effect": "callbackRegistration",
-      "callback_effect": "explicit",
-      "callback_source": {
-        "kind": "argument_pointee",
-        "argument": 0,
-        "offset": 4
-      },
-      "callback_lifetime": "until_class_unregistered_or_process_exit",
-      "callback_abi": {
-        "kind": "generic_callback",
-        "argument_words": 4,
-        "stack_cleanup_bytes": 16,
-        "nullable": false
+      "callback_protocol": {
+        "format": "spaghetti-extractor-callback-protocol-v1",
+        "id": "win32-window-procedure-wide",
+        "action": "register",
+        "source": {
+          "kind": "argument_pointee",
+          "argument": 0,
+          "offset": 4,
+          "sentinels": []
+        },
+        "signature": {
+          "abi_template": "pe32-stdcall-v1",
+          "argument_words": 4,
+          "stack_cleanup_bytes": 16,
+          "result": {"kind": "word", "register": "eax"}
+        },
+        "instance": {
+          "kind": "provider_resource",
+          "argument": 0,
+          "callback_argument": 0
+        },
+        "previous_result": null,
+        "lifetime": {
+          "kind": "until_resource_event_or_process_exit",
+          "end_event": "user32.dll!UnregisterClassW"
+        },
+        "delivery": {"timing": "nested_or_deferred", "thread": "external_concurrent"},
+        "cardinality": {
+          "minimum": 0,
+          "maximum": null,
+          "scope": "registration_generation"
+        },
+        "provider_behavior": {"instance_relation": "registered_class_for_window"}
       }
     },
     {

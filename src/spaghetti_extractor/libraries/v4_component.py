@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..artifacts.formats import GENERATED_LIBRARY_COMPONENT_V1_FORMAT
+from ..abi.legacy import library_profile_v3_from_physical
+from ..abi.matching import read_abi_match_resolution
+from ..abi.model import PhysicalAbiProfileV1
 from ..components.machine_binding import (
     COMPONENT_MACHINE_BINDING_DECLARATION_V2,
     check_component_machine_binding,
@@ -27,7 +30,7 @@ from .v4_adoption_records import (
     CHECKED_LIBRARY_ISLAND_CODEC_V1,
     CheckedLibraryIslandV1,
 )
-from .v4_behavior_pack import load_reusable_library_behavior_pack_v1
+from .v4_behavior_pack import load_reusable_library_behavior_pack
 from .v4_record_support import canonical_sha256
 from .v4_release_set import select_library_island_v1
 
@@ -44,6 +47,7 @@ def build_checked_library_component_v1(
     catalog_search_index: CatalogSearchIndexV3 | Path | str,
     canonical_external_sites: Path | str | None,
     out_dir: Path | str,
+    abi_match_resolution: Path | str | None = None,
 ) -> dict[str, Any]:
     """Materialize one component without original execution or handwritten tests."""
 
@@ -52,7 +56,7 @@ def build_checked_library_component_v1(
         if isinstance(checked_island, CheckedLibraryIslandV1)
         else CHECKED_LIBRARY_ISLAND_CODEC_V1.read(checked_island)
     )
-    pack = load_reusable_library_behavior_pack_v1(behavior_pack)
+    pack = load_reusable_library_behavior_pack(behavior_pack)
     release, island = select_library_island_v1(
         release_hypotheses, receipt.island_id
     )
@@ -104,6 +108,16 @@ def build_checked_library_component_v1(
     operations = interface.operation_index()
     functions = {row.function_id: row for row in catalog.functions}
     profiles = {row.profile_id: row for row in catalog.abi_profiles}
+    abi_resolution = (
+        None
+        if abi_match_resolution is None
+        else read_abi_match_resolution(abi_match_resolution)
+    )
+    abi_bindings = {
+        str(row.get("match_id")): row
+        for row in (() if abi_resolution is None else abi_resolution["bindings"])
+        if isinstance(row, Mapping)
+    }
     matches_by_operation: dict[str, Any] = {}
     for match in island.matches:
         function = functions.get(match.catalog_function_id)
@@ -140,7 +154,24 @@ def build_checked_library_component_v1(
     if not issues:
         for operation_id, operation in sorted(operations.items()):
             match, function = matches_by_operation[operation_id]
-            profile = profiles.get(function.abi_profile_id or "")
+            resolved = abi_bindings.get(match.match_id)
+            if abi_resolution is not None:
+                if (
+                    not isinstance(resolved, Mapping)
+                    or resolved.get("status") != "complete"
+                    or not isinstance(resolved.get("profile"), Mapping)
+                ):
+                    issue("operation_physical_abi_unresolved", operation_id)
+                    continue
+                try:
+                    profile = library_profile_v3_from_physical(
+                        PhysicalAbiProfileV1.parse(resolved["profile"])
+                    )
+                except (ValueError, TypeError) as error:
+                    issue("operation_physical_abi_adapter_unsupported", str(error))
+                    continue
+            else:
+                profile = profiles.get(function.abi_profile_id or "")
             if profile is None:
                 issue("operation_abi_missing", operation_id)
                 continue
@@ -266,6 +297,11 @@ def build_checked_library_component_v1(
             "behavior_pack_sha256": pack.pack_sha256,
             "interface_sha256": interface.sha256,
             "source_package_sha256": pack.source["implementation_sha256"],
+            "abi_match_resolution_sha256": (
+                None
+                if abi_resolution is None
+                else abi_resolution["resolution_sha256"]
+            ),
             "machine_binding_receipt_sha256": (
                 None
                 if machine_binding_receipt is None

@@ -16,6 +16,9 @@ from spaghetti_extractor.authority.exact_units import (
     EXACT_UNIT_CODEC_V3,
     ExactUnitV3,
 )
+from spaghetti_extractor.authority.catalog_call_contracts import (
+    CATALOG_CALL_CONTRACTS_ARTIFACT_KIND_V3,
+)
 from spaghetti_extractor.authority.external_site_records import (
     EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
     EXTERNAL_PROFILE_ISSUE_CODEC_V3,
@@ -91,7 +94,7 @@ def _unit(
         ]
     )
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",
@@ -270,6 +273,7 @@ class ParametricSummaryProposalTests(unittest.TestCase):
                     SimpleNamespace(
                         access_id="access:member",
                         kind="write",
+                        epoch_call_index=None,
                     ),
                 ),
             )
@@ -309,7 +313,7 @@ class ParametricSummaryProposalTests(unittest.TestCase):
                 member_set={"unit:member"},
                 relevant_memories=(graph,),
                 nonstack_accesses={
-                    "access:member": ("unit:member", "write")
+                    "access:member": ("unit:member", "write", None)
                 },
             )
         )
@@ -321,6 +325,94 @@ class ParametricSummaryProposalTests(unittest.TestCase):
             (("unit:member", "alias:shared", "write"),),
         )
         self.assertEqual(checked_kills, ())
+        self.assertEqual(unversioned, ())
+
+    def test_pre_call_read_does_not_claim_post_call_memory_preservation(
+        self,
+    ) -> None:
+        graph = SimpleNamespace(
+            record_id="memory:read",
+            transition_summary_ids=("summary:member",),
+            access_versions=(
+                SimpleNamespace(
+                    access_id="access:read", component_id="alias:shared"
+                ),
+            ),
+            alias_components=(SimpleNamespace(component_id="alias:shared"),),
+            unknown_write_kills=(),
+        )
+        units = {
+            "unit:member": SimpleNamespace(
+                transition_summary_id="summary:member",
+                nonstack_accesses=(
+                    SimpleNamespace(
+                        access_id="access:read",
+                        kind="read",
+                        epoch_call_index=None,
+                    ),
+                ),
+            )
+        }
+
+        _relevant, proposed = _memory_effects(
+            ("unit:member",), units, (graph,)
+        )
+        checked, _kills, unversioned = _checked_memory_effects_v3(
+            member_set={"unit:member"},
+            relevant_memories=(graph,),
+            nonstack_accesses={
+                "access:read": ("unit:member", "read", None)
+            },
+        )
+
+        self.assertEqual(proposed, ())
+        self.assertEqual(checked, ())
+        self.assertEqual(unversioned, ())
+
+    def test_post_call_read_requires_memory_preservation(self) -> None:
+        graph = SimpleNamespace(
+            record_id="memory:read",
+            transition_summary_ids=("summary:member",),
+            access_versions=(
+                SimpleNamespace(
+                    access_id="access:read", component_id="alias:shared"
+                ),
+            ),
+            alias_components=(SimpleNamespace(component_id="alias:shared"),),
+            unknown_write_kills=(),
+        )
+        units = {
+            "unit:member": SimpleNamespace(
+                transition_summary_id="summary:member",
+                nonstack_accesses=(
+                    SimpleNamespace(
+                        access_id="access:read",
+                        kind="read",
+                        epoch_call_index=3,
+                    ),
+                ),
+            )
+        }
+
+        _relevant, proposed = _memory_effects(
+            ("unit:member",), units, (graph,)
+        )
+        checked, _kills, unversioned = _checked_memory_effects_v3(
+            member_set={"unit:member"},
+            relevant_memories=(graph,),
+            nonstack_accesses={
+                "access:read": ("unit:member", "read", 3)
+            },
+        )
+
+        self.assertEqual(
+            tuple((row.alias_component_id, row.kind) for row in proposed),
+            (("alias:shared", "preserved"),),
+        )
+        self.assertEqual(
+            tuple((row.alias_component_id, row.kind) for row in checked),
+            (("alias:shared", "preserved"),),
+        )
         self.assertEqual(unversioned, ())
 
     def test_generated_proposal_is_replayed_to_complete_authority(self) -> None:
@@ -384,6 +476,12 @@ class ParametricSummaryProposalTests(unittest.TestCase):
                 (EXTERNAL_PROFILE_ISSUE_CODEC_V3.write(issue.record_id, issue),),
             )
             static_values = _static_values(root / "static-values")
+            catalog_calls = _empty(
+                root / "catalog-calls", CATALOG_CALL_CONTRACTS_ARTIFACT_KIND_V3
+            )
+            call_boundaries = _empty(
+                root / "call-boundaries", "call-boundary-contracts-v3"
+            )
             proposals = root / "proposals"
             generate_parametric_summary_proposals_v3(
                 unit_facts_path=unit_facts,
@@ -405,6 +503,8 @@ class ParametricSummaryProposalTests(unittest.TestCase):
                 output_directory=root / "checked",
                 inputs={
                     "external_profiles": profiles,
+                    "catalog_call_contracts": catalog_calls,
+                    "call_boundary_contracts": call_boundaries,
                     "memory_versions": memory,
                     "parametric_proposals": proposals,
                     "unit_facts": unit_facts,
@@ -478,6 +578,12 @@ class ParametricSummaryProposalTests(unittest.TestCase):
                 root / "profiles", EXTERNAL_PROFILE_ARTIFACT_KIND_V3
             )
             static_values = _static_values(root / "static-values")
+            catalog_calls = _empty(
+                root / "catalog-calls", CATALOG_CALL_CONTRACTS_ARTIFACT_KIND_V3
+            )
+            call_boundaries = _empty(
+                root / "call-boundaries", "call-boundary-contracts-v3"
+            )
             proposals = root / "proposals"
             generate_parametric_summary_proposals_v3(
                 unit_facts_path=unit_facts,
@@ -506,6 +612,8 @@ class ParametricSummaryProposalTests(unittest.TestCase):
                 output_directory=root / "checked",
                 inputs={
                     "external_profiles": profiles,
+                    "catalog_call_contracts": catalog_calls,
+                    "call_boundary_contracts": call_boundaries,
                     "memory_versions": memory,
                     "parametric_proposals": proposals,
                     "unit_facts": unit_facts,

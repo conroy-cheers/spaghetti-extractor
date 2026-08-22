@@ -29,6 +29,17 @@ from ..artifacts.artifact_set import (
 from ..artifacts.io import ArtifactInputReaderV3, open_artifact_reader_v3
 from ..authority._schema import mapping, stable_id
 from ..authority.authority_common import canonical_dependencies_v3
+from ..authority.catalog_call_contracts import (
+    CATALOG_CALL_CONTRACTS_ARTIFACT_KIND_V3,
+    CATALOG_CALL_CONTRACT_CODEC_V1,
+    CatalogCallContractV1,
+    catalog_call_contract_machine_contradictions_v1,
+)
+from ..authority.call_boundary_contracts import (
+    CALL_BOUNDARY_CONTRACTS_ARTIFACT_KIND_V3,
+    CALL_BOUNDARY_CONTRACT_CODEC_V3,
+    CallBoundaryContractV3,
+)
 from ..authority.external_site_records import (
     EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
     EXTERNAL_PROFILE_CODEC_V3,
@@ -379,6 +390,8 @@ def _propose_target_dataflow_v3(
     preservation_cache: dict[
         tuple[str, ...], _ProposedPreservationV3
     ],
+    catalog_contracts: Mapping[str, CatalogCallContractV1],
+    call_boundary_contracts: Mapping[str, CallBoundaryContractV3],
 ) -> dict[str, _ProposedIndirectTargetV3]:
     """Propose a bounded register-target fixed point over exact direct exits."""
 
@@ -474,6 +487,8 @@ def _propose_target_dataflow_v3(
                         profile_index,
                         calls,
                         rva_to_unit,
+                        catalog_contracts,
+                        call_boundary_contracts,
                     )
                     preservation_cache[key] = preservation
                 if not preservation.complete:
@@ -532,6 +547,8 @@ def _propose_target_dataflow_v3(
                             profile_index,
                             calls,
                             rva_to_unit,
+                            catalog_contracts,
+                            call_boundary_contracts,
                         )
                         preservation_cache[internal_ids] = preservation
                     if not preservation.complete:
@@ -738,10 +755,14 @@ def _memory_effects(
         for row in memories_by_summary_id.get(summary_id, ())
     }
     relevant = tuple(relevant_by_id[row_id] for row_id in sorted(relevant_by_id))
-    nonstack: dict[str, tuple[str, str]] = {}
+    nonstack: dict[str, tuple[str, str, int | None]] = {}
     for unit_id in members:
         for access in units[unit_id].nonstack_accesses:
-            nonstack[access.access_id] = (unit_id, access.kind)
+            nonstack[access.access_id] = (
+                unit_id,
+                access.kind,
+                access.epoch_call_index,
+            )
     rank = {"preserved": 0, "write": 1, "unknown_kill": 2}
     effects: dict[tuple[str, str], str] = {}
     for graph in relevant:
@@ -749,7 +770,9 @@ def _memory_effects(
             exact = nonstack.get(link.access_id)
             if exact is None:
                 continue
-            unit_id, access_kind = exact
+            unit_id, access_kind, epoch_call_index = exact
+            if access_kind == "read" and epoch_call_index is None:
+                continue
             kind = "preserved" if access_kind == "read" else "write"
             key = (unit_id, link.component_id)
             if rank[kind] > rank.get(effects.get(key, "preserved"), 0):
@@ -789,6 +812,8 @@ class _ProposedPreservationV3:
     registers: tuple[str, ...]
     unit_ids: tuple[str, ...]
     profile_ids: tuple[str, ...]
+    contract_ids: tuple[str, ...] = ()
+    boundary_contract_record_ids: tuple[str, ...] = ()
 
 
 def _proposal_direct_closure_v3(
@@ -828,6 +853,7 @@ def _proposal_has_base_return_v3(
     units: Mapping[str, ParametricUnitFactV3],
     calls: Mapping[str, tuple[tuple[int, str | None], ...]],
     rva_to_unit: Mapping[int, str],
+    indirect_internal_targets: Mapping[str, tuple[str, ...]],
 ) -> bool:
     closure_set = set(closure)
     pending = [entry]
@@ -837,7 +863,12 @@ def _proposal_has_base_return_v3(
         if unit_id in visited or unit_id not in closure_set:
             continue
         visited.add(unit_id)
-        if any(target in recursive_entries for _index, target in calls[unit_id]):
+        if any(
+            target in recursive_entries for _index, target in calls[unit_id]
+        ) or any(
+            target in recursive_entries
+            for target in indirect_internal_targets.get(unit_id, ())
+        ):
             continue
         if units[unit_id].returns:
             return True
@@ -859,9 +890,48 @@ def _propose_internal_preservation_v3(
     profile_index: _ProfileIndexV3,
     calls: Mapping[str, tuple[tuple[int, str | None], ...]],
     rva_to_unit: Mapping[int, str],
+    catalog_contracts: Mapping[str, CatalogCallContractV1],
+    call_boundary_contracts: Mapping[str, CallBoundaryContractV3],
+    indirect_targets: Mapping[str, _ProposedIndirectTargetV3] | None = None,
 ) -> _ProposedPreservationV3:
+    indirect_targets = indirect_targets or {}
+    matched = tuple(catalog_contracts.get(target) for target in target_unit_ids)
+    if matched and all(
+        row is not None and row.preserved_registers is not None for row in matched
+    ):
+        contracts = tuple(row for row in matched if row is not None)
+        preserved = set(PE32_CALLEE_PRESERVED_REGISTERS_V3)
+        for contract in contracts:
+            preserved.intersection_update(contract.preserved_registers or ())
+        return _ProposedPreservationV3(
+            True,
+            tuple(sorted(preserved)),
+            tuple(sorted(set(target_unit_ids))),
+            (),
+            tuple(sorted(row.contract_id for row in contracts)),
+        )
+    boundaries = tuple(
+        call_boundary_contracts.get(target) for target in target_unit_ids
+    )
+    if boundaries and all(row is not None and row.authorizing for row in boundaries):
+        checked_boundaries = tuple(row for row in boundaries if row is not None)
+        preserved = set(PE32_CALLEE_PRESERVED_REGISTERS_V3)
+        for contract in checked_boundaries:
+            preserved.intersection_update(contract.preserved_registers)
+        return _ProposedPreservationV3(
+            True,
+            tuple(sorted(preserved)),
+            tuple(sorted(set(target_unit_ids))),
+            (),
+            (),
+            tuple(sorted(row.record_id for row in checked_boundaries)),
+        )
     entries: set[str] = set(target_unit_ids)
     closures: dict[str, tuple[str, ...]] = {}
+    indirect_internal_by_unit: dict[str, tuple[str, ...]] = {}
+    indirect_external_by_unit: dict[str, tuple[tuple[str, ...] | None, ...]] = {}
+    indirect_support_units: set[str] = set()
+    profile_ids: set[str] = set()
     complete = True
     pending = list(target_unit_ids)
     while pending:
@@ -880,6 +950,43 @@ def _propose_internal_preservation_v3(
                 elif target_id not in entries:
                     entries.add(target_id)
                     pending.append(target_id)
+            internal_targets: set[str] = set()
+            external_preserved: list[tuple[str, ...] | None] = []
+            for occurrence in units[unit_id].indirect_exits:
+                target = indirect_targets.get(occurrence.exit_id)
+                if target is None:
+                    complete = False
+                    continue
+                internal_targets.update(target.target_unit_ids)
+                indirect_support_units.update(target.support_unit_ids)
+                profile_ids.update(target.support_profile_ids)
+                transfer = (
+                    "jump"
+                    if "jump" in occurrence.transfer_kind
+                    else "call"
+                )
+                for profile_id in target.external_profile_record_ids:
+                    profile = profile_index.by_record_id.get(profile_id)
+                    preserved = (
+                        None
+                        if profile is None
+                        or transfer not in profile.allowed_transfers
+                        else _abi_preserved_registers_v3(profile)
+                    )
+                    external_preserved.append(preserved)
+                    profile_ids.add(profile_id)
+                    if preserved is None:
+                        complete = False
+                if not target.target_unit_ids and not target.external_profile_record_ids:
+                    complete = False
+            indirect_internal_by_unit[unit_id] = tuple(sorted(internal_targets))
+            indirect_external_by_unit[unit_id] = tuple(external_preserved)
+            for target_id in internal_targets:
+                if target_id not in units:
+                    complete = False
+                elif target_id not in entries:
+                    entries.add(target_id)
+                    pending.append(target_id)
 
     call_edges = {
         entry: {
@@ -887,6 +994,11 @@ def _propose_internal_preservation_v3(
             for unit_id in closures.get(entry, ())
             for _event_index, target_id in calls[unit_id]
             if target_id is not None
+        }
+        | {
+            target_id
+            for unit_id in closures.get(entry, ())
+            for target_id in indirect_internal_by_unit.get(unit_id, ())
         }
         for entry in entries
     }
@@ -903,13 +1015,13 @@ def _propose_internal_preservation_v3(
                 units,
                 calls,
                 rva_to_unit,
+                indirect_internal_by_unit,
             )
             for entry in component
         ):
             complete = False
 
     external_preserved: dict[tuple[str, int], tuple[str, ...] | None] = {}
-    profile_ids: set[str] = set()
     for closure in closures.values():
         for unit_id in closure:
             for row in units[unit_id].external_calls:
@@ -932,7 +1044,14 @@ def _propose_internal_preservation_v3(
                 if preserved is None:
                     complete = False
     consumed_units = tuple(
-        sorted({unit_id for closure in closures.values() for unit_id in closure})
+        sorted(
+            {
+                unit_id
+                for closure in closures.values()
+                for unit_id in closure
+            }
+            | indirect_support_units
+        )
     )
     if not complete:
         return _ProposedPreservationV3(
@@ -971,6 +1090,14 @@ def _propose_internal_preservation_v3(
                     and entry_equations.get(target_id, False)
                     for _event_index, target_id in calls[unit_id]
                 )
+                valid &= all(
+                    entry_equations.get(target_id, False)
+                    for target_id in indirect_internal_by_unit.get(unit_id, ())
+                )
+                valid &= all(
+                    preserved is not None and register in preserved
+                    for preserved in indirect_external_by_unit.get(unit_id, ())
+                )
                 if unit_equations[unit_id] != valid:
                     unit_equations[unit_id] = valid
                     changed = True
@@ -1007,6 +1134,8 @@ def _propose_scc(
     preservation_cache: dict[
         tuple[str, ...], _ProposedPreservationV3
     ],
+    catalog_contracts: Mapping[str, CatalogCallContractV1],
+    call_boundary_contracts: Mapping[str, CallBoundaryContractV3],
 ) -> ParametricSccProposalV3:
     scc_id = parametric_scc_id_v3(members, call_edges)
     recursive = len(members) > 1 or any(source == target for source, target in call_edges)
@@ -1077,6 +1206,9 @@ def _propose_scc(
                     profile_index,
                     calls,
                     rva_to_unit,
+                    catalog_contracts,
+                    call_boundary_contracts,
+                    proposed_indirect_targets,
                 )
                 preservation_cache[key] = preservation
             dependencies.update(
@@ -1085,7 +1217,23 @@ def _propose_scc(
                     RecordDependencyV3("structural_targets", target_unit_id),
                 }
             )
+            dependencies.update(
+                RecordDependencyV3("unit_facts", consumed_unit_id)
+                for consumed_unit_id in preservation.unit_ids
+            )
+            dependencies.update(
+                RecordDependencyV3("structural_targets", consumed_unit_id)
+                for consumed_unit_id in preservation.unit_ids
+            )
             profile_dependencies.update(preservation.profile_ids)
+            dependencies.update(
+                RecordDependencyV3("catalog_call_contracts", contract_id)
+                for contract_id in preservation.contract_ids
+            )
+            dependencies.update(
+                RecordDependencyV3("call_boundary_contracts", record_id)
+                for record_id in preservation.boundary_contract_record_ids
+            )
             call_effects.append(
                 CallEffectV3(
                     stable_id(
@@ -1104,6 +1252,11 @@ def _propose_scc(
                     (),
                     None,
                     preservation.registers if preservation.complete else None,
+                    (
+                        preservation.contract_ids[0]
+                        if len(preservation.contract_ids) == 1
+                        else None
+                    ),
                 )
             )
 
@@ -1142,12 +1295,12 @@ def _propose_scc(
                     (),
                     None,
                     preserved_registers,
+                    None,
                 )
             )
 
         return_exit = unit.returns
-        delta = unit.stack_net_bytes
-        cleanup = delta - 4 if return_exit and delta is not None and delta >= 4 else None
+        cleanup = unit.return_cleanup_bytes if return_exit else None
         if cleanup is not None:
             cleanup_values.add(cleanup)
         returns.append(
@@ -1236,6 +1389,8 @@ def generate_parametric_summary_proposals_v3(
     external_profiles_path: Path,
     static_value_origins_path: Path,
     output_directory: Path,
+    catalog_call_contracts_path: Path | None = None,
+    call_boundary_contracts_path: Path | None = None,
 ) -> ArtifactSetManifestV3:
     readers = {
         "external_profiles": open_artifact_reader_v3(external_profiles_path),
@@ -1246,6 +1401,14 @@ def generate_parametric_summary_proposals_v3(
             static_value_origins_path
         ),
     }
+    if catalog_call_contracts_path is not None:
+        readers["catalog_call_contracts"] = open_artifact_reader_v3(
+            catalog_call_contracts_path
+        )
+    if call_boundary_contracts_path is not None:
+        readers["call_boundary_contracts"] = open_artifact_reader_v3(
+            call_boundary_contracts_path
+        )
     expected_kinds = {
         "external_profiles": EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
         "memory_versions": MEMORY_VERSIONS_ARTIFACT_KIND_V3,
@@ -1253,6 +1416,14 @@ def generate_parametric_summary_proposals_v3(
         "structural_targets": STRUCTURAL_TARGETS_ARTIFACT_KIND_V3,
         "static_value_origins": STATIC_VALUE_ORIGINS_ARTIFACT_KIND_V3,
     }
+    if catalog_call_contracts_path is not None:
+        expected_kinds["catalog_call_contracts"] = (
+            CATALOG_CALL_CONTRACTS_ARTIFACT_KIND_V3
+        )
+    if call_boundary_contracts_path is not None:
+        expected_kinds["call_boundary_contracts"] = (
+            CALL_BOUNDARY_CONTRACTS_ARTIFACT_KIND_V3
+        )
     bindings = []
     for name, reader in readers.items():
         _require_kind(reader, expected_kinds[name], name)
@@ -1279,6 +1450,41 @@ def generate_parametric_summary_proposals_v3(
         ):
             profiles.append(EXTERNAL_PROFILE_CODEC_V3.read(row).value)
     profile_index = _ProfileIndexV3(tuple(profiles))
+    catalog_contract_rows = (
+        ()
+        if catalog_call_contracts_path is None
+        else tuple(
+            CATALOG_CALL_CONTRACT_CODEC_V1.read(row).value
+            for row in readers["catalog_call_contracts"].iter_records()
+        )
+    )
+    all_catalog_contracts = {
+        row.target_entry_unit_id: row for row in catalog_contract_rows
+    }
+    if len(all_catalog_contracts) != len(catalog_contract_rows):
+        raise ParametricSummaryProposalV3Error(
+            "catalog-call contracts contain ambiguous target entries"
+        )
+    catalog_contracts = {
+        entry: row
+        for entry, row in all_catalog_contracts.items()
+        if not catalog_call_contract_machine_contradictions_v1(row, units)
+    }
+    boundary_contract_rows = (
+        ()
+        if call_boundary_contracts_path is None
+        else tuple(
+            CALL_BOUNDARY_CONTRACT_CODEC_V3.read(row).value
+            for row in readers["call_boundary_contracts"].iter_records()
+        )
+    )
+    call_boundary_contracts = {
+        row.record_id: row for row in boundary_contract_rows
+    }
+    if len(call_boundary_contracts) != len(boundary_contract_rows):
+        raise ParametricSummaryProposalV3Error(
+            "call-boundary contracts contain ambiguous target entries"
+        )
     memories_by_summary_id_lists: dict[
         str, list[MemoryVersionRecordV3]
     ] = {}
@@ -1346,7 +1552,14 @@ def generate_parametric_summary_proposals_v3(
         rva_to_unit=rva_to_unit,
         budget=64,
         preservation_cache=preservation_cache,
+        catalog_contracts=catalog_contracts,
+        call_boundary_contracts=call_boundary_contracts,
     )
+    # Target-dataflow queries use deliberately conservative call summaries
+    # while target sets are still converging. Recompute final summaries from
+    # the completed finite target inventory instead of retaining bootstrap
+    # cache entries.
+    preservation_cache.clear()
     proposals: list[ParametricSccProposalV3] = []
     for members in partition_call_graph_sccs_v3(units, edges):
         member_set = set(members)
@@ -1379,6 +1592,8 @@ def generate_parametric_summary_proposals_v3(
                     )
                 ),
                 preservation_cache=preservation_cache,
+                catalog_contracts=catalog_contracts,
+                call_boundary_contracts=call_boundary_contracts,
             )
         )
     records: list[ArtifactRecordV3] = [
@@ -1410,6 +1625,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--structural-targets", type=Path, required=True)
     parser.add_argument("--external-profiles", type=Path, required=True)
     parser.add_argument("--static-value-origins", type=Path, required=True)
+    parser.add_argument("--catalog-call-contracts", type=Path, required=True)
+    parser.add_argument("--call-boundary-contracts", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
     return parser
 
@@ -1422,6 +1639,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         structural_targets_path=arguments.structural_targets,
         external_profiles_path=arguments.external_profiles,
         static_value_origins_path=arguments.static_value_origins,
+        catalog_call_contracts_path=arguments.catalog_call_contracts,
+        call_boundary_contracts_path=arguments.call_boundary_contracts,
         output_directory=arguments.out,
     )
     return 0

@@ -34,6 +34,7 @@ from spaghetti_extractor.candidate.authority import (
 from spaghetti_extractor.machine_ir.coverage import (
     FALLBACK_COVERAGE_RECEIPT_FORMAT,
 )
+from spaghetti_extractor.machine_ir.memory_actions import build_memory_action_graph
 from spaghetti_extractor.components.formats import (
     COMPONENT_RUNTIME_COMPLETION_V3_FORMAT,
     COMPONENT_RUNTIME_PACKAGE_V3_FORMAT,
@@ -58,8 +59,8 @@ def _write_json(path: Path, value: object) -> None:
 
 
 def _unit() -> dict[str, object]:
-    return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+    unit = {
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": "unit:1000",
         "source": {
@@ -68,8 +69,18 @@ def _unit() -> dict[str, object]:
             "instruction_bytes_sha256": "c" * 64,
         },
         "instructions": [{"rva_start": 0x1000, "rva_end": 0x1001}],
-        "semantics": {"external_events": [], "faults": [], "outcome": {"kind": "return"}},
+        "semantics": {
+            "memory_events": [],
+            "external_events": [],
+            "faults": [],
+            "ordered_events": [],
+            "outcome": {"kind": "return"},
+        },
     }
+    unit["semantics"]["memory_actions"] = build_memory_action_graph(
+        instructions=unit["instructions"], memory_events=[], ordered_events=[]
+    )
+    return unit
 
 
 class CandidateAuthorityV3Tests(unittest.TestCase):
@@ -84,13 +95,13 @@ class CandidateAuthorityV3Tests(unittest.TestCase):
         self.machine_ir_sha256 = hashlib.sha256(self.machine_ir.read_bytes()).hexdigest()
         self.manifest = self.root / "machine-ir-manifest.json"
         _write_json(self.manifest, {
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v3",
             "binary": {"sha256": PE_SHA256},
             "inputs": {"original_pe": {"sha256": PE_SHA256}},
             "counts": {"units": 1},
             "artifacts": {
                 "machine_ir": {
-                    "format": "spaghetti-extractor-machine-ir-v2",
+                    "format": "spaghetti-extractor-machine-ir-v3",
                     "sha256": self.machine_ir_sha256,
                 }
             },

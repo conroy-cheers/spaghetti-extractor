@@ -1,5 +1,5 @@
 {
-  "format": "spaghetti-extractor-component-machine-binding-declaration-v2",
+  "format": "spaghetti-extractor-component-machine-binding-declaration-v3",
   "id": "memory-regions-equal",
   "unit_ids": [
     "semantic-transfer:original-cutpoint-00008d60-00008d6f",
@@ -28,28 +28,60 @@
         {
           "id": "left",
           "projection": {
-            "kind": "bytes_view",
+            "kind": "view",
             "base": {
               "kind": "stack",
               "offset": 4,
               "width": 32,
               "at": "entry"
             },
-            "extent_id": "count",
+            "extent": {
+              "kind": "stack",
+              "offset": 12,
+              "width": 32,
+              "at": "entry"
+            },
+            "requested_extent": {
+              "kind": "stack",
+              "offset": 12,
+              "width": 32,
+              "at": "entry"
+            },
+            "authority": {
+              "id": "left_region",
+              "kind": "external",
+              "lifetime": "invocation"
+            },
             "at": "entry"
           }
         },
         {
           "id": "right",
           "projection": {
-            "kind": "bytes_view",
+            "kind": "view",
             "base": {
               "kind": "stack",
               "offset": 8,
               "width": 32,
               "at": "entry"
             },
-            "extent_id": "count",
+            "extent": {
+              "kind": "stack",
+              "offset": 12,
+              "width": 32,
+              "at": "entry"
+            },
+            "requested_extent": {
+              "kind": "stack",
+              "offset": 12,
+              "width": 32,
+              "at": "entry"
+            },
+            "authority": {
+              "id": "right_region",
+              "kind": "external",
+              "lifetime": "invocation"
+            },
             "at": "entry"
           }
         }
@@ -68,7 +100,6 @@
       "state": [],
       "preserved_state_ids": [],
       "effects": [],
-      "callback_operation_ids": [],
       "continuation_unit_ids": []
     }
   ],

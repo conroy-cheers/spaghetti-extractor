@@ -33,7 +33,7 @@ BINDING = ArtifactBindingV3("binary", "pe32", "fixture.exe", PE_SHA256)
 
 def _unit() -> dict[str, object]:
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": "unit:unknown-write",
         "status": "qualified",

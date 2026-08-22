@@ -678,7 +678,7 @@ def _method(producer: object, status: str) -> dict[str, object]:
             "kind": "exhaustive_finite_domain_v1",
             "complete_for_declared_domain": status != "incomplete",
             "candidate_only": True,
-            "semantic_reference": "canonical-machine-ir-v2",
+            "semantic_reference": "canonical-machine-ir-v3",
             "reference_backend": "bounded-python-machine-ir-evaluator-v3",
             "candidate_backend": "compiled-portable-c",
             "independent_isa_qualification": "required-at-candidate-gate-v3",

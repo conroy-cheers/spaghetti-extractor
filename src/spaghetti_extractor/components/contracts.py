@@ -277,41 +277,60 @@ def _declarations(
         "postconditions": [],
         "observations": [],
     }
-    component = {
-        "id": lift_unit["id"],
-        "label": lift_unit["label"],
-        "purpose": "Operator-defined independently liftable semantic component",
-        "kind": "aggregate" if lift_unit["kind"] == "group" else "procedure",
-        "sharing": "exclusive",
-        "expected_reachability": "any",
-        "membership": {
-            "unit_ids": copy.deepcopy(lift_unit["unit_ids"]),
-            "cluster_ids": [],
-        },
-        "children": [],
-        "component_calls": [],
-        "logical_interface": logical,
-        "refinement": {
-            "status": "not_started",
-            "stages": [
-                {
-                    "kind": "component_resolution_v2",
-                    "resolution_sha256": resolution["resolution_sha256"],
-                    "lift_unit_id": lift_unit["id"],
-                }
-            ],
-        },
-        "emission": {
-            "policy": "subsystem" if lift_unit["kind"] == "group" else "function"
-        },
-        "evidence": [],
-        "assumptions": [],
-    }
+    resolved_units = (
+        [lift_unit]
+        if lift_unit["kind"] == "group"
+        else [
+            copy.deepcopy(dict(row))
+            for row in _array(resolution.get("components"), "resolved components")
+            if isinstance(row, Mapping)
+        ]
+    )
+    components = []
+    for resolved in resolved_units:
+        kind = resolved.get("kind")
+        identity = resolved.get("id")
+        if kind not in {"component", "group"} or not isinstance(identity, str):
+            raise ComponentIntentError("resolved component declaration is malformed")
+        components.append(
+            {
+                "id": identity,
+                "label": resolved["label"],
+                "purpose": "Operator-defined independently liftable semantic component",
+                "kind": "aggregate" if kind == "group" else "procedure",
+                "sharing": "exclusive",
+                "expected_reachability": "any",
+                "membership": {
+                    "unit_ids": copy.deepcopy(resolved["unit_ids"]),
+                    "cluster_ids": [],
+                },
+                "children": [],
+                "component_calls": copy.deepcopy(
+                    resolved.get("component_calls", [])
+                ),
+                "logical_interface": copy.deepcopy(logical),
+                "refinement": {
+                    "status": "not_started",
+                    "stages": [
+                        {
+                            "kind": "component_resolution_v2",
+                            "resolution_sha256": resolution["resolution_sha256"],
+                            "lift_unit_id": identity,
+                        }
+                    ],
+                },
+                "emission": {
+                    "policy": "subsystem" if kind == "group" else "function"
+                },
+                "evidence": [],
+                "assumptions": [],
+            }
+        )
     return {
         "format": SEMANTIC_COMPONENT_DECLARATIONS_FORMAT,
         "program_id": resolution["program_id"],
         "bindings": copy.deepcopy(resolution["bindings"]),
-        "components": [component],
+        "components": sorted(components, key=lambda row: str(row["id"])),
     }
 
 

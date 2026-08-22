@@ -15,6 +15,7 @@ from ..artifacts.formats import (
     STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT,
 )
 from ..external.callbacks import parse_callback_abi, parse_callback_source
+from ..external.callback_protocols import callback_protocol_from_contract
 from ..external.machine_import_profiles import load_machine_import_profile_set
 from ..errors import ToolkitInputError
 from ..static_program.codec import load_static_program_contract_binding
@@ -345,21 +346,30 @@ def _machine_import_contracts(
             )
         world_effect = contract.get("world_effect")
         callback_abi = contract.get("callback_abi")
+        callback_protocol = callback_protocol_from_contract(
+            contract,
+            argument_words=argument_words,
+            context=f"external profile contract {contract['id']!r}",
+        )
         if world_effect == "callbackRegistration":
             context = f"external profile contract {contract['id']!r}"
             source = parse_callback_source(
                 contract, argument_words=argument_words, context=context
             )
             callback = parse_callback_abi(contract, context=context)
-            contract["callback_source"] = source.as_json()
-            contract["callback_abi"] = callback.as_json()
+            if callback_protocol is None:
+                contract["callback_source"] = source.as_json()
+                contract["callback_abi"] = callback.as_json()
             callback_lifetime = contract.get("callback_lifetime")
-            if not isinstance(callback_lifetime, (str, dict)) or not callback_lifetime:
+            if callback_protocol is None and (
+                not isinstance(callback_lifetime, (str, dict))
+                or not callback_lifetime
+            ):
                 raise ToolkitInputError(
                     f"external profile contract {contract['id']!r} has no exact callback lifetime"
                 )
             callback_result = contract.get("callback_result")
-            if callback_result is not None and (
+            if callback_protocol is None and callback_result is not None and (
                 not isinstance(callback_result, Mapping)
                 or set(callback_result) != {"register", "origin", "nullable"}
                 or callback_result.get("register")
@@ -370,7 +380,7 @@ def _machine_import_contracts(
                 raise ToolkitInputError(
                     f"external profile contract {contract['id']!r} has an invalid callback result"
                 )
-        elif callback_abi is not None:
+        elif callback_abi is not None or callback_protocol is not None:
             raise ToolkitInputError(
                 f"external profile contract {contract['id']!r} attaches a callback ABI to a non-callback effect"
             )
@@ -464,18 +474,26 @@ def _annotate_machine_import_arguments(
             callback = parse_callback_abi(
                 contract, context=f"machine call {contract.get('id')!r}"
             )
-            abi_contract.update({
-                "callback_source": callback_source.as_json(),
-                "callback_abi": callback.as_json(),
-                "callback_behavior": contract.get(
-                    "callback_behavior", "registration"
-                ),
-                "callback_lifetime": _machine_contract_metadata(
-                    contract.get("callback_lifetime")
-                ),
-            })
-            if contract.get("callback_result") is not None:
-                abi_contract["callback_result"] = dict(contract["callback_result"])
+            callback_protocol = callback_protocol_from_contract(
+                contract,
+                argument_words=argument_words,
+                context=f"machine call {contract.get('id')!r}",
+            )
+            if callback_protocol is not None:
+                abi_contract["callback_protocol"] = callback_protocol.to_payload()
+            else:
+                abi_contract.update({
+                    "callback_source": callback_source.as_json(),
+                    "callback_abi": callback.as_json(),
+                    "callback_behavior": contract.get(
+                        "callback_behavior", "registration"
+                    ),
+                    "callback_lifetime": _machine_contract_metadata(
+                        contract.get("callback_lifetime")
+                    ),
+                })
+                if contract.get("callback_result") is not None:
+                    abi_contract["callback_result"] = dict(contract["callback_result"])
         event["abi_contract"] = abi_contract
         return event
 

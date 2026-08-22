@@ -247,7 +247,11 @@ def materialize_inductive_certificate(
         plan,
         machine,
         relation,
-        [] if service_bindings is None else service_bindings,
+        (
+            semantic_payload.get("services", [])
+            if service_bindings is None
+            else service_bindings
+        ),
     )
     model_by_segment = {
         str(item["segment_id"]): item

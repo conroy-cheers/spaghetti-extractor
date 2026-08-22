@@ -4,15 +4,21 @@
   "accept_derived_machine_boundary": true,
   "overrides": {
     "portable_interface_ir": {
-      "format": "spaghetti-extractor-component-interface-ir-v2",
+      "format": "spaghetti-extractor-component-interface-ir-v4",
       "id": "memory_regions_equal",
       "types": [
         {
-          "id": "bytes",
-          "kind": "bytes",
+          "id": "u8",
+          "kind": "scalar",
+          "c_type": "uint8_t"
+        },
+        {
+          "id": "byte_span",
+          "kind": "view",
+          "element_type_id": "u8",
           "access": "read",
-          "extent_parameter_id": "count",
-          "nul_terminated": false
+          "extent": { "kind": "parameter", "parameter_id": "count" },
+          "ownership": "borrowed"
         },
         {
           "id": "bool8",
@@ -31,8 +37,8 @@
           "id": "compare",
           "kind": "operation",
           "parameters": [
-            { "id": "left", "type_id": "bytes" },
-            { "id": "right", "type_id": "bytes" },
+            { "id": "left", "type_id": "byte_span" },
+            { "id": "right", "type_id": "byte_span" },
             { "id": "count", "type_id": "u32" }
           ],
           "results": [
@@ -55,8 +61,8 @@
         {
           "id": "compare_memory",
           "parameter_type_ids": [
-            "bytes",
-            "bytes",
+            "byte_span",
+            "byte_span",
             "u32"
           ],
           "result_type_id": "u32",

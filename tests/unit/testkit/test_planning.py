@@ -26,6 +26,7 @@ def _test(
         dependency_paths=dependencies,
         fixtures=(),
         resources=(),
+        declared_resources=(),
         sha256=f"{index:064x}",
         input_sha256=f"{index + 1:064x}",
         shard=shard or f"pure-{index % 32:02d}",
@@ -125,12 +126,13 @@ class TestPlanningTests(unittest.TestCase):
 
     def test_directory_resource_suppresses_redundant_read_only_children(self) -> None:
         row = _test(1, dependencies=("docs/README.md",))
-        row = replace(row, resources=("docs",))
+        row = replace(row, resources=("docs",), declared_resources=("docs",))
         index = ImpactIndex(repository=".", modules=(), tests=(row,))
 
         plan = build_suite_plan(index, mode="full")
 
         self.assertEqual(plan.shards[0].files, ("docs", row.path))
+        self.assertEqual(plan.shards[0].declared_resources, ("docs",))
 
 
 if __name__ == "__main__":

@@ -46,13 +46,25 @@ def _generic_suite_file(path: str) -> bool:
     return root in _GENERIC_SUITE_INCLUDED_ROOTS
 
 
+def _declared_resource_file(path: str, resources: tuple[str, ...] | list[str]) -> bool:
+    return any(
+        path == resource or path.startswith(f"{resource.rstrip('/')}/")
+        for resource in resources
+    )
+
+
 def _static_shard(shard: PlannedShard) -> dict[str, object]:
     core: dict[str, object] = {
         "id": shard.id,
         "resource_class": shard.resource_class,
         "tests": list(shard.tests),
         "test_paths": list(shard.test_paths),
-        "files": [path for path in shard.files if _generic_suite_file(path)],
+        "files": [
+            path
+            for path in shard.files
+            if _generic_suite_file(path)
+            or _declared_resource_file(path, shard.declared_resources)
+        ],
         "fixtures": list(shard.fixtures),
     }
     return {**core, "input_sha256": canonical_sha256(core)}
@@ -63,13 +75,18 @@ def nix_execution_plan_payload(
     *,
     excluded_shards: frozenset[str] = frozenset(),
 ) -> dict[str, object]:
-    """Render a live plan without target-only resources or prebuilt shards."""
+    """Render a live plan without inferred target resources or prebuilt shards."""
 
     payload = plan.as_dict()
     payload["shards"] = [
         {
             **row,
-            "files": [path for path in row["files"] if _generic_suite_file(path)],
+            "files": [
+                path
+                for path in row["files"]
+                if _generic_suite_file(path)
+                or _declared_resource_file(path, row["declared_resources"])
+            ],
         }
         for row in payload["shards"]
         if row["id"] not in excluded_shards

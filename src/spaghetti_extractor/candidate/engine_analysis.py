@@ -19,6 +19,7 @@ from ..external.callbacks import (
 from ..external.contracts import CheckedExternalSiteContract
 from ..machine_ir.schema import RAW_INSTRUCTION_FIELDS
 from ..errors import ToolkitInputError
+from ..machine_ir.memory_actions import MemoryActionError, validate_memory_action_graph
 from ..util import sha256_file
 from .engine_model import (
     NativeTerminationImport,
@@ -112,7 +113,7 @@ def _adapt_native_machine_ir_unit(
     unit: Mapping[str, Any], row_index: int
 ) -> dict[str, Any]:
     if unit.get("format") != _MACHINE_IR_FORMAT or unit.get("record_kind") != "unit":
-        raise ToolkitInputError(f"machine-IR record {row_index} is not a v2 unit")
+        raise ToolkitInputError(f"machine-IR record {row_index} is not a v3 unit")
     if _contains_raw_instruction_material(unit):
         raise ToolkitInputError(
             f"machine-IR record {row_index} contains raw instruction material"
@@ -126,6 +127,15 @@ def _adapt_native_machine_ir_unit(
     semantics = unit.get("semantics")
     if not isinstance(source, Mapping) or not isinstance(semantics, Mapping):
         raise ToolkitInputError(f"{transfer_id} source or semantics is malformed")
+    memory_actions = semantics.get("memory_actions")
+    if not isinstance(memory_actions, Mapping):
+        raise ToolkitInputError(f"{transfer_id} has no memory action graph")
+    try:
+        validate_memory_action_graph(memory_actions, require_authoritative=True)
+    except MemoryActionError as exc:
+        raise ToolkitInputError(
+            f"{transfer_id} has a non-authoritative memory action graph: {exc}"
+        ) from exc
     original = source.get("original")
     if not isinstance(original, Mapping):
         raise ToolkitInputError(f"{transfer_id} has no machine-IR source span")
@@ -158,7 +168,9 @@ def _adapt_native_machine_ir_unit(
         "original": {"rva_start": rva_start, "rva_end": rva_end, "size": size},
         "instructions": instructions,
         "ordered_events": ordered_events,
+        "memory_actions": copy.deepcopy(dict(memory_actions)),
         "register_writes": semantics.get("register_writes"),
+        "flag_writes": semantics.get("flag_writes"),
         "outcome": semantics.get("outcome"),
         "fpu_state": semantics.get("fpu_state"),
         "instruction_effect_schedule": semantics.get("instruction_effect_schedule"),

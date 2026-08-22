@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 
 from ..artifacts.formats import NATIVE_ENGINE_PACKAGE_FORMAT, NATIVE_ENGINE_PLAN_FORMAT
 from ..external.callbacks import CallbackABI, CallbackSource
+from ..external.callback_protocols import parse_callback_protocol
 from ..external.contracts import (
     CheckedExternalSiteContract,
 )
@@ -39,6 +40,7 @@ from .engine_components import (
     _previous_callback_storage_writes,
 )
 from .authority.execution import load_candidate_execution_authority_v3
+from .callback_authority import load_callback_protocol_authority_v1
 from .engine_model import (
     NativeCallbackAdapter,
     NativeCallbackPassthrough,
@@ -85,11 +87,12 @@ def plan_spx_native_engine(
     machine_ir_manifest: Path,
     recovered_executable_data: Path | str | None = None,
     entry_rva: int,
-    callback_targets: Iterable[int | Mapping[str, Any]] = (),
+    tls_callback_targets: Iterable[int | Mapping[str, Any]] = (),
     import_iat_vas: Mapping[tuple[str, str | int], int] | None = None,
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
     canonical_external_sites: Path | str,
+    callback_authority: Path | str,
     root_closure: Path | str,
     target_certificates: Path | str,
     parametric_summaries: Path | str,
@@ -124,7 +127,7 @@ def plan_spx_native_engine(
     )
     semantic_input_sha256 = sha256_file(input_path)
     selected_portable_components = tuple(selected_portable_components)
-    callback_targets = tuple(callback_targets)
+    tls_callback_targets = tuple(tls_callback_targets)
     machine_ir_mode = True
     machine_ir_manifest_payload = _machine_ir_manifest_payload(
         machine_ir=Path(machine_ir),
@@ -134,6 +137,10 @@ def plan_spx_native_engine(
     authoritative_external_index = load_authoritative_external_sites(
         canonical_external_sites
     )
+    callback_authority_index = load_callback_protocol_authority_v1(
+        callback_authority
+    )
+    callback_authority_by_site = callback_authority_index.by_external_site()
     authoritative_external_sites = authoritative_external_index.by_event()
     execution_authority = load_candidate_execution_authority_v3(
         root_closure=Path(root_closure),
@@ -233,6 +240,7 @@ def plan_spx_native_engine(
     callback_site_abis: dict[
         int, tuple[CallbackSource, int, CallbackABI]
     ] = {}
+    callback_site_authorities: dict[int, tuple[Any, ...]] = {}
     x87_operations: list[NativeX87Operation] = []
     relocation_evidence = _parse_pe_base_relocation_evidence(
         base_relocation_evidence
@@ -642,6 +650,30 @@ def plan_spx_native_engine(
                 )
                 if checked_registration is not None:
                     callback_registration = checked_registration
+                    site_ids = (
+                        []
+                        if target_resolution_evidence is None
+                        else target_resolution_evidence.get("site_ids", [])
+                    )
+                    authority_rows = tuple(
+                        callback
+                        for site_id in site_ids
+                        for callback in callback_authority_by_site.get(site_id, ())
+                    )
+                    if not authority_rows:
+                        blockers.append(_blocker(
+                            "callback_protocol_authority_missing",
+                            transfer_id=transfer_id,
+                            event_index=event_index,
+                            instruction_rva=instruction_rva,
+                            observed=site_ids,
+                            next_action=(
+                                "derive callback-authority-v4 from the canonical "
+                                "external registration site"
+                            ),
+                        ))
+                    else:
+                        callback_site_authorities[instruction_rva] = authority_rows
             elif checked_external_contracts_required:
                 blockers.append(_blocker(
                     "canonical_external_site_authority_missing",
@@ -759,12 +791,12 @@ def plan_spx_native_engine(
     callback_specs: dict[int, tuple[str, str, str, int]] = {}
     declared_callback_root_rvas = {
         value.get("rva")
-        for value in callback_targets
+        for value in tls_callback_targets
         if isinstance(value, Mapping)
         and isinstance(value.get("rva"), int)
         and not isinstance(value.get("rva"), bool)
     }
-    for index, value in enumerate(callback_targets):
+    for index, value in enumerate(tls_callback_targets):
         try:
             callback_rva, callback_kind, stack_cleanup = _callback_spec(value, index)
         except ToolkitInputError as exc:
@@ -813,8 +845,60 @@ def plan_spx_native_engine(
             if site.checked_external_contract is not None
             else None
         )
-        if callback_adapter is not None:
-            target_rvas = callback_adapter.target_rvas
+        authority_rows = callback_site_authorities.get(site.instruction_rva, ())
+        if authority_rows:
+            protocols = {
+                json.dumps(
+                    row.protocol.to_value(),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                for row in authority_rows
+                if row.protocol is not None
+            }
+            target_rvas = tuple(sorted({row.target_rva for row in authority_rows}))
+            if len(protocols) != 1:
+                blockers.append(_blocker(
+                    "callback_protocol_authority_ambiguous",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    observed=sorted(protocols),
+                    next_action="split callback alternatives by exact protocol",
+                ))
+                continue
+            protocol = parse_callback_protocol(
+                json.loads(next(iter(protocols))),
+                registration_argument_words=(
+                    site.checked_external_contract.argument_words
+                    if site.checked_external_contract is not None
+                    else argument_index + 1
+                ),
+                context=f"{site.transfer_id} callback protocol authority",
+            )
+            if (
+                protocol.source is None
+                or protocol.source.argument != argument_index
+                or protocol.source.kind != source_spec.kind
+                or protocol.signature.argument_words != callback_abi.argument_words
+                or protocol.signature.stack_cleanup_bytes != stack_cleanup
+            ):
+                blockers.append(_blocker(
+                    "callback_protocol_runtime_contradiction",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    next_action="regenerate runtime bindings from callback authority",
+                ))
+                continue
+            if callback_adapter is not None and callback_adapter.target_rvas != target_rvas:
+                blockers.append(_blocker(
+                    "callback_adapter_authority_contradiction",
+                    transfer_id=site.transfer_id,
+                    instruction_rva=site.instruction_rva,
+                    observed=list(callback_adapter.target_rvas),
+                    expected=list(target_rvas),
+                    next_action="regenerate the adapter from callback-authority-v4",
+                ))
+                continue
             callback_image_base = (
                 relocation_evidence.image_base
                 if relocation_evidence is not None
@@ -841,6 +925,14 @@ def plan_spx_native_engine(
                 )
                 for rva in target_rvas
             )
+        elif callback_adapter is not None:
+            blockers.append(_blocker(
+                "callback_protocol_authority_missing",
+                transfer_id=site.transfer_id,
+                instruction_rva=site.instruction_rva,
+                next_action="supply complete callback-authority-v4",
+            ))
+            continue
         elif source_spec.kind == "argument_pointee":
             blockers.append(_blocker(
                 "callback_target_provenance_incomplete",

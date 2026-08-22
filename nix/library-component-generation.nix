@@ -8,6 +8,7 @@
   checkedIsland,
   behaviorPack,
   catalogSearchIndex,
+  abiMatchResolution ? null,
   canonicalExternalSites,
 }:
 
@@ -40,6 +41,7 @@ pkgs.runCommand name {
     ${lib.escapeShellArg behaviorPack} \
     ${lib.escapeShellArg catalogSearchIndex} \
     ${lib.escapeShellArg canonicalExternalSites} \
+    ${lib.escapeShellArg (if abiMatchResolution == null then "" else abiMatchResolution)} \
     "$out" <<'PY'
   import pathlib
   import sys
@@ -55,7 +57,8 @@ pkgs.runCommand name {
       behavior_pack=pathlib.Path(sys.argv[4]),
       catalog_search_index=pathlib.Path(sys.argv[5]),
       canonical_external_sites=pathlib.Path(sys.argv[6]),
-      out_dir=pathlib.Path(sys.argv[7]),
+      abi_match_resolution=(None if not sys.argv[7] else pathlib.Path(sys.argv[7])),
+      out_dir=pathlib.Path(sys.argv[8]),
   )
   PY
   jq -e '

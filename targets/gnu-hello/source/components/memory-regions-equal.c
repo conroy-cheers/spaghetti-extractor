@@ -2,8 +2,8 @@
 
 uint8_t gnu_hello_memory_regions_equal(
     spx_memory_regions_equal_context_v2 *context,
-    const spx_bytes_view_v2 *left,
-    const spx_bytes_view_v2 *right,
+    const spx_view_v1 *left,
+    const spx_view_v1 *right,
     uint32_t count) {
   uint32_t comparison = context->services->compare_memory(
       context->services->context, left, right, count);

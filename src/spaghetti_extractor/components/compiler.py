@@ -13,9 +13,19 @@ from .inductive_source import (
     InductiveSourcePlanV1,
     validate_inductive_source_plans,
 )
+from .atomics import (
+    interface_uses_atomics,
+    spx_atomics_header,
+    spx_atomics_validation_source,
+)
 from .interface_ir import (
+    COMPONENT_INTERFACE_IR_V4,
     ComponentInterfaceIRError,
     PortableComponentInterfaceV2,
+)
+from .capabilities import (
+    spx_reference_runtime_header,
+    spx_reference_runtime_source,
 )
 
 
@@ -82,6 +92,16 @@ def compile_component_library(
         implementation_header = generated_root / "portable-component-implementation.h"
         conformance_tu = generated_root / "component-conformance.c"
         public_header.write_text(interface.render_public_header(), encoding="ascii")
+        has_atomics = interface_uses_atomics(interface.types)
+        atomic_validation_tu: Path | None = None
+        if has_atomics:
+            (generated_root / "spx-atomics.h").write_text(
+                spx_atomics_header(), encoding="ascii"
+            )
+            atomic_validation_tu = generated_root / "spx-atomics-validation.c"
+            atomic_validation_tu.write_text(
+                spx_atomics_validation_source(), encoding="ascii"
+            )
         implementation_header.write_text(
             interface.render_implementation_header(
                 symbols, public_header=public_header.name
@@ -95,6 +115,17 @@ def compile_component_library(
             encoding="ascii",
         )
         generated_translation_units: list[Path] = [conformance_tu]
+        if interface.format_version == COMPONENT_INTERFACE_IR_V4:
+            (generated_root / "spx-reference-runtime.h").write_text(
+                spx_reference_runtime_header(), encoding="ascii"
+            )
+            reference_runtime_tu = generated_root / "spx-reference-runtime.c"
+            reference_runtime_tu.write_text(
+                spx_reference_runtime_source(), encoding="ascii"
+            )
+            generated_translation_units.append(reference_runtime_tu)
+        if mode == "host-shared" and atomic_validation_tu is not None:
+            generated_translation_units.append(atomic_validation_tu)
         forced_interface_header = implementation_header
         if induction:
             aggregate_header = generated_root / "portable-component-inductive.h"

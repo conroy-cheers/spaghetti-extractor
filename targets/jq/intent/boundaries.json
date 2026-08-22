@@ -1,0 +1,123 @@
+{
+  "format": "spaghetti-extractor-boundary-check-spec-v1",
+  "schema_id": "jq-1.8.1-pe32-boundaries",
+  "types": [
+    {"id": "unit", "kind": "void"},
+    {"id": "u8", "kind": "integer", "width_bits": 8, "signed": false},
+    {"id": "i8", "kind": "integer", "width_bits": 8, "signed": true},
+    {"id": "u16", "kind": "integer", "width_bits": 16, "signed": false},
+    {"id": "i32", "kind": "integer", "width_bits": 32, "signed": true},
+    {"id": "u32", "kind": "integer", "width_bits": 32, "signed": false},
+    {"id": "f64", "kind": "float", "format": "binary64", "value_bits": 64},
+    {"id": "jv-refcnt", "kind": "opaque", "nominal_id": "jv_refcnt"},
+    {"id": "file", "kind": "opaque", "nominal_id": "FILE"},
+    {"id": "p-jv-refcnt", "kind": "pointer", "pointee_type_id": "jv-refcnt", "qualifiers": []},
+    {"id": "p-file", "kind": "pointer", "pointee_type_id": "file", "qualifiers": []},
+    {"id": "p-char", "kind": "pointer", "pointee_type_id": "i8", "qualifiers": []},
+    {
+      "id": "jv-payload",
+      "kind": "union",
+      "nominal_id": "jv_payload",
+      "fields": [
+        {"id": "number", "type_id": "f64", "bit_width": null},
+        {"id": "ptr", "type_id": "p-jv-refcnt", "bit_width": null}
+      ]
+    },
+    {
+      "id": "jv",
+      "kind": "record",
+      "nominal_id": "jv",
+      "fields": [
+        {"id": "kind_flags", "type_id": "u8", "bit_width": null},
+        {"id": "pad", "type_id": "u8", "bit_width": null},
+        {"id": "offset", "type_id": "u16", "bit_width": null},
+        {"id": "size", "type_id": "i32", "bit_width": null},
+        {"id": "payload", "type_id": "jv-payload", "bit_width": null}
+      ]
+    },
+    {
+      "id": "math-exception",
+      "kind": "record",
+      "nominal_id": "msvcrt-exception",
+      "fields": [
+        {"id": "type", "type_id": "i32", "bit_width": null},
+        {"id": "name", "type_id": "p-char", "bit_width": null},
+        {"id": "arg1", "type_id": "f64", "bit_width": null},
+        {"id": "arg2", "type_id": "f64", "bit_width": null},
+        {"id": "retval", "type_id": "f64", "bit_width": null}
+      ]
+    },
+    {"id": "p-math-exception", "kind": "pointer", "pointee_type_id": "math-exception", "qualifiers": []},
+    {"id": "jv-copy-fn", "kind": "function", "result_type_id": "jv", "parameter_type_ids": ["jv"], "variadic": false, "calling_convention": "cdecl"},
+    {"id": "jv-free-fn", "kind": "function", "result_type_id": "unit", "parameter_type_ids": ["jv"], "variadic": false, "calling_convention": "cdecl"},
+    {"id": "jv-dumpf-fn", "kind": "function", "result_type_id": "unit", "parameter_type_ids": ["jv", "p-file", "i32"], "variadic": false, "calling_convention": "cdecl"},
+    {"id": "math-handler-fn", "kind": "function", "result_type_id": "i32", "parameter_type_ids": ["p-math-exception"], "variadic": false, "calling_convention": "cdecl"},
+    {"id": "p-math-handler-fn", "kind": "pointer", "pointee_type_id": "math-handler-fn", "qualifiers": []},
+    {"id": "set-math-handler-fn", "kind": "function", "result_type_id": "p-math-handler-fn", "parameter_type_ids": ["p-math-handler-fn"], "variadic": false, "calling_convention": "cdecl"}
+  ],
+  "signatures": [
+    {
+      "id": "jv-copy", "function_type_id": "jv-copy-fn",
+      "parameters": [{"id": "value", "type_id": "jv", "interpretation": "resource", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": "jq-value", "provider_domain": "libjq"}],
+      "results": [{"id": "copy", "type_id": "jv", "interpretation": "resource", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": "jq-value", "provider_domain": "libjq"}]
+    },
+    {
+      "id": "jv-free", "function_type_id": "jv-free-fn",
+      "parameters": [{"id": "value", "type_id": "jv", "interpretation": "resource", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": "jq-value", "provider_domain": "libjq"}],
+      "results": []
+    },
+    {
+      "id": "jv-dumpf", "function_type_id": "jv-dumpf-fn",
+      "parameters": [
+        {"id": "value", "type_id": "jv", "interpretation": "resource", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": "jq-value", "provider_domain": "libjq"},
+        {"id": "stream", "type_id": "p-file", "interpretation": "reference", "nullable": false, "access": "write", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null},
+        {"id": "flags", "type_id": "i32", "interpretation": "value", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null}
+      ],
+      "results": []
+    },
+    {
+      "id": "math-handler", "function_type_id": "math-handler-fn",
+      "parameters": [{"id": "exception", "type_id": "p-math-exception", "interpretation": "reference", "nullable": false, "access": "read_write", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null}],
+      "results": [{"id": "handled", "type_id": "i32", "interpretation": "value", "nullable": false, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null}]
+    },
+    {
+      "id": "set-math-handler", "function_type_id": "set-math-handler-fn",
+      "parameters": [{"id": "handler", "type_id": "p-math-handler-fn", "interpretation": "callback", "nullable": true, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null}],
+      "results": [{"id": "previous", "type_id": "p-math-handler-fn", "interpretation": "callback", "nullable": true, "access": "none", "extent": {"kind": "none", "bytes": null, "value_id": null}, "resource_kind": null, "provider_domain": null}]
+    }
+  ],
+  "layout": {
+    "target": "i686-pc-windows-pe32",
+    "abi_dialect": "pe32-i386-gnu-v1",
+    "byte_order": "little",
+    "pointer_width_bits": 32,
+    "packing": "mingw-natural",
+    "layouts": [
+      {"type_id": "u8", "size_bits": 8, "alignment_bits": 8, "value_bits": 8, "abi_class": "integer", "fields": [], "padding": []},
+      {"type_id": "i8", "size_bits": 8, "alignment_bits": 8, "value_bits": 8, "abi_class": "integer", "fields": [], "padding": []},
+      {"type_id": "u16", "size_bits": 16, "alignment_bits": 16, "value_bits": 16, "abi_class": "integer", "fields": [], "padding": []},
+      {"type_id": "i32", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "integer", "fields": [], "padding": []},
+      {"type_id": "u32", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "integer", "fields": [], "padding": []},
+      {"type_id": "f64", "size_bits": 64, "alignment_bits": 64, "value_bits": 64, "abi_class": "floating", "fields": [], "padding": []},
+      {"type_id": "p-jv-refcnt", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "p-file", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "p-char", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "jv-payload", "size_bits": 64, "alignment_bits": 64, "value_bits": 64, "abi_class": "aggregate-register", "fields": [{"id": "number", "offset_bits": 0, "storage_bits": 64, "value_bits": 64}, {"id": "ptr", "offset_bits": 0, "storage_bits": 32, "value_bits": 32}], "padding": []},
+      {"type_id": "jv", "size_bits": 128, "alignment_bits": 64, "value_bits": 128, "abi_class": "aggregate-memory", "fields": [{"id": "kind_flags", "offset_bits": 0, "storage_bits": 8, "value_bits": 8}, {"id": "pad", "offset_bits": 8, "storage_bits": 8, "value_bits": 8}, {"id": "offset", "offset_bits": 16, "storage_bits": 16, "value_bits": 16}, {"id": "size", "offset_bits": 32, "storage_bits": 32, "value_bits": 32}, {"id": "payload", "offset_bits": 64, "storage_bits": 64, "value_bits": 64}], "padding": []},
+      {"type_id": "math-exception", "size_bits": 256, "alignment_bits": 64, "value_bits": 256, "abi_class": "aggregate-memory", "fields": [{"id": "type", "offset_bits": 0, "storage_bits": 32, "value_bits": 32}, {"id": "name", "offset_bits": 32, "storage_bits": 32, "value_bits": 32}, {"id": "arg1", "offset_bits": 64, "storage_bits": 64, "value_bits": 64}, {"id": "arg2", "offset_bits": 128, "storage_bits": 64, "value_bits": 64}, {"id": "retval", "offset_bits": 192, "storage_bits": 64, "value_bits": 64}], "padding": []},
+      {"type_id": "p-math-exception", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []},
+      {"type_id": "p-math-handler-fn", "size_bits": 32, "alignment_bits": 32, "value_bits": 32, "abi_class": "pointer", "fields": [], "padding": []}
+    ]
+  },
+  "frames": [
+    {"id": "jv-copy", "subject": {"kind": "function", "id": "libjq.jv-copy", "image_selector": "main-image"}, "signature_id": "jv-copy", "transfer_kind": "direct"},
+    {"id": "jv-free", "subject": {"kind": "function", "id": "libjq.jv-free", "image_selector": "main-image"}, "signature_id": "jv-free", "transfer_kind": "direct"},
+    {"id": "jv-dumpf", "subject": {"kind": "function", "id": "libjq.jv-dumpf", "image_selector": "main-image"}, "signature_id": "jv-dumpf", "transfer_kind": "direct"},
+    {"id": "math-handler", "subject": {"kind": "callback", "id": "msvcrt-user-math-error-handler", "image_selector": "main-image"}, "signature_id": "math-handler", "transfer_kind": "callback"},
+    {"id": "set-math-handler", "subject": {"kind": "import", "id": "msvcrt.__setusermatherr", "image_selector": "main-image"}, "signature_id": "set-math-handler", "transfer_kind": "import"}
+  ],
+  "source_names": {
+    "types": {"u8": "spx_u8", "i8": "spx_i8", "u16": "spx_u16", "i32": "spx_i32", "u32": "spx_u32", "f64": "spx_f64", "jv-refcnt": "jv_refcnt", "file": "FILE", "p-jv-refcnt": "jv_refcnt_ptr", "p-file": "FILE_ptr", "p-char": "char_ptr", "jv-payload": "jv_payload", "jv": "jv", "math-exception": "spx_math_exception", "p-math-exception": "spx_math_exception_ptr", "jv-copy-fn": "spx_jv_copy_fn", "jv-free-fn": "spx_jv_free_fn", "jv-dumpf-fn": "spx_jv_dumpf_fn", "math-handler-fn": "spx_math_handler_fn", "p-math-handler-fn": "spx_math_handler", "set-math-handler-fn": "spx_set_math_handler_fn"},
+    "signatures": {"jv-copy": "jv_copy", "jv-free": "jv_free", "jv-dumpf": "jv_dumpf", "math-handler": "spx_user_math_error_handler", "set-math-handler": "__setusermatherr"}
+  }
+}

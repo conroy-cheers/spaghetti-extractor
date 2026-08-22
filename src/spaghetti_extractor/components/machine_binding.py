@@ -15,12 +15,16 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from ..artifacts.artifact_set import ArtifactV3Error, canonical_sha256_v3
+from ..artifacts.io import open_artifact_reader_v3
+from ..artifacts.formats import MACHINE_IR_FORMAT
+from ..artifacts.boundary_claims import read_authorized_callback_protocols_v4
 from ..external.site_authority import (
     CanonicalExternalSiteRecordError,
     read_canonical_external_site_ids,
 )
 from .machine_binding_checks import (
     ComponentMachineBindingError,
+    check_component_operation_services as _check_component_operation_services,
     check_operation_view_aliases as _check_operation_view_aliases,
     check_result_decoding as _check_result_decoding,
     interface_payload as _checked_interface_payload,
@@ -40,11 +44,20 @@ COMPONENT_MACHINE_BINDING_V1 = "spaghetti-extractor-component-machine-binding-v1
 COMPONENT_MACHINE_BINDING_DECLARATION_V2 = (
     "spaghetti-extractor-component-machine-binding-declaration-v2"
 )
+COMPONENT_MACHINE_BINDING_DECLARATION_V3 = (
+    "spaghetti-extractor-component-machine-binding-declaration-v3"
+)
 COMPONENT_MACHINE_BINDING_RECEIPT_V1 = (
     "spaghetti-extractor-component-machine-binding-receipt-v1"
 )
-_INTERFACE_V2 = "spaghetti-extractor-component-interface-ir-v2"
-_MACHINE_IR = "spaghetti-extractor-machine-ir-v2"
+_INTERFACE_FORMATS = frozenset(
+    {
+        "spaghetti-extractor-component-interface-ir-v2",
+        "spaghetti-extractor-component-interface-ir-v3",
+        "spaghetti-extractor-component-interface-ir-v4",
+    }
+)
+_MACHINE_IR = MACHINE_IR_FORMAT
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,127}")
 _ARTIFACT_ID = re.compile(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?\Z")
@@ -106,16 +119,157 @@ class MachineProjectionV1:
             _exact(row, {"kind", "value", "width"}, context)
             _uint(row["value"], f"{context} value")
             _width(row["width"], context)
+        elif kind == "origin_remainder":
+            _exact(row, {"kind"}, context)
         elif kind == "control_condition":
             _exact(row, {"kind", "at"}, context)
             if row["at"] != "exit":
                 raise ComponentMachineBindingError(
                     f"{context} control condition must be observed at exit"
                 )
+        elif kind == "finite_control_target":
+            _exact(
+                row,
+                {
+                    "kind",
+                    "at",
+                    "unit_id",
+                    "selector_parameter_id",
+                    "target_inventory_sha256",
+                    "routes",
+                },
+                context,
+            )
+            if row["at"] != "exit":
+                raise ComponentMachineBindingError(
+                    f"{context} finite control target must be observed at exit"
+                )
+            _text(row["unit_id"], f"{context} unit id")
+            _identifier(
+                row["selector_parameter_id"],
+                f"{context} selector parameter id",
+            )
+            _digest(
+                row["target_inventory_sha256"],
+                f"{context} target inventory digest",
+            )
+            routes = _array(row["routes"], f"{context} routes")
+            parsed_routes: list[tuple[int, int, int, int]] = []
+            for index, raw_route in enumerate(routes):
+                route = _object(raw_route, f"{context} route {index}")
+                _exact(
+                    route,
+                    {
+                        "selector_value",
+                        "logical_value",
+                        "target_rva",
+                        "target_address",
+                    },
+                    f"{context} route {index}",
+                )
+                parsed_routes.append(
+                    (
+                        _uint(
+                            route["selector_value"],
+                            f"{context} route {index} selector value",
+                        ),
+                        _uint(
+                            route["logical_value"],
+                            f"{context} route {index} logical value",
+                        ),
+                        _uint(
+                            route["target_rva"],
+                            f"{context} route {index} target RVA",
+                        ),
+                        _uint(
+                            route["target_address"],
+                            f"{context} route {index} target address",
+                        ),
+                    )
+                )
+            if not routes or parsed_routes != sorted(parsed_routes):
+                raise ComponentMachineBindingError(
+                    f"{context} routes must be nonempty and canonically ordered"
+                )
+            if len({row[0] for row in parsed_routes}) != len(parsed_routes):
+                raise ComponentMachineBindingError(
+                    f"{context} selector values must be unique"
+                )
         elif kind == "resource":
             _exact(row, {"kind", "resource_kind", "source"}, context)
             _identifier(row["resource_kind"], f"{context} resource kind")
             cls.parse(row["source"], f"{context} resource source")
+        elif kind == "atomic_object":
+            _exact(
+                row,
+                {
+                    "kind",
+                    "resource_kind",
+                    "unit_id",
+                    "action_id",
+                    "profile_id",
+                    "source",
+                    "width",
+                },
+                context,
+            )
+            if row["resource_kind"] != "atomic_object":
+                raise ComponentMachineBindingError(
+                    f"{context} atomic resource kind is invalid"
+                )
+            _text(row["unit_id"], f"{context} unit id")
+            _text(row["action_id"], f"{context} action id")
+            _text(row["profile_id"], f"{context} profile id")
+            cls.parse(row["source"], f"{context} atomic source")
+            width = row["width"]
+            if width not in {1, 2, 4}:
+                raise ComponentMachineBindingError(
+                    f"{context} atomic width is unsupported"
+                )
+        elif kind == "callback_handle":
+            _exact(
+                row,
+                {"kind", "protocol_id", "authority_id", "source", "at"},
+                context,
+            )
+            _text(row["protocol_id"], f"{context} protocol id")
+            _text(row["authority_id"], f"{context} authority id")
+            cls.parse(row["source"], f"{context} callback source")
+            _phase(row["at"], context)
+        elif kind == "reference":
+            _exact(
+                row,
+                {"kind", "source", "requested_extent", "authority", "at"},
+                context,
+            )
+            cls.parse(row["source"], f"{context} reference source")
+            cls.parse(
+                row["requested_extent"],
+                f"{context} reference requested extent",
+            )
+            _origin_authority(row["authority"], f"{context} reference authority")
+            _phase(row["at"], context)
+        elif kind == "view":
+            _exact(
+                row,
+                {
+                    "kind",
+                    "base",
+                    "extent",
+                    "requested_extent",
+                    "authority",
+                    "at",
+                },
+                context,
+            )
+            cls.parse(row["base"], f"{context} view base")
+            cls.parse(row["extent"], f"{context} view extent")
+            cls.parse(
+                row["requested_extent"],
+                f"{context} view requested extent",
+            )
+            _origin_authority(row["authority"], f"{context} view authority")
+            _phase(row["at"], context)
         elif kind == "field":
             _exact(row, {"kind", "base", "field_id"}, context)
             cls.parse(row["base"], f"{context} field base")
@@ -247,6 +401,12 @@ class MachineEffectReferenceV1:
     family: str
     index: int
     fact_sha256: str
+
+    @property
+    def identity(self) -> str:
+        """Stable row identity; one logical effect may cover several facts."""
+
+        return f"{self.effect_id}:{self.unit_id}:{self.family}:{self.index:08d}"
 
     @classmethod
     def parse(cls, value: object, context: str) -> "MachineEffectReferenceV1":
@@ -404,8 +564,16 @@ class ServiceMachineBindingV1:
         provider = _object(row["provider"], f"{context} provider")
         kind = provider.get("kind")
         if kind == "external_site":
-            _exact(provider, {"kind", "site_id"}, f"{context} provider")
+            fields = {"kind", "site_id"}
+            if "result_projection" in provider:
+                fields.add("result_projection")
+            _exact(provider, fields, f"{context} provider")
             _text(provider["site_id"], f"{context} site id")
+            if "result_projection" in provider:
+                MachineProjectionV1.parse(
+                    provider["result_projection"],
+                    f"{context} external result projection",
+                )
         elif kind == "machine_events":
             _exact(provider, {"kind", "events"}, f"{context} provider")
             events = tuple(
@@ -426,13 +594,30 @@ class ServiceMachineBindingV1:
                     f"{context} machine events must be unique and ordered"
                 )
         elif kind == "component_operation":
-            _exact(
-                provider,
-                {"kind", "component_id", "operation_id"},
-                f"{context} provider",
-            )
+            fields = {"kind", "component_id", "operation_id"}
+            if "events" in provider:
+                fields.add("events")
+            _exact(provider, fields, f"{context} provider")
             _artifact_id(provider["component_id"], f"{context} component id")
             _identifier(provider["operation_id"], f"{context} operation id")
+            if "events" in provider:
+                events = tuple(
+                    MachineServiceEventV1.parse(
+                        item, f"{context} component-operation event {index}"
+                    )
+                    for index, item in enumerate(
+                        _array(provider["events"], f"{context} component-operation events")
+                    )
+                )
+                if not events:
+                    raise ComponentMachineBindingError(
+                        f"{context} component-operation provider has no events"
+                    )
+                refs = [(item.unit_id, item.event_index) for item in events]
+                if refs != sorted(refs) or len(refs) != len(set(refs)):
+                    raise ComponentMachineBindingError(
+                        f"{context} component-operation events must be unique and ordered"
+                    )
         else:
             raise ComponentMachineBindingError(f"{context} provider kind is unsupported")
         mediation = _text(row["mediation"], f"{context} mediation")
@@ -544,6 +729,7 @@ def materialize_component_machine_binding(
     interface: Path | str | Mapping[str, object] | object,
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
+    semantic_component_catalog: Path | str | Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Bind an operator mapping declaration to exact generated artifacts."""
 
@@ -551,7 +737,11 @@ def materialize_component_machine_binding(
     if raw.get("format") == COMPONENT_MACHINE_BINDING_V1:
         ComponentMachineBindingV1.parse(raw)
         return raw
-    if raw.get("format") != COMPONENT_MACHINE_BINDING_DECLARATION_V2:
+    declaration_format = raw.get("format")
+    if declaration_format not in {
+        COMPONENT_MACHINE_BINDING_DECLARATION_V2,
+        COMPONENT_MACHINE_BINDING_DECLARATION_V3,
+    }:
         raise ComponentMachineBindingError(
             "unsupported component machine-binding declaration format"
         )
@@ -566,8 +756,14 @@ def materialize_component_machine_binding(
     machine_units = _machine_units(machine_path.read_bytes())
     manifest = _load(machine_ir_manifest, "machine-IR manifest")
     pe_sha256 = _machine_manifest_pe_sha256(manifest)
+    catalog = (
+        None
+        if semantic_component_catalog is None
+        else _load(semantic_component_catalog, "semantic component catalog")
+    )
+    component_id = _artifact_id(raw["id"], "component binding declaration id")
     return create_component_machine_binding_v1(
-        id=_artifact_id(raw["id"], "component binding declaration id"),
+        id=component_id,
         binary={
             "pe_sha256": pe_sha256,
             "machine_ir_sha256": hashlib.sha256(machine_path.read_bytes()).hexdigest(),
@@ -575,7 +771,13 @@ def materialize_component_machine_binding(
         interface={"id": portable.identity, "sha256": portable.sha256},
         unit_ids=list(_strings(raw["unit_ids"], "declared machine units", nonempty=True)),
         operations=[
-            _materialize_operation_binding(row, machine_units).to_payload()
+            _materialize_operation_binding(
+                row,
+                machine_units,
+                component_id=component_id,
+                semantic_component_catalog=catalog,
+                declaration_format=str(declaration_format),
+            ).to_payload()
             for row in _array(raw["operations"], "declared operation bindings")
         ],
         services=[
@@ -588,6 +790,10 @@ def materialize_component_machine_binding(
 def _materialize_operation_binding(
     value: object,
     machine: Mapping[str, Mapping[str, object]],
+    *,
+    component_id: str,
+    semantic_component_catalog: Mapping[str, object] | None,
+    declaration_format: str,
 ) -> OperationMachineBindingV1:
     """Bind hash-free operator effect references to exact machine facts."""
 
@@ -601,9 +807,10 @@ def _materialize_operation_binding(
         "state",
         "preserved_state_ids",
         "effects",
-        "callback_operation_ids",
         "continuation_unit_ids",
     }
+    if declaration_format == COMPONENT_MACHINE_BINDING_DECLARATION_V2:
+        expected.add("callback_operation_ids")
     _exact(row, expected, "declared operation binding")
     effects: list[dict[str, object]] = []
     for position, raw_effect in enumerate(
@@ -627,10 +834,152 @@ def _materialize_operation_binding(
         materialized = {key: value for key, value in effect.items() if key != "fact_sha256"}
         materialized["fact_sha256"] = canonical_sha256_v3(fact)
         effects.append(json.loads(json.dumps(materialized)))
+    materialized_results = []
+    for position, raw_result in enumerate(
+        _array(row["results"], "declared operation results")
+    ):
+        result = _object(raw_result, f"declared operation result {position}")
+        if set(result) not in ({"id", "projection"}, {"id", "projection", "decoding"}):
+            raise ComponentMachineBindingError(
+                f"declared operation result {position} fields differ"
+            )
+        materialized_results.append(
+            {
+                **json.loads(json.dumps(result)),
+                "projection": _materialize_finite_control_target(
+                    result.get("projection"),
+                    component_id=component_id,
+                    semantic_component_catalog=semantic_component_catalog,
+                ),
+            }
+        )
     return OperationMachineBindingV1.parse(
-        {**json.loads(json.dumps(row)), "effects": effects},
+        {
+            **json.loads(json.dumps(row)),
+            "callback_operation_ids": list(row.get("callback_operation_ids", [])),
+            "effects": effects,
+            "results": materialized_results,
+        },
         "materialized operation binding",
     )
+
+
+def _materialize_finite_control_target(
+    value: object,
+    *,
+    component_id: str,
+    semantic_component_catalog: Mapping[str, object] | None,
+) -> object:
+    projection = _object(value, "declared result projection")
+    if projection.get("kind") != "finite_control_target":
+        return json.loads(json.dumps(projection))
+    _exact(
+        projection,
+        {
+            "kind",
+            "at",
+            "unit_id",
+            "selector_parameter_id",
+            "targets",
+        },
+        "declared finite control target",
+    )
+    if semantic_component_catalog is None:
+        raise ComponentMachineBindingError(
+            "finite control target materialization requires the semantic component catalog"
+        )
+    components = _array(
+        semantic_component_catalog.get("components"),
+        "semantic component catalog components",
+    )
+    component_matches = [
+        _object(item, "semantic component")
+        for item in components
+        if isinstance(item, Mapping) and item.get("id") == component_id
+    ]
+    if len(component_matches) != 1:
+        raise ComponentMachineBindingError(
+            "finite control target component is absent or ambiguous in the semantic catalog"
+        )
+    boundary = _object(
+        component_matches[0].get("machine_boundary"),
+        "finite control target machine boundary",
+    )
+    unit_id = _text(projection["unit_id"], "finite control target unit id")
+    exit_matches = [
+        _object(item, "finite control exit")
+        for item in _array(boundary.get("exits"), "component boundary exits")
+        if isinstance(item, Mapping)
+        and item.get("source_unit_id") == unit_id
+        and item.get("kind") == "indirect_jump"
+    ]
+    if len(exit_matches) != 1:
+        raise ComponentMachineBindingError(
+            "finite control target exit is absent or ambiguous"
+        )
+    inventory = _object(
+        exit_matches[0].get("target_inventory"),
+        "finite control target inventory",
+    )
+    if inventory.get("closure") != "checked_finite_target_inventory":
+        raise ComponentMachineBindingError(
+            "finite control target inventory is not checked and closed"
+        )
+    target_values: dict[int, int] = {}
+    for index, raw_target in enumerate(
+        _array(projection["targets"], "declared finite control targets")
+    ):
+        target = _object(raw_target, f"declared finite control target {index}")
+        _exact(
+            target,
+            {"target_rva", "logical_value"},
+            f"declared finite control target {index}",
+        )
+        target_rva = _uint(target["target_rva"], "finite control target RVA")
+        logical_value = _uint(
+            target["logical_value"], "finite control target logical value"
+        )
+        if target_rva in target_values:
+            raise ComponentMachineBindingError(
+                "declared finite control target RVAs must be unique"
+            )
+        target_values[target_rva] = logical_value
+    entries = [
+        _object(item, "finite control inventory entry")
+        for item in _array(inventory.get("entries"), "finite control inventory entries")
+    ]
+    recovered_targets = {int(item["target_rva"]) for item in entries}
+    if set(target_values) != recovered_targets:
+        raise ComponentMachineBindingError(
+            "declared finite control targets differ from the checked target inventory"
+        )
+    routes = sorted(
+        (
+            {
+                "selector_value": _uint(item["index"], "finite control selector"),
+                "logical_value": target_values[int(item["target_rva"])],
+                "target_rva": _uint(item["target_rva"], "finite control target RVA"),
+                "target_address": _uint(
+                    item["target_address"], "finite control target address"
+                ),
+            }
+            for item in entries
+        ),
+        key=lambda item: (
+            item["selector_value"],
+            item["logical_value"],
+            item["target_rva"],
+            item["target_address"],
+        ),
+    )
+    return {
+        "kind": "finite_control_target",
+        "at": projection["at"],
+        "unit_id": unit_id,
+        "selector_parameter_id": projection["selector_parameter_id"],
+        "target_inventory_sha256": canonical_sha256_v3(inventory),
+        "routes": routes,
+    }
 
 
 def _materialize_service_binding(
@@ -641,18 +990,20 @@ def _materialize_service_binding(
 
     row = _object(value, "declared service binding")
     provider = _object(row.get("provider"), "declared service provider")
-    if provider.get("kind") != "machine_events":
+    provider_kind = provider.get("kind")
+    if provider_kind not in {"machine_events", "component_operation"} or (
+        provider_kind == "component_operation" and "events" not in provider
+    ):
         return ServiceMachineBindingV1.parse(row, "declared service binding")
     _exact(
         row,
         {"service_id", "provider", "mediation"},
         "declared service binding",
     )
-    _exact(
-        provider,
-        {"kind", "events"},
-        "declared machine-event service provider",
-    )
+    provider_fields = {"kind", "events"}
+    if provider_kind == "component_operation":
+        provider_fields.update({"component_id", "operation_id"})
+    _exact(provider, provider_fields, "declared machine-event service provider")
     events: list[dict[str, object]] = []
     for index, raw_event in enumerate(
         _array(provider["events"], "declared machine service events")
@@ -691,9 +1042,15 @@ def _materialize_service_binding(
                 "event_sha256": canonical_sha256_v3(machine_event),
             }
         )
+    materialized_provider = {
+        key: json.loads(json.dumps(value))
+        for key, value in provider.items()
+        if key != "events"
+    }
+    materialized_provider["events"] = events
     materialized = {
         "service_id": row.get("service_id"),
-        "provider": {"kind": "machine_events", "events": events},
+        "provider": materialized_provider,
         "mediation": row.get("mediation"),
     }
     return ServiceMachineBindingV1.parse(
@@ -709,6 +1066,9 @@ def check_component_machine_binding(
     machine_ir_manifest: Path | str,
     external_site_ids: Sequence[str] = (),
     canonical_external_sites: Path | str | None = None,
+    callback_authority: Path | str | None = None,
+    component_resolution: Path | str | Mapping[str, object] | None = None,
+    semantic_component_catalog: Path | str | Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Check one binding without treating its reviewed proposal as authority."""
 
@@ -745,6 +1105,16 @@ def check_component_machine_binding(
     states = _index(interface_payload.get("state", []), "portable state")
     effects = _index(interface_payload.get("effects", []), "portable effects")
     services = _index(interface_payload.get("services", []), "portable services")
+    resolution_payload = (
+        None
+        if component_resolution is None
+        else _load(component_resolution, "component resolution")
+    )
+    catalog_payload = (
+        None
+        if semantic_component_catalog is None
+        else _load(semantic_component_catalog, "semantic component catalog")
+    )
     bound_operations = {row.operation_id: row for row in parsed.operations}
     if set(bound_operations) != set(operations):
         _issue(issues, "incomplete", "operation_binding_inventory_mismatch")
@@ -761,8 +1131,63 @@ def check_component_machine_binding(
             effects,
             machine,
             set(parsed.unit_ids),
-            issues,
+            component_id=parsed.identity,
+            semantic_component_catalog=catalog_payload,
+            issues=issues,
         )
+    callback_handles = tuple(
+        projection
+        for operation in parsed.operations
+        for value in (*operation.parameters, *operation.results)
+        for projection in _callback_handle_projections(value.projection)
+    )
+    callback_handles += tuple(
+        projection
+        for operation in parsed.operations
+        for value in operation.state
+        for bound in (value.entry, value.exit)
+        for projection in _callback_handle_projections(bound)
+    )
+    callback_authority_manifest_sha256: str | None = None
+    if callback_handles:
+        if callback_authority is None:
+            _issue(issues, "incomplete", "callback_authority_missing")
+        else:
+            try:
+                callback_protocols, callback_authority_manifest_sha256 = (
+                    _callback_authority_protocols(
+                        callback_authority,
+                        authority_ids=frozenset(
+                            str(row.payload["authority_id"])
+                            for row in callback_handles
+                        ),
+                    )
+                )
+            except (ArtifactV3Error, ComponentMachineBindingError, ValueError) as exc:
+                _issue(
+                    issues,
+                    "violated",
+                    "callback_authority_invalid",
+                    detail=str(exc),
+                )
+            else:
+                for projection in callback_handles:
+                    authority_id = str(projection.payload["authority_id"])
+                    expected_protocol = callback_protocols.get(authority_id)
+                    if expected_protocol is None:
+                        _issue(
+                            issues,
+                            "incomplete",
+                            "callback_handle_authority_unresolved",
+                            id=authority_id,
+                        )
+                    elif projection.payload["protocol_id"] != expected_protocol:
+                        _issue(
+                            issues,
+                            "violated",
+                            "callback_handle_protocol_contradiction",
+                            id=authority_id,
+                        )
     bound_services = {row.service_id: row for row in parsed.services}
     if set(bound_services) != set(services):
         _issue(issues, "incomplete", "service_binding_inventory_mismatch")
@@ -788,6 +1213,15 @@ def check_component_machine_binding(
         provider = service.provider
         if provider.get("kind") == "external_site" and provider.get("site_id") not in known_external:
             _issue(issues, "incomplete", "external_site_provider_unresolved", id=service.service_id)
+    _check_component_operation_services(
+        component_id=parsed.identity,
+        services=parsed.services,
+        machine=machine,
+        machine_ir_sha256=machine_sha256,
+        resolution=resolution_payload,
+        catalog=catalog_payload,
+        issues=issues,
+    )
     _check_machine_service_bindings(parsed, services, machine, issues)
     status = (
         "violated"
@@ -804,6 +1238,27 @@ def check_component_machine_binding(
             Path(machine_ir_manifest).read_bytes()
         ).hexdigest(),
         "pe_sha256": pe_sha256,
+        **(
+            {
+                "callback_authority_manifest_sha256": (
+                    callback_authority_manifest_sha256
+                ),
+            }
+            if callback_authority_manifest_sha256 is not None
+            else {}
+        ),
+        **(
+            {
+                "component_resolution_sha256": resolution_payload.get(
+                    "resolution_sha256"
+                ),
+                "semantic_component_catalog_sha256": catalog_payload.get(
+                    "catalog_sha256"
+                ),
+            }
+            if resolution_payload is not None and catalog_payload is not None
+            else {}
+        ),
     }
     core = {
         "format": COMPONENT_MACHINE_BINDING_RECEIPT_V1,
@@ -825,6 +1280,29 @@ def check_component_machine_binding(
     return {**core, "receipt_sha256": canonical_sha256_v3(core)}
 
 
+def _callback_handle_projections(
+    projection: MachineProjectionV1,
+) -> tuple[MachineProjectionV1, ...]:
+    result = [projection] if projection.kind == "callback_handle" else []
+    for key in ("source", "base", "address"):
+        child = projection.payload.get(key)
+        if isinstance(child, Mapping):
+            result.extend(
+                _callback_handle_projections(
+                    MachineProjectionV1.parse(child, "nested callback projection")
+                )
+            )
+    return tuple(result)
+
+
+def _callback_authority_protocols(
+    value: Path | str, *, authority_ids: frozenset[str]
+) -> tuple[dict[str, str], str]:
+    return read_authorized_callback_protocols_v4(
+        value, authority_ids=authority_ids
+    )
+
+
 def _check_machine_service_bindings(
     binding: ComponentMachineBindingV1,
     services: Mapping[str, Mapping[str, object]],
@@ -835,7 +1313,9 @@ def _check_machine_service_bindings(
     selected = set(binding.unit_ids)
     for service_binding in binding.services:
         provider = service_binding.provider
-        if provider.get("kind") != "machine_events":
+        if provider.get("kind") not in {"machine_events", "component_operation"}:
+            continue
+        if "events" not in provider:
             continue
         logical = services.get(service_binding.service_id)
         if logical is None:
@@ -924,6 +1404,9 @@ def _check_operation_binding(
     effects: Mapping[str, Mapping[str, object]],
     machine: Mapping[str, Mapping[str, object]],
     selected_unit_ids: set[str],
+    *,
+    component_id: str,
+    semantic_component_catalog: Mapping[str, object] | None,
     issues: list[dict[str, object]],
 ) -> None:
     for unit_id in (*bound.entry_unit_ids, *bound.exit_unit_ids, *bound.continuation_unit_ids):
@@ -966,6 +1449,16 @@ def _check_operation_binding(
                 operation_id=bound.operation_id,
                 issues=issues,
             )
+            if value.projection.kind == "atomic_object":
+                _check_atomic_object_projection(
+                    projection=value.projection,
+                    logical_value=logical,
+                    types=types,
+                    machine=machine,
+                    selected_unit_ids=selected_unit_ids,
+                    operation_id=bound.operation_id,
+                    issues=issues,
+                )
     for value in bound.results:
         logical = result_index.get(value.identity)
         if logical is not None:
@@ -979,6 +1472,18 @@ def _check_operation_binding(
                 operation_id=bound.operation_id,
                 issues=issues,
             )
+            if value.projection.kind == "finite_control_target":
+                _check_finite_control_target_projection(
+                    projection=value.projection,
+                    logical_value=logical,
+                    operation_parameters=parameter_index,
+                    types=types,
+                    bound=bound,
+                    machine=machine,
+                    component_id=component_id,
+                    semantic_component_catalog=semantic_component_catalog,
+                    issues=issues,
+                )
             _check_result_decoding(
                 value=value,
                 operation_parameters=parameter_index,
@@ -1090,6 +1595,222 @@ def _check_operation_binding(
             )
 
 
+def _check_finite_control_target_projection(
+    *,
+    projection: MachineProjectionV1,
+    logical_value: Mapping[str, object],
+    operation_parameters: Mapping[str, Mapping[str, object]],
+    types: Mapping[str, Mapping[str, object]],
+    bound: OperationMachineBindingV1,
+    machine: Mapping[str, Mapping[str, object]],
+    component_id: str,
+    semantic_component_catalog: Mapping[str, object] | None,
+    issues: list[dict[str, object]],
+) -> None:
+    """Bind a logical route result to one exact recovered selector table."""
+
+    payload = projection.payload
+    operation_id = bound.operation_id
+    unit_id = str(payload["unit_id"])
+    selector_id = str(payload["selector_parameter_id"])
+    selector_logical = operation_parameters.get(selector_id)
+    selector_bound = next(
+        (row for row in bound.parameters if row.identity == selector_id), None
+    )
+    if selector_logical is None or selector_bound is None:
+        _issue(
+            issues,
+            "violated",
+            "finite_control_selector_parameter_missing",
+            id=operation_id,
+        )
+        return
+    if selector_bound.projection.kind != "register":
+        _issue(
+            issues,
+            "incomplete",
+            "finite_control_selector_projection_unsupported",
+            id=operation_id,
+            observed=selector_bound.projection.kind,
+        )
+        return
+    selector_payload = selector_bound.projection.payload
+    selector_width = int(selector_payload["width"])
+    selector_register = str(selector_payload["register"])
+    expected_index_expression: dict[str, object]
+    if selector_width == 32:
+        expected_index_expression = {
+            "op": "reg",
+            "name": selector_register,
+            "width": 32,
+        }
+    else:
+        expected_index_expression = {
+            "op": "and32",
+            "args": [
+                {
+                    "op": "const",
+                    "value": (1 << selector_width) - 1,
+                    "width": 32,
+                },
+                {"op": "reg", "name": selector_register, "width": 32},
+            ],
+        }
+    if unit_id not in bound.exit_unit_ids or unit_id not in machine:
+        _issue(
+            issues,
+            "violated",
+            "finite_control_exit_unit_mismatch",
+            id=operation_id,
+            unit_id=unit_id,
+        )
+        return
+    semantics = _object(machine[unit_id].get("semantics"), "machine semantics")
+    outcome = _object(semantics.get("outcome"), "machine outcome")
+    if outcome.get("kind") != "indirect_jump":
+        _issue(
+            issues,
+            "violated",
+            "finite_control_exit_is_not_indirect_jump",
+            id=operation_id,
+            unit_id=unit_id,
+        )
+        return
+    if semantic_component_catalog is None:
+        _issue(
+            issues,
+            "incomplete",
+            "finite_control_semantic_catalog_missing",
+            id=operation_id,
+        )
+        return
+    components = _array(
+        semantic_component_catalog.get("components"),
+        "semantic component catalog components",
+    )
+    component_matches = [
+        _object(item, "semantic component")
+        for item in components
+        if isinstance(item, Mapping) and item.get("id") == component_id
+    ]
+    if len(component_matches) != 1:
+        _issue(
+            issues,
+            "violated",
+            "finite_control_component_catalog_mismatch",
+            id=operation_id,
+        )
+        return
+    boundary = _object(
+        component_matches[0].get("machine_boundary"),
+        "finite control machine boundary",
+    )
+    exit_matches = [
+        _object(item, "finite control boundary exit")
+        for item in _array(boundary.get("exits"), "component boundary exits")
+        if isinstance(item, Mapping)
+        and item.get("source_unit_id") == unit_id
+        and item.get("kind") == "indirect_jump"
+    ]
+    if len(exit_matches) != 1:
+        _issue(
+            issues,
+            "violated",
+            "finite_control_boundary_exit_mismatch",
+            id=operation_id,
+            unit_id=unit_id,
+        )
+        return
+    boundary_exit = exit_matches[0]
+    inventory = _object(
+        boundary_exit.get("target_inventory"),
+        "finite control target inventory",
+    )
+    if (
+        inventory.get("closure") != "checked_finite_target_inventory"
+        or boundary_exit.get("target_expression") != outcome.get("target")
+        or payload.get("target_inventory_sha256")
+        != canonical_sha256_v3(inventory)
+    ):
+        _issue(
+            issues,
+            "violated",
+            "finite_control_target_inventory_mismatch",
+            id=operation_id,
+            unit_id=unit_id,
+        )
+        return
+    index = _object(inventory.get("index"), "finite control selector index")
+    if index.get("expression") != expected_index_expression:
+        _issue(
+            issues,
+            "incomplete",
+            "finite_control_selector_expression_unsupported",
+            id=operation_id,
+            expected=expected_index_expression,
+            observed=index.get("expression"),
+        )
+    entries = [
+        _object(item, "finite control inventory entry")
+        for item in _array(inventory.get("entries"), "finite control inventory entries")
+    ]
+    routes = [
+        _object(item, "finite control route")
+        for item in _array(payload.get("routes"), "finite control routes")
+    ]
+    observed_routes = [
+        (
+            int(item["selector_value"]),
+            int(item["target_rva"]),
+            int(item["target_address"]),
+        )
+        for item in routes
+    ]
+    expected_routes = sorted(
+        (
+            int(item["index"]),
+            int(item["target_rva"]),
+            int(item["target_address"]),
+        )
+        for item in entries
+    )
+    if observed_routes != expected_routes:
+        _issue(
+            issues,
+            "violated",
+            "finite_control_route_inventory_mismatch",
+            id=operation_id,
+        )
+    target_to_logical: dict[int, set[int]] = {}
+    logical_to_target: dict[int, set[int]] = {}
+    logical_type = types.get(str(logical_value.get("type_id")))
+    logical_width = (
+        None if logical_type is None else _logical_scalar_width(logical_type)
+    )
+    for route in routes:
+        target = int(route["target_rva"])
+        logical = int(route["logical_value"])
+        target_to_logical.setdefault(target, set()).add(logical)
+        logical_to_target.setdefault(logical, set()).add(target)
+        if logical_width is not None and logical >= 1 << logical_width:
+            _issue(
+                issues,
+                "violated",
+                "finite_control_logical_value_out_of_range",
+                id=operation_id,
+                logical_value=logical,
+            )
+    if any(len(values) != 1 for values in target_to_logical.values()) or any(
+        len(values) != 1 for values in logical_to_target.values()
+    ):
+        _issue(
+            issues,
+            "violated",
+            "finite_control_route_mapping_not_bijective",
+            id=operation_id,
+        )
+
+
 def _check_logical_projection(
     *,
     projection: MachineProjectionV1,
@@ -1151,6 +1872,15 @@ def _check_logical_projection(
                     "control_condition_projection_role_invalid",
                 )
             return
+        if projection.kind == "finite_control_target":
+            if role != "result" or expected_phase != "exit":
+                _projection_issue(
+                    issues,
+                    operation_id,
+                    logical_value,
+                    "finite_control_target_projection_role_invalid",
+                )
+            return
         if projection.kind == "constant" and role == "parameter":
             _projection_issue(
                 issues, operation_id, logical_value,
@@ -1191,7 +1921,12 @@ def _check_logical_projection(
         return
 
     if kind == "resource":
-        if projection.kind != "resource":
+        expected_projection = (
+            "atomic_object"
+            if logical_type.get("resource_kind") == "atomic_object"
+            else "resource"
+        )
+        if projection.kind != expected_projection:
             _projection_issue(
                 issues, operation_id, logical_value,
                 "resource_projection_kind_mismatch",
@@ -1209,6 +1944,94 @@ def _check_logical_projection(
         _check_address_projection(
             source, expected_phase, operation_id, logical_value, issues
         )
+        return
+
+    if kind == "callback":
+        if projection.kind != "callback_handle":
+            _projection_issue(
+                issues, operation_id, logical_value,
+                "callback_projection_kind_mismatch",
+                observed=projection.kind,
+            )
+            return
+        if payload.get("at") != expected_phase:
+            _projection_issue(
+                issues, operation_id, logical_value,
+                "projection_phase_mismatch",
+                expected=expected_phase,
+                observed=payload.get("at"),
+            )
+        _check_address_projection(
+            MachineProjectionV1.parse(
+                payload.get("source"), "callback-handle source"
+            ),
+            expected_phase,
+            operation_id,
+            logical_value,
+            issues,
+        )
+        return
+
+    if kind in {"reference", "view"}:
+        if projection.kind != kind:
+            _projection_issue(
+                issues,
+                operation_id,
+                logical_value,
+                f"{kind}_projection_kind_mismatch",
+                observed=projection.kind,
+            )
+            return
+        if payload.get("at") != expected_phase:
+            _projection_issue(
+                issues,
+                operation_id,
+                logical_value,
+                "projection_phase_mismatch",
+                expected=expected_phase,
+                observed=payload.get("at"),
+            )
+        address_field = "source" if kind == "reference" else "base"
+        _check_address_projection(
+            MachineProjectionV1.parse(
+                payload.get(address_field), f"{kind} address source"
+            ),
+            expected_phase,
+            operation_id,
+            logical_value,
+            issues,
+        )
+        extent_fields = (
+            ("requested_extent",)
+            if kind == "reference"
+            else ("extent", "requested_extent")
+        )
+        for extent_field in extent_fields:
+            extent = MachineProjectionV1.parse(
+                payload.get(extent_field), f"{kind} {extent_field}"
+            )
+            if kind == "view" and extent_field == "extent" and extent.kind == "origin_remainder":
+                continue
+            _check_address_projection(
+                extent,
+                expected_phase,
+                operation_id,
+                logical_value,
+                issues,
+            )
+        if kind == "view":
+            extent_kind = logical_type.get("extent", {}).get("kind")
+            extent_projection = MachineProjectionV1.parse(
+                payload.get("extent"), "view extent"
+            )
+            if extent_kind == "nul_terminated" and extent_projection.kind != "origin_remainder":
+                _issue(
+                    issues,
+                    "incomplete",
+                    "nul_terminated_view_requires_origin_remainder_bound",
+                    id=operation_id,
+                    value_id=logical_value.get("id"),
+                )
         return
 
     if kind == "bytes":
@@ -1315,6 +2138,91 @@ def _check_logical_projection(
     )
 
 
+def _check_atomic_object_projection(
+    *,
+    projection: MachineProjectionV1,
+    logical_value: Mapping[str, object],
+    types: Mapping[str, Mapping[str, object]],
+    machine: Mapping[str, Mapping[str, object]],
+    selected_unit_ids: set[str],
+    operation_id: str,
+    issues: list[dict[str, object]],
+) -> None:
+    """Bind one opaque capability to one authoritative machine RMW action."""
+
+    payload = projection.payload
+    logical_type = types.get(str(logical_value.get("type_id")))
+    if logical_type is None or logical_type.get("resource_kind") != "atomic_object":
+        _projection_issue(
+            issues,
+            operation_id,
+            logical_value,
+            "atomic_projection_requires_atomic_resource",
+        )
+        return
+    unit_id = str(payload.get("unit_id"))
+    unit = machine.get(unit_id)
+    if unit is None or unit_id not in selected_unit_ids:
+        _projection_issue(
+            issues,
+            operation_id,
+            logical_value,
+            "atomic_projection_unit_outside_component",
+        )
+        return
+    semantics = _object(unit.get("semantics"), "atomic projection semantics")
+    graph = _object(semantics.get("memory_actions"), "atomic memory-action graph")
+    authority = _object(graph.get("authority"), "atomic graph authority")
+    if graph.get("status") != "complete" or authority.get("authoritative") is not True:
+        _projection_issue(
+            issues,
+            operation_id,
+            logical_value,
+            "atomic_projection_graph_not_authoritative",
+        )
+        return
+    matches = [
+        row
+        for row in _array(graph.get("actions"), "atomic actions")
+        if isinstance(row, Mapping) and row.get("id") == payload.get("action_id")
+    ]
+    if len(matches) != 1:
+        _projection_issue(
+            issues,
+            operation_id,
+            logical_value,
+            "atomic_projection_action_missing",
+        )
+        return
+    action = matches[0]
+    source = MachineProjectionV1.parse(payload.get("source"), "atomic source")
+    source_payload = source.payload
+    expected_address = action.get("address")
+    if source.kind != "constant" or expected_address != {
+        "op": "const",
+        "value": source_payload.get("value"),
+        "width": source_payload.get("width"),
+    }:
+        _projection_issue(
+            issues,
+            operation_id,
+            logical_value,
+            "atomic_projection_address_mismatch",
+        )
+    if (
+        action.get("kind") != "rmw"
+        or action.get("operation") not in {"compare_exchange", "exchange"}
+        or action.get("width_bytes") != payload.get("width")
+        or graph.get("profile_id") != payload.get("profile_id")
+    ):
+        _projection_issue(
+            issues,
+            operation_id,
+            logical_value,
+            "atomic_projection_action_mismatch",
+        )
+
+
 def _check_address_projection(
     projection: MachineProjectionV1,
     expected_phase: str,
@@ -1358,6 +2266,24 @@ def _check_address_projection(
     if projection.kind == "resource":
         _check_address_projection(
             MachineProjectionV1.parse(payload.get("source"), "resource source"),
+            expected_phase,
+            operation_id,
+            logical_value,
+            issues,
+        )
+        return
+    if projection.kind == "atomic_object":
+        _check_address_projection(
+            MachineProjectionV1.parse(payload.get("source"), "atomic source"),
+            expected_phase,
+            operation_id,
+            logical_value,
+            issues,
+        )
+        return
+    if projection.kind == "callback_handle":
+        _check_address_projection(
+            MachineProjectionV1.parse(payload.get("source"), "callback source"),
             expected_phase,
             operation_id,
             logical_value,
@@ -1412,6 +2338,21 @@ def _check_projection_phase(
         )
 
 
+def _origin_authority(value: object, context: str) -> Mapping[str, object]:
+    row = _object(value, context)
+    _exact(row, {"id", "kind", "lifetime"}, context)
+    _identifier(row["id"], f"{context} id")
+    if row["kind"] not in {
+        "image", "static", "stack", "process", "external", "tls", "resource"
+    }:
+        raise ComponentMachineBindingError(f"{context} kind is unsupported")
+    if row["lifetime"] not in {
+        "process", "image", "invocation", "thread", "allocation", "resource"
+    }:
+        raise ComponentMachineBindingError(f"{context} lifetime is unsupported")
+    return row
+
+
 def _machine_effect_fact(
     unit: Mapping[str, object], family: str, index: int
 ) -> Mapping[str, object]:
@@ -1448,8 +2389,10 @@ def _machine_units(data: bytes) -> dict[str, Mapping[str, object]]:
 
 def _interface_payload(value: Path | str | Mapping[str, object] | object) -> dict[str, object]:
     payload = _load(value, "portable component interface")
-    if payload.get("format") != _INTERFACE_V2:
-        raise ComponentMachineBindingError("machine binding requires portable interface v2")
+    if payload.get("format") not in _INTERFACE_FORMATS:
+        raise ComponentMachineBindingError(
+            "machine binding requires portable interface v2 or v3"
+        )
     return _checked_interface_payload(payload)
 
 
@@ -1476,6 +2419,7 @@ from .machine_binding_schema import (
 
 __all__ = [
     "COMPONENT_MACHINE_BINDING_DECLARATION_V2",
+    "COMPONENT_MACHINE_BINDING_DECLARATION_V3",
     "COMPONENT_MACHINE_BINDING_RECEIPT_V1",
     "COMPONENT_MACHINE_BINDING_V1",
     "ComponentMachineBindingError",

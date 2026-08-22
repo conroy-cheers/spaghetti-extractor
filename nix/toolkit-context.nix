@@ -99,6 +99,9 @@ let
   inductiveCertificateKernel = import ./inductive-certificate-kernel.nix {
     inherit pkgs leanSource;
   };
+  relationKernel = import ./relation-kernel.nix {
+    inherit pkgs leanSource;
+  };
   bochsConformance = pkgs.callPackage ./bochs-conformance.nix {
     instrumentationSrc = ../tools/bochs-conformance;
   };
@@ -181,7 +184,12 @@ in
     inherit testkitTestRunner testkitDeveloper;
   };
   kernels = {
-    inherit isaConformanceKernel isaSemanticKernel inductiveCertificateKernel;
+    inherit
+      isaConformanceKernel
+      isaSemanticKernel
+      inductiveCertificateKernel
+      relationKernel
+      ;
   };
   tools = {
     inherit bochsConformance headlessWine minimalImportCall;

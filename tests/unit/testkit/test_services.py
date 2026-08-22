@@ -40,6 +40,7 @@ def _record(identity: str, input_hash: str) -> TestRecord:
         dependency_paths=(),
         fixtures=(),
         resources=(),
+        declared_resources=(),
         sha256=input_hash,
         input_sha256=input_hash,
         shard="pure-00",

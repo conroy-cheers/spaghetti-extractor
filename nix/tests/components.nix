@@ -11,6 +11,14 @@ let
       "spaghetti_extractor.components.machine_binding"
     ];
   };
+  rootedProjectionSource = import ../python-module-closure.nix {
+    inherit pkgs;
+    phaseRole = "candidate";
+    name = "spaghetti-extractor-components-rooted-projection-python-closure";
+    modules = [
+      "spaghetti_extractor.candidate.authority.rooted_projection"
+    ];
+  };
   peFixtureSource = pkgs.lib.fileset.toSource {
     root = ../..;
     fileset = pkgs.lib.fileset.unions [
@@ -268,7 +276,7 @@ let
               if identity in {"unit:a", "unit:c"} else []
           )
           return {
-              "format": "spaghetti-extractor-machine-ir-v2",
+              "format": "spaghetti-extractor-machine-ir-v3",
               "record_kind": "unit",
               "id": identity,
               "status": "qualified",
@@ -435,7 +443,7 @@ let
       ir.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in units))
       ir_hash = hashlib.sha256(ir.read_bytes()).hexdigest()
       manifest = {
-          "format": "spaghetti-extractor-machine-ir-v2",
+          "format": "spaghetti-extractor-machine-ir-v3",
           "artifacts": {"machine_ir": {"path": "machine-ir.jsonl", "sha256": ir_hash}},
           "binary": {"sha256": "1" * 64},
           "control": {"roots": [{"kind": "pe_entrypoint", "rva": 4096, "checked": True}]},
@@ -447,7 +455,7 @@ let
           "format": "spaghetti-extractor-reconstruction-plan-v1",
           "status": "incomplete",
           "inputs": {"machine_ir": {
-              "format": "spaghetti-extractor-machine-ir-v2",
+              "format": "spaghetti-extractor-machine-ir-v3",
               "sha256": ir_hash,
               "manifest_sha256": manifest_hash,
           }},
@@ -749,6 +757,50 @@ let
       })
       PY
     '';
+  rootedBehavioralProjection = pkgs.runCommand
+    "spaghetti-extractor-components-rooted-projection-fixture"
+    { nativeBuildInputs = [ pythonEnv ]; } ''
+      mkdir -p "$out"
+      export PYTHONPATH=${rootedProjectionSource}/src
+      ${pythonEnv}/bin/python3 - \
+        ${fixture}/machine-ir.jsonl \
+        "$out/rooted-behavioral-projection-v1.json" <<'PY'
+      import json
+      import pathlib
+      import sys
+
+      from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
+      from spaghetti_extractor.candidate.authority.rooted_projection import (
+          ROOTED_BEHAVIORAL_PROJECTION_V1_FORMAT,
+      )
+
+      machine_ir, output = map(pathlib.Path, sys.argv[1:])
+      unit_ids = sorted(
+          json.loads(line)["id"]
+          for line in machine_ir.read_text(encoding="utf-8").splitlines()
+          if line
+      )
+      core = {
+          "format": ROOTED_BEHAVIORAL_PROJECTION_V1_FORMAT,
+          "root_unit_ids": [unit_ids[0]],
+          "reachable_unit_ids": unit_ids,
+          "structural_unit_count": len(unit_ids),
+          "bindings": {
+              "root_closure_manifest_sha256": "a" * 64,
+              "semantic_index_manifest_sha256": "b" * 64,
+              "semantic_universe_sha256": "c" * 64,
+          },
+      }
+      output.write_text(
+          json.dumps(
+              {**core, "projection_sha256": canonical_sha256_v3(core)},
+              indent=2,
+              sort_keys=True,
+          ) + "\n",
+          encoding="ascii",
+      )
+      PY
+    '';
   mkDag = componentIntent: reviewRoot: sourceRoot: inductionRoot: proposals: import ../component-workflow.nix {
     inherit pkgs pythonEnv pythonSource;
     intent = componentIntent;
@@ -759,6 +811,7 @@ let
     bindingRoot = "${fixture}/bindings";
     namePrefix = "spaghetti-extractor-components-fixture";
     interpreterPackage = interpreter;
+    inherit rootedBehavioralProjection;
   };
   base = mkDag intent ./fixtures/components/base ./fixtures/components/source-base
     ./fixtures/components/induction-base
@@ -806,6 +859,7 @@ let
     bindingRoot = "${fixture}/bindings";
     namePrefix = "spaghetti-extractor-components-missing-induction-root";
     interpreterPackage = interpreter;
+    inherit rootedBehavioralProjection;
   };
   missingInductionRootEvaluation = builtins.tryEval
     missingInductionRoot.inductionPackages.h.drvPath;
@@ -1020,7 +1074,7 @@ let
           boundary_effects=(),
       )
       unit = {
-          "format": "spaghetti-extractor-machine-ir-v2",
+          "format": "spaghetti-extractor-machine-ir-v3",
           "record_kind": "unit",
           "id": "unit:e",
           "status": "qualified",
@@ -1078,7 +1132,7 @@ let
           encoding="ascii",
       )
       manifest = {
-          "format": "spaghetti-extractor-machine-ir-v2",
+          "format": "spaghetti-extractor-machine-ir-v3",
           "binary": {"sha256": hashlib.sha256(binary).hexdigest()},
           "artifacts": {
               "machine_ir": {
@@ -1643,6 +1697,7 @@ pkgs.linkFarm "spaghetti-extractor-components-check" [
   { name = "configuration-service-graph-e"; path = base.configurationServiceGraphs."e-enabled"; }
   { name = "activation-receipt-e"; path = base.configurationActivationReceipts."e-enabled".e; }
   { name = "activation-e"; path = base.activationPlans."e-enabled"; }
+  { name = "rooted-portable-gate-e"; path = base.portableGates."e-enabled"; }
   { name = "runtime-e"; path = portableRuntime; }
   { name = "portable-v2-e"; path = portableChecked; }
   { name = "reusable-library-behavior-e"; path = reusableLibraryBehaviorChecked; }

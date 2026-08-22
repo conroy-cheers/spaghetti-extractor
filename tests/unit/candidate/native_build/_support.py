@@ -39,6 +39,7 @@ from spaghetti_extractor.artifacts.artifact_set import (
 from spaghetti_extractor.candidate.interpreter import (
     write_spx_interpreter_package,
 )
+from spaghetti_extractor.machine_ir.memory_actions import build_memory_action_graph
 from spaghetti_extractor.candidate.build import (
     INTERPRETER_NATIVE_BUILD_FORMAT,
     INTERPRETER_NATIVE_BUILD_MANIFEST_FILENAME,
@@ -70,6 +71,7 @@ from spaghetti_extractor.components.formats import (
 from spaghetti_extractor.util import sha256_bytes, sha256_file
 from tests.unit.candidate.native_engine._support import (
     _candidate_execution_artifacts,
+    _empty_callback_authority,
 )
 
 
@@ -113,8 +115,8 @@ def _refresh_source_binding(manifest_path: Path, source_path: Path) -> None:
 
 
 def _transfer(rva: int = 0x1000) -> dict[str, Any]:
-    return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+    unit = {
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": f"semantic-transfer:{rva:08x}",
         "status": "qualified",
@@ -162,6 +164,10 @@ def _transfer(rva: int = 0x1000) -> dict[str, Any]:
             "instruction_effect_schedule": None,
         },
     }
+    unit["semantics"]["memory_actions"] = build_memory_action_graph(
+        instructions=unit["instructions"], memory_events=[], ordered_events=[]
+    )
+    return unit
 
 
 class _ReleaseInputs(TypedDict):
@@ -204,14 +210,14 @@ class _Packages:
         original_sha256 = sha256_file(self.original)
         machine_ir_sha256 = sha256_file(self.machine_ir)
         _write_json(self.machine_ir_manifest, {
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v3",
             "status": "qualified",
             "inputs": {"original_pe": {"sha256": original_sha256}},
             "binary": {"sha256": original_sha256},
             "counts": {"units": 1},
             "artifacts": {
                 "machine_ir": {
-                    "format": "spaghetti-extractor-machine-ir-v2",
+                    "format": "spaghetti-extractor-machine-ir-v3",
                     "path": self.machine_ir.name,
                     "sha256": machine_ir_sha256,
                 }
@@ -244,6 +250,7 @@ class _Packages:
             machine_ir_manifest=self.machine_ir_manifest,
             entry_rva=0x1000,
             canonical_external_sites=self.canonical_external_sites,
+            callback_authority=_empty_callback_authority(root),
             root_closure=execution_authority[0],
             target_certificates=execution_authority[1],
             parametric_summaries=execution_authority[2],

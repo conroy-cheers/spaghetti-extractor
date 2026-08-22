@@ -61,6 +61,11 @@ let
     namePrefix = "spaghetti-extractor-jq-1.8.1";
   };
   components = workflow.components;
+  boundaries = sdk.lifting.boundarySchema {
+    name = "spaghetti-extractor-jq-1.8.1";
+    spec = ./intent/boundaries.json;
+    sources = [ ./source/output-value-boundary.c ];
+  };
   candidateTests = {
     "jq-1.8.1-idiomatic-candidate-functional" = workflow.candidateTestFor {
       id = "jq-1.8.1-idiomatic-candidate-functional";
@@ -75,7 +80,11 @@ sdk.target.pe32Bundle {
   inherit workflow candidateTests;
   inputs.original = original;
   targetAssets.documentation = [ "intent/libraries/README.md" ];
+  targetAssets.boundary_schema = [ "intent/boundaries.json" ];
+  targetAssets.boundary_source = [ "source/output-value-boundary.c" ];
+  extraArtifacts.boundaries = boundaries;
   checks = {
     component-contract = components.contracts.operator-whole;
+    canonical-boundaries = boundaries;
   };
 }

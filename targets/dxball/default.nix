@@ -69,6 +69,11 @@ let
     maxCandidatesPerSeed = 12;
   };
   components = workflow.components;
+  boundaries = sdk.lifting.boundarySchema {
+    name = "spaghetti-extractor-dxball-1.09";
+    spec = ./intent/boundaries.json;
+    sources = [ ./source/window-class-boundary.c ];
+  };
   runtimeData = pkgs.runCommand "dxball-1.09-candidate-runtime-data" {
     __contentAddressed = true;
   } ''
@@ -94,7 +99,11 @@ sdk.target.pe32Bundle {
   };
   profiles.interface = interfaceProfile;
   targetAssets.documentation = [ "intent/libraries/README.md" ];
+  targetAssets.boundary_schema = [ "intent/boundaries.json" ];
+  targetAssets.boundary_source = [ "source/window-class-boundary.c" ];
+  extraArtifacts.boundaries = boundaries;
   checks = {
     component-contract = components.contracts.startup-extended;
+    canonical-boundaries = boundaries;
   };
 }

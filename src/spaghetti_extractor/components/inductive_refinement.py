@@ -21,8 +21,14 @@ from .inductive_receipts import (
 )
 from .inductive_relation import InductiveCutpointRelationV1
 from .inductive_source import InductiveSourcePlanV1
+from .inductive_world import (
+    InductiveServiceWorld,
+    InductiveWorldError,
+    render_inductive_service_world,
+)
 from .interface_ir import PortableComponentInterfaceV2
-from .semantic_paths import build_inductive_segment_models
+from .semantic_path_errors import SemanticPathError
+from .semantic_paths import build_inductive_segment_models, build_operation_path_model
 from .semantic_contract import ComponentSemanticContractV1
 from .source import component_operation_symbols, load_component_source_package
 
@@ -43,6 +49,7 @@ def check_inductive_source_refinement_artifacts(
     certificate: Path | str | Mapping[str, object],
     cbmc: Path | str,
     timeout_seconds: int = 300,
+    component_service_contracts: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Load and cross-bind the immutable artifacts used by the Nix phase."""
 
@@ -79,9 +86,15 @@ def check_inductive_source_refinement_artifacts(
     checked_certificate = InductiveOperationCertificateV1.parse(
         _load_artifact(certificate, "inductive operation certificate")
     )
+    provider_contracts = _load_provider_contracts(
+        component_service_contracts or {},
+        semantic_payload=semantic.to_payload(),
+        interface=portable,
+        operation_id=plan.operation_id,
+    )
     return check_inductive_source_refinement(
         operation=operations[0],
-        service_bindings=[],
+        service_bindings=semantic_payload.get("services", []),
         interface=portable,
         source_package=source_package,
         source_profile=_load_artifact(source_profile, "source-profile receipt"),
@@ -91,6 +104,7 @@ def check_inductive_source_refinement_artifacts(
         certificate=checked_certificate,
         cbmc=cbmc,
         timeout_seconds=timeout_seconds,
+        provider_contracts=provider_contracts,
     )
 
 
@@ -107,6 +121,7 @@ def check_inductive_source_refinement(
     certificate: InductiveOperationCertificateV1,
     cbmc: Path | str,
     timeout_seconds: int = 300,
+    provider_contracts: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict[str, object]:
     """Prove initialization and one arbitrary step at every exact cutpoint."""
 
@@ -167,13 +182,9 @@ def check_inductive_source_refinement(
             "inductive refinement of persistent component state is not implemented"
         )
     logical_operation = interface.operation_index()[source_plan.operation_id]
-    if (
-        logical_operation.allowed_service_ids
-        or logical_operation.effect_ids
-        or operation.get("callback_operation_ids")
-    ):
+    if logical_operation.effect_ids or operation.get("callback_operation_ids"):
         raise InductiveRefinementError(
-            "inductive services, effects, and callbacks require a checked world model"
+            "inductive effects and callbacks require a checked world model"
         )
     if any(item.kind not in {"scalar", "enum", "resource", "bytes"} for item in (
         interface.type_index()[value.type_id]
@@ -228,6 +239,7 @@ def check_inductive_source_refinement(
                 relation=relation,
                 certificate=certificate,
                 model=model,
+                provider_contracts=provider_contracts or {},
             ),
             encoding="ascii",
         )
@@ -292,6 +304,20 @@ def check_inductive_source_refinement(
             "relation_sha256": relation.relation_sha256,
             "implementation_sha256": source["implementation_sha256"],
             "machine_receipt_sha256": machine_receipt.receipt_sha256,
+            "component_service_contracts": [
+                {
+                    "service_id": service_id,
+                    "interface_sha256": contract["interface_sha256"],
+                    "semantic_contract_sha256": contract[
+                        "semantic_contract_sha256"
+                    ],
+                    "operation_sha256": contract["operation_sha256"],
+                    "model_sha256": contract["model_sha256"],
+                }
+                for service_id, contract in sorted(
+                    (provider_contracts or {}).items()
+                )
+            ],
         },
         "checker": {
             "id": "cbmc",
@@ -323,9 +349,18 @@ def _render_harness(
     relation: InductiveCutpointRelationV1,
     certificate: InductiveOperationCertificateV1,
     model: Mapping[str, object],
+    provider_contracts: Mapping[str, Mapping[str, object]],
 ) -> str:
     operation = interface.operation_index()[source_plan.operation_id]
     types = interface.type_index()
+    byte_tokens = {
+        parameter.identity: index + 1
+        for index, parameter in enumerate(
+            parameter
+            for parameter in operation.parameters
+            if types[parameter.type_id].kind == "bytes"
+        )
+    }
     prefix = f"SPX_{_macro(interface.identity)}_{_macro(operation.identity)}"
     state_type = f"spx_{_fragment(interface.identity)}_{_fragment(operation.identity)}_state_v1"
     control_type = f"spx_{_fragment(interface.identity)}_{_fragment(operation.identity)}_control_v1"
@@ -343,6 +378,12 @@ def _render_harness(
         for value in operation.parameters
     ):
         c_types.add("uint32_t")
+    c_types.update(
+        interface.logical_c_type(service.result_type_id)
+        for service in interface.services
+        if service.identity in operation.allowed_service_ids
+        and service.result_type_id is not None
+    )
     nondet = {
         c_type: f"spx_nondet_{index}" for index, c_type in enumerate(sorted(c_types))
     }
@@ -355,7 +396,23 @@ def _render_harness(
             for c_type, symbol in nondet.items()
         ),
         "",
+        "static uint32_t spx_i32_bits(int32_t value) {",
+        "  if (value >= 0) return (uint32_t)value;",
+        "  return UINT32_MAX - (uint32_t)(-(value + 1));",
+        "}",
+        "",
     ]
+    try:
+        world = render_inductive_service_world(
+            interface=interface,
+            operation_id=operation.identity,
+            model=model,
+            nondeterministic_functions=nondet,
+            provider_contracts=provider_contracts,
+        )
+    except InductiveWorldError as exc:
+        raise InductiveRefinementError(str(exc)) from exc
+    lines.extend(world.prelude)
     byte_parameters = [
         value
         for value in operation.parameters
@@ -400,6 +457,8 @@ def _render_harness(
             prefix=prefix,
             state_type=state_type,
             control_type=control_type,
+            world=world,
+            byte_tokens=byte_tokens,
         )
     )
     check_names = ["spx_check_initialize"]
@@ -425,6 +484,8 @@ def _render_harness(
                 prefix=prefix,
                 state_type=state_type,
                 control_type=control_type,
+                world=world,
+                byte_tokens=byte_tokens,
                 cutpoint_unit_id=cutpoint.unit_id,
             )
         )
@@ -452,6 +513,8 @@ def _render_check_function(
     prefix: str,
     state_type: str,
     control_type: str,
+    world: InductiveServiceWorld,
+    byte_tokens: Mapping[str, int],
     cutpoint_unit_id: str | None = None,
 ) -> list[str]:
     if not segments:
@@ -462,6 +525,7 @@ def _render_check_function(
         f"static void {name}(void) {{",
         f"  spx_{interface.identity}_context_v2 context = {{0}};",
         f"  {state_type} state = {{0}};",
+        *world.setup,
     ]
     for field in source_plan.state:
         c_type = interface.logical_c_value_type(field.type_id)
@@ -528,9 +592,14 @@ def _render_check_function(
         )
         phase_number = source_plan.phase_ids.index(cutpoint.phase_id)
         invariants = _cutpoint_invariants(certificate, cutpoint_unit_id)
+        signed_state_ids = {
+            field.identity
+            for field in source_plan.state
+            if interface.logical_c_value_type(field.type_id) == "int32_t"
+        }
         for invariant in invariants:
             lines.append(
-                f"  __CPROVER_assume({_render_expression(invariant.expression.to_payload())});"
+                f"  __CPROVER_assume({_render_expression(invariant.expression.to_payload(), byte_tokens=byte_tokens, signed_state_ids=signed_state_ids)});"
             )
         call = (
             f"{source_plan.symbols.step}(&state, UINT32_C({phase_number}), "
@@ -567,6 +636,8 @@ def _render_check_function(
             source_plan=source_plan,
             certificate=certificate,
             prefix=prefix,
+            service_numbers=world.service_numbers,
+            byte_tokens=byte_tokens,
         )
         for segment in segments
     ]
@@ -588,17 +659,50 @@ def _segment_clause(
     source_plan: InductiveSourcePlanV1,
     certificate: InductiveOperationCertificateV1,
     prefix: str,
+    service_numbers: Mapping[str, int],
+    byte_tokens: Mapping[str, int],
 ) -> str:
+    signed_state_ids = {
+        field.identity
+        for field in source_plan.state
+        if interface.logical_c_value_type(field.type_id) == "int32_t"
+    }
     conditions = [
-        f"({_render_expression(item)})"
+        f"({_render_expression(item, byte_tokens=byte_tokens, signed_state_ids=signed_state_ids)})"
         for item in _rows(segment.get("guards"), "segment guards")
     ]
     conditions.extend(
-        f"({_render_expression(item)})"
+        f"({_render_expression(item, byte_tokens=byte_tokens, signed_state_ids=signed_state_ids)})"
         for item in _rows(
             segment.get("relation_checks", []), "segment relation checks"
         )
     )
+    trace = _rows(segment.get("trace"), "segment service trace")
+    conditions.extend(
+        [
+            "spx_oracle.overflow == UINT32_C(0)",
+            f"spx_oracle.count == UINT32_C({len(trace)})",
+        ]
+    )
+    for event_index, event in enumerate(trace):
+        service_id = _text(event.get("service_id"), "segment service id")
+        service_number = service_numbers.get(service_id)
+        arguments = event.get("arguments")
+        if service_number is None or not isinstance(arguments, list) or any(
+            not isinstance(argument, Mapping) for argument in arguments
+        ):
+            raise InductiveRefinementError("segment service trace is malformed")
+        conditions.extend(
+            [
+                f"spx_oracle.ids[{event_index}] == UINT32_C({service_number})",
+                f"spx_oracle.argument_counts[{event_index}] == UINT32_C({len(arguments)})",
+                *(
+                    f"spx_oracle.arguments[{event_index}][{argument_index}] == "
+                    f"(uint64_t)({_render_expression(expression, byte_tokens=byte_tokens, signed_state_ids=signed_state_ids)})"
+                    for argument_index, expression in enumerate(arguments)
+                ),
+            ]
+        )
     target = _mapping(segment.get("target"), "segment target")
     if target.get("kind") == "cutpoint":
         phase_id = str(target["phase_id"])
@@ -609,11 +713,23 @@ def _segment_clause(
             ]
         )
         values = _mapping(segment.get("target_values"), "segment target values")
+        state_types = {
+            field.identity: interface.logical_c_value_type(field.type_id)
+            for field in source_plan.state
+        }
         for key, expression in values.items():
             kind, identity = str(key).split(":", 1)
-            observed = identity if kind == "parameter" else f"state.{identity}"
+            observed = (
+                f"UINT32_C({byte_tokens[identity]})"
+                if kind == "parameter" and identity in byte_tokens
+                else identity
+                if kind == "parameter"
+                else f"state.{identity}"
+            )
+            if kind == "source_state" and state_types.get(identity) == "int32_t":
+                observed = f"spx_i32_bits({observed})"
             conditions.append(
-                f"({observed}) == ({_render_expression(expression)})"
+                f"({observed}) == ({_render_expression(expression, byte_tokens=byte_tokens, signed_state_ids=signed_state_ids)})"
             )
         target_updates = {
             str(key).split(":", 1)[1]: expression
@@ -626,15 +742,21 @@ def _segment_clause(
             target_invariant = _substitute_target_state(
                 invariant.expression.to_payload(), target_updates
             )
-            conditions.append(_render_expression(target_invariant))
+            conditions.append(
+                _render_expression(
+                    target_invariant,
+                    byte_tokens=byte_tokens,
+                    signed_state_ids=signed_state_ids,
+                )
+            )
         segment_id = str(segment["segment_id"])
         decreases = [
             item for item in certificate.decreases if item.transition_id == segment_id
         ]
         for decrease in decreases:
             conditions.append(
-                f"(uint32_t)({_render_expression(decrease.after.to_payload())}) "
-                f"< (uint32_t)({_render_expression(decrease.before.to_payload())})"
+                f"(uint32_t)({_render_expression(decrease.after.to_payload(), byte_tokens=byte_tokens, signed_state_ids=signed_state_ids)}) "
+                f"< (uint32_t)({_render_expression(decrease.before.to_payload(), byte_tokens=byte_tokens, signed_state_ids=signed_state_ids)})"
             )
     else:
         completion_id = str(target["completion_id"])
@@ -652,8 +774,10 @@ def _segment_clause(
                 if len(operation.results) == 1
                 else f"observed_result.{result.identity}"
             )
+            if interface.logical_c_value_type(result.type_id) == "int32_t":
+                observed = f"spx_i32_bits({observed})"
             conditions.append(
-                f"({observed}) == ({_render_expression(results[result.identity])})"
+                f"({observed}) == ({_render_expression(results[result.identity], byte_tokens=byte_tokens, signed_state_ids=signed_state_ids)})"
             )
     return " && ".join(f"({item})" for item in conditions)
 
@@ -708,22 +832,43 @@ def _cutpoint_invariants(
     return predicates
 
 
-def _render_expression(value: object) -> str:
+def _render_expression(
+    value: object,
+    *,
+    byte_tokens: Mapping[str, int] | None = None,
+    signed_state_ids: set[str] | None = None,
+) -> str:
     row = _mapping(value, "inductive logical expression")
     op = row.get("op")
     if op == "parameter":
         return _text(row.get("name"), "parameter expression")
     if op == "bytes_address":
-        return _text(row.get("name"), "byte-view address expression")
+        name = _text(row.get("name"), "byte-view address expression")
+        if byte_tokens is None or name not in byte_tokens:
+            raise InductiveRefinementError(
+                f"byte-view address {name!r} has no operation parameter"
+            )
+        return f"UINT32_C({byte_tokens[name]})"
     if op in {"state_input", "loop_variable"}:
-        return "spx_initial_state_" + _text(row.get("name"), "state expression")
+        name = _text(row.get("name"), "state expression")
+        rendered = "spx_initial_state_" + name
+        return (
+            f"spx_i32_bits({rendered})"
+            if name in (signed_state_ids or set())
+            else rendered
+        )
+    if op == "service_result":
+        index = row.get("index")
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0:
+            raise InductiveRefinementError("service-result index is invalid")
+        return f"spx_oracle.results[{index}]"
     if op == "byte_extent":
         return _text(row.get("name"), "byte extent") + ".extent"
     if op == "byte_read":
         name = _text(row.get("name"), "byte view")
         return (
             f"__CPROVER_uninterpreted_spx_byte_{name}"
-            f"((uint32_t)({_render_expression(row.get('index'))}))"
+            f"((uint32_t)({_render_expression(row.get('index'), byte_tokens=byte_tokens, signed_state_ids=signed_state_ids)}))"
         )
     if op == "const":
         return f"UINT32_C({int(row.get('value', 0)) & 0xFFFFFFFF})"
@@ -733,26 +878,39 @@ def _render_expression(value: object) -> str:
     if not isinstance(args, list):
         raise InductiveRefinementError(f"expression {op!r} has no arguments")
     rendered = [
-        _render_expression(item) if isinstance(item, Mapping) else str(item)
+        _render_expression(
+            item,
+            byte_tokens=byte_tokens,
+            signed_state_ids=signed_state_ids,
+        )
+        if isinstance(item, Mapping)
+        else str(item)
         for item in args
     ]
-    binary = {
+    word_binary = {
         "add32": "+",
         "sub32": "-",
         "and32": "&",
         "or32": "|",
         "xor32": "^",
         "mul32": "*",
-        "eq": "==",
         "ult32": "<",
         "ule32": "<=",
+    }
+    logical_binary = {
+        "eq": "==",
         "and": "&&",
         "and_bool": "&&",
         "or": "||",
         "or_bool": "||",
     }
-    if op in binary and len(rendered) == 2:
-        return f"(({rendered[0]}) {binary[op]} ({rendered[1]}))"
+    if op in word_binary and len(rendered) == 2:
+        return (
+            f"(((uint32_t)({rendered[0]})) {word_binary[op]} "
+            f"((uint32_t)({rendered[1]})))"
+        )
+    if op in logical_binary and len(rendered) == 2:
+        return f"(({rendered[0]}) {logical_binary[op]} ({rendered[1]}))"
     if op == "not" and len(rendered) == 1:
         return f"(!({rendered[0]}))"
     if op == "ite" and len(rendered) == 3:
@@ -850,6 +1008,160 @@ def _load_artifact(
     if not isinstance(loaded, Mapping):
         raise InductiveRefinementError(f"{context} must be an object")
     return dict(loaded)
+
+
+def _load_provider_contracts(
+    declarations: Mapping[str, object],
+    *,
+    semantic_payload: Mapping[str, object],
+    interface: PortableComponentInterfaceV2,
+    operation_id: str,
+) -> dict[str, dict[str, object]]:
+    operation = interface.operation_index()[operation_id]
+    allowed = set(operation.allowed_service_ids)
+    services = {item.identity: item for item in interface.services}
+    semantic_services = {
+        str(item["service_id"]): item
+        for item in _rows(semantic_payload.get("services"), "semantic services")
+    }
+    if set(declarations) - allowed:
+        raise InductiveRefinementError(
+            "component service contract inventory contains an unused service"
+        )
+    result: dict[str, dict[str, object]] = {}
+    for service_id, raw in sorted(declarations.items()):
+        declaration = _mapping(raw, f"component service contract {service_id}")
+        if set(declaration) != {
+            "component_id",
+            "operation_id",
+            "semantic_contract",
+            "interface",
+        }:
+            raise InductiveRefinementError(
+                f"component service contract {service_id!r} has unknown fields"
+            )
+        semantic_service = semantic_services.get(service_id)
+        provider = (
+            _mapping(semantic_service.get("provider"), "semantic service provider")
+            if semantic_service is not None
+            else {}
+        )
+        component_id = _text(
+            declaration.get("component_id"), "provider component id"
+        )
+        provider_operation_id = _text(
+            declaration.get("operation_id"), "provider operation id"
+        )
+        if (
+            provider.get("kind") != "component_operation"
+            or provider.get("component_id") != component_id
+            or provider.get("operation_id") != provider_operation_id
+        ):
+            raise InductiveRefinementError(
+                f"component service contract {service_id!r} differs from exact resolution"
+            )
+        provider_semantic = ComponentSemanticContractV1.parse(
+            _load_artifact(
+                _text(
+                    declaration.get("semantic_contract"),
+                    "provider semantic contract path",
+                ),
+                "provider semantic contract",
+            )
+        )
+        provider_interface = PortableComponentInterfaceV2.parse(
+            _load_artifact(
+                _text(declaration.get("interface"), "provider interface path"),
+                "provider interface",
+            )
+        )
+        if provider_semantic.status != "satisfied":
+            raise InductiveRefinementError(
+                f"component service provider {component_id!r} is not semantically satisfied"
+            )
+        provider_operations = [
+            item
+            for item in _rows(
+                provider_semantic.to_payload().get("operations"),
+                "provider semantic operations",
+            )
+            if item.get("operation_id") == provider_operation_id
+        ]
+        if len(provider_operations) != 1:
+            raise InductiveRefinementError(
+                f"component service provider operation {provider_operation_id!r} is ambiguous"
+            )
+        provider_operation = provider_interface.operation_index().get(
+            provider_operation_id
+        )
+        if provider_operation is None:
+            raise InductiveRefinementError(
+                f"component service provider operation {provider_operation_id!r} is absent"
+            )
+        consumer_service = services[service_id]
+        if (
+            len(provider_operation.parameters)
+            != len(consumer_service.parameter_type_ids)
+            or len(provider_operation.results) != 1
+            or consumer_service.result_type_id is None
+        ):
+            raise InductiveRefinementError(
+                f"component service provider {service_id!r} is not a scalar function"
+            )
+        consumer_types = [
+            interface.logical_c_value_type(type_id)
+            for type_id in consumer_service.parameter_type_ids
+        ]
+        provider_types = [
+            provider_interface.logical_c_value_type(item.type_id)
+            for item in provider_operation.parameters
+        ]
+        if consumer_types != provider_types or interface.logical_c_value_type(
+            consumer_service.result_type_id
+        ) != provider_interface.logical_c_value_type(
+            provider_operation.results[0].type_id
+        ):
+            raise InductiveRefinementError(
+                f"component service provider {service_id!r} has incompatible value types"
+            )
+        try:
+            model = build_operation_path_model(
+                provider_operations[0],
+                provider_interface,
+                provider_semantic.to_payload().get("services", []),
+            )
+        except SemanticPathError as exc:
+            raise InductiveRefinementError(
+                f"component service provider {service_id!r} has no finite contract: {exc}"
+            ) from exc
+        if model.get("service_ids") or model.get("state_ids"):
+            raise InductiveRefinementError(
+                f"component service provider {service_id!r} is not a closed scalar function"
+            )
+        paths = _rows(model.get("paths"), "provider finite paths")
+        if any(_rows(path.get("trace"), "provider path trace") for path in paths):
+            raise InductiveRefinementError(
+                f"component service provider {service_id!r} invokes another service"
+            )
+        result_id = provider_operation.results[0].identity
+        result[service_id] = {
+            "component_id": component_id,
+            "operation_id": provider_operation_id,
+            "parameter_ids": [item.identity for item in provider_operation.parameters],
+            "result_id": result_id,
+            "paths": [
+                {
+                    "guards": copy.deepcopy(path["guards"]),
+                    "results": copy.deepcopy(path["results"]),
+                }
+                for path in paths
+            ],
+            "interface_sha256": provider_interface.sha256,
+            "semantic_contract_sha256": provider_semantic.contract_sha256,
+            "operation_sha256": canonical_sha256_v3(provider_operations[0]),
+            "model_sha256": canonical_sha256_v3(model),
+        }
+    return result
 
 
 def _text(value: object, context: str) -> str:

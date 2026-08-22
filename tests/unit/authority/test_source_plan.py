@@ -17,7 +17,7 @@ def _unit(
     call_targets: tuple[int, ...] = (),
 ) -> dict[str, object]:
     unit = {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",

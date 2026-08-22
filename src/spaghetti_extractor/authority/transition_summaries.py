@@ -297,6 +297,11 @@ def _expected_unsupported(
         "counts",
         "fpu_state",
         "instruction_effect_schedule",
+        # Checked memory-action graphs are provenance for consumers such as
+        # atomic lowering.  The transition projection continues to derive its
+        # effects from memory_events and must not treat this parallel checked
+        # view as an unknown machine effect.
+        "memory_actions",
     }
     for name in sorted(set(semantics) - known_fields):
         result.add(

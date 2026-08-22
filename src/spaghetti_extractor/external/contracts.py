@@ -19,6 +19,7 @@ from ..external.callbacks import (
     parse_callback_source,
     parse_nested_native_callback_behavior,
 )
+from ..external.callback_protocols import callback_protocol_from_machine_contract
 from ..errors import ToolkitInputError
 
 
@@ -570,6 +571,8 @@ def checked_external_site_contract_from_authority(
             "machine_contract",
             "callbacks",
     }
+    if "callback_source_decision" in raw:
+        expected_fields.add("callback_source_decision")
     if set(raw) != expected_fields:
         raise CheckedExternalSiteContractError(
             f"{context} has noncanonical authority fields"
@@ -584,6 +587,7 @@ def checked_external_site_contract_from_authority(
     arguments = raw["arguments"]
     authority_callback_effect = raw["callback_effect"]
     callbacks = raw["callbacks"]
+    callback_source_decision = raw.get("callback_source_decision")
     contract_id = raw["id"]
     memory_effect = raw["memory_effect"]
     world_effect = raw["world_effect"]
@@ -598,15 +602,61 @@ def checked_external_site_contract_from_authority(
         raise CheckedExternalSiteContractError(
             f"{context} has malformed argument or callback inventories"
         )
+    _validate_authority_callback_source_decision(
+        callback_source_decision,
+        arguments=arguments,
+        callbacks=callbacks,
+        callback_effect=authority_callback_effect,
+        context=context,
+    )
     argument_base = 0 if transfer_kind == "call" else 4
     callback_effect = "none"
     callback_adapter = None
     if authority_callback_effect == "registers":
         callback_effect = "explicit"
-        callback_source = machine.get("callback_source")
-        callback_abi = machine.get("callback_abi")
-        callback_lifetime = machine.get("callback_lifetime")
-        callback_behavior = machine.get("callback_behavior", "registration")
+        protocol = callback_protocol_from_machine_contract(
+            machine, context=f"{context} callback protocol"
+        )
+        if protocol is not None:
+            callback_source = None
+            if protocol.source is not None:
+                callback_source = {
+                    "kind": protocol.source.kind,
+                    "argument": protocol.source.argument,
+                    **(
+                        {"offset": protocol.source.offset}
+                        if protocol.source.kind == "argument_pointee"
+                        else {}
+                    ),
+                }
+            callback_abi = {
+                "kind": "generic_callback",
+                "argument_words": protocol.signature.argument_words,
+                "stack_cleanup_bytes": protocol.signature.stack_cleanup_bytes,
+                "nullable": any(
+                    row.kind == "null"
+                    for row in (() if protocol.source is None else protocol.source.sentinels)
+                ),
+            }
+            callback_lifetime = protocol.lifetime.to_payload()
+            nested = parse_nested_native_callback_behavior(
+                machine,
+                registration_argument_words=argument_words,
+                context=f"{context} callback protocol",
+            )
+            callback_behavior = (
+                "registration" if nested is None else nested.as_json()
+            )
+            _validate_callback_previous_result_relation(
+                protocol=protocol,
+                machine=machine,
+                context=context,
+            )
+        else:
+            callback_source = machine.get("callback_source")
+            callback_abi = machine.get("callback_abi")
+            callback_lifetime = machine.get("callback_lifetime")
+            callback_behavior = machine.get("callback_behavior", "registration")
         if not isinstance(callback_source, Mapping) or not isinstance(
             callback_abi, Mapping
         ) or not isinstance(callback_lifetime, (str, Mapping)):
@@ -680,6 +730,85 @@ def checked_external_site_contract_from_authority(
         },
         context=context,
     )
+
+
+def _validate_authority_callback_source_decision(
+    value: object,
+    *,
+    arguments: list[object],
+    callbacks: list[object],
+    callback_effect: object,
+    context: str,
+) -> None:
+    """Validate proof-only callback classification before runtime projection."""
+
+    if value is None:
+        return
+    if callback_effect != "registers" or not isinstance(value, Mapping):
+        raise CheckedExternalSiteContractError(
+            f"{context} has a callback-source decision outside callback registration"
+        )
+    kind = value.get("kind")
+    fields = {"kind", "argument_index", "source_expression"}
+    if kind == "non_callback_sentinel":
+        fields.add("sentinel_word")
+    if set(value) != fields or kind not in {
+        "callback_target",
+        "non_callback_sentinel",
+        "parametric_entry_word",
+    }:
+        raise CheckedExternalSiteContractError(
+            f"{context} has a malformed callback-source decision"
+        )
+    argument_index = _uint(
+        value.get("argument_index"),
+        f"{context} callback-source argument index",
+        maximum=max(0, len(arguments) - 1),
+    )
+    if not arguments or value.get("source_expression") != arguments[argument_index]:
+        raise CheckedExternalSiteContractError(
+            f"{context} callback-source decision disagrees with its argument"
+        )
+    if kind == "callback_target":
+        if not callbacks:
+            raise CheckedExternalSiteContractError(
+                f"{context} callback-target decision has no target inventory"
+            )
+    elif callbacks:
+        raise CheckedExternalSiteContractError(
+            f"{context} non-target callback-source decision carries targets"
+        )
+    if kind == "non_callback_sentinel":
+        _uint(
+            value.get("sentinel_word"),
+            f"{context} callback-source sentinel word",
+        )
+
+
+def _validate_callback_previous_result_relation(
+    *, protocol: object, machine: Mapping[str, object], context: str
+) -> None:
+    previous = getattr(protocol, "previous_result")
+    relations = machine.get("result_register_relations", [])
+    if not isinstance(relations, list):
+        raise CheckedExternalSiteContractError(
+            f"{context} callback result relations are malformed"
+        )
+    related = [
+        row
+        for row in relations
+        if isinstance(row, Mapping) and row.get("relation") == "related_word"
+    ]
+    if previous is None:
+        if related:
+            raise CheckedExternalSiteContractError(
+                f"{context} callback has an undeclared previous result"
+            )
+        return
+    if len(related) != 1 or related[0].get("register") != previous.register:
+        raise CheckedExternalSiteContractError(
+            f"{context} callback previous result is not bound to its machine register"
+        )
 
 
 def checked_external_site_contract_from_event(

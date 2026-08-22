@@ -5,6 +5,16 @@
   perSystem = { config, pkgs, ... }:
     let
       context = import ../toolkit-context.nix { inherit pkgs; };
+      testManifest = builtins.fromJSON (
+        builtins.readFile ../generated/test-suite-manifest.json
+      );
+      declaredTargetResources = pkgs.lib.unique (
+        pkgs.lib.concatMap
+          (shard: builtins.filter
+            (path: pkgs.lib.hasPrefix "targets/" path)
+            shard.files)
+          testManifest.shards
+      );
       testSource = pkgs.lib.fileset.toSource {
         root = ../..;
         fileset = pkgs.lib.fileset.unions [
@@ -20,6 +30,9 @@
           ../../src
           ../../tests
           ../../tools
+          (pkgs.lib.fileset.unions (
+            map (path: ../.. + "/${path}") declaredTargetResources
+          ))
         ];
       };
       mkTestSuite = mode: import ../test-suite.nix {
@@ -227,6 +240,7 @@
         machine-import-control-profile = machineImportControlProfileFixture;
         isa-kernel = context.kernels.isaConformanceKernel;
         inductive-certificate-kernel = context.kernels.inductiveCertificateKernel;
+        relation-kernel = context.kernels.relationKernel;
         roundtrip = roundtrip.qualification;
         target-sdk = targetSdkCheck;
         components = componentsCheck;

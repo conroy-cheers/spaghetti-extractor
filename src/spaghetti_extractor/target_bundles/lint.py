@@ -22,14 +22,21 @@ TARGET_ASSET_ROLES = frozenset(
         "component_source",
         "component_machine_binding",
         "component_induction",
+        "component_relation",
+        "call_intent",
+        "call_layout",
         "library_adoption_intent",
         "candidate_test",
         "runtime",
         "documentation",
         "license",
+        "boundary_schema",
+        "boundary_source",
     }
 )
-_MANUAL_ROLES = frozenset({"runtime", "documentation", "license"})
+_MANUAL_ROLES = frozenset(
+    {"runtime", "documentation", "license", "boundary_schema", "boundary_source"}
+)
 _FORBIDDEN_PARTS = frozenset(
     {".cache", ".direnv", "build", "generated", "result", "results"}
 )

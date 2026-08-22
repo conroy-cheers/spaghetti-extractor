@@ -47,6 +47,7 @@ pkgs.runCommand "${namePrefix}-component-runtime-package-v3" {
     ${lib.escapeShellArg (builtins.toJSON (paths componentConfiguration.adapterPlans))} \
     ${lib.escapeShellArg (builtins.toJSON (paths (componentConfiguration.activationReceipts or { })))} \
     ${lib.escapeShellArg (builtins.toJSON (paths (componentConfiguration.machineBindings or { })))} \
+    ${lib.escapeShellArg (builtins.toJSON (paths (componentConfiguration.boundaryPlans or { })))} \
     ${lib.escapeShellArg (builtins.toJSON (paths (componentConfiguration.libraryComponents or { })))} \
     ${interpreterPackage} \
     "$out" <<'PY'
@@ -69,9 +70,10 @@ pkgs.runCommand "${namePrefix}-component-runtime-package-v3" {
       adapter_plans={key: pathlib.Path(value) for key, value in json.loads(sys.argv[8]).items()},
       activation_receipts={key: pathlib.Path(value) for key, value in json.loads(sys.argv[9]).items()},
       machine_bindings={key: pathlib.Path(value) for key, value in json.loads(sys.argv[10]).items()},
-      library_components={key: pathlib.Path(value) for key, value in json.loads(sys.argv[11]).items()},
-      interpreter_package=pathlib.Path(sys.argv[12]),
-      out_dir=pathlib.Path(sys.argv[13]),
+      boundary_plans={key: pathlib.Path(value) for key, value in json.loads(sys.argv[11]).items()},
+      library_components={key: pathlib.Path(value) for key, value in json.loads(sys.argv[12]).items()},
+      interpreter_package=pathlib.Path(sys.argv[13]),
+      out_dir=pathlib.Path(sys.argv[14]),
   )
   PY
   jq -e '

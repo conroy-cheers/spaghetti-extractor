@@ -50,6 +50,12 @@ OPERATOR_COMMANDS = (
     "component build",
     "component bind",
     "component check",
+    "component relation",
+    "call status",
+    "call inspect",
+    "call propose",
+    "call adopt",
+    "call check",
     "library status",
     "library inspect",
     "library adopt",
@@ -125,7 +131,7 @@ class PublicCliTests(unittest.TestCase):
         namespaces = _subcommands(parser)
         self.assertEqual(
             tuple(namespaces.choices),
-            ("project", "component", "library", "candidate", "expert"),
+            ("project", "component", "call", "library", "candidate", "expert"),
         )
         self.assertEqual(
             tuple(command.name for command in SUPPORTED_COMMANDS),

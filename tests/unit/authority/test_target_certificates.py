@@ -98,7 +98,7 @@ def _unit(unit_id: str, rva: int, *, indirect: bool, target_rva: int) -> dict[st
             "has_indirect_target": False,
         }
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",

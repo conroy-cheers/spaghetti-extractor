@@ -25,6 +25,7 @@ from ..libraries.v4_identity_records import (
     LibraryIslandHypothesisV4,
     LibraryReleaseHypothesesV4,
 )
+from ..abi.matching import read_abi_match_resolution
 from ..util import write_json
 
 
@@ -34,7 +35,55 @@ def _issue(status: str, code: str, location: str) -> dict[str, object]:
 
 def _next_action(issue: dict[str, object]) -> str:
     code = issue.get("code")
+    field = issue.get("field")
+    if code == "abi_required_fact_missing" and isinstance(field, str):
+        field_actions = {
+            "arguments": (
+                "add checked call-site/callee input-location evidence or a pinned "
+                "header/debug declaration for this exact library snapshot"
+            ),
+            "results": (
+                "recover the machine result locations and their caller uses, or add a "
+                "pinned declaration"
+            ),
+            "variadic": (
+                "reconcile reachable call-site arities with pinned declaration metadata"
+            ),
+            "preserved_state": (
+                "complete checked register preservation across every function return"
+            ),
+            "stack_cleanup": (
+                "classify every reachable return and reconcile its exact stack delta"
+            ),
+            "calling_convention": (
+                "reconcile symbol decoration, argument locations, and return cleanup"
+            ),
+        }
+        return field_actions.get(
+            field,
+            f"supply checked physical ABI evidence for {field}",
+        )
     actions = {
+        "abi_constraint_contradiction": (
+            "inspect the listed machine, declaration, and match evidence IDs; correct "
+            "the contradictory profile rather than choosing one source"
+        ),
+        "abi_alternative_budget_exceeded": (
+            "refine call-site or declaration evidence to reduce the finite ABI alternatives"
+        ),
+        "abi_fact_ambiguous": (
+            "use the matched symbol, return cleanup, and checked call sites to reduce this "
+            "field to one physical ABI value"
+        ),
+        "abi_declaration_match_ambiguous": (
+            "make declaration symbol selectors unique within this pinned catalog snapshot"
+        ),
+        "abi_checked_summary_not_authorizing": (
+            "close the referenced checked parametric summary before using this function match"
+        ),
+        "abi_declaration_or_machine_evidence_required": (
+            "add a pinned declaration spec or improve checked machine call-boundary recovery"
+        ),
         "canonical_boundary_not_checked": (
             "adopt a reusable implementation, then build the island check so "
             "canonical call, return, external-site, and indirect-target boundaries are checked"
@@ -220,6 +269,7 @@ def build_library_status_v4(
     target_id: str,
     release_hypotheses: Path | str,
     catalog_search_index: Path | str | None = None,
+    abi_match_resolution: Path | str | None = None,
     adoption_intents: Iterable[LibraryAdoptionIntentV1 | Path | str] = (),
     checked_islands: Iterable[CheckedLibraryIslandV1 | Path | str] = (),
     generated_components: Iterable[Path | str] = (),
@@ -235,6 +285,16 @@ def build_library_status_v4(
     catalog_functions = (
         {} if catalog is None else {row.function_id: row for row in catalog.functions}
     )
+    abi_resolution = (
+        None
+        if abi_match_resolution is None
+        else read_abi_match_resolution(abi_match_resolution)
+    )
+    abi_binding_by_match = {
+        str(row.get("match_id")): row
+        for row in (() if abi_resolution is None else abi_resolution["bindings"])
+        if isinstance(row, dict)
+    }
     if catalog is not None and any(
         release.catalog_search_index_sha256 != catalog.index_sha256
         for release in releases
@@ -363,6 +423,22 @@ def build_library_status_v4(
         selection_blockers.extend(issues)
     hypothesis_rows = []
     blockers = list(violations) + selection_blockers
+    if abi_resolution is not None:
+        blockers.extend(
+            {
+                **dict(issue),
+                "family": "boundary",
+                "location": (
+                    "abi:"
+                    f"{issue.get('catalog_undecorated_symbol') or '/'.join(issue.get('catalog_symbols', [])) or 'unknown'}:"
+                    f"{issue.get('subject_id')}"
+                    if issue.get("subject_id") is not None
+                    else f"abi-match:{issue.get('match_id', 'unknown')}"
+                ),
+            }
+            for issue in abi_resolution.get("issues", [])
+            if isinstance(issue, dict)
+        )
     for release in releases:
         for release_issue in release.issues:
             blockers.append(release_issue.to_payload())
@@ -424,6 +500,14 @@ def build_library_status_v4(
                         "symbols": list(function.symbols),
                         "operation_id": function.operation_id,
                         "abi_profile_id": function.abi_profile_id,
+                        "physical_abi": next(
+                            (
+                                abi_binding_by_match.get(match.match_id)
+                                for match in island.matches
+                                if match.catalog_function_id == function.function_id
+                            ),
+                            None,
+                        ),
                     }
                 )
             hypothesis_rows.append(
@@ -491,6 +575,18 @@ def build_library_status_v4(
             "adoption_intents": len(intents),
             "ready_adoptions": sum(row["status"] == "ready" for row in selections),
             "primary_blockers": len(unique_blockers),
+            "physical_abi_complete": sum(
+                row.get("status") == "complete"
+                for row in abi_binding_by_match.values()
+            ),
+            "physical_abi_incomplete": sum(
+                row.get("status") == "incomplete"
+                for row in abi_binding_by_match.values()
+            ),
+            "physical_abi_violated": sum(
+                row.get("status") == "violated"
+                for row in abi_binding_by_match.values()
+            ),
         },
         "islands": sorted(hypothesis_rows, key=lambda row: str(row["id"])),
         "selections": sorted(selections, key=lambda row: str(row["intent_id"])),

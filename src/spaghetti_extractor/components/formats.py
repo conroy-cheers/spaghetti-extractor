@@ -44,12 +44,58 @@ COMPONENT_EXTERNAL_SITE_SLICE_V1_FORMAT = (
 COMPONENT_INTERFACE_IR_V2_FORMAT = (
     "spaghetti-extractor-component-interface-ir-v2"
 )
+COMPONENT_INTERFACE_IR_V3_FORMAT = (
+    "spaghetti-extractor-component-interface-ir-v3"
+)
+COMPONENT_INTERFACE_IR_V4_FORMAT = (
+    "spaghetti-extractor-component-interface-ir-v4"
+)
+PORTABLE_COMPONENT_INTERFACE_V5_FORMAT = (
+    "spaghetti-extractor-portable-component-interface-v5"
+)
+INTERACTION_CONTRACT_V1_FORMAT = (
+    "spaghetti-extractor-interaction-contract-v1"
+)
+INTERACTION_CONTRACT_CATALOG_V1_FORMAT = (
+    "spaghetti-extractor-interaction-contract-catalog-v1"
+)
+INTERACTION_CONTRACT_RECEIPT_V1_FORMAT = (
+    "spaghetti-extractor-interaction-contract-receipt-v1"
+)
+COMPONENT_INTERACTION_INVENTORY_V1_FORMAT = (
+    "spaghetti-extractor-component-interaction-inventory-v1"
+)
+COMPONENT_RELATION_DECLARATION_V2_FORMAT = (
+    "spaghetti-extractor-component-relation-declaration-v2"
+)
+COMPONENT_RELATION_PROPOSAL_PACKAGE_V2_FORMAT = (
+    "spaghetti-extractor-component-relation-proposal-package-v2"
+)
+COMPONENT_RELATION_IR_V4_FORMAT = "spaghetti-extractor-component-relation-ir-v4"
+COMPONENT_RELATION_RECEIPT_V2_FORMAT = (
+    "spaghetti-extractor-component-relation-receipt-v2"
+)
+BOUNDARY_PRIMITIVE_MANIFEST_V1_FORMAT = (
+    "spaghetti-extractor-boundary-primitive-manifest-v1"
+)
+MACHINE_OBJECT_AUTHORITY_V1_FORMAT = (
+    "spaghetti-extractor-machine-object-authority-v1"
+)
+COMPONENT_BOUNDARY_PLAN_V3_FORMAT = (
+    "spaghetti-extractor-component-boundary-plan-v3"
+)
+COMPONENT_BOUNDARY_PLAN_RECEIPT_V3_FORMAT = (
+    "spaghetti-extractor-component-boundary-plan-receipt-v3"
+)
 COMPONENT_CONTRACT_V3_FORMAT = "spaghetti-extractor-component-contract-v3"
 COMPONENT_IMPLEMENTATION_V3_FORMAT = (
     "spaghetti-extractor-component-implementation-v3"
 )
 COMPONENT_MACHINE_BINDING_V3_FORMAT = (
     "spaghetti-extractor-component-machine-binding-v3"
+)
+COMPONENT_MACHINE_BINDING_V4_FORMAT = (
+    "spaghetti-extractor-component-machine-binding-v4"
 )
 COMPONENT_DEPENDENCY_GRAPH_V3_FORMAT = (
     "spaghetti-extractor-component-dependency-graph-v3"
@@ -124,8 +170,24 @@ __all__ = [
     "COMPONENT_EVIDENCE_V3_FORMAT",
     "COMPONENT_EXTERNAL_SITE_SLICE_V1_FORMAT",
     "COMPONENT_INTERFACE_IR_V2_FORMAT",
+    "COMPONENT_INTERFACE_IR_V3_FORMAT",
+    "COMPONENT_INTERFACE_IR_V4_FORMAT",
+    "PORTABLE_COMPONENT_INTERFACE_V5_FORMAT",
+    "INTERACTION_CONTRACT_V1_FORMAT",
+    "INTERACTION_CONTRACT_CATALOG_V1_FORMAT",
+    "INTERACTION_CONTRACT_RECEIPT_V1_FORMAT",
+    "COMPONENT_INTERACTION_INVENTORY_V1_FORMAT",
+    "COMPONENT_RELATION_DECLARATION_V2_FORMAT",
+    "COMPONENT_RELATION_PROPOSAL_PACKAGE_V2_FORMAT",
+    "COMPONENT_RELATION_IR_V4_FORMAT",
+    "COMPONENT_RELATION_RECEIPT_V2_FORMAT",
+    "BOUNDARY_PRIMITIVE_MANIFEST_V1_FORMAT",
+    "MACHINE_OBJECT_AUTHORITY_V1_FORMAT",
+    "COMPONENT_BOUNDARY_PLAN_V3_FORMAT",
+    "COMPONENT_BOUNDARY_PLAN_RECEIPT_V3_FORMAT",
     "COMPONENT_IMPLEMENTATION_V3_FORMAT",
     "COMPONENT_MACHINE_BINDING_V3_FORMAT",
+    "COMPONENT_MACHINE_BINDING_V4_FORMAT",
     "COMPONENT_QUALIFICATION_V3_FORMAT",
     "COMPONENT_RESOLUTION_V2_FORMAT",
     "COMPONENT_RESOLUTION_SLICE_V1_FORMAT",

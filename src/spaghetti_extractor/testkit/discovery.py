@@ -768,9 +768,14 @@ def build_impact_index(
         inferred_resources = set(inferred_for(path))
         for dependency in dependencies:
             inferred_resources.update(inferred_for(dependency))
+        declared_resources = _resource_dependency_closure(
+            repository,
+            directive.resources,
+            content_overrides=resource_content_overrides,
+        )
         resources = _resource_dependency_closure(
             repository,
-            set(directive.resources) | inferred_resources,
+            set(declared_resources) | inferred_resources,
             content_overrides=resource_content_overrides,
         )
         missing_resources = [resource for resource in resources if not (repository / resource).exists()]
@@ -817,6 +822,7 @@ def build_impact_index(
                 dependency_paths=tuple(sorted(dependencies)),
                 fixtures=fixture_ids,
                 resources=resources,
+                declared_resources=declared_resources,
                 sha256=module.sha256,
                 input_sha256=canonical_sha256(
                     {"test": module.sha256, "inputs": input_rows, "fixtures": list(fixture_ids)}

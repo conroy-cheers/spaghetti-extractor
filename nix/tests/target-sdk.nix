@@ -165,6 +165,13 @@ let
     runtimeFrontiers = artifact;
     staticReleasePolicies.default = { receipt = acceptance; gate = acceptance; };
     staticReleasePolicies.minimal = { receipt = acceptance; gate = acceptance; };
+    calls = {
+      configured = false;
+      assetInventory = [ ];
+      status = artifact;
+      subjects = { };
+      check = artifact;
+    };
     releaseFor = { configurationId }:
       assert builtins.elem configurationId [ "default" "minimal" ];
       { receipt = acceptance; gate = acceptance; };
@@ -269,6 +276,7 @@ let
 in
 assert sdk.format == "spaghetti-extractor-target-sdk-v3";
 assert pe32WorkflowArguments ? componentInductionRoot;
+assert pe32WorkflowArguments ? componentRelationRoot;
 assert registry.minimal-sdk-consumer.metadata.id == "minimal-sdk-consumer";
 assert registry.minimal-sdk-consumer.defaultConfiguration == "default";
 assert registry.minimal-sdk-consumer.artifacts.input.baseline == artifact;

@@ -27,6 +27,7 @@
         isa-kernel = context.kernels.isaConformanceKernel;
         isa-semantic-kernel = context.kernels.isaSemanticKernel;
         inductive-certificate-kernel = context.kernels.inductiveCertificateKernel;
+        relation-kernel = context.kernels.relationKernel;
         bochs-conformance = context.tools.bochsConformance;
       } // context.fixtureCatalog.packageAttributes context.fixtures;
 

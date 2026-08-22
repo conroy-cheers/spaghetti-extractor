@@ -116,11 +116,11 @@ class _Fixture:
         _write_json(
             self.machine_manifest,
             {
-                "format": "spaghetti-extractor-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v3",
                 "counts": {"units": 1},
                 "artifacts": {
                     "machine_ir": {
-                        "format": "spaghetti-extractor-machine-ir-v2",
+                        "format": "spaghetti-extractor-machine-ir-v3",
                         "path": self.machine_ir.name,
                         "sha256": sha256_file(self.machine_ir),
                     }
@@ -172,7 +172,7 @@ class _Fixture:
                     "path": self.machine_ir.name,
                     "sha256": sha256_file(self.machine_ir),
                 },
-                "input_mode": "sanitized_machine_ir_v2",
+                "input_mode": "sanitized_machine_ir_v3",
                 "program": {"path": program.name, "sha256": sha256_file(program)},
                 "sources": [
                     {
@@ -239,6 +239,11 @@ class _Fixture:
                 runtime_header_sha256="3" * 64,
                 interpreter_header_sha256="4" * 64,
                 interpreter_internal_header_sha256="5" * 64,
+                atomics_header_sha256="6" * 64,
+                atomics_backend_header_sha256="7" * 64,
+                atomics_source_sha256="8" * 64,
+                capability_backend_header_sha256="9" * 64,
+                capability_backend_source_sha256="a" * 64,
             ),
             required_unit_ids=(self.exact.unit_id,),
             lowerable_unit_ids=(self.exact.unit_id,),

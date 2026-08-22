@@ -10,9 +10,11 @@ from ..artifacts.artifact_set import (
     ArtifactV3Error,
     CanonicalValueV3,
     RecordDependencyV3,
+    canonical_sha256_v3,
 )
 from ..artifacts.io import ArtifactSetReaderV3
 from ..artifacts.phases import PhaseContextV3, RecordCodecV3, map_units
+from ..artifacts.callback_protocols import callback_protocol_from_machine_contract
 from ._schema import (
     digest,
     fail,
@@ -40,17 +42,127 @@ from .external_site_records import (
     CallbackRequirementV3,
     CanonicalExternalSiteRecordV3,
 )
-from .semantic_index import SEMANTIC_INDEX_CODEC_V3
+from .incoming_call_frames import (
+    INCOMING_CALL_FRAME_CODEC_V3,
+    INCOMING_CALL_FRAMES_ARTIFACT_KIND_V3,
+)
 
 
 CALLBACK_EVIDENCE_RECORD_V3_SCHEMA = (
-    "spaghetti-extractor-callback-evidence-record-v3"
+    "spaghetti-extractor-callback-evidence-record-v4"
 )
-CALLBACK_EVIDENCE_ARTIFACT_KIND_V3 = "callback-evidence-v3"
+CALLBACK_EVIDENCE_ARTIFACT_KIND_V4 = "callback-evidence-v4"
+CALLBACK_EVIDENCE_ARTIFACT_KIND_V3 = CALLBACK_EVIDENCE_ARTIFACT_KIND_V4
 CALLBACK_AUTHORITY_RECORD_V3_SCHEMA = (
-    "spaghetti-extractor-callback-authority-record-v3"
+    "spaghetti-extractor-callback-authority-record-v4"
 )
-CALLBACK_AUTHORITY_ARTIFACT_KIND_V3 = "callback-authority-v3"
+CALLBACK_AUTHORITY_ARTIFACT_KIND_V4 = "callback-authority-v4"
+CALLBACK_AUTHORITY_ARTIFACT_KIND_V3 = CALLBACK_AUTHORITY_ARTIFACT_KIND_V4
+
+
+def derive_callback_entry_state_v3(
+    *,
+    external_site_id: str,
+    requirement: CallbackRequirementV3,
+    machine_contract: CanonicalValueV3,
+) -> tuple[CanonicalValueV3 | None, PrimaryBlockerV3 | None]:
+    """Derive the canonical symbolic PE32 callback entry frame.
+
+    Concrete callback arguments and the external return address are supplied by
+    the environment at invocation time.  The checked entry state records their
+    exact ABI locations without pretending those values are statically known.
+    """
+
+    machine = mapping(machine_contract.to_value(), "callback machine contract")
+    protocol = callback_protocol_from_machine_contract(
+        machine, context="callback machine contract"
+    )
+    raw_abi = (
+        protocol.signature.to_payload()
+        if protocol is not None
+        else machine.get("callback_abi")
+    )
+    if not isinstance(raw_abi, dict):
+        return None, PrimaryBlockerV3(
+            "incomplete", "callback_entry_abi_missing"
+        )
+    if canonical_sha256_v3(raw_abi) != requirement.abi_sha256:
+        return None, PrimaryBlockerV3(
+            "violated", "callback_entry_abi_contradiction"
+        )
+    kind = raw_abi.get("kind")
+    if protocol is None and kind != "generic_callback":
+        return None, PrimaryBlockerV3(
+            "incomplete", "callback_entry_abi_unsupported"
+        )
+    argument_words = raw_abi.get("argument_words")
+    cleanup_bytes = raw_abi.get("stack_cleanup_bytes")
+    nullable = (
+        any(
+            row.kind == "null"
+            for row in (() if protocol.source is None else protocol.source.sentinels)
+        )
+        if protocol is not None
+        else raw_abi.get("nullable")
+    )
+    if (
+        not isinstance(argument_words, int)
+        or isinstance(argument_words, bool)
+        or argument_words < 0
+        or not isinstance(cleanup_bytes, int)
+        or isinstance(cleanup_bytes, bool)
+        or cleanup_bytes < 0
+        or cleanup_bytes % 4 != 0
+        or not isinstance(nullable, bool)
+    ):
+        return None, PrimaryBlockerV3(
+            "violated", "callback_entry_abi_malformed"
+        )
+    frame_id = f"callback-frame:{requirement.callback_id}"
+    entry_esp = {
+        "kind": "callback_frame_location",
+        "frame_id": frame_id,
+        "offset": 0,
+    }
+    return (
+        CanonicalValueV3.of(
+            {
+                "model": "pe32-callback-entry-v1",
+                "external_site_id": external_site_id,
+                "callback_id": requirement.callback_id,
+                "target_unit_id": requirement.target_unit_id,
+                "target_rva": requirement.target_rva,
+                "lifetime": requirement.lifetime,
+                "abi": raw_abi,
+                "registers": {"esp": entry_esp},
+                "stack": {
+                    "frame_id": frame_id,
+                    "return_address": {
+                        "offset": 0,
+                        "value": {
+                            "kind": "external_callback_continuation",
+                            "callback_id": requirement.callback_id,
+                        },
+                    },
+                    "arguments": [
+                        {
+                            "index": index,
+                            "offset": 4 + index * 4,
+                            "width": 4,
+                            "value": {
+                                "kind": "external_callback_argument",
+                                "callback_id": requirement.callback_id,
+                                "index": index,
+                            },
+                        }
+                        for index in range(argument_words)
+                    ],
+                    "callee_cleanup_bytes": cleanup_bytes,
+                },
+            }
+        ),
+        None,
+    )
 
 
 @dataclass(frozen=True)
@@ -149,7 +261,7 @@ def _decode_callback_evidence(value: Any) -> CallbackEvidenceV3:
         fail(
             "wrong_record_schema",
             "record is not callback-evidence-record-v3",
-            "use CALLBACK_EVIDENCE_CODEC_V3 with callback-evidence-v3",
+            "use CALLBACK_EVIDENCE_CODEC_V4 with callback-evidence-v4",
         )
     return CallbackEvidenceV3(
         record_id=text(row["id"], "callback evidence ID"),
@@ -198,6 +310,7 @@ class CallbackAuthorityV3:
     authorizing: bool
     entry_state: CanonicalValueV3 | None
     primary_blocker: PrimaryBlockerV3 | None
+    protocol: CanonicalValueV3 | None = None
 
     def __post_init__(self) -> None:
         text(self.callback_id, "callback authority ID")
@@ -224,6 +337,12 @@ class CallbackAuthorityV3:
                 "fail_open_callback_authority",
                 "callback status disagrees with entry-state authority",
                 "retain entry state only for a complete callback",
+            )
+        if self.status == "complete" and self.protocol is None:
+            fail(
+                "fail_open_callback_authority",
+                "complete callback authority has no canonical protocol",
+                "bind the callback protocol from the canonical external site",
             )
 
 
@@ -271,6 +390,9 @@ def _callback_payload(value: CallbackAuthorityV3) -> dict[str, Any]:
         "entry_state": (
             None if value.entry_state is None else value.entry_state.to_value()
         ),
+        "protocol": (
+            None if value.protocol is None else value.protocol.to_value()
+        ),
         "primary_blocker": blocker_payload_v3(value.primary_blocker),
     }
 
@@ -289,6 +411,7 @@ def _parse_callback(value: Any) -> CallbackAuthorityV3:
             "status",
             "authorizing",
             "entry_state",
+            "protocol",
             "primary_blocker",
         },
         "callback authority",
@@ -326,6 +449,11 @@ def _parse_callback(value: Any) -> CallbackAuthorityV3:
             if row["primary_blocker"] is None
             else PrimaryBlockerV3.parse(row["primary_blocker"])
         ),
+        protocol=(
+            None
+            if row["protocol"] is None
+            else CanonicalValueV3.of(row["protocol"])
+        ),
     )
 
 
@@ -360,8 +488,8 @@ def _decode_callback_record(value: Any) -> CallbackAuthorityRecordV3:
     if row["schema"] != CALLBACK_AUTHORITY_RECORD_V3_SCHEMA:
         fail(
             "wrong_record_schema",
-            "record is not callback-authority-record-v3",
-            "use CALLBACK_AUTHORITY_CODEC_V3 with callback-authority-v3",
+            "record is not callback-authority-record-v4",
+            "use CALLBACK_AUTHORITY_CODEC_V4 with callback-authority-v4",
         )
     authorizing = row["authorizing"]
     if not isinstance(authorizing, bool):
@@ -412,48 +540,67 @@ def _checked_callback(
     *,
     external_site_id: str,
     requirement: CallbackRequirementV3,
+    machine_contract: CanonicalValueV3,
 ) -> tuple[CallbackAuthorityV3, tuple[RecordDependencyV3, ...]]:
     evidence_dependency = RecordDependencyV3(
         "callback_evidence", requirement.callback_id
     )
-    exact_dependency = RecordDependencyV3(
-        "semantic_index", requirement.target_unit_id
+    target_dependency = RecordDependencyV3(
+        "incoming_call_frames", requirement.target_unit_id
     )
-    dependencies = (evidence_dependency, exact_dependency)
-    exact_source = _record_or_none(
-        context, exact_dependency.input_name, exact_dependency.record_id
+    dependencies = (evidence_dependency, target_dependency)
+    target_source = _record_or_none(
+        context, target_dependency.input_name, target_dependency.record_id
     )
     evidence_source = _record_or_none(
         context, evidence_dependency.input_name, evidence_dependency.record_id
     )
     target_sha256 = "0" * 64
+    machine = mapping(machine_contract.to_value(), "callback machine contract")
+    raw_protocol = machine.get("callback_protocol")
+    protocol = (
+        CanonicalValueV3.of(raw_protocol)
+        if isinstance(raw_protocol, dict)
+        else None
+    )
+    expected_entry_state, entry_blocker = derive_callback_entry_state_v3(
+        external_site_id=external_site_id,
+        requirement=requirement,
+        machine_contract=machine_contract,
+    )
     blocker: PrimaryBlockerV3 | None
-    if exact_source is None:
+    if target_source is None:
         blocker = PrimaryBlockerV3(
             "violated",
             "callback_target_unit_missing",
-            exact_dependency.input_name,
-            exact_dependency.record_id,
+            target_dependency.input_name,
+            target_dependency.record_id,
         )
     elif (
         manifest_blocker := manifest_blocker_v3(
             context,
-            exact_dependency.input_name,
-            "semantic_index_artifact_not_complete",
-            exact_dependency,
+            target_dependency.input_name,
+            "incoming_call_frames_artifact_not_complete",
+            target_dependency,
         )
     ) is not None:
         blocker = manifest_blocker
     else:
-        exact = SEMANTIC_INDEX_CODEC_V3.read(exact_source).value
-        target_sha256 = exact.unit_sha256
-        if exact.rva_start != requirement.target_rva:
+        target = INCOMING_CALL_FRAME_CODEC_V3.read(target_source).value
+        target_sha256 = target.unit_sha256
+        if target.rva_start != requirement.target_rva:
             blocker = PrimaryBlockerV3(
                 "violated",
                 "callback_target_rva_contradiction",
-                exact_dependency.input_name,
-                exact_dependency.record_id,
+                target_dependency.input_name,
+                target_dependency.record_id,
             )
+        elif protocol is None:
+            blocker = PrimaryBlockerV3(
+                "incomplete", "callback_protocol_missing"
+            )
+        elif entry_blocker is not None:
+            blocker = entry_blocker
         elif evidence_source is None:
             blocker = PrimaryBlockerV3(
                 "incomplete",
@@ -476,7 +623,7 @@ def _checked_callback(
                 evidence.record_id == requirement.callback_id
                 and evidence.external_site_id == external_site_id
                 and evidence.target_unit_id == requirement.target_unit_id
-                and evidence.target_unit_sha256 == exact.unit_sha256
+                and evidence.target_unit_sha256 == target.unit_sha256
                 and evidence.target_rva == requirement.target_rva
                 and evidence.abi_sha256 == requirement.abi_sha256
                 and evidence.lifetime == requirement.lifetime
@@ -496,6 +643,13 @@ def _checked_callback(
                         if evidence.primary_blocker is not None
                         else "callback_evidence_incomplete"
                     ),
+                    evidence_dependency.input_name,
+                    evidence_dependency.record_id,
+                )
+            elif evidence.entry_state != expected_entry_state:
+                blocker = PrimaryBlockerV3(
+                    "violated",
+                    "callback_entry_state_contradiction",
                     evidence_dependency.input_name,
                     evidence_dependency.record_id,
                 )
@@ -520,6 +674,7 @@ def _checked_callback(
             authorizing=complete,
             entry_state=entry_state,
             primary_blocker=blocker,
+            protocol=protocol if complete else None,
         ),
         dependencies,
     )
@@ -557,6 +712,7 @@ def _derive_callback_record(
                 context,
                 external_site_id=site.site_id,
                 requirement=requirement,
+                machine_contract=site.contract.machine_contract,
             )
             callbacks.append(callback)
             dependencies.extend(exact_dependencies)
@@ -622,31 +778,41 @@ def check_callback_authority_completeness_v3(
 
 
 CALLBACK_AUTHORITY_PHASE_V3 = map_units(
-    name="callback-authority-v3",
-    version="2",
+    name="callback-authority-v4",
+    version="1",
     source_input="external_sites",
     input_artifact_kinds={
         "callback_evidence": CALLBACK_EVIDENCE_ARTIFACT_KIND_V3,
         "external_sites": CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
-        "semantic_index": "semantic-index-v3",
+        "incoming_call_frames": INCOMING_CALL_FRAMES_ARTIFACT_KIND_V3,
     },
     output_artifact_kind=CALLBACK_AUTHORITY_ARTIFACT_KIND_V3,
     transform=_transform_callbacks,
     completeness=check_callback_authority_completeness_v3,
-    unit_aligned_inputs=("semantic_index",),
 )
+CALLBACK_AUTHORITY_PHASE_V4 = CALLBACK_AUTHORITY_PHASE_V3
+CALLBACK_AUTHORITY_CODEC_V4 = CALLBACK_AUTHORITY_CODEC_V3
+CallbackAuthorityV4 = CallbackAuthorityV3
+CallbackAuthorityRecordV4 = CallbackAuthorityRecordV3
 
 
 __all__ = [
     "CALLBACK_AUTHORITY_ARTIFACT_KIND_V3",
+    "CALLBACK_AUTHORITY_ARTIFACT_KIND_V4",
     "CALLBACK_AUTHORITY_CODEC_V3",
+    "CALLBACK_AUTHORITY_CODEC_V4",
     "CALLBACK_AUTHORITY_PHASE_V3",
+    "CALLBACK_AUTHORITY_PHASE_V4",
     "CALLBACK_AUTHORITY_RECORD_V3_SCHEMA",
     "CALLBACK_EVIDENCE_ARTIFACT_KIND_V3",
+    "CALLBACK_EVIDENCE_ARTIFACT_KIND_V4",
     "CALLBACK_EVIDENCE_CODEC_V3",
     "CALLBACK_EVIDENCE_RECORD_V3_SCHEMA",
     "CallbackAuthorityRecordV3",
+    "CallbackAuthorityRecordV4",
     "CallbackAuthorityV3",
+    "CallbackAuthorityV4",
     "CallbackEvidenceV3",
+    "derive_callback_entry_state_v3",
     "check_callback_authority_completeness_v3",
 ]

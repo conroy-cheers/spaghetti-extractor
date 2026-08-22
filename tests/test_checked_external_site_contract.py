@@ -14,7 +14,11 @@ from spaghetti_extractor.external.contracts import (
     parse_checked_external_site_contract,
     require_profile_match,
 )
-from spaghetti_extractor.authority.external_site_records import ExternalContractV3
+from spaghetti_extractor.authority.external_site_records import (
+    CallbackRequirementV3,
+    CallbackSourceDecisionV3,
+    ExternalContractV3,
+)
 from spaghetti_extractor.external.machine_import_profiles import (
     load_machine_import_profile_set,
 )
@@ -165,6 +169,95 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
         self.assertEqual(projected.identity.symbol, "ExitProcess")
         self.assertEqual(projected.profile_disposition, "terminates")
         self.assertEqual(projected.arguments[0]["name"], "eax")
+
+    def test_projects_callback_source_decision_from_checked_v3_authority(self) -> None:
+        source = {"op": "input", "name": "argument-0", "width": 32}
+        callback = CallbackRequirementV3.create(
+            site_id="external-site-v3:fixture",
+            ordinal=0,
+            target_unit_id="semantic-transfer:callback",
+            target_rva=0x1234,
+            abi_sha256="2" * 64,
+            lifetime="until_replaced_or_process_exit",
+        )
+        contract = ExternalContractV3.create(
+            identity={
+                "kind": "import",
+                "dll": "kernel32.dll",
+                "symbol": "SetUnhandledExceptionFilter",
+            },
+            transfer_kind="call",
+            disposition="returns",
+            profile_id="kernel32",
+            profile_sha256="1" * 64,
+            argument_words=1,
+            arguments=(source,),
+            memory_effect="none",
+            world_effect="callbackRegistration",
+            callback_effect="registers",
+            machine_contract={
+                "abi_template": "pe32-stdcall-v1",
+                "argument_words": 1,
+                "disposition": "returns",
+                "memory_effect": "none",
+                "memory_footprints": [],
+                "world_effect": "callbackRegistration",
+                "callback_effect": "registers",
+                "result_register_relations": [
+                    {"register": "eax", "relation": "related_word"}
+                ],
+                "out_pointer_relations": [],
+                "out_interface_relations": [],
+                "callback_protocol": {
+                    "format": "spaghetti-extractor-callback-protocol-v1",
+                    "id": "fixture-callback",
+                    "action": "replace",
+                    "source": {
+                        "kind": "argument_word",
+                        "argument": 0,
+                        "sentinels": [],
+                    },
+                    "signature": {
+                        "abi_template": "pe32-stdcall-v1",
+                        "argument_words": 1,
+                        "stack_cleanup_bytes": 4,
+                        "result": {"kind": "word", "register": "eax"},
+                    },
+                    "instance": {"kind": "singleton"},
+                    "previous_result": {
+                        "register": "eax",
+                        "nullable": True,
+                        "sentinels": [],
+                    },
+                    "lifetime": {
+                        "kind": "until_replaced_or_process_exit"
+                    },
+                    "delivery": {
+                        "timing": "deferred",
+                        "thread": "external_concurrent",
+                    },
+                    "cardinality": {
+                        "minimum": 0,
+                        "maximum": None,
+                        "scope": "registration_generation",
+                    },
+                    "provider_behavior": None,
+                },
+            },
+            callbacks=(callback,),
+            callback_source_decision=CallbackSourceDecisionV3.create(
+                kind="callback_target",
+                argument_index=0,
+                source_expression=source,
+            ),
+        )
+
+        projected = checked_external_site_contract_from_authority(
+            contract.to_payload()
+        )
+
+        self.assertEqual(projected.callback_effect, "explicit")
+        self.assertEqual(projected.callback_adapter.target_rvas, (0x1234,))
 
     def test_resolved_contract_derives_exact_stack_arguments(self) -> None:
         contract = _profile_entry()

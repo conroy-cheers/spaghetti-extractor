@@ -20,6 +20,7 @@ from ...authority.final_authority import (
     FinalAuthorityRecordV3,
 )
 from ...artifacts.formats import MACHINE_IR_FORMAT
+from ...machine_ir.memory_actions import MemoryActionError, validate_memory_action_graph
 from ...artifacts.artifact_set import (
     ArtifactV3Error,
     canonical_sha256_v3,
@@ -271,6 +272,14 @@ def _load_machine_ir(path: Path, decision: _Decision) -> _MachineIR | None:
                 raise CandidateAuthorityV3Error(
                     f"machine-IR line {line_number} is not one exact unit"
                 )
+            semantics = _mapping(
+                row.get("semantics"), f"machine-IR line {line_number} semantics"
+            )
+            memory_actions = _mapping(
+                semantics.get("memory_actions"),
+                f"machine-IR line {line_number} memory actions",
+            )
+            validate_memory_action_graph(memory_actions, require_authoritative=True)
             unit_id = _text(row.get("id"), "machine-IR unit ID")
             source = _mapping(row.get("source"), f"{unit_id} source")
             original = _mapping(source.get("original"), f"{unit_id} original span")
@@ -303,7 +312,7 @@ def _load_machine_ir(path: Path, decision: _Decision) -> _MachineIR | None:
             sha256=hashlib.sha256(data).hexdigest(),
             units=tuple(sorted(units, key=lambda row: row.unit_id)),
         )
-    except (OSError, ArtifactV3Error, CandidateAuthorityV3Error) as exc:
+    except (OSError, ArtifactV3Error, CandidateAuthorityV3Error, MemoryActionError) as exc:
         decision.violated("machine_ir_corrupt", str(exc))
         return None
 

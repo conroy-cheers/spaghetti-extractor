@@ -174,16 +174,35 @@ def _activation_plan(
     *,
     fallback_units: int = 0,
     ownership_state: str = "machine_ir_fallback",
+    rooted_fallback: bool = False,
 ) -> dict[str, object]:
+    root_kind = (
+        "machine_ir_fallback"
+        if rooted_fallback or ownership_state == "machine_ir_fallback"
+        else "portable_replacement"
+    )
     entries = [
         {
-            "unit_id": f"unit:{index}",
-            "rva": index,
+            "unit_id": "unit:root",
+            "rva": 0,
+            "implementation_kind": root_kind,
+            "dispatch_lookup": (
+                "spx_program_lookup"
+                if root_kind == "machine_ir_fallback"
+                else "spx_region_override_lookup"
+            ),
+            "selected_owner": None,
+        },
+        *(
+        {
+            "unit_id": f"unit:unreachable:{index}",
+            "rva": index + 1,
             "implementation_kind": "machine_ir_fallback",
             "dispatch_lookup": "spx_program_lookup",
             "selected_owner": None,
         }
         for index in range(fallback_units)
+        ),
     ]
     core: dict[str, object] = {
         "format": "spaghetti-extractor-component-activation-plan-v3",
@@ -204,6 +223,18 @@ def _activation_plan(
         "issues": [],
     }
     return {**core, "activation_plan_sha256": canonical_sha256_v3(core)}
+
+
+def _rooted_projection(structural_unit_count: int = 1) -> object:
+    return type(
+        "RootedProjection",
+        (),
+        {
+            "reachable_unit_ids": ("unit:root",),
+            "structural_unit_count": structural_unit_count,
+            "projection_sha256": "9" * 64,
+        },
+    )()
 
 
 class UniversalComponentTests(unittest.TestCase):
@@ -366,13 +397,19 @@ class UniversalComponentTests(unittest.TestCase):
 
         self.assertEqual(
             build_component_release_gate_v1(
-                graph=graph, activation_plan=_activation_plan(), mode="hybrid"
+                graph=graph,
+                activation_plan=_activation_plan(),
+                rooted_projection=_rooted_projection(),
+                mode="hybrid",
             )["status"],
             "ready",
         )
         self.assertEqual(
             build_component_release_gate_v1(
-                graph=graph, activation_plan=_activation_plan(), mode="portable"
+                graph=graph,
+                activation_plan=_activation_plan(),
+                rooted_projection=_rooted_projection(),
+                mode="portable",
             )["status"],
             "incomplete",
         )
@@ -398,6 +435,7 @@ class UniversalComponentTests(unittest.TestCase):
                 activation_plan=_activation_plan(
                     ownership_state="portable_replacement"
                 ),
+                rooted_projection=_rooted_projection(),
                 mode="portable",
             )["status"],
             "ready",
@@ -414,16 +452,40 @@ class UniversalComponentTests(unittest.TestCase):
                 fallback_units=1,
                 ownership_state="portable_replacement",
             ),
+            rooted_projection=_rooted_projection(2),
             mode="portable",
         )
-        self.assertEqual(fallback_gate["status"], "incomplete")
+        self.assertEqual(fallback_gate["status"], "ready")
         self.assertEqual(fallback_gate["counts"]["machine_ir_fallback_units"], 1)
+        self.assertEqual(
+            fallback_gate["counts"]["root_reachable_machine_ir_fallback_units"],
+            0,
+        )
+        self.assertEqual(
+            fallback_gate["counts"]["unreachable_machine_ir_fallback_units"], 1
+        )
+
+        rooted_fallback_gate = build_component_release_gate_v1(
+            graph=portable_graph,
+            activation_plan=_activation_plan(
+                ownership_state="portable_replacement",
+                rooted_fallback=True,
+            ),
+            rooted_projection=_rooted_projection(),
+            mode="portable",
+        )
+        self.assertEqual(rooted_fallback_gate["status"], "incomplete")
+        self.assertIn(
+            "root_reachable_machine_ir_fallback_forbidden_by_portable_release",
+            {row["code"] for row in rooted_fallback_gate["issues"]},
+        )
 
         mismatched = build_component_release_gate_v1(
             graph=graph,
             activation_plan=_activation_plan(
                 ownership_state="portable_replacement"
             ),
+            rooted_projection=_rooted_projection(),
             mode="hybrid",
         )
         self.assertEqual(mismatched["status"], "violated")

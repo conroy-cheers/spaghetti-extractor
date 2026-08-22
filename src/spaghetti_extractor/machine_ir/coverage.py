@@ -413,7 +413,7 @@ def _validate_interpreter_lowering(
     if (
         package.get("format") != SPX_INTERPRETER_PACKAGE_FORMAT
         or package.get("status") != "ready"
-        or package.get("input_mode") != "sanitized_machine_ir_v2"
+        or package.get("input_mode") != "sanitized_machine_ir_v3"
         or package_blockers
         or package_counts.get("input_transfers") != len(units)
         or package_counts.get("blocked_transfers") != 0

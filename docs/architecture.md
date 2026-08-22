@@ -21,8 +21,11 @@ original PE bytes
   -> exact PE inventory and executable-byte classification
   -> rooted static state machine and byte-bound unit preparation
   -> canonical byte-free machine IR
-  -> checked structural transfer, external-site, callback, and exception facts
-  -> complete fallback capability and implementation ownership
+  -> checked classification, fallback capability, and implementation ownership
+     for every exact structural unit
+  -> checked root-reachable behavioral projection
+  -> checked transfer, external-site, callback, exception, summary, and ISA facts
+     for projected units and events
   -> structural-executable-v1
   -> executable interpreter/native hybrid baseline
   -> reviewed portable component interface V2
@@ -84,7 +87,9 @@ phases, in dependency order, are:
 | `parametric-scc-summaries-v3` | Check dependency-SCC invariant certificates and export finite facts without replaying rooted paths. |
 | `inductive-authority-v3` | Check SCC entry facts, preservation, exports, and bounded circular invariants. |
 | `canonical-external-sites-v3` | Bind resolved external transfers to exact ABI, argument, effect, and continuation evidence. |
-| `callback-authority-v3` | Bind callback registration, entry state, ABI, lifetime, and nested transition evidence. |
+| `call-boundary-contracts-v3` | Reconcile call-site intent, ABI facts, and exact machine transport into checked boundary contracts. |
+| `incoming-call-frames-v3` | Bind externally entered functions and callbacks to exact incoming physical frames. |
+| `callback-authority-v4` | Bind one canonical callback protocol to registration, entry state, ABI, lifetime, and target evidence. |
 | `launch-root-closure-v3` | Derive rooted closure from PE entry/export/TLS roots and checked callback roots. |
 | `exceptional-transitions-v3` | Classify feasible faults as supported transfer, observable termination, or frontier. |
 | `isa-qualification-v3` | Bind every reachable instruction form to qualified decode and semantics evidence. |

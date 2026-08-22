@@ -33,7 +33,7 @@ from ..pe32.recovered_executable_data import (
 from ..util import sha256_bytes
 
 
-_MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v2"
+_MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v3"
 _CALL_KINDS = frozenset({"external_call", "indirect_call"})
 _SEMANTIC_RUNTIME_EVENT_KINDS = frozenset(
     {"rep_movsd", "rep_movs", "rep_stos", "rep_scas"}

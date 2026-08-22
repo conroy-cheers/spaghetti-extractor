@@ -55,7 +55,7 @@ pkgs.runCommand
     jq -e '
       .format == "spaghetti-extractor-semantic-interpreter-package-v1" and
       .status == "ready" and
-      .input_mode == "sanitized_machine_ir_v2" and
+      .input_mode == "sanitized_machine_ir_v3" and
       .counts.input_transfers > 0 and
       .counts.transfers == .counts.input_transfers and
       .counts.blocked_transfers == 0 and
@@ -77,4 +77,19 @@ pkgs.runCommand
     test "$(jq -r .lowering.interpreter_internal_header_sha256 \
       ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
       "$(sha256sum "$out/state-machine-interpreter-internal.h" | cut -d' ' -f1)"
+    test "$(jq -r .lowering.capability_backend_header_sha256 \
+      ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
+      "$(sha256sum "$out/spx-capability-backend.h" | cut -d' ' -f1)"
+    test "$(jq -r .lowering.capability_backend_source_sha256 \
+      ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
+      "$(sha256sum "$out/spx-capability-backend.c" | cut -d' ' -f1)"
+    test "$(jq -r .lowering.atomics_header_sha256 \
+      ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
+      "$(sha256sum "$out/spx-atomics.h" | cut -d' ' -f1)"
+    test "$(jq -r .lowering.atomics_backend_header_sha256 \
+      ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
+      "$(sha256sum "$out/spx-atomics-backend.h" | cut -d' ' -f1)"
+    test "$(jq -r .lowering.atomics_source_sha256 \
+      ${capabilityAnalysis}/fallback-capability-analysis.json)" = \
+      "$(sha256sum "$out/spx-atomics.c" | cut -d' ' -f1)"
   ''

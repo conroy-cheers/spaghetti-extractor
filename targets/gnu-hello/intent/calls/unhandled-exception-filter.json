@@ -1,0 +1,66 @@
+{
+  "abi_dialect": "pe32-i386-gnu-v1",
+  "faithful_function_type_id": "exception_filter_fn",
+  "format": "spaghetti-extractor-call-protocol-intent-v1",
+  "id": "gnu-hello.unhandled-exception-filter",
+  "idiomatic_projections": [],
+  "lifecycle": [
+    {
+      "condition": null,
+      "id": "borrow.exception-info",
+      "path": {
+        "fields": [],
+        "slot_id": "arg0"
+      },
+      "provider_domain": "win32_exception_dispatch",
+      "resource_kind": "exception_context",
+      "service_id": null,
+      "transition": "borrow_shared"
+    }
+  ],
+  "rationale": "The checked callback authority identifies the installed handler as a Win32 stdcall unhandled-exception filter receiving one borrowed EXCEPTION_POINTERS pointer and returning a 32-bit disposition.",
+  "source_names": {
+    "fields": [],
+    "types": {
+      "exception_pointers": "EXCEPTION_POINTERS"
+    },
+    "values": {
+      "arg0": "exception_info",
+      "result0": "disposition"
+    }
+  },
+  "subject": {
+    "id": "win32-unhandled-exception-filter",
+    "image_selector": "main-image",
+    "kind": "callback"
+  },
+  "types": [
+    {
+      "id": "exception_pointers",
+      "kind": "opaque",
+      "nominal_id": "EXCEPTION_POINTERS"
+    },
+    {
+      "id": "p_exception_pointers",
+      "kind": "pointer",
+      "pointee_type_id": "exception_pointers",
+      "qualifiers": []
+    },
+    {
+      "id": "i32",
+      "kind": "integer",
+      "signed": true,
+      "width_bits": 32
+    },
+    {
+      "calling_convention": "stdcall",
+      "id": "exception_filter_fn",
+      "kind": "function",
+      "parameter_type_ids": [
+        "p_exception_pointers"
+      ],
+      "result_type_id": "i32",
+      "variadic": false
+    }
+  ]
+}

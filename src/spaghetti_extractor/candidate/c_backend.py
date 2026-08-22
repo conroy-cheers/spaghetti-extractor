@@ -7,7 +7,17 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from ..artifacts.formats import SEMANTIC_IR_FORMAT
+from ..components.capabilities import (
+    spx_capability_backend_header,
+    spx_capability_backend_source,
+)
+from ..machine_ir.memory_actions import MemoryActionError, validate_memory_action_graph
 from .api_catalog import MachineCallCatalog, MachineCallSignature
+from .atomics import (
+    spx_atomics_backend_header,
+    spx_atomics_header,
+    spx_atomics_source,
+)
 from .c_domains import (
     _CALL_EVENT_KINDS,
     _FLAG_NAMES,
@@ -141,8 +151,22 @@ def write_spx_semantic_c_backend(
     source_map_path = out_dir / "state-machine-source-map.json"
     implementation_manifest_path = out_dir / "state-machine-implementation.json"
     runtime_obligations_path = out_dir / "state-machine-runtime-obligations.json"
+    atomics_header = out_dir / "spx-atomics.h"
+    capability_backend_header = out_dir / "spx-capability-backend.h"
+    capability_backend_source = out_dir / "spx-capability-backend.c"
+    atomics_backend_header = out_dir / "spx-atomics-backend.h"
+    atomics_source = out_dir / "spx-atomics.c"
     report_path = out_dir / "state-machine-c-report.json"
     rows = list(rows)
+    capability_backend_header.write_text(
+        spx_capability_backend_header(), encoding="utf-8"
+    )
+    capability_backend_source.write_text(
+        spx_capability_backend_source(), encoding="utf-8"
+    )
+    atomics_header.write_text(spx_atomics_header(), encoding="utf-8")
+    atomics_backend_header.write_text(spx_atomics_backend_header(), encoding="utf-8")
+    atomics_source.write_text(spx_atomics_source(), encoding="utf-8")
     inventory_complete = bool(rows)
     api_adapter_plan = _api_adapter_plan(rows, machine_call_catalog)
     runtime_call_boundaries = _runtime_call_obligations(
@@ -248,6 +272,26 @@ def write_spx_semantic_c_backend(
     )
     write_json(source_map_path, source_map)
     implementation_artifacts = {
+        "capability_backend_header": {
+            "path": capability_backend_header.name,
+            "sha256": sha256_file(capability_backend_header),
+        },
+        "capability_backend_source": {
+            "path": capability_backend_source.name,
+            "sha256": sha256_file(capability_backend_source),
+        },
+        "atomics_public_header": {
+            "path": atomics_header.name,
+            "sha256": sha256_file(atomics_header),
+        },
+        "atomics_backend_header": {
+            "path": atomics_backend_header.name,
+            "sha256": sha256_file(atomics_backend_header),
+        },
+        "atomics_backend_source": {
+            "path": atomics_source.name,
+            "sha256": sha256_file(atomics_source),
+        },
         "runtime_header": {"path": header.name, "sha256": sha256_file(header)},
         "transfers_header": {"path": transfers_header.name, "sha256": sha256_file(transfers_header)},
         "generated_source": {"path": source.name, "sha256": sha256_file(source)},
@@ -404,6 +448,30 @@ def _row_blockers(row: dict[str, Any]) -> list[str]:
         blockers.append("incomplete_transfer")
     if row.get("expression_model") != SEMANTIC_IR_FORMAT:
         blockers.append("unsupported_expression_model")
+    instructions = row.get("instructions")
+    has_atomic_instruction = isinstance(instructions, list) and any(
+        isinstance(instruction, dict)
+        and (
+            str(instruction.get("mnemonic") or "").strip().lower().startswith("lock ")
+            or (
+                str(instruction.get("mnemonic") or "").strip().lower() == "xchg"
+                and isinstance(instruction.get("operands"), list)
+                and any(
+                    isinstance(operand, dict) and operand.get("kind") == "memory"
+                    for operand in instruction["operands"]
+                )
+            )
+        )
+        for instruction in instructions
+    )
+    if has_atomic_instruction:
+        memory_actions = row.get("memory_actions")
+        try:
+            if not isinstance(memory_actions, dict):
+                raise MemoryActionError("memory action graph is missing")
+            validate_memory_action_graph(memory_actions, require_authoritative=True)
+        except MemoryActionError:
+            blockers.append("atomic_memory_actions_not_authoritative")
     fpu_state = row.get("fpu_state")
     if fpu_state is not None:
         blockers.extend(("x87_state", "x87_checked_replay_required"))
@@ -865,6 +933,33 @@ typedef void (*spx_atomic_exchange_handler)(
     uint32_t *observed,
     uint32_t *fault);
 
+typedef enum spx_boundary_status {
+  SPX_BOUNDARY_OK = 0,
+  SPX_BOUNDARY_MEMORY_FAULT = 1,
+  SPX_BOUNDARY_EXPIRED = 2,
+  SPX_BOUNDARY_UNSUPPORTED = 3,
+  SPX_BOUNDARY_TYPE_MISMATCH = 4
+} spx_boundary_status;
+
+typedef struct spx_machine_reference_v1 {
+  uint64_t domain;
+  uint64_t object;
+  uint64_t generation;
+  uint64_t offset;
+  uint64_t extent;
+  uint32_t permissions;
+} spx_machine_reference_v1;
+
+typedef spx_boundary_status (*spx_boundary_resolve_reference_handler)(
+    void *context, uint32_t address, uint32_t requested_extent,
+    uint32_t permissions, uint32_t nullable, uint32_t allow_one_past,
+    spx_machine_reference_v1 *result);
+
+typedef spx_boundary_status (*spx_boundary_realize_reference_handler)(
+    void *context, const spx_machine_reference_v1 *reference,
+    uint32_t permissions, uint32_t nullable, uint32_t allow_one_past,
+    uint32_t *address);
+
 typedef uint32_t (*spx_code_target_resolver)(
     spx_runtime *runtime,
     uint32_t target_word,
@@ -883,6 +978,8 @@ struct spx_runtime {
   void (*write)(void *context, uint32_t address, uint32_t width, uint32_t value, uint32_t *fault);
   spx_atomic_compare_exchange_handler atomic_compare_exchange;
   spx_atomic_exchange_handler atomic_exchange;
+  spx_boundary_resolve_reference_handler resolve_reference;
+  spx_boundary_realize_reference_handler realize_reference;
   uint32_t (*undefined_value)(
       void *context, uint32_t slot, const spx_machine_state *input,
       uint32_t defined_value);

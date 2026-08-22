@@ -11,6 +11,7 @@ from spaghetti_extractor.external.contracts import (
 )
 from spaghetti_extractor.util import sha256_bytes, sha256_file
 from tests.unit.candidate.native_engine._support import (
+    _canonical_callback_authority,
     _candidate_execution_artifacts,
     _canonical_external_sites,
 )
@@ -119,7 +120,7 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
         size = 6 if registration else 1
         ordered = [event] if registration else []
         return {
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v3",
             "record_kind": "unit",
             "id": f"semantic-transfer:typed-{rva:08x}",
             "status": "qualified",
@@ -194,10 +195,10 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
         "failure": None,
     }
     manifest.write_text(json.dumps({
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "artifacts": {
             "machine_ir": {
-                "format": "spaghetti-extractor-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v3",
                 "sha256": sha256_file(machine_ir),
             },
         },
@@ -232,6 +233,14 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
     execution_authority = _candidate_execution_artifacts(
         root, units=[registration, continuation, callback]
     )
+    callback_authority = _canonical_callback_authority(
+        root,
+        registration_unit=registration,
+        event_index=0,
+        identity=identity_payload,
+        contract=checked_contract,
+        target_units=(callback,),
+    )
     write_spx_native_engine_package(
         machine_ir=machine_ir,
         machine_ir_manifest=manifest,
@@ -240,6 +249,7 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
         preferred_image_base=0x400000,
         import_iat_vas={("user32.dll", "RegisterClassA"): 0x432000},
         canonical_external_sites=canonical_external_sites,
+        callback_authority=callback_authority,
         root_closure=execution_authority[0],
         target_certificates=execution_authority[1],
         parametric_summaries=execution_authority[2],

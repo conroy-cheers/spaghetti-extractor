@@ -6,6 +6,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..machine_ir.memory_actions import MemoryActionError, validate_memory_action_graph
+
 from .c_domains import (
     _CALL_EVENT_KINDS,
     _FLAG_NAMES,
@@ -505,13 +507,40 @@ def _render_transfer(row: dict[str, Any], symbol: str) -> str:
         if isinstance(event, dict) and event.get("kind") == "rep_scas"
         for output in event.get("owned_flag_outputs", [])
     }
+    atomic_by_event: dict[int, dict[str, Any]] = {}
+    atomic_constituents: set[int] = set()
+    memory_actions = row.get("memory_actions")
+    if isinstance(memory_actions, dict):
+        try:
+            validate_memory_action_graph(memory_actions, require_authoritative=True)
+        except MemoryActionError as exc:
+            raise ValueError(f"non_authoritative_memory_actions:{exc}") from exc
+        for action in memory_actions["actions"]:
+            if action.get("kind") != "rmw":
+                continue
+            indices = action.get("source_memory_event_indices")
+            if not isinstance(indices, list) or not indices or any(
+                not isinstance(index, int) or isinstance(index, bool) or index < 0
+                for index in indices
+            ):
+                raise ValueError("malformed_atomic_memory_event_binding")
+            if min(indices) in atomic_by_event or atomic_constituents.intersection(indices):
+                raise ValueError("overlapping_atomic_memory_event_binding")
+            atomic_by_event[min(indices)] = action
+            atomic_constituents.update(indices)
     if ordered_events:
+        memory_index = 0
         for event in ordered_events:
             if not isinstance(event, dict):
                 continue
             family = event.get("family")
             if family == "memory":
-                _render_ordered_memory_event(renderer, event)
+                action = atomic_by_event.get(memory_index)
+                if action is not None:
+                    _render_ordered_atomic_action(renderer, action)
+                if memory_index not in atomic_constituents:
+                    _render_ordered_memory_event(renderer, event)
+                memory_index += 1
             elif family == "fault":
                 _render_ordered_fault_event(renderer, event)
             elif family == "external":
@@ -572,6 +601,59 @@ def _render_ordered_memory_event(renderer: _ExpressionRenderer, event: dict[str,
         value = renderer.render(event.get("value"))
         renderer.lines.append(f"  spx_write(rt, {address}, {width}U, {value}, &memory_fault);")
     renderer.lines.append("  if (memory_fault) return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };")
+
+
+def _render_ordered_atomic_action(
+    renderer: _ExpressionRenderer, action: dict[str, Any]
+) -> None:
+    operation = action.get("operation")
+    if operation not in {"compare_exchange", "exchange"}:
+        raise ValueError(f"unsupported_atomic_rmw:{operation}")
+    width = int(action.get("width_bytes") or 0)
+    if width not in {1, 2, 4}:
+        raise ValueError("unsupported_atomic_rmw_width")
+    transition = action.get("transition")
+    if not isinstance(transition, dict):
+        raise ValueError("malformed_atomic_rmw_action")
+    address = renderer.render(action.get("address"))
+    if operation == "compare_exchange":
+        compare = action.get("compare")
+        if not isinstance(compare, dict):
+            raise ValueError("malformed_compare_exchange_action")
+        expected = renderer.render(compare.get("expected"))
+        desired = renderer.render(compare.get("desired"))
+    else:
+        desired = renderer.render(transition.get("written"))
+    suffix = renderer.counter
+    renderer.counter += 1
+    observed = f"atomic_observed_{suffix}"
+    if operation == "compare_exchange":
+        exchanged = f"atomic_exchanged_{suffix}"
+        renderer.lines.extend(
+            [
+                f"  uint32_t {observed} = 0U, {exchanged} = 0U;",
+                "  spx_runtime_atomic_compare_exchange(",
+                f"      rt, {address}, {width}U, {expected}, {desired},",
+                f"      &{observed}, &{exchanged}, &memory_fault);",
+            ]
+        )
+    else:
+        renderer.lines.extend(
+            [
+                f"  uint32_t {observed} = 0U;",
+                "  spx_runtime_atomic_exchange(",
+                f"      rt, {address}, {width}U, {desired},",
+                f"      &{observed}, &memory_fault);",
+            ]
+        )
+    renderer.lines.append(
+        "  if (memory_fault) return (spx_step_result){ SPX_MEMORY_FAULT, 0U, 0U };"
+    )
+    observed_expression = transition.get("observed")
+    if not isinstance(observed_expression, dict):
+        raise ValueError("malformed_atomic_rmw_observation")
+    key = json.dumps(observed_expression, sort_keys=True, separators=(",", ":"))
+    renderer.memo[key] = observed
 
 
 def _render_ordered_fault_event(renderer: _ExpressionRenderer, event: dict[str, Any]) -> None:

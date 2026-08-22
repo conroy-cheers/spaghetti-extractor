@@ -8,6 +8,9 @@ from typing import Any, cast
 from spaghetti_extractor.authority._schema import AnalysisV3Error
 from spaghetti_extractor.authority.callbacks import (
     CALLBACK_AUTHORITY_ARTIFACT_KIND_V3,
+    CALLBACK_AUTHORITY_CODEC_V3,
+    CallbackAuthorityV3,
+    CallbackAuthorityRecordV3,
 )
 from spaghetti_extractor.authority.exact_units import (
     EXACT_UNIT_CODEC_V3,
@@ -23,6 +26,11 @@ from spaghetti_extractor.authority.exceptional_transitions import (
     TERMINAL_SYNCHRONOUS_FAULT_MODEL_V1,
     ExceptionEvidenceV3,
     exceptional_transition_id_v3,
+)
+from spaghetti_extractor.authority.external_site_records import (
+    CANONICAL_EXTERNAL_SITE_CODEC_V3,
+    CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
+    CanonicalExternalSiteRecordV3,
 )
 from spaghetti_extractor.authority.root_closure import (
     LAUNCH_ROOT_CLOSURE_CODEC_V3,
@@ -81,7 +89,7 @@ def _unit(
         else {"kind": "direct_jump", "target_rva": target_rva}
     )
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",
@@ -193,6 +201,48 @@ def _empty_target_certificates(path: Path, semantic: Path) -> Path:
     return _write(path, "indirect-target-certificates-v3", tuple(records))
 
 
+def _empty_external_sites(path: Path, semantic: Path) -> Path:
+    records = []
+    for source in ArtifactSetReaderV3(semantic).iter_records():
+        unit = SEMANTIC_INDEX_CODEC_V3.read(source).value
+        checked = CanonicalExternalSiteRecordV3(
+            record_id=unit.record_id,
+            unit_sha256=unit.unit_sha256,
+            status="complete",
+            authorizing=True,
+            sites=(),
+            primary_blocker=None,
+            dependencies=(),
+        )
+        records.append(
+            CANONICAL_EXTERNAL_SITE_CODEC_V3.write(
+                checked.record_id, checked
+            )
+        )
+    return _write(
+        path, CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3, tuple(records)
+    )
+
+
+def _empty_callbacks(path: Path, semantic: Path) -> Path:
+    records = []
+    for source in ArtifactSetReaderV3(semantic).iter_records():
+        unit = SEMANTIC_INDEX_CODEC_V3.read(source).value
+        checked = CallbackAuthorityRecordV3(
+            record_id=unit.record_id,
+            unit_sha256=unit.unit_sha256,
+            status="complete",
+            authorizing=True,
+            callbacks=(),
+            primary_blocker=None,
+            dependencies=(),
+        )
+        records.append(
+            CALLBACK_AUTHORITY_CODEC_V3.write(checked.record_id, checked)
+        )
+    return _write(path, CALLBACK_AUTHORITY_ARTIFACT_KIND_V3, tuple(records))
+
+
 class RootAndExceptionAuthorityV3Tests(unittest.TestCase):
     def _base_inputs(self, root: Path, *, with_root: bool = True):
         fault = {
@@ -233,10 +283,11 @@ class RootAndExceptionAuthorityV3Tests(unittest.TestCase):
                 for row in (source_exact, target_exact)
             ),
         )
-        callbacks = _write(
-            root / "callbacks",
-            CALLBACK_AUTHORITY_ARTIFACT_KIND_V3,
-            (),
+        callbacks = _empty_callbacks(
+            root / "callbacks", semantic_index
+        )
+        external_sites = _empty_external_sites(
+            root / "external-sites", semantic_index
         )
         target_certificates = _empty_target_certificates(
             root / "target-certificates", semantic_index
@@ -267,6 +318,7 @@ class RootAndExceptionAuthorityV3Tests(unittest.TestCase):
             output_directory=root / "closure",
             inputs={
                 "callbacks": callbacks,
+                "external_sites": external_sites,
                 "launch_roots": roots,
                 "semantic_index": semantic_index,
                 "target_certificates": target_certificates,
@@ -383,6 +435,9 @@ class RootAndExceptionAuthorityV3Tests(unittest.TestCase):
                 CALLBACK_AUTHORITY_ARTIFACT_KIND_V3,
                 (),
             )
+            external_sites = _empty_external_sites(
+                root / "external-sites-indirect", semantic_index
+            )
             target_certificates = _empty_target_certificates(
                 root / "target-certificates-indirect", semantic_index
             )
@@ -412,6 +467,7 @@ class RootAndExceptionAuthorityV3Tests(unittest.TestCase):
                 output_directory=root / "closure-indirect",
                 inputs={
                     "callbacks": callbacks,
+                    "external_sites": external_sites,
                     "launch_roots": roots,
                     "semantic_index": semantic_index,
                     "target_certificates": target_certificates,
@@ -562,6 +618,155 @@ class RootAndExceptionAuthorityV3Tests(unittest.TestCase):
             self.assertEqual(
                 checked.primary_blocker.code,
                 "exception_terminal_profile_binding_contradiction",
+            )
+
+    def test_reachable_registration_adds_checked_callback_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_exact = ExactUnitV3.create(
+                _unit("root:unit", 0x1000), pe_sha256=PE_SHA256
+            )
+            target_exact = ExactUnitV3.create(
+                _unit("callback:unit", 0x3000), pe_sha256=PE_SHA256
+            )
+            semantic_index = _write(
+                root / "semantic-index",
+                SEMANTIC_INDEX_ARTIFACT_KIND_V3,
+                tuple(
+                    SEMANTIC_INDEX_CODEC_V3.write(
+                        row.record_id, derive_semantic_index_v3(row)
+                    )
+                    for row in (source_exact, target_exact)
+                ),
+            )
+            callback_id = "callback-v3:" + "a" * 64
+            callback_signature = {
+                "abi_template": "pe32-stdcall-v1",
+                "argument_words": 0,
+                "stack_cleanup_bytes": 0,
+                "result": {"kind": "void"},
+            }
+            callback_protocol = {
+                "format": "spaghetti-extractor-callback-protocol-v1",
+                "id": callback_id,
+                "action": "replace",
+                "source": {
+                    "kind": "argument_word",
+                    "argument": 0,
+                    "sentinels": [],
+                },
+                "signature": callback_signature,
+                "instance": {"kind": "singleton"},
+                "previous_result": None,
+                "lifetime": {"kind": "until_replaced_or_process_exit"},
+                "delivery": {
+                    "timing": "deferred",
+                    "thread": "external_concurrent",
+                },
+                "cardinality": {
+                    "minimum": 0,
+                    "maximum": None,
+                    "scope": "registration_generation",
+                },
+                "provider_behavior": None,
+            }
+            callback = CallbackAuthorityV3(
+                callback_id=callback_id,
+                external_site_id="external-site-v3:" + "b" * 64,
+                target_unit_id=target_exact.unit_id,
+                target_unit_sha256=target_exact.unit_sha256,
+                target_rva=target_exact.rva_start,
+                abi_sha256=canonical_sha256_v3(callback_signature),
+                lifetime="until_replaced_or_process_exit",
+                status="complete",
+                authorizing=True,
+                entry_state=CanonicalValueV3.of(
+                    {"model": "pe32-callback-entry-v1"}
+                ),
+                primary_blocker=None,
+                protocol=CanonicalValueV3.of(callback_protocol),
+            )
+            callbacks = _write(
+                root / "callbacks",
+                CALLBACK_AUTHORITY_ARTIFACT_KIND_V3,
+                (
+                    CALLBACK_AUTHORITY_CODEC_V3.write(
+                        source_exact.unit_id,
+                        CallbackAuthorityRecordV3(
+                            record_id=source_exact.unit_id,
+                            unit_sha256=source_exact.unit_sha256,
+                            status="complete",
+                            authorizing=True,
+                            callbacks=(callback,),
+                            primary_blocker=None,
+                            dependencies=(),
+                        ),
+                    ),
+                    CALLBACK_AUTHORITY_CODEC_V3.write(
+                        target_exact.unit_id,
+                        CallbackAuthorityRecordV3(
+                            record_id=target_exact.unit_id,
+                            unit_sha256=target_exact.unit_sha256,
+                            status="complete",
+                            authorizing=True,
+                            callbacks=(),
+                            primary_blocker=None,
+                            dependencies=(),
+                        ),
+                    ),
+                ),
+            )
+            launch_root = LaunchRootEvidenceV3(
+                record_id=launch_root_id_v3(
+                    "pe_entrypoint", "entrypoint", source_exact.unit_id
+                ),
+                root_kind="pe_entrypoint",
+                identity="entrypoint",
+                unit_id=source_exact.unit_id,
+                unit_sha256=source_exact.unit_sha256,
+                entry_state=CanonicalValueV3.of({"loader": "fixture"}),
+                callback_id=None,
+                status="complete",
+                primary_blocker=None,
+            )
+            roots = _write(
+                root / "roots",
+                LAUNCH_ROOT_EVIDENCE_ARTIFACT_KIND_V3,
+                (
+                    LAUNCH_ROOT_EVIDENCE_CODEC_V3.write(
+                        launch_root.record_id, launch_root
+                    ),
+                ),
+            )
+            closure_path = LAUNCH_ROOT_CLOSURE_PHASE_V3.run(
+                output_directory=root / "closure",
+                inputs={
+                    "callbacks": callbacks,
+                    "external_sites": _empty_external_sites(
+                        root / "external-sites", semantic_index
+                    ),
+                    "launch_roots": roots,
+                    "semantic_index": semantic_index,
+                    "target_certificates": _empty_target_certificates(
+                        root / "target-certificates", semantic_index
+                    ),
+                },
+                bindings=(BINDING,),
+            ).output_directory
+            closure = LAUNCH_ROOT_CLOSURE_CODEC_V3.read(
+                next(ArtifactSetReaderV3(closure_path).iter_records())
+            ).value
+            self.assertEqual(closure.status, "complete")
+            self.assertEqual(closure.callback_root_ids, (callback_id,))
+            self.assertEqual(
+                closure.root_unit_ids, ("callback:unit", "root:unit")
+            )
+            self.assertEqual(
+                closure.reachable_unit_ids, ("callback:unit", "root:unit")
+            )
+            self.assertEqual(
+                tuple(row.edge_kind for row in closure.edges),
+                ("event_callback",),
             )
 
     def test_launch_root_codec_rejects_stale_stable_id(self) -> None:

@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..authority_inputs.machine_ir_authority import build_machine_ir_authority_bindings
+from ..machine_ir.memory_actions import (
+    MemoryActionError,
+    build_memory_action_graph,
+    validate_memory_action_graph,
+)
 from .state_machine import SPX_STATE_MACHINE_FORMAT, normalize_spx_semantic_transfer
 from ..static_program.codec import load_static_program_contract_binding
 from ..pe32.image import parse_pe_image
@@ -70,7 +75,7 @@ def prepare_machine_ir_units_package(
     binary = parse_pe_image(original_path)
     if binary.machine != "i386" or binary.bitness != 32:
         raise MachineIRExportError(
-            "machine IR v2 supports x86 PE32 inputs only",
+            "machine IR v3 supports x86 PE32 inputs only",
             code="unsupported_binary_model",
         )
     static_program_sha256: str | None = None
@@ -315,6 +320,22 @@ def _load_reusable_prepared_units(
                 )
             _assert_byte_free(raw)
             identity = _required_string(raw.get("id"), "prepared machine IR unit id")
+            try:
+                unit_semantics = raw.get("semantics")
+                if not isinstance(unit_semantics, Mapping):
+                    raise MemoryActionError("machine IR semantics is missing")
+                memory_actions = unit_semantics.get("memory_actions")
+                if not isinstance(memory_actions, Mapping):
+                    raise MemoryActionError("memory action graph is missing")
+                validate_memory_action_graph(
+                    memory_actions, require_authoritative=True
+                )
+            except MemoryActionError as exc:
+                raise MachineIRExportError(
+                    f"prepared machine IR unit {identity} has invalid memory actions: {exc}",
+                    code="prepared_machine_ir_memory_actions_invalid",
+                    unit_id=identity,
+                ) from exc
             preparation = raw.get("preparation")
             if (
                 not isinstance(preparation, Mapping)
@@ -491,6 +512,11 @@ def _prepare_unit(
         field: _semantic_copy(row.get(field), field, identity)
         for field in _SEMANTIC_FIELDS
     }
+    semantics["memory_actions"] = build_memory_action_graph(
+        instructions=[instruction.payload() for instruction in instructions],
+        memory_events=semantics["memory_events"],
+        ordered_events=semantics["ordered_events"],
+    )
     semantics["fpu_state"] = fpu_state
     semantics["instruction_effect_schedule"] = schedule
     control_recovery = _recover_unknown_fallthrough(
@@ -537,6 +563,8 @@ def _prepare_unit(
             "qualified"
             if (
                 _semantic_unit_qualified(row, x87_micro_ops)
+                and semantics["memory_actions"]["status"] == "complete"
+                and semantics["memory_actions"]["authority"]["authoritative"] is True
                 and decoded_control_reconciliation["status"] == "complete"
             )
             else "incomplete"

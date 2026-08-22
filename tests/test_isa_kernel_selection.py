@@ -231,7 +231,7 @@ class ISAKernelSelectionAuthorityTests(unittest.TestCase):
     ) -> Path:
         unit = ExactUnitV3.create(
             {
-                "format": "spaghetti-extractor-machine-ir-v2",
+                "format": "spaghetti-extractor-machine-ir-v3",
                 "record_kind": "unit",
                 "id": "unit-1000",
                 "status": "qualified",

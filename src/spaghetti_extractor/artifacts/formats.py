@@ -18,7 +18,18 @@ SPX_INTERPRETER_PACKAGE_FORMAT = "spaghetti-extractor-semantic-interpreter-packa
 NATIVE_ENGINE_PLAN_FORMAT = "spaghetti-extractor-native-engine-plan-v1"
 NATIVE_ENGINE_PACKAGE_FORMAT = "spaghetti-extractor-native-engine-package-v1"
 NATIVE_RUNTIME_PACKAGE_FORMAT = "spaghetti-extractor-native-runtime-package-v1"
-MACHINE_IR_FORMAT = "spaghetti-extractor-machine-ir-v2"
+MACHINE_IR_V2_FORMAT = "spaghetti-extractor-machine-ir-v2"
+MACHINE_IR_FORMAT = "spaghetti-extractor-machine-ir-v3"
+MACHINE_MEMORY_ACTION_GRAPH_FORMAT = (
+    "spaghetti-extractor-machine-memory-action-graph-v1"
+)
+CONCURRENCY_SIGNATURE_FORMAT = (
+    "spaghetti-extractor-concurrency-signature-v1"
+)
+MEMORY_MODEL_RECEIPT_FORMAT = (
+    "spaghetti-extractor-memory-model-receipt-v1"
+)
+PE32_WB_TSO_PROFILE_ID = "x86-pe32-user-wb-tso-v1"
 STATIC_ANALYSIS_PROFILE_ID = "x86-pe32-static-reconstruction-v1"
 STATIC_PROGRAM_CONTRACT_FORMAT = "spaghetti-extractor-static-program-contract-v2"
 STATIC_PROGRAM_SEMANTIC_BINDING_FORMAT = (
@@ -115,6 +126,12 @@ REUSABLE_LIBRARY_IMPLEMENTATION_V1_FORMAT = (
 REUSABLE_LIBRARY_BEHAVIOR_PACK_V1_FORMAT = (
     "spaghetti-extractor-reusable-library-behavior-pack-v1"
 )
+REUSABLE_LIBRARY_BEHAVIOR_PACK_V2_FORMAT = (
+    "spaghetti-extractor-reusable-library-behavior-pack-v2"
+)
+LIBRARY_BEHAVIOR_CONTRACT_V2_FORMAT = (
+    "spaghetti-extractor-library-behavior-contract-v2"
+)
 GENERATED_LIBRARY_COMPONENT_V1_FORMAT = (
     "spaghetti-extractor-generated-library-component-v1"
 )
@@ -128,13 +145,85 @@ CANDIDATE_TEST_CASE_REPORT_FORMAT = (
     "spaghetti-extractor-candidate-test-case-report-v1"
 )
 CANDIDATE_TEST_REPORT_FORMAT = "spaghetti-extractor-candidate-test-report-v1"
+ABI_EVIDENCE_FORMAT = "spaghetti-extractor-abi-evidence-v1"
+ABI_FACT_SET_FORMAT = "spaghetti-extractor-abi-fact-set-v1"
+ABI_CONSTRAINT_RESULT_FORMAT = "spaghetti-extractor-abi-constraint-result-v1"
+PHYSICAL_ABI_CERTIFICATE_FORMAT = (
+    "spaghetti-extractor-physical-abi-certificate-v1"
+)
+PORTABLE_PROTOTYPE_FORMAT = "spaghetti-extractor-portable-prototype-v1"
+BOUNDARY_EFFECTS_FORMAT = "spaghetti-extractor-boundary-effects-v1"
+REVIEWED_ABI_ASSUMPTION_FORMAT = "spaghetti-extractor-reviewed-abi-assumption-v1"
+ABI_ANALYSIS_BUNDLE_FORMAT = "spaghetti-extractor-abi-analysis-bundle-v1"
+PHYSICAL_ABI_CATALOG_FORMAT = "spaghetti-extractor-physical-abi-catalog-v1"
+ABI_MATCH_RESOLUTION_FORMAT = "spaghetti-extractor-abi-match-resolution-v1"
+CATALOG_CALL_CONTRACT_SET_FORMAT = (
+    "spaghetti-extractor-catalog-call-contract-set-v1"
+)
+PHYSICAL_ABI_DECLARATIONS_FORMAT = (
+    "spaghetti-extractor-physical-abi-declarations-v1"
+)
+PHYSICAL_ABI_DECLARATION_SPEC_FORMAT = (
+    "spaghetti-extractor-physical-abi-declaration-spec-v1"
+)
+ABI_DECLARATION_INGESTION_FORMAT = (
+    "spaghetti-extractor-abi-declaration-ingestion-v1"
+)
+PORTABLE_TYPE_GRAPH_V1_FORMAT = "spaghetti-extractor-portable-type-graph-v1"
+SOURCE_NAMING_V1_FORMAT = "spaghetti-extractor-source-naming-v1"
+TARGET_LAYOUT_SET_V1_FORMAT = "spaghetti-extractor-target-layout-set-v1"
+PHYSICAL_CALL_FRAME_V2_FORMAT = "spaghetti-extractor-physical-call-frame-v2"
+PHYSICAL_CALL_FRAME_V3_FORMAT = "spaghetti-extractor-physical-call-frame-v3"
+CALL_FRAME_RELATION_V1_FORMAT = "spaghetti-extractor-call-frame-relation-v1"
+CALL_FRAME_RELATION_RECEIPT_V1_FORMAT = (
+    "spaghetti-extractor-call-frame-relation-receipt-v1"
+)
+CALL_LIFECYCLE_V1_FORMAT = "spaghetti-extractor-call-lifecycle-v1"
+CALL_LIFECYCLE_RECEIPT_V1_FORMAT = (
+    "spaghetti-extractor-call-lifecycle-receipt-v1"
+)
+CHECKED_CALL_PROTOCOL_V1_FORMAT = "spaghetti-extractor-checked-call-protocol-v1"
+CHECKED_CALL_PROTOCOL_V2_FORMAT = "spaghetti-extractor-checked-call-protocol-v2"
+IDIOMATIC_CALL_VIEW_V1_FORMAT = "spaghetti-extractor-idiomatic-call-view-v1"
+CALL_PROTOCOL_PROPOSAL_V1_FORMAT = (
+    "spaghetti-extractor-call-protocol-proposal-v1"
+)
+CALL_PROTOCOL_INTENT_V1_FORMAT = "spaghetti-extractor-call-protocol-intent-v1"
+IA32_DIALECT_RECEIPT_V1_FORMAT = "spaghetti-extractor-ia32-dialect-receipt-v1"
+CALLBACK_PROTOCOL_V2_FORMAT = "spaghetti-extractor-callback-protocol-v2"
+CALLBACK_PROTOCOL_V3_FORMAT = "spaghetti-extractor-callback-protocol-v3"
+CALL_PROTOCOL_COMPATIBILITY_V1_FORMAT = (
+    "spaghetti-extractor-call-protocol-compatibility-v1"
+)
+MACHINE_CALL_EVIDENCE_V1_FORMAT = "spaghetti-extractor-machine-call-evidence-v1"
+BOUNDARY_SCHEMA_V1_FORMAT = "spaghetti-extractor-boundary-schema-v1"
+TARGET_DATA_LAYOUT_V1_FORMAT = "spaghetti-extractor-target-data-layout-v1"
+BOUNDARY_FACT_SET_V1_FORMAT = "spaghetti-extractor-boundary-fact-set-v1"
+BOUNDARY_EVIDENCE_RECEIPT_V1_FORMAT = (
+    "spaghetti-extractor-boundary-evidence-receipt-v1"
+)
+BOUNDARY_LIFECYCLE_V1_FORMAT = "spaghetti-extractor-boundary-lifecycle-v1"
+BOUNDARY_LIFECYCLE_RECEIPT_V1_FORMAT = (
+    "spaghetti-extractor-boundary-lifecycle-receipt-v1"
+)
+BOUNDARY_PROJECTION_V1_FORMAT = "spaghetti-extractor-boundary-projection-v1"
+BOUNDARY_PROJECTION_RECEIPT_V1_FORMAT = (
+    "spaghetti-extractor-boundary-projection-receipt-v1"
+)
 __all__ = [
+    "ABI_ANALYSIS_BUNDLE_FORMAT",
+    "ABI_CONSTRAINT_RESULT_FORMAT",
+    "ABI_EVIDENCE_FORMAT",
+    "ABI_FACT_SET_FORMAT",
+    "ABI_MATCH_RESOLUTION_FORMAT",
+    "CATALOG_CALL_CONTRACT_SET_FORMAT",
     "AUTHORITY_DIAGNOSTICS_V3_FORMAT",
     "CANONICAL_EXTERNAL_SITE_RECORD_V3_SCHEMA",
     "CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3",
     "CANDIDATE_TEST_SUITE_FORMAT",
     "CANDIDATE_TEST_CASE_REPORT_FORMAT",
     "CANDIDATE_TEST_REPORT_FORMAT",
+    "BOUNDARY_EFFECTS_FORMAT",
     "COMPONENT_INTERFACE_REFINEMENT_FORMAT",
     "COMPONENT_INTERFACE_SPEC_FORMAT",
     "COMPONENT_QUALIFICATION_FORMAT",
@@ -167,6 +256,8 @@ __all__ = [
     "CHECKED_LIBRARY_ISLAND_V1_FORMAT",
     "REUSABLE_LIBRARY_IMPLEMENTATION_V1_FORMAT",
     "REUSABLE_LIBRARY_BEHAVIOR_PACK_V1_FORMAT",
+    "REUSABLE_LIBRARY_BEHAVIOR_PACK_V2_FORMAT",
+    "LIBRARY_BEHAVIOR_CONTRACT_V2_FORMAT",
     "GENERATED_LIBRARY_COMPONENT_V1_FORMAT",
     "DYNAMIC_LIBRARY_REQUIREMENTS_FORMAT",
     "EXTERNAL_OPERATION_CONTRACT_FORMAT",
@@ -177,6 +268,11 @@ __all__ = [
     "LINKED_ISLAND_MANIFEST_V2_FORMAT",
     "LINKED_ISLAND_REVIEW_FORMAT",
     "MACHINE_IR_FORMAT",
+    "MACHINE_IR_V2_FORMAT",
+    "MACHINE_MEMORY_ACTION_GRAPH_FORMAT",
+    "CONCURRENCY_SIGNATURE_FORMAT",
+    "MEMORY_MODEL_RECEIPT_FORMAT",
+    "PE32_WB_TSO_PROFILE_ID",
     "LAUNCH_ASSUMPTION_TEMPLATE_FORMAT",
     "NATIVE_ENGINE_PACKAGE_FORMAT",
     "NATIVE_ENGINE_PLAN_FORMAT",
@@ -202,4 +298,37 @@ __all__ = [
     "STATIC_MACHINE_IMPORT_PROFILE_FORMAT",
     "TARGET_HINTS_ARTIFACT_KIND",
     "RELEASE_ACCEPTANCE_FORMAT",
+    "PHYSICAL_ABI_CERTIFICATE_FORMAT",
+    "PHYSICAL_ABI_DECLARATIONS_FORMAT",
+    "PHYSICAL_ABI_DECLARATION_SPEC_FORMAT",
+    "PHYSICAL_ABI_CATALOG_FORMAT",
+    "ABI_DECLARATION_INGESTION_FORMAT",
+    "PORTABLE_TYPE_GRAPH_V1_FORMAT",
+    "SOURCE_NAMING_V1_FORMAT",
+    "TARGET_LAYOUT_SET_V1_FORMAT",
+    "PHYSICAL_CALL_FRAME_V2_FORMAT",
+    "PHYSICAL_CALL_FRAME_V3_FORMAT",
+    "CALL_FRAME_RELATION_V1_FORMAT",
+    "CALL_FRAME_RELATION_RECEIPT_V1_FORMAT",
+    "CALL_LIFECYCLE_V1_FORMAT",
+    "CHECKED_CALL_PROTOCOL_V1_FORMAT",
+    "CHECKED_CALL_PROTOCOL_V2_FORMAT",
+    "IDIOMATIC_CALL_VIEW_V1_FORMAT",
+    "CALL_PROTOCOL_PROPOSAL_V1_FORMAT",
+    "CALL_PROTOCOL_INTENT_V1_FORMAT",
+    "IA32_DIALECT_RECEIPT_V1_FORMAT",
+    "CALLBACK_PROTOCOL_V2_FORMAT",
+    "CALLBACK_PROTOCOL_V3_FORMAT",
+    "CALL_PROTOCOL_COMPATIBILITY_V1_FORMAT",
+    "MACHINE_CALL_EVIDENCE_V1_FORMAT",
+    "BOUNDARY_SCHEMA_V1_FORMAT",
+    "TARGET_DATA_LAYOUT_V1_FORMAT",
+    "BOUNDARY_FACT_SET_V1_FORMAT",
+    "BOUNDARY_EVIDENCE_RECEIPT_V1_FORMAT",
+    "BOUNDARY_LIFECYCLE_V1_FORMAT",
+    "BOUNDARY_LIFECYCLE_RECEIPT_V1_FORMAT",
+    "BOUNDARY_PROJECTION_V1_FORMAT",
+    "BOUNDARY_PROJECTION_RECEIPT_V1_FORMAT",
+    "PORTABLE_PROTOTYPE_FORMAT",
+    "REVIEWED_ABI_ASSUMPTION_FORMAT",
 ]

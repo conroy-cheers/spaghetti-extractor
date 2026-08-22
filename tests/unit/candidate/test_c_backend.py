@@ -11,6 +11,7 @@ from spaghetti_extractor.candidate.c_backend import (
     write_spx_semantic_c_backend,
 )
 from spaghetti_extractor.candidate.api_catalog import load_machine_call_catalog
+from spaghetti_extractor.machine_ir.memory_actions import build_memory_action_graph
 from spaghetti_extractor.reconstruction.state_machine import normalize_spx_semantic_transfer
 
 
@@ -81,6 +82,58 @@ def _rep_scas_event():
 
 
 class SemanticCBackendTests(unittest.TestCase):
+    def test_exchange_uses_one_runtime_rmw_and_reuses_its_observation(self):
+        address = {"op": "const", "value": 0x430320, "width": 32}
+        observed = {"op": "load", "address": address, "width": 4}
+        desired = {"op": "reg", "name": "edx", "width": 32}
+        events = [
+            {"kind": "read", "address": address, "width": 4},
+            {"kind": "write", "address": address, "width": 4, "value": desired},
+        ]
+        ordered = [
+            {"family": "memory", "instruction_rva": 0x1000, **event}
+            for event in events
+        ]
+        instruction = {
+            "rva_start": 0x1000,
+            "mnemonic": "xchg",
+            "operands": [
+                {
+                    "kind": "memory",
+                    "segment": None,
+                    "base": None,
+                    "index": None,
+                    "scale": 1,
+                    "displacement": 0x430320,
+                    "width_bits": 32,
+                },
+                {"kind": "register", "name": "edx", "width_bits": 32},
+            ],
+        }
+        transfer = _transfer(
+            id="semantic-transfer:exchange",
+            instructions=[instruction],
+            register_writes=[{"register": "edx", "value": observed}],
+            memory_events=events,
+            ordered_events=ordered,
+            memory_actions=build_memory_action_graph(
+                instructions=[instruction],
+                memory_events=events,
+                ordered_events=ordered,
+            ),
+            outcome={"kind": "fallthrough", "target_rva": 0x1001},
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            report = write_spx_semantic_c_backend(root, [transfer])
+
+            self.assertEqual(report["status"], "complete", report)
+            source = (root / "state-machine-transfers.c").read_text(encoding="utf-8")
+            self.assertEqual(source.count("spx_runtime_atomic_exchange("), 1)
+            self.assertNotIn("spx_read(rt", source)
+            self.assertIn("state->edx = atomic_observed_", source)
+
     def test_emits_compiler_consumable_c_from_semantic_ir_without_original_bytes(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

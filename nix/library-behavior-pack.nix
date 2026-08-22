@@ -10,6 +10,7 @@
   sourceProfile,
   compileReceipt,
   qualificationReceipt,
+  behaviorContract ? null,
 }:
 
 let
@@ -28,6 +29,9 @@ let
   compileReceiptInput = asInput "${name}-compile-receipt.json" compileReceipt;
   qualificationReceiptInput =
     asInput "${name}-qualification-receipt.json" qualificationReceipt;
+  behaviorContractInput =
+    if behaviorContract == null then null
+    else asInput "${name}-behavior-contract.json" behaviorContract;
   phaseSource = import ./python-module-closure.nix {
     phaseRole = "candidate";
     inherit pkgs;
@@ -36,7 +40,7 @@ let
   };
 in
 assert lib.assertMsg (identifier name) "library behavior-pack name is invalid";
-pkgs.runCommand "${name}-reusable-library-behavior-pack-v1" {
+pkgs.runCommand "${name}-reusable-library-behavior-pack-${if behaviorContractInput == null then "v1" else "v2"}" {
   nativeBuildInputs = [ pythonEnv pkgs.jq ];
   preferLocalBuild = false;
   allowSubstitutes = true;
@@ -61,9 +65,10 @@ pkgs.runCommand "${name}-reusable-library-behavior-pack-v1" {
 
   from spaghetti_extractor.libraries.v4_behavior_pack import (
       build_reusable_library_behavior_pack_v1,
+      build_reusable_library_behavior_pack_v2,
   )
 
-  build_reusable_library_behavior_pack_v1(
+  common = dict(
       implementation=pathlib.Path(sys.argv[1]),
       source_package=pathlib.Path(sys.argv[2]),
       interface=pathlib.Path(sys.argv[3]),
@@ -72,9 +77,18 @@ pkgs.runCommand "${name}-reusable-library-behavior-pack-v1" {
       qualification_receipt=pathlib.Path(sys.argv[6]),
       out_dir=pathlib.Path(sys.argv[7]),
   )
+  behavior = ${if behaviorContractInput == null then "None" else "pathlib.Path(" + builtins.toJSON (toString behaviorContractInput) + ")"}
+  if behavior is None:
+      build_reusable_library_behavior_pack_v1(**common)
+  else:
+      build_reusable_library_behavior_pack_v2(
+          **common,
+          behavior_contract=behavior,
+      )
   PY
   jq -e '
-    .format == "spaghetti-extractor-reusable-library-behavior-pack-v1" and
+    (.format == "spaghetti-extractor-reusable-library-behavior-pack-v1" or
+     .format == "spaghetti-extractor-reusable-library-behavior-pack-v2") and
     (.pack_sha256 | type == "string")
   ' "$out/behavior-pack.json" >/dev/null
 ''

@@ -85,6 +85,38 @@ def slice_component_resolution(
             f"lift unit {lift_unit_id!r} resolved to {len(matches)} definitions"
         )
     field, lift_unit = matches[0]
+    sliced_components: list[dict[str, object]] = []
+    if field == "components":
+        component_index = {
+            str(row["id"]): copy.deepcopy(dict(row))
+            for row in _array(payload.get("components"), "resolved components")
+            if isinstance(row, Mapping) and isinstance(row.get("id"), str)
+        }
+        pending = [str(lift_unit["id"])]
+        selected: set[str] = set()
+        while pending:
+            component_id = pending.pop()
+            if component_id in selected:
+                continue
+            component = component_index.get(component_id)
+            if component is None:
+                raise ComponentIntentError(
+                    f"component-call dependency references unknown component "
+                    f"{component_id!r}"
+                )
+            selected.add(component_id)
+            for call in _array(
+                component.get("component_calls", []),
+                f"component {component_id} calls",
+            ):
+                if not isinstance(call, Mapping) or not isinstance(
+                    call.get("target_component_id"), str
+                ):
+                    raise ComponentIntentError(
+                        f"component {component_id} has a malformed call dependency"
+                    )
+                pending.append(str(call["target_component_id"]))
+        sliced_components = [component_index[key] for key in sorted(selected)]
     core = {
         "format": COMPONENT_RESOLUTION_SLICE_V1_FORMAT,
         "status": "checked",
@@ -94,7 +126,7 @@ def slice_component_resolution(
             payload["permitted_activation_profiles"]
         ),
         "bindings": copy.deepcopy(payload["bindings"]),
-        "components": [lift_unit] if field == "components" else [],
+        "components": sliced_components,
         "groups": [lift_unit] if field == "groups" else [],
         "configurations": [],
     }
@@ -154,7 +186,11 @@ def _resolve_component_catalog(
                 if component.machine_binding is None
                 else component.machine_binding.as_posix()
             ),
+            "component_call_dependencies": copy.deepcopy(
+                proposal.get("component_call_dependencies", [])
+            ),
         }
+    _resolve_component_calls(resolved_components)
     resolved_groups = _resolve_groups(catalog, resolved_components)
     configurations = [
         _resolve_configuration(
@@ -229,6 +265,96 @@ def _resolve_groups(
     for identity in sorted(group_intents):
         resolve(identity)
     return result
+
+
+def _resolve_component_calls(
+    components: Mapping[str, dict[str, object]],
+) -> None:
+    unit_owners: dict[str, list[str]] = {}
+    for component_id, component in components.items():
+        for unit_id in _array(
+            component.get("unit_ids"), f"component {component_id} unit IDs"
+        ):
+            if isinstance(unit_id, str):
+                unit_owners.setdefault(unit_id, []).append(component_id)
+
+    for component_id, component in components.items():
+        calls: list[dict[str, object]] = []
+        unresolved: list[dict[str, object]] = []
+        dependencies = _array(
+            component.pop("component_call_dependencies", []),
+            f"component {component_id} call dependencies",
+        )
+        source_units = set(str(value) for value in component["unit_ids"])
+        for index, raw in enumerate(dependencies):
+            if not isinstance(raw, Mapping):
+                raise ComponentIntentError(
+                    f"component {component_id} call dependency {index} is malformed"
+                )
+            target_rva = raw.get("target_rva")
+            target_unit_id = raw.get("target_unit_id")
+            callsite_unit_ids = raw.get("callsite_unit_ids")
+            if (
+                not isinstance(target_rva, int)
+                or isinstance(target_rva, bool)
+                or not isinstance(target_unit_id, str)
+                or not isinstance(callsite_unit_ids, list)
+                or not callsite_unit_ids
+                or any(
+                    not isinstance(value, str) or value not in source_units
+                    for value in callsite_unit_ids
+                )
+            ):
+                raise ComponentIntentError(
+                    f"component {component_id} call dependency {index} is malformed"
+                )
+            owners = sorted(
+                owner
+                for owner in unit_owners.get(target_unit_id, [])
+                if owner != component_id
+            )
+            if len(owners) != 1:
+                unresolved.append(
+                    {
+                        "target_rva": target_rva,
+                        "target_unit_id": target_unit_id,
+                        "callsite_unit_ids": copy.deepcopy(callsite_unit_ids),
+                        "reason": (
+                            "selected_component_missing"
+                            if not owners
+                            else "selected_component_ambiguous"
+                        ),
+                        "candidate_component_ids": owners,
+                    }
+                )
+                continue
+            core: dict[str, object] = {
+                "target_component_id": owners[0],
+                "target_rva": target_rva,
+                "target_unit_id": target_unit_id,
+                "callsites": [
+                    {"source_unit_id": value}
+                    for value in sorted(set(str(item) for item in callsite_unit_ids))
+                ],
+            }
+            calls.append(
+                {**core, "dependency_sha256": _canonical_sha256(core)}
+            )
+        component["component_calls"] = sorted(
+            calls,
+            key=lambda row: (
+                str(row["target_component_id"]),
+                int(row["target_rva"]),
+                str(row["target_unit_id"]),
+            ),
+        )
+        component["unresolved_component_calls"] = sorted(
+            unresolved,
+            key=lambda row: (
+                int(row["target_rva"]),
+                str(row["target_unit_id"]),
+            ),
+        )
 
 
 def _resolve_configuration(

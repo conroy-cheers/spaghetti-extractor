@@ -101,7 +101,7 @@ class WinmmRuntimeProfileTests(unittest.TestCase):
                 self.assertEqual(row["memory_effect"], "nativeCallthrough")
                 self.assertEqual(row["memory_footprints"], [])
                 self.assertEqual(row["world_effect"], "nativeCallthrough")
-                self.assertEqual(row["callback_effect"], "none")
+                self.assertNotIn("callback_effect", row)
 
     def test_midi_stream_open_models_the_pe32_sdk_callback_protocol(self) -> None:
         row = _entry(_profile_payload(), "midiStreamOpen")
@@ -133,19 +133,25 @@ class WinmmRuntimeProfileTests(unittest.TestCase):
         self.assertEqual(behavior.instance_registration_argument, 4)
         self.assertEqual(behavior.payload_arguments, (3, 4))
         self.assertEqual(
-            row["callback_lifetime"],
-            "until_midi_stream_closed_or_process_exit",
+            row["callback_protocol"]["lifetime"],
+            {
+                "kind": "until_resource_event_or_process_exit",
+                "end_event": "winmm.dll!midiStreamClose",
+            },
         )
 
         contracts = _machine_import_contracts([_PROFILE])
         loaded = contracts[("winmm.dll", "midiStreamOpen", None)]
-        self.assertEqual(loaded["callback_behavior"], row["callback_behavior"])
+        self.assertEqual(
+            loaded["callback_protocol"], row["callback_protocol"]
+        )
 
     def test_midi_stream_open_callback_protocol_fails_closed(self) -> None:
         mutations = {
-            "wrong provider": ("provider_relation", "same_named_dll"),
-            "wrong delivery": ("delivery", "eventually"),
+            "wrong provider": ("provider_behavior", "provider_relation", "same_named_dll"),
+            "wrong delivery": ("protocol", "delivery", {"timing": "eventually", "thread": "provider_serialized"}),
             "bad mode": (
+                "provider_behavior",
                 "activation",
                 {
                     "kind": "masked_argument_equals",
@@ -155,19 +161,21 @@ class WinmmRuntimeProfileTests(unittest.TestCase):
                 },
             ),
             "duplicate message": (
+                "provider_behavior",
                 "message_values",
                 [0x3C7, 0x3C7],
             ),
-            "missing callback word": ("payload_arguments", [3]),
+            "missing callback word": ("provider_behavior", "payload_arguments", [3]),
         }
-        for label, (field, value) in mutations.items():
+        for label, (owner, field, value) in mutations.items():
             with self.subTest(mutation=label):
                 payload = _profile_payload()
                 row = _entry(payload, "midiStreamOpen")
-                behavior = copy.deepcopy(row["callback_behavior"])
-                assert isinstance(behavior, dict)
-                behavior[field] = value
-                row["callback_behavior"] = behavior
+                protocol = row["callback_protocol"]
+                assert isinstance(protocol, dict)
+                target = protocol if owner == "protocol" else protocol["provider_behavior"]
+                assert isinstance(target, dict)
+                target[field] = value
                 with self.assertRaises(ToolkitInputError):
                     _load_mutated(payload)
 

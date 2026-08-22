@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from ..components.interaction_contract import InteractionContractCatalogV1
 from ..external.machine_abi import (
     parse_normal_call_abi_premise,
     resolve_machine_call_abi,
@@ -291,6 +292,7 @@ def _validate_machine_import(path: Path, payload: Mapping[str, Any]) -> None:
     if payload.get("format") not in {
         "spaghetti-extractor-external-environment-profile-v1",
         "spaghetti-extractor-static-machine-import-profile-v1",
+        "spaghetti-extractor-static-machine-import-profile-v2",
     }:
         raise ProfileRegistryError("unsupported machine import profile format")
     load_machine_import_profile_set([path])
@@ -441,6 +443,16 @@ def _validate_import_abi_policy(path: Path, payload: Mapping[str, Any]) -> None:
             raise ProfileRegistryError(f"{context}.abi_template is unsupported")
 
 
+def _validate_interaction_contract_catalog(
+    path: Path, payload: Mapping[str, Any]
+) -> None:
+    del path
+    _expect_format(
+        payload, "spaghetti-extractor-interaction-contract-catalog-v1"
+    )
+    InteractionContractCatalogV1.parse(payload)
+
+
 _VALIDATORS: Mapping[str, ProfileValidator] = {
     "c0-toolchain-v1": _validate_c0_toolchain,
     "callable-external-v2": _validate_callable_external,
@@ -448,6 +460,7 @@ _VALIDATORS: Mapping[str, ProfileValidator] = {
     "external-interface-extraction-v1": _validate_interface_extraction,
     "import-abi-policy-v1": _validate_import_abi_policy,
     "indirect-target-profile-v1": _validate_indirect_target,
+    "interaction-contract-catalog-v1": _validate_interaction_contract_catalog,
     "launch-assumption-template-v1": _validate_launch_assumption,
     "machine-import-profile-v1": _validate_machine_import,
     "normal-call-abi-premise-v1": _validate_normal_call_abi,
@@ -470,6 +483,9 @@ PROFILE_ROLE_VALIDATORS: Mapping[str, frozenset[str]] = {
     ),
     "import-abi-policy": frozenset({"import-abi-policy-v1"}),
     "indirect-target-assumption": frozenset({"indirect-target-profile-v1"}),
+    "interaction-contract-catalog": frozenset(
+        {"interaction-contract-catalog-v1"}
+    ),
     "machine-import-environment": frozenset({"machine-import-profile-v1"}),
     "machine-import-runtime": frozenset({"machine-import-profile-v1"}),
     "normal-call-abi-premise": frozenset({"normal-call-abi-premise-v1"}),

@@ -17,6 +17,15 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..artifacts.formats import RECONSTRUCTION_CONTRACT_ANALYSIS_FORMAT
+from ..errors import ToolkitInputError
+from ..external.callback_protocols import parse_callback_protocol
+from ..machine_ir.memory_actions import (
+    ATOMIC_OPERATIONS as _CANONICAL_ATOMIC_OPERATIONS,
+    MemoryActionError,
+    build_memory_action_graph,
+    concurrency_signature,
+    validate_memory_action_graph,
+)
 
 _ACCESS_ORDER = {"read": 0, "write": 1, "read_write": 2}
 _ATOMIC_OPERATIONS = {
@@ -39,6 +48,7 @@ _ATOMIC_OPERATIONS = {
     "xchg": "exchange",
     "xor": "bitwise_xor",
 }
+assert _ATOMIC_OPERATIONS == _CANONICAL_ATOMIC_OPERATIONS
 _TEMPLATE_CONVENTIONS = {
     "pe32-cdecl-v1": "cdecl",
     "pe32-stdcall-v1": "stdcall",
@@ -73,6 +83,9 @@ def analyze_reconstruction_contracts(
         normalized_units, issues
     )
     atomic_effects = _analyze_atomics(normalized_units, concrete_memory, issues)
+    memory_action_graphs, concurrency_signatures = _memory_action_authority(
+        normalized_units
+    )
     external_services, callbacks = _analyze_external_events(
         normalized_units,
         catalog,
@@ -105,6 +118,8 @@ def analyze_reconstruction_contracts(
             "aliasing": aliasing,
         },
         "atomic_effects": atomic_effects,
+        "memory_action_graphs": memory_action_graphs,
+        "concurrency_signatures": concurrency_signatures,
         "external_services": external_services,
         "callbacks": callbacks,
         "unit_enrichments": unit_enrichments,
@@ -116,11 +131,57 @@ def analyze_reconstruction_contracts(
             "valid_memory_preconditions": len(valid_memory),
             "alias_preconditions": len(aliasing),
             "atomic_effects": len(atomic_effects),
+            "memory_action_graphs": len(memory_action_graphs),
+            "concurrency_signatures": len(concurrency_signatures),
             "external_services": len(external_services),
             "callbacks": len(callbacks),
             "issues": len(issues),
         },
     }
+
+
+def _memory_action_authority(
+    units: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    graphs: list[dict[str, Any]] = []
+    signatures: list[dict[str, Any]] = []
+    for unit in units:
+        semantics = unit["semantics"]
+        supplied = semantics.get("memory_actions")
+        if isinstance(supplied, Mapping):
+            graph = _json_copy(supplied, "memory action graph")
+        else:
+            graph = build_memory_action_graph(
+                instructions=(
+                    unit.get("instructions")
+                    if isinstance(unit.get("instructions"), list)
+                    else []
+                ),
+                memory_events=(
+                    semantics.get("memory_events")
+                    if isinstance(semantics.get("memory_events"), list)
+                    else []
+                ),
+                ordered_events=(
+                    semantics.get("ordered_events")
+                    if isinstance(semantics.get("ordered_events"), list)
+                    else []
+                ),
+                legacy_source=True,
+            )
+        graph_row = {"unit_id": unit["id"], "graph": graph}
+        graphs.append(graph_row)
+        try:
+            validate_memory_action_graph(graph, require_authoritative=True)
+            signatures.append(
+                {
+                    "unit_id": unit["id"],
+                    "signature": concurrency_signature(graph),
+                }
+            )
+        except MemoryActionError:
+            pass
+    return graphs, signatures
 
 
 def _normalize_units(
@@ -413,10 +474,10 @@ def _analyze_atomics(
         locked_count = sum(
             1
             for instruction in instructions
-            if isinstance(instruction, Mapping) and _has_lock_prefix(instruction)
+            if isinstance(instruction, Mapping) and _is_atomic_instruction(instruction)
         )
         for instruction_index, instruction in enumerate(instructions):
-            if not isinstance(instruction, Mapping) or not _has_lock_prefix(instruction):
+            if not isinstance(instruction, Mapping) or not _is_atomic_instruction(instruction):
                 continue
             mnemonic = _base_mnemonic(instruction)
             operation = _ATOMIC_OPERATIONS.get(mnemonic)
@@ -509,7 +570,8 @@ def _analyze_atomics(
                 ),
                 "effect_kind": "atomic_read_modify_write",
                 "operation": operation,
-                "lock_prefix": True,
+                "lock_prefix": _has_lock_prefix(instruction),
+                "implicit_lock": mnemonic == "xchg" and not _has_lock_prefix(instruction),
                 "ordering": {
                     "architecture": "x86",
                     "kind": "locked_instruction_order",
@@ -522,7 +584,11 @@ def _analyze_atomics(
                     "width_bytes": width_bytes,
                     "width_bits": width_bits if _is_int(width_bits) else None,
                 },
-                "conditional_write": mnemonic.startswith("cmpxchg"),
+                # IA-32 CMPXCHG performs a locked write cycle on both success
+                # and failure.  The value is conditional; the action is not.
+                "conditional_write": False,
+                "conditional_written_value": mnemonic.startswith("cmpxchg"),
+                "write_occurs": "always",
                 "concrete_memory_events": sorted(
                     candidates, key=lambda item: item["event_index"]
                 ),
@@ -799,11 +865,44 @@ def _callback_metadata(
     unit_id = str(service["unit_id"])
     event_index = int(service["event_index"])
     local_complete = True
+    protocol_raw, protocol_conflict = _reconcile_mappings(
+        event.get("callback_protocol"),
+        abi.get("callback_protocol"),
+        signature.get("callback_protocol") if signature else None,
+    )
+    protocol_source = None
+    protocol_abi = None
+    protocol_lifetime = None
+    if isinstance(protocol_raw, Mapping) and not protocol_conflict:
+        try:
+            protocol = parse_callback_protocol(
+                protocol_raw,
+                registration_argument_words=len(argument_values),
+                context="callback protocol",
+            )
+        except ToolkitInputError:
+            protocol_conflict = True
+        else:
+            protocol_source = (
+                None if protocol.source is None else protocol.source.to_payload()
+            )
+            protocol_abi = {
+                "kind": "generic_callback",
+                "argument_words": protocol.signature.argument_words,
+                "stack_cleanup_bytes": protocol.signature.stack_cleanup_bytes,
+                "nullable": any(
+                    row.kind == "null"
+                    for row in (() if protocol.source is None else protocol.source.sentinels)
+                ),
+            }
+            protocol_lifetime = protocol.lifetime.to_payload()
     callback_source, conflict = _reconcile_mappings(
         event.get("callback_source"),
         abi.get("callback_source"),
         signature.get("callback_source") if signature else None,
+        protocol_source,
     )
+    conflict = conflict or protocol_conflict
     source_kind = (
         callback_source.get("kind")
         if isinstance(callback_source, Mapping)
@@ -863,6 +962,7 @@ def _callback_metadata(
         event.get("callback_abi"),
         abi.get("callback_abi"),
         signature.get("callback_abi") if signature else None,
+        protocol_abi,
     )
     if conflict or not _valid_callback_abi(callback_abi):
         local_complete = False
@@ -882,6 +982,7 @@ def _callback_metadata(
         if signature
         else None,
         callback_abi.get("lifetime") if isinstance(callback_abi, Mapping) else None,
+        protocol_lifetime,
     )
     if conflict or lifetime is None:
         local_complete = False
@@ -1320,6 +1421,18 @@ def _has_lock_prefix(instruction: Mapping[str, Any]) -> bool:
             return True
     attributes = instruction.get("attributes")
     return isinstance(attributes, Mapping) and attributes.get("lock_prefix") is True
+
+
+def _is_atomic_instruction(instruction: Mapping[str, Any]) -> bool:
+    if _has_lock_prefix(instruction):
+        return True
+    if _base_mnemonic(instruction) != "xchg":
+        return False
+    operands = instruction.get("operands")
+    return isinstance(operands, list) and any(
+        isinstance(operand, Mapping) and operand.get("kind") == "memory"
+        for operand in operands
+    )
 
 
 def _base_mnemonic(instruction: Mapping[str, Any]) -> str:

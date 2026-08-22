@@ -20,6 +20,8 @@ from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactSetWriterV3,
     canonical_sha256_v3,
 )
+from spaghetti_extractor.artifacts.formats import MACHINE_IR_FORMAT
+from spaghetti_extractor.machine_ir.memory_actions import build_memory_action_graph
 from spaghetti_extractor.authority.external_site_records import (
     CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
 )
@@ -41,6 +43,7 @@ from spaghetti_extractor.errors import ToolkitInputError
 from tests.unit.candidate.native_engine._support import (
     _candidate_execution_artifacts,
     _canonical_external_sites,
+    _empty_callback_authority,
     _implementation_manifest,
     _machine_ir_x87_transfer,
 )
@@ -66,7 +69,7 @@ def _transfer(rva: int = 0x1000) -> dict[str, object]:
 
 
 def _as_machine_ir(row: dict[str, object]) -> dict[str, object]:
-    if row.get("format") == "spaghetti-extractor-machine-ir-v2":
+    if row.get("format") == MACHINE_IR_FORMAT:
         unit = copy.deepcopy(row)
         original = unit["source"]["original"]
         outcome = unit["semantics"].get("outcome")
@@ -99,7 +102,7 @@ def _as_machine_ir(row: dict[str, object]) -> dict[str, object]:
                 ],
             })
         unit = {
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": MACHINE_IR_FORMAT,
             "record_kind": "unit",
             "id": row["id"],
             "status": "qualified",
@@ -159,6 +162,13 @@ def _as_machine_ir(row: dict[str, object]) -> dict[str, object]:
             "direct_targets": sorted(set(direct)),
             "has_indirect_target": kind in {"indirect", "indirect_call"},
         }
+    semantics = unit["semantics"]
+    if not isinstance(semantics.get("memory_actions"), dict):
+        semantics["memory_actions"] = build_memory_action_graph(
+            instructions=unit["instructions"],
+            memory_events=semantics.get("memory_events", []),
+            ordered_events=semantics.get("ordered_events", []),
+        )
     return unit
 
 
@@ -309,7 +319,7 @@ def _packages(
         machine_ir_manifest=manifest,
         entry_rva=0x1000,
         preferred_image_base=0x400000,
-        callback_targets=callback_targets or [],
+        tls_callback_targets=callback_targets or [],
         import_iat_vas=(
             import_iat_vas
             if import_iat_vas is not None
@@ -328,6 +338,7 @@ def _packages(
         ),
         selected_portable_components=selected_portable_components or [],
         canonical_external_sites=canonical_external_sites,
+        callback_authority=_empty_callback_authority(root),
         out=engine,
         root_closure=execution_authority[0],
         target_certificates=execution_authority[1],
@@ -522,7 +533,7 @@ def _machine_ir_indirect_external_result_rows() -> list[dict[str, object]]:
         "stack_inputs": [],
     }
     return [{
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": MACHINE_IR_FORMAT,
         "record_kind": "unit",
         "id": "semantic-transfer:typed-00001000",
         "status": "qualified",

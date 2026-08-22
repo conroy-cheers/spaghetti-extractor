@@ -1,0 +1,16 @@
+{
+  "format": "spaghetti-extractor-component-relation-declaration-v2",
+  "component_id": "program-name-selection",
+  "machine_backend": "x86-pe32-v1",
+  "operations": [
+    {
+      "operation_id": "select",
+      "interactions": [
+        {
+          "site_id": "service:find_last_character:semantic-transfer:original-cutpoint-00002b64-00002b6c:0",
+          "contract_id": "c-runtime.strrchr.borrowed-interior-v1"
+        }
+      ]
+    }
+  ]
+}

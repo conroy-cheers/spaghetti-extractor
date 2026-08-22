@@ -29,7 +29,7 @@ pkgs.runCommand
     jq -e '
       .format == "spaghetti-extractor-semantic-interpreter-package-v1" and
       .status == "ready" and
-      .input_mode == "sanitized_machine_ir_v2" and
+      .input_mode == "sanitized_machine_ir_v3" and
       .counts.input_transfers > 0 and
       .counts.transfers == .counts.input_transfers and
       .counts.blocked_transfers == 0 and

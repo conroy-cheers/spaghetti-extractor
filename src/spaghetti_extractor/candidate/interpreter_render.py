@@ -127,7 +127,7 @@ _ACTIONS = (
     # Opcode 25 retains its historical ABI label. Its payload is now a typed,
     # byte-free operation and all newly generated capability metadata says so.
     "outcome_external", "replay_x87", "rep_stosd", "rep_movs", "rep_stos",
-    "rep_scas",
+    "rep_scas", "atomic_compare_exchange", "atomic_exchange",
 )
 
 
@@ -673,6 +673,29 @@ spx_step_result spx_interpreter_step(
         spx_sync_eflags(state);
         if(result==0U)break;
       }
+    } else if(a->op==30U){
+      uint32_t observed=0U,exchanged=0U;
+      if(a->arity!=4U||a->args[3]>=t->word_count||
+          (a->aux!=1U&&a->aux!=2U&&a->aux!=4U))
+        return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+      if(!rt||!rt->atomic_compare_exchange)
+        return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+      rt->atomic_compare_exchange(
+        rt->context,words[a->args[0]],a->aux,words[a->args[1]],words[a->args[2]],
+        &observed,&exchanged,&memory_fault);
+      words[a->args[3]]=observed;word_valid[a->args[3]]=1U;
+      (void)exchanged;
+    } else if(a->op==31U){
+      uint32_t observed=0U;
+      if(a->arity!=3U||a->args[2]>=t->word_count||
+          (a->aux!=1U&&a->aux!=2U&&a->aux!=4U))
+        return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+      if(!rt||!rt->atomic_exchange)
+        return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
+      rt->atomic_exchange(
+        rt->context,words[a->args[0]],a->aux,words[a->args[1]],
+        &observed,&memory_fault);
+      words[a->args[2]]=observed;word_valid[a->args[2]]=1U;
     } else return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};
     if(memory_fault)return(spx_step_result){SPX_MEMORY_FAULT,source_rva,0U};
     if(semantic_fault)return(spx_step_result){SPX_UNIMPLEMENTED,source_rva,0U};

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -144,6 +145,29 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
         self.assertEqual([row["id"] for row in original_slice["components"]], ["a"])
         self.assertEqual(original_slice["groups"], [])
         self.assertEqual(original_slice["configurations"], [])
+
+    def test_resolution_slice_includes_exact_component_call_closure(self) -> None:
+        shutil.rmtree(self.proposals)
+        self._write_proposals(component_calls=True)
+        resolution = resolve_component_catalog(
+            proposals=self.proposals,
+            intent=self.intent,
+            out=self.root / "resolution.json",
+        )
+
+        component_a = next(
+            row for row in resolution["components"] if row["id"] == "a"
+        )
+        self.assertEqual(
+            [row["target_component_id"] for row in component_a["component_calls"]],
+            ["b"],
+        )
+        sliced = slice_component_resolution(
+            resolution=resolution,
+            lift_unit_id="a",
+            out=self.root / "slice.json",
+        )
+        self.assertEqual([row["id"] for row in sliced["components"]], ["a", "b"])
 
     def test_resolution_slice_rejects_stale_upstream_hash(self) -> None:
         resolution = resolve_component_catalog(
@@ -825,7 +849,7 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-    def _write_proposals(self) -> None:
+    def _write_proposals(self, *, component_calls: bool = False) -> None:
         manifest_path = self.machine / "machine-ir-manifest.json"
         ir_path = self.machine / "machine-ir.jsonl"
         plan = json.loads(self.plan.read_text(encoding="utf-8"))
@@ -871,6 +895,14 @@ class ComponentInputsAndConfigurationTests(unittest.TestCase):
                             "blockers": [],
                         },
                     ]
+        if component_calls:
+            proposals[0]["component_call_dependencies"] = [
+                {
+                    "target_rva": 0x1010,
+                    "target_unit_id": "unit:b",
+                    "callsite_unit_ids": ["unit:a"],
+                }
+            ]
         for proposal in proposals:
             proposal["proposal_sha256"] = _canonical_sha256(proposal)
         payload = {

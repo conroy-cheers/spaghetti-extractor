@@ -436,6 +436,7 @@ def synthesize_component_interface_spec(
         )
 
     objects: list[dict[str, Any]] = []
+    object_by_location: dict[str, dict[str, Any]] = {}
     services: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
     adapter_effects: list[dict[str, Any]] = []
@@ -461,8 +462,14 @@ def synthesize_component_interface_spec(
                     {"effect": reference, "reason": "stack_frame_projection"}
                 )
                 continue
-            objects.append(
-                {
+            location_key = json.dumps(
+                {"address": address, "width": event.get("width")},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            logical_object = object_by_location.get(location_key)
+            if logical_object is None:
+                logical_object = {
                     "id": f"machine_object_{len(objects):04d}",
                     "kind": "machine_memory_location",
                     "base": copy.deepcopy(address),
@@ -471,12 +478,43 @@ def synthesize_component_interface_spec(
                             "id": "value",
                             "offset": 0,
                             "width": event.get("width"),
-                            "permissions": [str(event.get("kind"))],
-                            "event_refs": [reference],
+                            "permissions": [],
+                            "event_refs": [],
                         }
                     ],
                 }
-            )
+                objects.append(logical_object)
+                object_by_location[location_key] = logical_object
+            field = logical_object["fields"][0]
+            permission = str(event.get("kind"))
+            if permission not in field["permissions"]:
+                field["permissions"].append(permission)
+                field["permissions"].sort()
+            field["event_refs"].append(reference)
+            unit = machine["units_by_id"][effect["unit_id"]]
+            semantics = unit.get("semantics")
+            graph = semantics.get("memory_actions") if isinstance(semantics, Mapping) else None
+            actions = graph.get("actions") if isinstance(graph, Mapping) else None
+            if isinstance(actions, list):
+                for action in actions:
+                    if (
+                        isinstance(action, Mapping)
+                        and action.get("kind") == "rmw"
+                        and effect["index"] in action.get("source_memory_event_indices", [])
+                    ):
+                        capability = {
+                            "action_id": action.get("id"),
+                            "operation": action.get("operation"),
+                            "profile_id": graph.get("profile_id"),
+                            "width_bytes": action.get("width_bytes"),
+                            "object_model": "opaque_spx_atomic_object",
+                        }
+                        existing = logical_object.get("atomic_capability")
+                        if existing is not None and existing != capability:
+                            raise ComponentInterfaceError(
+                                "one logical object is bound to incompatible atomic actions"
+                            )
+                        logical_object["atomic_capability"] = capability
         elif family == "external_event":
             event = effect["payload"]
             if event.get("kind") == "internal_call" and _internal_call_is_member(

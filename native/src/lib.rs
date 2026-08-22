@@ -3,6 +3,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyInt, PyList, PyString, PyTuple};
 use sha2::{Digest, Sha256};
 
+mod abi_solver;
 mod artifact_json;
 mod library_index;
 
@@ -152,6 +153,10 @@ fn spaghetti_extractor_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(canonical_json_bytes, module)?)?;
     module.add_function(wrap_pyfunction!(canonical_sha256, module)?)?;
     module.add_function(wrap_pyfunction!(
+        abi_solver::resolve_abi_equalities,
+        module
+    )?)?;
+    module.add_function(wrap_pyfunction!(
         artifact_json::parse_canonical_json_lines,
         module
     )?)?;
@@ -160,6 +165,7 @@ fn spaghetti_extractor_native(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module
     )?)?;
     module.add("NATIVE_API_VERSION", 1_u32)?;
+    module.add("ABI_SOLVER_API_VERSION", 1_u32)?;
     module.add("LIBRARY_INDEX_API_VERSION", 1_u32)?;
     Ok(())
 }

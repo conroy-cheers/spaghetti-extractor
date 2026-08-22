@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ..errors import ToolkitInputError
+from .callback_protocols import callback_protocol_from_contract
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,18 @@ def parse_callback_source(
 ) -> CallbackSource:
     """Parse the canonical callback source declaration."""
 
+    protocol = callback_protocol_from_contract(
+        contract, argument_words=argument_words, context=context
+    )
+    if protocol is not None:
+        if protocol.source is None:
+            raise ToolkitInputError(f"{context} has no exact callback source")
+        return CallbackSource(
+            protocol.source.kind,
+            protocol.source.argument,
+            protocol.source.offset,
+            tuple(row.word for row in protocol.source.sentinels),
+        )
     raw_source = contract.get("callback_source")
     if not isinstance(raw_source, Mapping):
         raise ToolkitInputError(f"{context} has no exact callback_source")
@@ -178,6 +191,27 @@ def parse_callback_source(
 def parse_callback_abi(
     contract: Mapping[str, Any], *, context: str
 ) -> CallbackABI:
+    argument_words = contract.get("argument_words")
+    if not isinstance(argument_words, int) or isinstance(argument_words, bool):
+        arity = contract.get("arity")
+        argument_words = (
+            arity.get("words")
+            if isinstance(arity, Mapping) and arity.get("kind") == "fixed"
+            else 0
+        )
+    protocol = callback_protocol_from_contract(
+        contract, argument_words=int(argument_words), context=context
+    )
+    if protocol is not None:
+        return CallbackABI(
+            kind="generic_callback",
+            argument_words=protocol.signature.argument_words,
+            stack_cleanup_bytes=protocol.signature.stack_cleanup_bytes,
+            nullable=any(
+                row.kind == "null"
+                for row in (() if protocol.source is None else protocol.source.sentinels)
+            ),
+        )
     raw = contract.get("callback_abi")
     if not isinstance(raw, Mapping) or set(raw) != {
         "kind",
@@ -211,6 +245,28 @@ def parse_callback_abi(
 def parse_callback_result(
     contract: Mapping[str, Any], *, context: str
 ) -> CallbackResult | None:
+    argument_words = contract.get("argument_words")
+    if not isinstance(argument_words, int) or isinstance(argument_words, bool):
+        arity = contract.get("arity")
+        argument_words = (
+            arity.get("words")
+            if isinstance(arity, Mapping) and arity.get("kind") == "fixed"
+            else 0
+        )
+    protocol = callback_protocol_from_contract(
+        contract, argument_words=int(argument_words), context=context
+    )
+    if protocol is not None:
+        previous = protocol.previous_result
+        return (
+            None
+            if previous is None
+            else CallbackResult(
+                previous.register,
+                "previous_registered_callback",
+                previous.nullable,
+            )
+        )
     raw = contract.get("callback_result")
     if raw is None:
         return None
@@ -242,7 +298,55 @@ def parse_nested_native_callback_behavior(
 ) -> NestedNativeCallbackBehavior | None:
     """Validate a callback protocol supplied and invoked by one pinned provider."""
 
-    raw = contract.get("callback_behavior")
+    protocol = callback_protocol_from_contract(
+        contract,
+        argument_words=registration_argument_words,
+        context=context,
+    )
+    if protocol is not None:
+        raw_behavior = protocol.provider_behavior
+        if raw_behavior is None:
+            return None
+        activation = raw_behavior.get("activation")
+        if not isinstance(activation, Mapping):
+            raise ToolkitInputError(
+                f"{context} has an invalid nested native callback behavior"
+            )
+        instance = protocol.instance
+        required = {
+            "kind", "provider_relation", "activation", "message_argument",
+            "message_values", "resource_argument", "payload_arguments",
+        }
+        if (
+            set(raw_behavior) != required
+            or raw_behavior.get("kind") != "same_pinned_native_provider_v1"
+            or raw_behavior.get("provider_relation")
+            != "same_pinned_native_provider_v1"
+            or instance.argument is None
+            or instance.callback_argument is None
+        ):
+            raise ToolkitInputError(
+                f"{context} has an invalid nested native callback behavior"
+            )
+        raw = {
+            "kind": "nested_native_callback_v1",
+            "provider_relation": "same_pinned_native_provider_v1",
+            "delivery": "during_call_or_until_lifetime_end",
+            "activation": dict(activation),
+            "message_argument": raw_behavior.get("message_argument"),
+            "message_values": raw_behavior.get("message_values"),
+            "resource_argument": raw_behavior.get("resource_argument"),
+            "instance_binding": {
+                "callback_argument": instance.callback_argument,
+                "registration_argument": instance.argument,
+            },
+            "payload_arguments": raw_behavior.get("payload_arguments"),
+        }
+        contract = {**contract, "callback_abi": parse_callback_abi(
+            contract, context=context
+        ).as_json()}
+    else:
+        raw = contract.get("callback_behavior")
     if raw is None or raw == "registration":
         return None
     expected_keys = {

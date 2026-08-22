@@ -201,6 +201,7 @@ def _resolution_projection(proposal: Mapping[str, Any]) -> dict[str, Any]:
         "id": proposal.get("id"),
         "proposal_kinds": copy.deepcopy(proposal.get("proposal_kinds")),
         "membership": copy.deepcopy(proposal.get("membership")),
+        "component_call_dependencies": _component_call_projection(proposal),
         "bindings": {
             "membership_bindings_sha256": (
                 proposal.get("bindings", {}).get("membership_bindings_sha256")
@@ -214,7 +215,13 @@ def _resolution_projection(proposal: Mapping[str, Any]) -> dict[str, Any]:
 def _validate_resolution_projection(
     proposal: Mapping[str, Any], *, index: int
 ) -> None:
-    if set(proposal) != {"id", "proposal_kinds", "membership", "bindings"}:
+    if set(proposal) != {
+        "id",
+        "proposal_kinds",
+        "membership",
+        "component_call_dependencies",
+        "bindings",
+    }:
         raise ComponentIntentError(
             f"selected proposal {index} has unexpected resolution fields"
         )
@@ -260,6 +267,100 @@ def _validate_resolution_projection(
         raise ComponentIntentError(
             f"selected proposal {index} has invalid membership binding"
         )
+    dependencies = proposal.get("component_call_dependencies")
+    if not isinstance(dependencies, list):
+        raise ComponentIntentError(
+            f"selected proposal {index} has invalid component-call dependencies"
+        )
+    normalized = []
+    for dependency_index, raw in enumerate(dependencies):
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "target_rva",
+            "target_unit_id",
+            "callsite_unit_ids",
+        }:
+            raise ComponentIntentError(
+                f"selected proposal {index} component-call dependency "
+                f"{dependency_index} is malformed"
+            )
+        target_rva = raw.get("target_rva")
+        target_unit_id = raw.get("target_unit_id")
+        callsites = raw.get("callsite_unit_ids")
+        if (
+            not isinstance(target_rva, int)
+            or isinstance(target_rva, bool)
+            or target_rva < 0
+            or not isinstance(target_unit_id, str)
+            or not target_unit_id
+            or not isinstance(callsites, list)
+            or not callsites
+            or any(not isinstance(value, str) or not value for value in callsites)
+            or callsites != sorted(set(callsites))
+        ):
+            raise ComponentIntentError(
+                f"selected proposal {index} component-call dependency "
+                f"{dependency_index} is malformed"
+            )
+        normalized.append(
+            (target_rva, target_unit_id, tuple(str(value) for value in callsites))
+        )
+    if normalized != sorted(set(normalized)):
+        raise ComponentIntentError(
+            f"selected proposal {index} component-call dependencies are not canonical"
+        )
+
+
+def _component_call_projection(proposal: Mapping[str, Any]) -> list[dict[str, Any]]:
+    raw_dependencies = proposal.get("component_call_dependencies", [])
+    if not isinstance(raw_dependencies, list):
+        raise ComponentIntentError("component proposal call dependencies are malformed")
+    projected: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_dependencies):
+        if not isinstance(raw, Mapping):
+            raise ComponentIntentError(
+                f"component proposal call dependency {index} is malformed"
+            )
+        target_rva = raw.get("target_rva")
+        target_unit_id = raw.get("target_unit_id")
+        callsites = raw.get("callsite_unit_ids")
+        if (
+            not isinstance(target_rva, int)
+            or isinstance(target_rva, bool)
+            or target_rva < 0
+            or not isinstance(target_unit_id, str)
+            or not target_unit_id
+            or not isinstance(callsites, list)
+            or not callsites
+            or any(not isinstance(value, str) or not value for value in callsites)
+        ):
+            raise ComponentIntentError(
+                f"component proposal call dependency {index} is malformed"
+            )
+        projected.append(
+            {
+                "target_rva": target_rva,
+                "target_unit_id": target_unit_id,
+                "callsite_unit_ids": sorted(set(callsites)),
+            }
+        )
+    projected.sort(
+        key=lambda row: (
+            int(row["target_rva"]),
+            str(row["target_unit_id"]),
+            tuple(str(value) for value in row["callsite_unit_ids"]),
+        )
+    )
+    keys = {
+        (
+            int(row["target_rva"]),
+            str(row["target_unit_id"]),
+            tuple(str(value) for value in row["callsite_unit_ids"]),
+        )
+        for row in projected
+    }
+    if len(keys) != len(projected):
+        raise ComponentIntentError("component proposal repeats a call dependency")
+    return projected
 
 
 def _read_object(path: Path, label: str) -> dict[str, Any]:

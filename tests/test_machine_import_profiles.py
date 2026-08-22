@@ -394,23 +394,27 @@ class MachineImportProfileTests(unittest.TestCase):
         for contract in callbacks:
             with self.subTest(contract=contract["id"]):
                 self.assertEqual(contract["callback_effect"], "explicit")
-                self.assertIn("callback_lifetime", contract)
-                self.assertIn("callback_abi", contract)
-                self.assertIn("callback_source", contract)
+                protocol = contract["callback_protocol"]
+                self.assertEqual(
+                    protocol["format"],
+                    "spaghetti-extractor-callback-protocol-v1",
+                )
+                self.assertIn("lifetime", protocol)
+                self.assertIn("signature", protocol)
+                self.assertIn("source", protocol)
         for contract in profile_set.contracts:
-            expected = (
-                "explicit"
-                if contract.contract.get("world_effect")
-                == "callbackRegistration"
-                else "none"
-                if "world_effect" in contract.contract
-                else None
-            )
-            self.assertEqual(
-                contract.contract.get("callback_effect"),
-                expected,
-                contract.contract.get("id"),
-            )
+            if "callback_protocol" in contract.contract:
+                self.assertEqual(
+                    contract.contract.get("callback_effect"),
+                    "explicit",
+                    contract.contract.get("id"),
+                )
+            else:
+                self.assertNotEqual(
+                    contract.contract.get("callback_effect"),
+                    "explicit",
+                    contract.contract.get("id"),
+                )
 
     def test_kernel32_exception_filter_has_exact_callback_contract(self) -> None:
         profile_set = load_machine_import_profile_set([
@@ -424,20 +428,24 @@ class MachineImportProfileTests(unittest.TestCase):
         self.assertEqual(contract["argument_words"], 1)
         self.assertEqual(contract["world_effect"], "callbackRegistration")
         self.assertEqual(contract["callback_effect"], "explicit")
-        self.assertEqual(
-            contract["callback_source"],
-            {"kind": "argument_word", "argument": 0},
-        )
-        self.assertEqual(contract["callback_abi"], {
-            "kind": "generic_callback",
+        protocol = contract["callback_protocol"]
+        self.assertEqual(protocol["id"], "win32-unhandled-exception-filter")
+        self.assertEqual(protocol["action"], "replace")
+        self.assertEqual(protocol["source"], {
+            "kind": "argument_word",
+            "argument": 0,
+            "sentinels": [{"word": 0, "kind": "null"}],
+        })
+        self.assertEqual(protocol["signature"], {
+            "abi_template": "pe32-stdcall-v1",
             "argument_words": 1,
             "stack_cleanup_bytes": 4,
-            "nullable": True,
+            "result": {"kind": "word", "register": "eax"},
         })
-        self.assertEqual(contract["callback_result"], {
+        self.assertEqual(protocol["previous_result"], {
             "register": "eax",
-            "origin": "previous_registered_callback",
             "nullable": True,
+            "sentinels": [{"word": 0, "kind": "null"}],
         })
 
     def test_reviewed_dll_policy_expands_to_exact_pe_import_abi(self) -> None:

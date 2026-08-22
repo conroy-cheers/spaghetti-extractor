@@ -22,6 +22,8 @@ from .formats import (
 from .interface_ir import (
     COMPONENT_INTERFACE_IR_V1,
     COMPONENT_INTERFACE_IR_V2,
+    COMPONENT_INTERFACE_IR_V3,
+    COMPONENT_INTERFACE_IR_V4,
     ComponentInterfaceIRError,
     ComponentInterfaceIRV1,
     PortableComponentInterfaceV2,
@@ -94,7 +96,11 @@ def build_component_development_contract(
         portable_format = _object(
             portable_payload, "reviewed portable interface"
         ).get("format")
-        if portable_format == COMPONENT_INTERFACE_IR_V2:
+        if portable_format in {
+            COMPONENT_INTERFACE_IR_V2,
+            COMPONENT_INTERFACE_IR_V3,
+            COMPONENT_INTERFACE_IR_V4,
+        }:
             interface = PortableComponentInterfaceV2.parse(portable_payload)
         elif portable_format == COMPONENT_INTERFACE_IR_V1:
             interface = ComponentInterfaceIRV1.parse(portable_payload)

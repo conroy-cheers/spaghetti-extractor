@@ -29,14 +29,18 @@ let
   structuralExecutionArg = lib.escapeShellArg
     "${structuralExecutionGate}/structural-executable.json";
   canonicalExternalSites =
-    staticAuthority.graph.outputs."canonical-external-sites-v3"
+    staticAuthority.graph.phases."canonical-external-sites-v3".artifact
       or (throw "static authority omitted canonical-external-sites-v3");
   canonicalExternalSitesArg = lib.escapeShellArg (toString canonicalExternalSites);
-  rootClosure = staticAuthority.graph.outputs."launch-root-closure-v3"
+  callbackAuthority =
+    staticAuthority.graph.phases."callback-authority-v4".artifact
+      or (throw "static authority omitted callback-authority-v4");
+  callbackAuthorityArg = lib.escapeShellArg (toString callbackAuthority);
+  rootClosure = staticAuthority.graph.phases."launch-root-closure-v3".artifact
     or (throw "static authority omitted launch-root-closure-v3");
-  targetCertificates = staticAuthority.graph.outputs."indirect-target-certificates-v3"
+  targetCertificates = staticAuthority.graph.phases."indirect-target-certificates-v3".artifact
     or (throw "static authority omitted indirect-target-certificates-v3");
-  parametricSummaries = staticAuthority.graph.outputs."parametric-scc-summaries-v3"
+  parametricSummaries = staticAuthority.graph.phases."parametric-scc-summaries-v3".artifact
     or (throw "static authority omitted parametric-scc-summaries-v3");
   python = "${pythonEnv}/bin/python3";
   loadImageContract = "${staticExport}/load-image-contract.json";
@@ -88,7 +92,7 @@ let
           [pathlib.Path(value) for value in sys.argv[2:]]
       )
       write_json(destination, {
-          "format": "spaghetti-extractor-external-environment-profile-v1",
+          "format": "spaghetti-extractor-static-machine-import-profile-v2",
           "id": "${namePrefix}-machine-import-profile-bundle-v1",
           "provenance": {
               "kind": "resolved_machine_import_profile_graph_v1",
@@ -130,6 +134,7 @@ let
       ${portableReplacementArg} \
       ${machineImportProfileBundle}/profile.json \
       ${canonicalExternalSitesArg} \
+      ${callbackAuthorityArg} \
       ${lib.escapeShellArg (toString rootClosure)} \
       ${lib.escapeShellArg (toString targetCertificates)} \
       ${lib.escapeShellArg (toString parametricSummaries)} \
@@ -153,11 +158,12 @@ let
     portable_path = sys.argv[5]
     profile_bundle = pathlib.Path(sys.argv[6])
     canonical_external_sites_path = sys.argv[7]
-    root_closure_path = pathlib.Path(sys.argv[8])
-    target_certificates_path = pathlib.Path(sys.argv[9])
-    parametric_summaries_path = pathlib.Path(sys.argv[10])
-    output = pathlib.Path(sys.argv[11])
-    profiles = tuple(pathlib.Path(value) for value in sys.argv[12:])
+    callback_authority_path = pathlib.Path(sys.argv[8])
+    root_closure_path = pathlib.Path(sys.argv[9])
+    target_certificates_path = pathlib.Path(sys.argv[10])
+    parametric_summaries_path = pathlib.Path(sys.argv[11])
+    output = pathlib.Path(sys.argv[12])
+    profiles = tuple(pathlib.Path(value) for value in sys.argv[13:])
     selected_portable_components = ()
     if portable_path:
         portable_payload = json.loads(
@@ -192,13 +198,14 @@ let
         machine_ir_manifest=machine_ir_manifest,
         recovered_executable_data=recovered_executable_data,
         entry_rva=inputs.entry_rva,
-        callback_targets=inputs.callback_targets,
+        tls_callback_targets=inputs.tls_callback_targets,
         import_iat_vas=inputs.import_iat_vas,
         termination_import=termination,
         base_relocation_evidence=inputs.base_relocation_evidence,
         fixed_image_base=inputs.fixed_image_base,
         preferred_image_base=inputs.image_base,
         canonical_external_sites=pathlib.Path(canonical_external_sites_path),
+        callback_authority=callback_authority_path,
         root_closure=root_closure_path,
         target_certificates=target_certificates_path,
         parametric_summaries=parametric_summaries_path,

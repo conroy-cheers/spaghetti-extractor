@@ -13,9 +13,12 @@ from .interface_ir import PortableComponentInterfaceV2
 COMPONENT_ACTIVATION_RECEIPT_V2 = (
     "spaghetti-extractor-component-activation-receipt-v2"
 )
+COMPONENT_ACTIVATION_RECEIPT_V3 = (
+    "spaghetti-extractor-component-activation-receipt-v3"
+)
 COMPONENT_ACTIVATION_RECEIPT_V1 = COMPONENT_ACTIVATION_RECEIPT_V2
 ACTIVATION_RECEIPT_V1_FORMAT = COMPONENT_ACTIVATION_RECEIPT_V2
-ACTIVATION_FACET_IDS = (
+ACTIVATION_FACET_IDS_V2 = (
     "interface",
     "source_profile",
     "source_compile",
@@ -24,6 +27,18 @@ ACTIVATION_FACET_IDS = (
     "service_graph",
     "ownership",
 )
+ACTIVATION_FACET_IDS = (
+    "interface",
+    "source_profile",
+    "source_compile",
+    "machine_binding",
+    "relation",
+    "boundary_plan",
+    "semantic_refinement",
+    "service_graph",
+    "ownership",
+)
+_ALL_FACET_IDS = frozenset(ACTIVATION_FACET_IDS)
 
 _DIGEST = re.compile(r"[0-9a-f]{64}")
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,127}")
@@ -37,6 +52,8 @@ _ACTION_TEXT = {
     "source_profile": "satisfy the restricted C profile and regenerate its receipt",
     "source_compile": "compile the exact content-bound source and regenerate its receipt",
     "machine_binding": "check the exact machine binding and regenerate its receipt",
+    "relation": "check the constructive machine-to-portable relation and regenerate its proof receipt",
+    "boundary_plan": "compile the checked relation into an executable boundary plan",
     "semantic_refinement": "check the source against the machine-derived semantic contract",
     "service_graph": "close the exact service graph and regenerate its receipt",
     "ownership": "complete exact and exclusive implementation ownership and regenerate its receipt",
@@ -48,7 +65,9 @@ _DIGEST_FIELDS = {
         "source_compile_sha256",
     ),
     "source_profile": ("receipt_sha256",),
-    "machine_binding": ("receipt_sha256",),
+    "machine_binding": ("receipt_sha256", "binding_sha256"),
+    "relation": ("receipt_sha256",),
+    "boundary_plan": ("receipt_sha256",),
     "semantic_refinement": ("receipt_sha256",),
     "service_graph": ("graph_sha256", "receipt_sha256"),
     "ownership": ("receipt_sha256", "activation_plan_sha256"),
@@ -112,7 +131,7 @@ class ActivationFacetV1:
             "activation facet",
         )
         identity = _identifier(row["id"], "activation facet id")
-        if identity not in ACTIVATION_FACET_IDS:
+        if identity not in _ALL_FACET_IDS:
             raise ActivationReceiptError(
                 f"unsupported activation facet {identity!r}"
             )
@@ -187,7 +206,7 @@ class ActivationNextActionV1:
         if not isinstance(rank, int) or isinstance(rank, bool) or rank < 1:
             raise ActivationReceiptError("activation next-action rank is invalid")
         facet_id = _identifier(row["facet_id"], "activation next-action facet")
-        if facet_id not in ACTIVATION_FACET_IDS:
+        if facet_id not in _ALL_FACET_IDS:
             raise ActivationReceiptError("activation next-action facet is unsupported")
         return cls(
             rank=rank,
@@ -214,6 +233,7 @@ class ActivationReceiptV1:
     facets: tuple[ActivationFacetV1, ...]
     next_actions: tuple[ActivationNextActionV1, ...]
     receipt_sha256: str
+    format_version: str = COMPONENT_ACTIVATION_RECEIPT_V2
 
     @classmethod
     def create(
@@ -225,6 +245,11 @@ class ActivationReceiptV1:
         | Sequence[ActivationFacetV1 | Mapping[str, object]],
     ) -> "ActivationReceiptV1":
         indexed = _coerce_facets(facets)
+        facet_ids = (
+            ACTIVATION_FACET_IDS
+            if any(item in indexed for item in ("relation", "boundary_plan"))
+            else ACTIVATION_FACET_IDS_V2
+        )
         complete_facets = tuple(
             indexed.get(
                 facet_id,
@@ -234,11 +259,15 @@ class ActivationReceiptV1:
                     receipt_sha256=None,
                 ),
             )
-            for facet_id in ACTIVATION_FACET_IDS
+            for facet_id in facet_ids
         )
         status, authorized, actions = _reduce(complete_facets)
         core: dict[str, object] = {
-            "format": COMPONENT_ACTIVATION_RECEIPT_V1,
+            "format": (
+                COMPONENT_ACTIVATION_RECEIPT_V3
+                if facet_ids == ACTIVATION_FACET_IDS
+                else COMPONENT_ACTIVATION_RECEIPT_V2
+            ),
             "component_id": _component_id(component_id, "activation component id"),
             "status": status,
             "activation_authorized": authorized,
@@ -261,6 +290,8 @@ class ActivationReceiptV1:
         semantic_refinement: object | None,
         service_graph: object | None,
         ownership: object | None,
+        relation: object | None = None,
+        boundary_plan: object | None = None,
         component_id: str | None = None,
         expected_hashes: Mapping[str, str] | None = None,
     ) -> "ActivationReceiptV1":
@@ -281,6 +312,8 @@ class ActivationReceiptV1:
             "service_graph": service_graph,
             "ownership": ownership,
         }
+        if relation is not None or boundary_plan is not None:
+            inputs.update({"relation": relation, "boundary_plan": boundary_plan})
         facets = {
             facet_id: _facet_from_receipt(
                 facet_id, value, expected_sha256=expected.get(facet_id)
@@ -321,7 +354,11 @@ class ActivationReceiptV1:
             },
             "component activation receipt",
         )
-        if row["format"] != COMPONENT_ACTIVATION_RECEIPT_V1:
+        format_version = row["format"]
+        if format_version not in {
+            COMPONENT_ACTIVATION_RECEIPT_V2,
+            COMPONENT_ACTIVATION_RECEIPT_V3,
+        }:
             raise ActivationReceiptError("unsupported component activation receipt format")
         component_id = _component_id(row["component_id"], "activation component id")
         bindings = _normalize_bindings(
@@ -331,7 +368,12 @@ class ActivationReceiptV1:
             ActivationFacetV1.parse(item)
             for item in _array(row["facets"], "activation facets")
         )
-        if tuple(item.identity for item in facets) != ACTIVATION_FACET_IDS:
+        facet_ids = (
+            ACTIVATION_FACET_IDS
+            if format_version == COMPONENT_ACTIVATION_RECEIPT_V3
+            else ACTIVATION_FACET_IDS_V2
+        )
+        if tuple(item.identity for item in facets) != facet_ids:
             raise ActivationReceiptError(
                 "activation receipt must contain every facet in canonical order"
             )
@@ -358,11 +400,14 @@ class ActivationReceiptV1:
         observed = _digest(core.pop("receipt_sha256"), "activation receipt digest")
         if canonical_sha256_v3(core) != observed:
             raise ActivationReceiptError("component activation receipt digest is stale")
-        return cls(component_id, status, authorized, bindings, facets, actions, observed)
+        return cls(
+            component_id, status, authorized, bindings, facets, actions, observed,
+            str(format_version),
+        )
 
     def to_payload(self) -> dict[str, object]:
         return {
-            "format": COMPONENT_ACTIVATION_RECEIPT_V1,
+            "format": self.format_version,
             "component_id": self.component_id,
             "status": self.status,
             "activation_authorized": self.activation_authorized,
@@ -470,18 +515,101 @@ def _cross_bind_receipts(
 
     machine_payload = _optional_payload(inputs["machine_binding"])
     if machine_payload is not None:
-        machine_bindings = _mapping_or_empty(machine_payload.get("bindings"))
-        if machine_bindings.get("interface_sha256") != interface_sha256:
-            invalid.add("machine_binding")
-        for field in (
-            "component_machine_binding_sha256",
-            "machine_ir_sha256",
-            "machine_ir_manifest_sha256",
-            "pe_sha256",
-        ):
-            value = machine_bindings.get(field)
+        machine_format = machine_payload.get("format")
+        if machine_format in {
+            "spaghetti-extractor-component-machine-binding-v3",
+            "spaghetti-extractor-component-machine-binding-v4",
+        }:
+            machine_bindings = _mapping_or_empty(
+                machine_payload.get("source_artifacts")
+            )
+            exact_machine = _mapping_or_empty(machine_payload.get("exact_machine"))
+            if (
+                machine_payload.get("component_id") != component_id
+                or machine_payload.get("interface_sha256") != interface_sha256
+            ):
+                invalid.add("machine_binding")
+            if (
+                interface.format_version
+                == "spaghetti-extractor-component-interface-ir-v4"
+                and (
+                    machine_format
+                    != "spaghetti-extractor-component-machine-binding-v4"
+                    or "relation_ir_sha256" not in machine_bindings
+                    or "relation_receipt_sha256" not in machine_bindings
+                )
+            ):
+                invalid.add("machine_binding")
+            fields = {
+                "component_machine_binding_sha256": machine_bindings.get(
+                    "machine_binding_sha256"
+                ),
+                "machine_ir_sha256": exact_machine.get("machine_ir_sha256"),
+                "machine_ir_manifest_sha256": exact_machine.get(
+                    "machine_ir_manifest_sha256"
+                ),
+                "pe_sha256": exact_machine.get("pe_sha256"),
+                "relation_ir_sha256": machine_bindings.get("relation_ir_sha256"),
+                "relation_receipt_sha256": machine_bindings.get(
+                    "relation_receipt_sha256"
+                ),
+            }
+        else:
+            machine_bindings = _mapping_or_empty(machine_payload.get("bindings"))
+            if machine_bindings.get("interface_sha256") != interface_sha256:
+                invalid.add("machine_binding")
+            fields = {
+                field: machine_bindings.get(field)
+                for field in (
+                    "component_machine_binding_sha256",
+                    "machine_ir_sha256",
+                    "machine_ir_manifest_sha256",
+                    "pe_sha256",
+                )
+            }
+        for field, value in fields.items():
             if isinstance(value, str) and _DIGEST.fullmatch(value):
                 bindings[field] = value
+
+    relation_payload = _optional_payload(inputs.get("relation"))
+    if relation_payload is not None:
+        relation_sha256 = relation_payload.get("relation_sha256")
+        relation_receipt_sha256 = relation_payload.get("receipt_sha256")
+        if (
+            relation_payload.get("component_id") != component_id
+            or relation_payload.get("status") != "checked"
+            or (
+                "relation_ir_sha256" in bindings
+                and relation_sha256 != bindings["relation_ir_sha256"]
+            )
+            or (
+                "relation_receipt_sha256" in bindings
+                and relation_receipt_sha256 != bindings["relation_receipt_sha256"]
+            )
+        ):
+            invalid.add("relation")
+        if isinstance(relation_sha256, str) and _DIGEST.fullmatch(relation_sha256):
+            bindings["relation_ir_sha256"] = relation_sha256
+        if isinstance(relation_receipt_sha256, str) and _DIGEST.fullmatch(
+            relation_receipt_sha256
+        ):
+            bindings["relation_receipt_sha256"] = relation_receipt_sha256
+
+    boundary_payload = _optional_payload(inputs.get("boundary_plan"))
+    if boundary_payload is not None:
+        plan_sha256 = boundary_payload.get("plan_sha256")
+        plan_receipt_sha256 = boundary_payload.get("receipt_sha256")
+        if (
+            boundary_payload.get("component_id") != component_id
+            or boundary_payload.get("status") != "checked"
+        ):
+            invalid.add("boundary_plan")
+        if isinstance(plan_sha256, str) and _DIGEST.fullmatch(plan_sha256):
+            bindings["boundary_plan_sha256"] = plan_sha256
+        if isinstance(plan_receipt_sha256, str) and _DIGEST.fullmatch(
+            plan_receipt_sha256
+        ):
+            bindings["boundary_plan_receipt_sha256"] = plan_receipt_sha256
 
     refinement_payload = _optional_payload(inputs["semantic_refinement"])
     if refinement_payload is not None:
@@ -569,7 +697,7 @@ def _coerce_facets(
     | Sequence[ActivationFacetV1 | Mapping[str, object]],
 ) -> dict[str, ActivationFacetV1]:
     if isinstance(values, Mapping):
-        unknown = sorted(set(values) - set(ACTIVATION_FACET_IDS))
+        unknown = sorted(set(values) - _ALL_FACET_IDS)
         if unknown:
             raise ActivationReceiptError(f"unsupported activation facets: {unknown!r}")
         result = {

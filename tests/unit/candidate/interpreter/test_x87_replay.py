@@ -56,7 +56,7 @@ class InterpreterX87ReplayTests(unittest.TestCase):
                 machine_ir=machine_ir, out=root / "package"
             )
             self.assertEqual(package["status"], "ready", package["blockers"])
-            self.assertEqual(package["input_mode"], "sanitized_machine_ir_v2")
+            self.assertEqual(package["input_mode"], "sanitized_machine_ir_v3")
             for path in (root / "package").iterdir():
                 if path.suffix not in {".c", ".h", ".json", ".jsonl"}:
                     continue

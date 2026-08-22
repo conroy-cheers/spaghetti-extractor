@@ -10,10 +10,10 @@ from pathlib import Path
 
 from spaghetti_extractor.candidate.interpreter import (
     CandidateInterpreterError,
-    compile_spx_interpreter_machine_ir,
     compile_spx_interpreter_program,
 )
 from tests.unit.candidate.interpreter._support import (
+    compile_spx_interpreter_machine_ir,
     write_spx_interpreter_package,
 )
 from spaghetti_extractor.candidate.x87 import (
@@ -124,7 +124,7 @@ def _write_machine(path: Path, rows: list[dict[str, object]]) -> None:
 def _machine_ir_x87_unit(*, mnemonic: str = "fld1", operands: list[object] | None = None) -> dict[str, object]:
     digest = sha256_bytes(bytes.fromhex("d9e8"))
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": "semantic-transfer:x87-replay",
         "status": "qualified",

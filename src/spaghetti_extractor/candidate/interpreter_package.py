@@ -13,13 +13,23 @@ from ..artifacts.formats import (
     SPX_INTERPRETER_PACKAGE_FORMAT,
     SPX_INTERPRETER_PROGRAM_FORMAT,
 )
+from ..components.capabilities import (
+    spx_capability_backend_header,
+    spx_capability_backend_source,
+)
 from ..machine_ir.fallback_capability import (
     FallbackCapabilityAnalysis,
     FallbackLoweringHashes,
 )
 from ..machine_ir.schema import RAW_INSTRUCTION_FIELDS
+from ..machine_ir.memory_actions import MemoryActionError, validate_memory_action_graph
 from ..machine_ir.definedness import analyze_definedness_jsonl
 from ..util import sha256_bytes, sha256_file, write_json
+from .atomics import (
+    spx_atomics_backend_header,
+    spx_atomics_header,
+    spx_atomics_source,
+)
 from .interpreter_compiler import _TransferCompiler
 from .interpreter_model import (
     SPX_INTERPRETER_DEFINEDNESS_USE_FIELDS,
@@ -76,7 +86,7 @@ def _adapt_machine_ir_rows(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for index, unit in enumerate(units):
         if unit.get("format") != _MACHINE_IR_FORMAT or unit.get("record_kind") != "unit":
             raise CandidateInterpreterError(
-                f"machine-IR record {index} is not a v2 unit",
+                f"machine-IR record {index} is not a v3 unit",
                 code="malformed_machine_ir_input",
             )
         if _contains_raw_instruction_material(unit):
@@ -88,6 +98,16 @@ def _adapt_machine_ir_rows(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
         source = _object(unit.get("source"), f"{identity} source binding")
         original = _object(source.get("original"), f"{identity} source span")
         semantics = _object(unit.get("semantics"), f"{identity} semantics")
+        memory_actions = _object(
+            semantics.get("memory_actions"), f"{identity} memory actions"
+        )
+        try:
+            validate_memory_action_graph(memory_actions, require_authoritative=True)
+        except MemoryActionError as exc:
+            raise CandidateInterpreterError(
+                f"{identity}: memory action graph is not authoritative: {exc}",
+                code="malformed_memory_action_graph",
+            ) from exc
         source_digest = _sha256(
             source.get("instruction_bytes_sha256"), f"{identity} source span SHA-256"
         )
@@ -125,6 +145,7 @@ def _adapt_machine_ir_rows(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "instructions": _list(
                 unit.get("instructions", []), f"{identity} instructions"
             ),
+            "memory_actions": memory_actions,
         }
         for field in (
             "pre_state", "register_writes", "flag_writes", "memory_events",
@@ -302,6 +323,11 @@ def write_spx_interpreter_package(
         "interpreter_source": out / "state-machine-interpreter.c",
         "program_source": out / "state-machine-program.c",
         "program_manifest": out / "state-machine-interpreter-program.json",
+        "capability_backend_header": out / "spx-capability-backend.h",
+        "capability_backend_source": out / "spx-capability-backend.c",
+        "atomics_header": out / "spx-atomics.h",
+        "atomics_backend_header": out / "spx-atomics-backend.h",
+        "atomics_source": out / "spx-atomics.c",
     }
     files["runtime_header"].write_text(_interpreter_runtime_header(), encoding="ascii")
     files["interpreter_header"].write_text(_interpreter_header(), encoding="ascii")
@@ -313,6 +339,17 @@ def write_spx_interpreter_package(
         encoding="ascii",
     )
     files["program_source"].write_text(_program_source(transfers), encoding="ascii")
+    files["capability_backend_header"].write_text(
+        spx_capability_backend_header(), encoding="ascii"
+    )
+    files["capability_backend_source"].write_text(
+        spx_capability_backend_source(), encoding="ascii"
+    )
+    files["atomics_header"].write_text(spx_atomics_header(), encoding="ascii")
+    files["atomics_backend_header"].write_text(
+        spx_atomics_backend_header(), encoding="ascii"
+    )
+    files["atomics_source"].write_text(spx_atomics_source(), encoding="ascii")
     program_payload = _program_payload(
         transfers,
         semantic_input_sha256=sha256_file(input_path),
@@ -326,7 +363,7 @@ def write_spx_interpreter_package(
         "format": SPX_INTERPRETER_PACKAGE_FORMAT,
         "status": "ready" if not blockers else "incomplete",
         "machine_ir": {"path": input_path.name, "sha256": sha256_file(input_path)},
-        "input_mode": "sanitized_machine_ir_v2",
+        "input_mode": "sanitized_machine_ir_v3",
         "program": {
             "path": files["program_manifest"].name,
             "sha256": sha256_file(files["program_manifest"]),
@@ -407,6 +444,17 @@ def write_fallback_capability_analysis(
         interpreter_internal_header_sha256=sha256_bytes(
             _INTERPRETER_INTERNAL_HEADER.encode("ascii")
         ),
+        capability_backend_header_sha256=sha256_bytes(
+            spx_capability_backend_header().encode("ascii")
+        ),
+        capability_backend_source_sha256=sha256_bytes(
+            spx_capability_backend_source().encode("ascii")
+        ),
+        atomics_header_sha256=sha256_bytes(spx_atomics_header().encode("ascii")),
+        atomics_backend_header_sha256=sha256_bytes(
+            spx_atomics_backend_header().encode("ascii")
+        ),
+        atomics_source_sha256=sha256_bytes(spx_atomics_source().encode("ascii")),
     )
     report = FallbackCapabilityAnalysis.create(
         machine_ir_path=machine_ir.name,

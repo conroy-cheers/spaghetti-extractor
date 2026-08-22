@@ -13,6 +13,7 @@
   binaryIdentity,
   machineImportProfiles ? [ ],
   launchProfileTemplate ? null,
+  normalCallAbiPremise,
   externalArtifacts ? { },
   outputs ? [ "canonical-external-sites-v3" "final-authority-v3" ],
   scheduleBucketCount ? 4,
@@ -63,6 +64,14 @@ let
     machineIrManifest = "${builtins.dirOf (toString machineIr)}/machine-ir-manifest.json";
     launchRoots = externalInputs.launchRoots.artifact;
   };
+  normalCallAbiInput = import ./authority-input-normal-call-abi-premise.nix {
+    inherit pkgs pythonEnv binary binaryIdentity contentAddressed;
+    profile = normalCallAbiPremise;
+    name = "${name}-normal-call-abi-premise-v3";
+  };
+  normalCallAbiMetadata = builtins.fromJSON (
+    builtins.readFile "${normalCallAbiInput}/metadata.json"
+  );
   manifestDerivation = import ./authority-graph-manifest.nix {
     inherit pkgs pythonEnv pythonSource outputs contentAddressed;
     name = "${name}-graph-manifest";
@@ -95,6 +104,11 @@ let
     external_profiles = externalInputs.externalProfiles;
     launch_roots = externalInputs.launchRoots;
     static_value_origins = externalInputs.staticValueOrigins;
+    normal_call_abi_premises = {
+      artifact = "${normalCallAbiInput}/artifact";
+      expectedKind = "normal-call-abi-premises-v3";
+      expectedRecordIds = normalCallAbiMetadata.record_ids;
+    };
   };
   earlyStandardExternalArtifacts = {
     inductive_inputs = standardEvidence.inductiveInputs;
@@ -142,6 +156,10 @@ let
           bootstrapGraph.phases."structural-target-proposals-v3".artifact;
         externalProfiles = externalInputs.externalProfiles.artifact;
         staticValueOrigins = externalInputs.staticValueOrigins.artifact;
+        catalogCallContracts =
+          bootstrapExternalArtifacts.catalog_call_contracts.artifact;
+        callBoundaryContracts =
+          bootstrapGraph.phases."call-boundary-contracts-v3".artifact;
       };
   generatedParametricSummaryProposalMetadata =
     if generatedParametricSummaryProposals == null then null else
@@ -291,6 +309,7 @@ let
         targetCertificates =
           targetEvidenceGraph.phases."indirect-target-certificates-v3".artifact;
         externalProfiles = externalInputs.externalProfiles.artifact;
+        staticValueOrigins = externalInputs.staticValueOrigins.artifact;
       };
   generatedExternalSiteEvidenceMetadata =
     if generatedExternalSiteEvidence == null then null else
@@ -314,11 +333,39 @@ let
       mkGraph externalSiteExternalArtifacts;
   componentExternalSites =
     externalSiteGraph.phases."canonical-external-sites-v3".artifact;
+  generatedCallbackEvidence =
+    if
+      diagnosticEmptyEvidence
+      || builtins.hasAttr "callback_evidence" externalArtifacts
+    then
+      null
+    else
+      import ./authority-input-callback-evidence.nix {
+        inherit pkgs pythonEnv pythonSource contentAddressed;
+        name = "${name}-callback-evidence-v4";
+        canonicalExternalSites = componentExternalSites;
+        incomingCallFrames =
+          externalSiteGraph.phases."incoming-call-frames-v3".artifact;
+      };
+  generatedCallbackEvidenceMetadata =
+    if generatedCallbackEvidence == null then null else
+    builtins.fromJSON (
+      builtins.readFile "${generatedCallbackEvidence}/metadata.json"
+    );
+  generatedCallbackEvidenceArtifact =
+    lib.optionalAttrs (generatedCallbackEvidence != null) {
+      callback_evidence = {
+        artifact = "${generatedCallbackEvidence}/artifact";
+        expectedKind = externalKinds.callback_evidence;
+        expectedRecordIds = generatedCallbackEvidenceMetadata.record_ids;
+      };
+    };
   generatedProviderArtifactsWithoutImplementation =
     generatedExceptionEvidenceArtifact
     // generatedParametricSummaryProposalArtifact
     // generatedTargetEvidenceArtifact
     // generatedISAEvidenceArtifact
+    // generatedCallbackEvidenceArtifact
     // lib.optionalAttrs (generatedExternalSiteEvidence != null) {
       external_site_evidence = {
         artifact = "${generatedExternalSiteEvidence}/artifact";
@@ -425,6 +472,7 @@ assert unknownOverrides == [ ];
     fallbackCapabilityAnalysis
     fallbackSupport
     generatedExternalSiteEvidence
+    generatedCallbackEvidence
     generatedExceptionEvidence
     generatedISAEvidence
     generatedIndexedTargetEvidence

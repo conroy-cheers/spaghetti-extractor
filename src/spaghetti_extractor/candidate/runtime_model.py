@@ -21,7 +21,7 @@ DEFINEDNESS_USE_FORMAT = SPX_INTERPRETER_DEFINEDNESS_USE_FORMAT
 _INTERPRETER_MANIFEST_FILENAME = "state-machine-interpreter-package.json"
 _NATIVE_ENGINE_MANIFEST_FILENAME = "native-engine-package.json"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
-_MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v2"
+_MACHINE_IR_INPUT_MODE = "sanitized_machine_ir_v3"
 
 
 class CandidateRuntimeError(ToolkitInputError):

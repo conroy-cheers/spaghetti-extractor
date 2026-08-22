@@ -23,7 +23,7 @@ class NativeImageInputs:
     image_base: int
     fixed_image_base: int | None
     import_iat_vas: Mapping[tuple[str, str | int], int]
-    callback_targets: tuple[Mapping[str, Any], ...]
+    tls_callback_targets: tuple[Mapping[str, Any], ...]
     base_relocation_evidence: Mapping[str, Any] | None
     initial_zero_ranges: tuple[tuple[int, int], ...]
 
@@ -122,7 +122,7 @@ def derive_native_image_inputs(
         image_base=contract.identity.preferred_base,
         fixed_image_base=fixed_image_base,
         import_iat_vas=imports,
-        callback_targets=tuple(callbacks),
+        tls_callback_targets=tuple(callbacks),
         base_relocation_evidence=relocation_evidence,
         initial_zero_ranges=initial_zero_ranges,
     )

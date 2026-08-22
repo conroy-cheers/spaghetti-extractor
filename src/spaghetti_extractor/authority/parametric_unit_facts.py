@@ -201,16 +201,28 @@ class CompactStackAccessV3:
 class CompactMemoryAccessV3:
     access_id: str
     kind: str
+    epoch_call_index: int | None
 
-    def to_payload(self) -> dict[str, str]:
-        return {"access_id": self.access_id, "kind": self.kind}
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "access_id": self.access_id,
+            "kind": self.kind,
+            "epoch_call_index": self.epoch_call_index,
+        }
 
     @classmethod
     def parse(cls, value: Any) -> "CompactMemoryAccessV3":
-        row = strict_object(value, {"access_id", "kind"}, "compact memory access")
+        row = strict_object(
+            value,
+            {"access_id", "kind", "epoch_call_index"},
+            "compact memory access",
+        )
         return cls(
             text(row["access_id"], "compact memory-access ID"),
             text(row["kind"], "compact memory-access kind", maximum=16),
+            _optional_uint(
+                row["epoch_call_index"], "compact memory-access call epoch"
+            ),
         )
 
 
@@ -223,6 +235,7 @@ class ParametricUnitFactV3:
     input_registers: tuple[str, ...]
     register_outputs: tuple[tuple[str, CanonicalValueV3], ...]
     stack_net_bytes: int | None
+    return_cleanup_bytes: int | None
     returns: bool
     successor_rvas: tuple[int, ...] | None
     external_calls: tuple[CompactExternalCallV3, ...]
@@ -301,6 +314,7 @@ def _encode(value: ParametricUnitFactV3) -> dict[str, Any]:
             for register, expression in value.register_outputs
         ],
         "stack_net_bytes": value.stack_net_bytes,
+        "return_cleanup_bytes": value.return_cleanup_bytes,
         "returns": value.returns,
         "successor_rvas": (
             None if value.successor_rvas is None else list(value.successor_rvas)
@@ -335,6 +349,7 @@ def _decode(value: Any) -> ParametricUnitFactV3:
             "input_registers",
             "register_outputs",
             "stack_net_bytes",
+            "return_cleanup_bytes",
             "returns",
             "successor_rvas",
             "external_calls",
@@ -393,6 +408,15 @@ def _decode(value: Any) -> ParametricUnitFactV3:
         ),
         register_outputs=register_outputs,
         stack_net_bytes=_optional_signed(row["stack_net_bytes"], "parametric stack delta"),
+        return_cleanup_bytes=(
+            None
+            if row["return_cleanup_bytes"] is None
+            else uint(
+                row["return_cleanup_bytes"],
+                "parametric return cleanup",
+                maximum=(1 << 16) - 1,
+            )
+        ),
         returns=boolean(row["returns"], "parametric return flag"),
         successor_rvas=(
             None
@@ -583,7 +607,7 @@ def derive_parametric_unit_fact_v3(
             )
         ) if isinstance(raw_inputs, Mapping) else ()
         event_inputs.append((row.source_index, inputs))
-        if row.category in {"external", "callback"}:
+        if row.transfer_kind in {"external_call", "external_jump"}:
             external_calls.append(
                 CompactExternalCallV3(
                     row.source_index,
@@ -596,8 +620,24 @@ def derive_parametric_unit_fact_v3(
     for access in transition.memory_accesses:
         offset = _esp_offset(access.address.to_value())
         if offset is None:
+            exact_access = mapping(
+                access.exact_record.to_value(), "exact nonstack memory access"
+            )
+            raw_epoch = exact_access.get("memory_epoch")
+            epoch = (
+                raw_epoch.get("call_index")
+                if isinstance(raw_epoch, Mapping)
+                and raw_epoch.get("kind") == "internal_call"
+                else None
+            )
             nonstack_accesses.append(
-                CompactMemoryAccessV3(access.access_id, access.memory_kind)
+                CompactMemoryAccessV3(
+                    access.access_id,
+                    access.memory_kind,
+                    epoch
+                    if isinstance(epoch, int) and not isinstance(epoch, bool)
+                    else None,
+                )
             )
         else:
             stack_accesses.append(
@@ -623,6 +663,7 @@ def derive_parametric_unit_fact_v3(
         ),
         register_outputs=outputs,
         stack_net_bytes=stack_delta,
+        return_cleanup_bytes=semantic.return_cleanup_bytes,
         returns=any(
             row.category == "outcome" and row.transfer_kind == "return"
             for row in transition.exits
@@ -695,7 +736,7 @@ def check_parametric_unit_facts_completeness_v3(
 
 PARAMETRIC_UNIT_FACTS_PHASE_V3 = map_units(
     name="parametric-unit-facts-v3",
-    version="1",
+    version="3",
     source_input="semantic_index",
     input_artifact_kinds={
         "semantic_index": SEMANTIC_INDEX_ARTIFACT_KIND_V3,

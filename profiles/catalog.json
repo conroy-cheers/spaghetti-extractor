@@ -7,6 +7,11 @@
       "validator_id": "c0-toolchain-v1"
     },
     {
+      "path": "interaction-contracts-v1.json",
+      "role": "interaction-contract-catalog",
+      "validator_id": "interaction-contract-catalog-v1"
+    },
+    {
       "path": "pe32-kernel32-callable-resolvers-v1.json",
       "role": "callable-external-resolution",
       "validator_id": "callable-external-v2"

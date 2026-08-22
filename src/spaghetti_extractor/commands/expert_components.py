@@ -147,6 +147,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
         command.add_argument("--adapter-plan", action="append", default=[])
         command.add_argument("--activation-receipt", action="append", default=[])
         command.add_argument("--machine-binding", action="append", default=[])
+        command.add_argument("--boundary-plan", action="append", default=[])
         path_argument(command, "interpreter_package", required=True)
         path_argument(command, "out", required=True)
         return lambda a: build_component_runtime_package(
@@ -160,6 +161,7 @@ def configure_command(name: str, command: argparse.ArgumentParser) -> Handler:
             adapter_plans=keyed_paths(a.adapter_plan),
             activation_receipts=keyed_paths(a.activation_receipt),
             machine_bindings=keyed_paths(a.machine_binding),
+            boundary_plans=keyed_paths(a.boundary_plan),
             interpreter_package=a.interpreter_package,
             out_dir=a.out,
         )

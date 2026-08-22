@@ -23,6 +23,7 @@ from ..authority.target_certificate_records import (
     IndirectTargetCertificateV3,
 )
 from ..external.site_authority import read_canonical_external_sites
+from ..abi.matching import read_abi_match_resolution
 from .abi_catalog import CATALOG_SEARCH_INDEX_CODEC_V3, CatalogSearchIndexV3
 from .matching_support import load_machine_package
 from .v4_adoption_records import (
@@ -33,7 +34,7 @@ from .v4_adoption_records import (
     LibraryAdoptionIntentV1,
     ReusableLibraryImplementationV1,
 )
-from .v4_behavior_manifest import read_library_behavior_pack_declaration_v1
+from .v4_behavior_manifest import read_library_behavior_pack_declaration
 from .v4_identity_records import (
     LibraryIslandIssueV4,
 )
@@ -182,6 +183,7 @@ def check_library_island_v1(
     canonical_external_sites: Path | str,
     target_certificates: Path | str,
     out: Path | str,
+    abi_match_resolution: Path | str | None = None,
 ) -> CheckedLibraryIslandV1:
     """Check one adoption without executing either the target or candidate."""
 
@@ -195,7 +197,7 @@ def check_library_island_v1(
     if isinstance(implementation, ReusableLibraryImplementationV1):
         checked_implementation = implementation
     elif Path(implementation).is_dir():
-        behavior_pack = read_library_behavior_pack_declaration_v1(implementation)
+        behavior_pack = read_library_behavior_pack_declaration(implementation)
         checked_implementation = behavior_pack.implementation
         implementation_pack_sha256 = behavior_pack.pack_sha256
     else:
@@ -207,6 +209,16 @@ def check_library_island_v1(
         if isinstance(catalog_search_index, CatalogSearchIndexV3)
         else CATALOG_SEARCH_INDEX_CODEC_V3.read(catalog_search_index)
     )
+    abi_resolution = (
+        None
+        if abi_match_resolution is None
+        else read_abi_match_resolution(abi_match_resolution)
+    )
+    abi_bindings = {
+        str(row.get("match_id")): row
+        for row in (() if abi_resolution is None else abi_resolution["bindings"])
+        if isinstance(row, Mapping)
+    }
     machine = load_machine_package(Path(machine_ir))
     sites_by_unit, external_manifest_sha256 = _external_sites(canonical_external_sites)
     certificates_by_unit, target_manifest_sha256 = _target_certificates(target_certificates)
@@ -271,7 +283,18 @@ def check_library_island_v1(
     }
     catalog_functions = {row.function_id: row for row in catalog.functions}
     catalog_abi_by_unit = {
-        unit_id: catalog_functions[match.catalog_function_id].abi_profile_id
+        unit_id: (
+            (
+                binding.get("profile", {}).get("id")
+                if isinstance(binding.get("profile"), Mapping)
+                else None
+            )
+            if (binding := abi_bindings.get(match.match_id)) is not None
+            and binding.get("status") == "complete"
+            else catalog_functions[match.catalog_function_id].abi_profile_id
+            if abi_resolution is None
+            else None
+        )
         for release_island in release.islands
         for match in release_island.matches
         if match.catalog_function_id in catalog_functions
@@ -423,6 +446,34 @@ def check_library_island_v1(
                     f"catalog-function:{function_id}",
                 )
             )
+        elif abi_resolution is not None:
+            matching_bindings = [
+                abi_bindings.get(match.match_id)
+                for match in island.matches
+                if match.catalog_function_id == function_id
+            ]
+            complete = [
+                row
+                for row in matching_bindings
+                if isinstance(row, Mapping)
+                and row.get("status") == "complete"
+                and isinstance(row.get("profile"), Mapping)
+            ]
+            if len(complete) != 1:
+                statuses = sorted(
+                    str(row.get("status"))
+                    for row in matching_bindings
+                    if isinstance(row, Mapping)
+                )
+                issues.append(
+                    _issue(
+                        "boundary",
+                        "violated" if "violated" in statuses else "incomplete",
+                        "catalog_operation_physical_abi_unresolved",
+                        "recognized operation lacks one complete canonical physical ABI binding",
+                        f"catalog-function:{function_id}",
+                    )
+                )
         elif function.abi_profile_id is None:
             issues.append(
                 _issue(
@@ -455,6 +506,11 @@ def check_library_island_v1(
             intent.intent_sha256,
             external_manifest_sha256,
             target_manifest_sha256,
+            *(
+                ()
+                if abi_resolution is None
+                else (str(abi_resolution["resolution_sha256"]),)
+            ),
         ),
         issues=issues,
     )

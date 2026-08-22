@@ -13,11 +13,18 @@ from pathlib import PurePath
 from typing import Any, Mapping, Sequence
 
 from ..artifacts.artifact_set import CanonicalValueV3, canonical_sha256_v3
-from .formats import COMPONENT_INTERFACE_IR_V2_FORMAT
+from .atomics import ATOMIC_OBJECT_RESOURCE_KIND, interface_uses_atomics
+from .formats import (
+    COMPONENT_INTERFACE_IR_V2_FORMAT,
+    COMPONENT_INTERFACE_IR_V3_FORMAT,
+    COMPONENT_INTERFACE_IR_V4_FORMAT,
+)
 
 
 COMPONENT_INTERFACE_IR_V1 = "spaghetti-extractor-component-interface-ir-v1"
 COMPONENT_INTERFACE_IR_V2 = COMPONENT_INTERFACE_IR_V2_FORMAT
+COMPONENT_INTERFACE_IR_V3 = COMPONENT_INTERFACE_IR_V3_FORMAT
+COMPONENT_INTERFACE_IR_V4 = COMPONENT_INTERFACE_IR_V4_FORMAT
 PORTABLE_COMPONENT_INTERFACE_V2_FORMAT = COMPONENT_INTERFACE_IR_V2
 SCALAR_TYPES = frozenset(
     {
@@ -113,6 +120,12 @@ class LogicalTypeV1:
     abi: str | None = None
     parameter_type_ids: tuple[str, ...] = ()
     result_type_id: str | None = None
+    nullable: bool | None = None
+    element_type_id: str | None = None
+    extent_kind: str | None = None
+    fixed_extent: int | None = None
+    allow_one_past: bool | None = None
+    lifetime: str | None = None
 
 
 @dataclass(frozen=True)
@@ -162,7 +175,7 @@ class ComponentInterfaceIRV1:
         result = cls(
             identity=_identifier(root["id"], "interface id"),
             types=tuple(
-                _parse_type(item, index)
+                _parse_type(item, index, interface_format=COMPONENT_INTERFACE_IR_V1)
                 for index, item in enumerate(_array(root["types"], "interface types"))
             ),
             parameters=tuple(
@@ -385,6 +398,7 @@ class ProtocolTransitionV2:
 class PortableComponentInterfaceV2:
     """Machine-free component contract with framework-managed instance state."""
 
+    format_version: str
     identity: str
     types: tuple[LogicalTypeV1, ...]
     state: tuple[ComponentStateFieldV2, ...]
@@ -412,7 +426,12 @@ class PortableComponentInterfaceV2:
             },
             "portable component interface V2",
         )
-        if root["format"] != COMPONENT_INTERFACE_IR_V2:
+        interface_format = root["format"]
+        if interface_format not in {
+            COMPONENT_INTERFACE_IR_V2,
+            COMPONENT_INTERFACE_IR_V3,
+            COMPONENT_INTERFACE_IR_V4,
+        }:
             raise ComponentInterfaceIRError(
                 "unsupported portable component interface format"
             )
@@ -423,9 +442,10 @@ class PortableComponentInterfaceV2:
             "portable interface protocol",
         )
         result = cls(
+            format_version=str(interface_format),
             identity=_identifier(root["id"], "interface id"),
             types=tuple(
-                _parse_type(item, index)
+                _parse_type(item, index, interface_format=str(interface_format))
                 for index, item in enumerate(_array(root["types"], "interface types"))
             ),
             state=tuple(
@@ -465,6 +485,12 @@ class PortableComponentInterfaceV2:
 
     def validate(self) -> None:
         type_ids = _unique((row.identity for row in self.types), "logical type")
+        if self.format_version == COMPONENT_INTERFACE_IR_V2 and any(
+            row.kind == "callback" for row in self.types
+        ):
+            raise ComponentInterfaceIRError(
+                "callback types require portable component interface V3"
+            )
         state_ids = _unique((row.identity for row in self.state), "state field")
         operation_ids = _unique(
             (row.identity for row in self.operations), "portable operation"
@@ -488,6 +514,8 @@ class PortableComponentInterfaceV2:
         for logical_type in self.types:
             references = [field.type_id for field in logical_type.fields]
             references.extend(logical_type.parameter_type_ids)
+            if logical_type.element_type_id is not None:
+                references.append(logical_type.element_type_id)
             if logical_type.result_type_id is not None:
                 references.append(logical_type.result_type_id)
             for reference in references:
@@ -497,6 +525,14 @@ class PortableComponentInterfaceV2:
                     )
         type_index = self.type_index()
         _validate_record_type_graph(type_index)
+        for logical_type in self.types:
+            if logical_type.element_type_id is None:
+                continue
+            element = type_index[logical_type.element_type_id]
+            if element.kind in {"resource", "callback", "view", "reference"}:
+                raise ComponentInterfaceIRError(
+                    f"logical type {logical_type.identity!r} has a non-addressable element type"
+                )
         for field in self.state:
             if field.type_id not in type_ids:
                 raise ComponentInterfaceIRError(
@@ -631,7 +667,7 @@ class PortableComponentInterfaceV2:
 
     def to_payload(self) -> dict[str, object]:
         return {
-            "format": COMPONENT_INTERFACE_IR_V2,
+            "format": self.format_version,
             "id": self.identity,
             "types": [_type_payload(row) for row in self.types],
             "state": [
@@ -693,6 +729,7 @@ class PortableComponentInterfaceV2:
             f"#define {guard}",
             "",
             "#include <stdint.h>",
+            *(['#include "spx-atomics.h"'] if interface_uses_atomics(self.types) else []),
             "",
             "typedef uint64_t spx_resource_v2;",
             "typedef struct {",
@@ -703,6 +740,31 @@ class PortableComponentInterfaceV2:
             "} spx_bytes_view_v2;",
             "",
         ]
+        if self.format_version == COMPONENT_INTERFACE_IR_V4:
+            lines.extend(
+                [
+                    "typedef struct {",
+                    "  uint64_t domain;",
+                    "  uint64_t object;",
+                    "  uint64_t generation;",
+                    "  uint64_t offset;",
+                    "  uint64_t extent;",
+                    "  uint32_t permissions;",
+                    "} spx_ref_v1;",
+                    "#define SPX_REF_V1_DEFINED 1",
+                    "typedef struct {",
+                    "  spx_ref_v1 base;",
+                    "  uint64_t extent;",
+                    "  uint32_t element_width;",
+                    "  void *access_context;",
+                    "  uint32_t (*read)(void *, spx_ref_v1, uint64_t, uint32_t, uint64_t *);",
+                    "  uint32_t (*write)(void *, spx_ref_v1, uint64_t, uint32_t, uint64_t);",
+                    "} spx_view_v1;",
+                    "#define SPX_VIEW_V1_DEFINED 1",
+                    '#include "spx-reference-runtime.h"',
+                    "",
+                ]
+            )
         index = self.type_index()
         for logical_type in self.types:
             lines.extend(_render_type_v2(logical_type, index))
@@ -912,7 +974,11 @@ def parse_component_interface(
     row = _object(value, "component interface")
     if row.get("format") == COMPONENT_INTERFACE_IR_V1:
         return ComponentInterfaceIRV1.parse(row)
-    if row.get("format") == COMPONENT_INTERFACE_IR_V2:
+    if row.get("format") in {
+        COMPONENT_INTERFACE_IR_V2,
+        COMPONENT_INTERFACE_IR_V3,
+        COMPONENT_INTERFACE_IR_V4,
+    }:
         return PortableComponentInterfaceV2.parse(row)
     raise ComponentInterfaceIRError("unsupported component interface format")
 
@@ -1113,7 +1179,7 @@ def _reachable_bytes_types(
 ) -> tuple[LogicalTypeV1, ...]:
     """Return byte views nested in one finite, acyclic logical value type."""
 
-    if logical_type.kind == "bytes":
+    if logical_type.kind in {"bytes", "view"}:
         return (logical_type,)
     if logical_type.kind != "record":
         return ()
@@ -1123,7 +1189,9 @@ def _reachable_bytes_types(
     return tuple(result)
 
 
-def _parse_type(value: object, index: int) -> LogicalTypeV1:
+def _parse_type(
+    value: object, index: int, *, interface_format: str = COMPONENT_INTERFACE_IR_V2
+) -> LogicalTypeV1:
     row = _object(value, f"logical type {index}")
     kind = _text(row.get("kind"), f"logical type {index} kind")
     identity = _identifier(row.get("id"), f"logical type {index} id")
@@ -1194,16 +1262,48 @@ def _parse_type(value: object, index: int) -> LogicalTypeV1:
             ownership=ownership,
         )
     if kind == "callback":
+        if interface_format == COMPONENT_INTERFACE_IR_V1:
+            _exact(
+                row,
+                {"id", "kind", "abi", "parameter_type_ids", "result_type_id"},
+                f"logical type {identity}",
+            )
+            result_type = row["result_type_id"]
+            return LogicalTypeV1(
+                identity,
+                kind,
+                abi=_identifier(row["abi"], f"logical type {identity} ABI"),
+                parameter_type_ids=tuple(
+                    _identifier(item, f"logical type {identity} callback parameter")
+                    for item in _array(row["parameter_type_ids"], "callback parameters")
+                ),
+                result_type_id=None
+                if result_type is None
+                else _identifier(result_type, f"logical type {identity} callback result"),
+            )
+        if interface_format not in {COMPONENT_INTERFACE_IR_V3, COMPONENT_INTERFACE_IR_V4}:
+            raise ComponentInterfaceIRError(
+                "callback types require portable component interface V3"
+            )
         _exact(
             row,
-            {"id", "kind", "abi", "parameter_type_ids", "result_type_id"},
+            {
+                "id", "kind", "ownership", "nullable",
+                "parameter_type_ids", "result_type_id",
+            },
             f"logical type {identity}",
         )
+        ownership = _text(row["ownership"], f"logical type {identity} ownership")
+        nullable = row["nullable"]
+        if ownership not in {"borrowed", "retained"} or not isinstance(nullable, bool):
+            raise ComponentInterfaceIRError(
+                f"logical callback type {identity!r} has invalid ownership or nullability"
+            )
         result_type = row["result_type_id"]
         return LogicalTypeV1(
             identity,
             kind,
-            abi=_identifier(row["abi"], f"logical type {identity} ABI"),
+            ownership=ownership,
             parameter_type_ids=tuple(
                 _identifier(item, f"logical type {identity} callback parameter")
                 for item in _array(row["parameter_type_ids"], "callback parameters")
@@ -1211,6 +1311,104 @@ def _parse_type(value: object, index: int) -> LogicalTypeV1:
             result_type_id=None
             if result_type is None
             else _identifier(result_type, f"logical type {identity} callback result"),
+            nullable=nullable,
+        )
+    if kind == "view":
+        if interface_format != COMPONENT_INTERFACE_IR_V4:
+            raise ComponentInterfaceIRError(
+                "view types require portable component interface V4"
+            )
+        _exact(
+            row,
+            {"id", "kind", "element_type_id", "access", "extent", "ownership"},
+            f"logical type {identity}",
+        )
+        access = _text(row["access"], f"logical type {identity} access")
+        ownership = _text(row["ownership"], f"logical type {identity} ownership")
+        if access not in ACCESS_MODES or ownership not in RESOURCE_OWNERSHIP:
+            raise ComponentInterfaceIRError(
+                f"logical view type {identity!r} has invalid access or ownership"
+            )
+        extent = _object(row["extent"], f"logical type {identity} extent")
+        extent_kind = _text(extent.get("kind"), f"logical type {identity} extent kind")
+        extent_parameter_id = None
+        fixed_extent = None
+        nul_terminated = False
+        if extent_kind == "parameter":
+            _exact(extent, {"kind", "parameter_id"}, f"logical type {identity} extent")
+            extent_parameter_id = _identifier(
+                extent["parameter_id"], f"logical type {identity} extent parameter"
+            )
+        elif extent_kind == "fixed":
+            _exact(extent, {"kind", "elements"}, f"logical type {identity} extent")
+            elements = extent["elements"]
+            if not isinstance(elements, int) or isinstance(elements, bool) or elements < 0:
+                raise ComponentInterfaceIRError(
+                    f"logical view type {identity!r} has invalid fixed extent"
+                )
+            fixed_extent = elements
+        elif extent_kind == "nul_terminated":
+            _exact(extent, {"kind"}, f"logical type {identity} extent")
+            nul_terminated = True
+        else:
+            raise ComponentInterfaceIRError(
+                f"logical view type {identity!r} has unsupported extent policy"
+            )
+        return LogicalTypeV1(
+            identity,
+            kind,
+            access=access,
+            extent_parameter_id=extent_parameter_id,
+            nul_terminated=nul_terminated,
+            ownership=ownership,
+            element_type_id=_identifier(
+                row["element_type_id"], f"logical type {identity} element type"
+            ),
+            extent_kind=extent_kind,
+            fixed_extent=fixed_extent,
+            lifetime="origin",
+        )
+    if kind == "reference":
+        if interface_format != COMPONENT_INTERFACE_IR_V4:
+            raise ComponentInterfaceIRError(
+                "reference types require portable component interface V4"
+            )
+        _exact(
+            row,
+            {
+                "id",
+                "kind",
+                "element_type_id",
+                "access",
+                "nullable",
+                "allow_one_past",
+                "lifetime",
+            },
+            f"logical type {identity}",
+        )
+        access = _text(row["access"], f"logical type {identity} access")
+        nullable = row["nullable"]
+        allow_one_past = row["allow_one_past"]
+        lifetime = _text(row["lifetime"], f"logical type {identity} lifetime")
+        if (
+            access not in ACCESS_MODES
+            or not isinstance(nullable, bool)
+            or not isinstance(allow_one_past, bool)
+            or lifetime != "origin"
+        ):
+            raise ComponentInterfaceIRError(
+                f"logical reference type {identity!r} has invalid policy"
+            )
+        return LogicalTypeV1(
+            identity,
+            kind,
+            access=access,
+            nullable=nullable,
+            element_type_id=_identifier(
+                row["element_type_id"], f"logical type {identity} element type"
+            ),
+            allow_one_past=allow_one_past,
+            lifetime=lifetime,
         )
     raise ComponentInterfaceIRError(f"unsupported logical type kind {kind!r}")
 
@@ -1385,9 +1583,40 @@ def _type_payload(value: LogicalTypeV1) -> dict[str, object]:
     elif value.kind == "callback":
         result.update(
             {
-                "abi": value.abi,
+                **(
+                    {"abi": value.abi}
+                    if value.abi is not None
+                    else {
+                        "ownership": value.ownership,
+                        "nullable": value.nullable,
+                    }
+                ),
                 "parameter_type_ids": list(value.parameter_type_ids),
                 "result_type_id": value.result_type_id,
+            }
+        )
+    elif value.kind == "view":
+        extent: dict[str, object] = {"kind": value.extent_kind}
+        if value.extent_kind == "parameter":
+            extent["parameter_id"] = value.extent_parameter_id
+        elif value.extent_kind == "fixed":
+            extent["elements"] = value.fixed_extent
+        result.update(
+            {
+                "element_type_id": value.element_type_id,
+                "access": value.access,
+                "extent": extent,
+                "ownership": value.ownership,
+            }
+        )
+    elif value.kind == "reference":
+        result.update(
+            {
+                "element_type_id": value.element_type_id,
+                "access": value.access,
+                "nullable": value.nullable,
+                "allow_one_past": value.allow_one_past,
+                "lifetime": value.lifetime,
             }
         )
     else:
@@ -1492,6 +1721,40 @@ def _validate_portable_value(
         _exact(row, {"id"}, context)
         _text(row["id"], f"{context} callback id")
         return
+    if logical_type.kind == "reference":
+        row = _object(value, context)
+        _exact(
+            row,
+            {"domain", "object", "generation", "offset", "extent", "permissions"},
+            context,
+        )
+        numbers = []
+        for field in ("domain", "object", "generation", "offset", "extent", "permissions"):
+            item = row[field]
+            if not isinstance(item, int) or isinstance(item, bool) or item < 0 or item > 2**64 - 1:
+                raise ComponentInterfaceIRError(f"{context}.{field} is invalid")
+            numbers.append(item)
+        _, object_id, _, offset, extent, _ = numbers
+        if object_id == 0:
+            if logical_type.nullable is not True or any(numbers):
+                raise ComponentInterfaceIRError(f"{context} is an invalid null reference")
+        elif offset > extent or (offset == extent and not logical_type.allow_one_past):
+            raise ComponentInterfaceIRError(f"{context} is outside its origin")
+        return
+    if logical_type.kind == "view":
+        row = _object(value, context)
+        _exact(row, {"base", "extent"}, context)
+        synthetic = LogicalTypeV1(
+            identity=f"{logical_type.identity}.base",
+            kind="reference",
+            nullable=False,
+            allow_one_past=True,
+        )
+        _validate_portable_value(row["base"], synthetic, types, f"{context}.base")
+        extent = row["extent"]
+        if not isinstance(extent, int) or isinstance(extent, bool) or extent < 0:
+            raise ComponentInterfaceIRError(f"{context}.extent is invalid")
+        return
     raise ComponentInterfaceIRError(
         f"{context} uses unsupported type {logical_type.kind!r}"
     )
@@ -1512,26 +1775,35 @@ def _c_type_v2(logical_type: LogicalTypeV1) -> str:
         qualifier = "const " if logical_type.access == "read" else ""
         return f"{qualifier}spx_{logical_type.identity}_v2 *"
     if logical_type.kind == "resource":
+        if logical_type.resource_kind == ATOMIC_OBJECT_RESOURCE_KIND:
+            return "spx_atomic_object *"
         return "spx_resource_v2"
     if logical_type.kind == "callback":
-        return f"spx_{logical_type.identity}_v2"
+        return f"spx_callback_{logical_type.identity}_v2 *"
+    if logical_type.kind == "reference":
+        return "spx_ref_v1"
+    if logical_type.kind == "view":
+        qualifier = "const " if logical_type.access == "read" else ""
+        return f"{qualifier}spx_view_v1 *"
     raise AssertionError(logical_type.kind)
 
 
 def _c_value_type_v2(logical_type: LogicalTypeV1) -> str:
-    if logical_type.kind in {"scalar", "enum", "resource", "callback"}:
+    if logical_type.kind in {"scalar", "enum", "resource", "callback", "reference"}:
         return _c_type_v2(logical_type)
     if logical_type.kind == "record":
         return f"spx_{logical_type.identity}_v2"
     if logical_type.kind == "bytes":
         return "spx_bytes_view_v2"
+    if logical_type.kind == "view":
+        return "spx_view_v1"
     raise AssertionError(logical_type.kind)
 
 
 def _render_type_v2(
     logical_type: LogicalTypeV1, index: Mapping[str, LogicalTypeV1]
 ) -> list[str]:
-    if logical_type.kind in {"scalar", "bytes", "resource"}:
+    if logical_type.kind in {"scalar", "bytes", "resource", "view", "reference"}:
         return []
     if logical_type.kind == "enum":
         assert logical_type.c_type is not None
@@ -1548,30 +1820,24 @@ def _render_type_v2(
         lines.extend([f"}} spx_{logical_type.identity}_v2;", ""])
         return lines
     if logical_type.kind == "callback":
-        parameters = ["void *context"] + [
-            f"{_c_type_v2(index[type_id])} argument_{position}"
-            for position, type_id in enumerate(logical_type.parameter_type_ids)
-        ]
-        result = (
-            "void"
-            if logical_type.result_type_id is None
-            else _c_value_type_v2(index[logical_type.result_type_id])
-        )
         return [
-            f"typedef {result} (*spx_{logical_type.identity}_fn_v2)({', '.join(parameters)});",
-            f"typedef struct spx_{logical_type.identity}_v2 {{",
-            "  void *context;",
-            f"  spx_{logical_type.identity}_fn_v2 invoke;",
-            f"}} spx_{logical_type.identity}_v2;",
+            f"typedef struct spx_callback_{logical_type.identity}_v2 "
+            f"spx_callback_{logical_type.identity}_v2;",
             "",
         ]
     raise AssertionError(logical_type.kind)
+
+
+PortableComponentInterfaceV3 = PortableComponentInterfaceV2
+PortableComponentInterfaceV4 = PortableComponentInterfaceV2
 
 
 __all__ = [
     "ACCESS_MODES",
     "COMPONENT_INTERFACE_IR_V1",
     "COMPONENT_INTERFACE_IR_V2",
+    "COMPONENT_INTERFACE_IR_V3",
+    "COMPONENT_INTERFACE_IR_V4",
     "PORTABLE_COMPONENT_INTERFACE_V2_FORMAT",
     "ComponentStateFieldV2",
     "ComponentInterfaceIRV1",
@@ -1583,6 +1849,8 @@ __all__ = [
     "LogicalValueV1",
     "LogicalValueV2",
     "PortableComponentInterfaceV2",
+    "PortableComponentInterfaceV3",
+    "PortableComponentInterfaceV4",
     "PortableOperationV2",
     "ProtocolTransitionV2",
     "RESOURCE_OWNERSHIP",

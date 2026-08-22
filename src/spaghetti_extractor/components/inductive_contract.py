@@ -161,7 +161,21 @@ class ExpressionV1:
             return cls(op, (("args", args),))
         # Known normalized operations that are outside the first conservative
         # profile remain representable, but can never authorize completion.
-        if op in {"service_result", "resource_value", "callback_value"}:
+        if op == "service_result":
+            row = _object(value, {"op", "index", "width"}, context)
+            width = _uint(row["width"], f"{context} width")
+            if width not in {1, 8, 16, 32, 64}:
+                raise InductiveOperationContractError(
+                    f"{context} service result width is unsupported"
+                )
+            return cls(
+                op,
+                (
+                    ("index", _uint(row["index"], f"{context} index")),
+                    ("width", width),
+                ),
+            )
+        if op in {"resource_value", "callback_value"}:
             row = _object(value, {"op", "name"}, context)
             return cls(op, (("name", _identifier(row["name"], f"{context} name")),))
         raise InductiveOperationContractError(
@@ -244,7 +258,7 @@ class ExpressionV1:
             if isinstance(args, tuple) and len(args) == 3:
                 return args[1].result_sort()
             return "unsupported"
-        if self.op in {"service_result", "resource_value", "callback_value"}:
+        if self.op in {"resource_value", "callback_value"}:
             return "unsupported"
         return "word"
 
@@ -1205,7 +1219,7 @@ def check_inductive_operation_certificate(
     for location, expression in expressions:
         for error in expression.sort_errors():
             issue("violated", "expression_sort_mismatch", location, error)
-        unsupported = set(expression.operations()) & {"service_result", "resource_value", "callback_value"}
+        unsupported = set(expression.operations()) & {"resource_value", "callback_value"}
         if unsupported:
             issue("incomplete", "expression_profile_unsupported", location, f"unsupported logical operations: {sorted(unsupported)!r}")
         missing_vars = set(expression.references("loop_variable")) - variables.keys()

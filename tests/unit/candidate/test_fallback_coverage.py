@@ -48,7 +48,7 @@ def _write_portable_selection(
 
 def _unit(identity: str, rva: int, marker: str) -> dict:
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": identity,
         "status": "qualified",
@@ -104,11 +104,11 @@ class _CoverageFixture:
 
     def _write_manifest(self) -> None:
         _write_json(self.manifest, {
-            "format": "spaghetti-extractor-machine-ir-v2",
+            "format": "spaghetti-extractor-machine-ir-v3",
             "counts": {"units": len(self.units)},
             "artifacts": {
                 "machine_ir": {
-                    "format": "spaghetti-extractor-machine-ir-v2",
+                    "format": "spaghetti-extractor-machine-ir-v3",
                     "path": self.machine_ir.name,
                     "sha256": sha256_file(self.machine_ir),
                 }
@@ -173,7 +173,7 @@ class _CoverageFixture:
                 "path": self.machine_ir.name,
                 "sha256": sha256_file(self.machine_ir),
             },
-            "input_mode": "sanitized_machine_ir_v2",
+            "input_mode": "sanitized_machine_ir_v3",
             "program": {
                 "path": self.program.name,
                 "sha256": sha256_file(self.program),

@@ -44,6 +44,7 @@ from ..external.machine_import_profiles import (
 )
 from ..errors import ToolkitInputError
 from ..external.callbacks import parse_callback_source
+from ..external.callback_protocols import callback_protocol_from_contract
 from ..pe32.image import parse_pe_image
 from ..pe32.model import ParsedPEImage
 from ..authority._schema import AnalysisV3Error, mapping, sequence, text, uint
@@ -353,7 +354,12 @@ def _adapt_profile_contract(
             "profile entry lacks an exact ABI, memory, world, or callback effect",
         )
     if mapped_callback == "registers":
-        if not isinstance(contract.get("callback_source"), Mapping):
+        protocol = callback_protocol_from_contract(
+            contract,
+            argument_words=arity.minimum_words,
+            context=f"external profile {subject}",
+        )
+        if protocol is None and not isinstance(contract.get("callback_source"), Mapping):
             return AdapterIssueV3(
                 "incomplete",
                 "external_profile_callback_source_missing",

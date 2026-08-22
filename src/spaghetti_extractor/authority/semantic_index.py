@@ -166,6 +166,7 @@ class SemanticIndexRecordV3:
     rva_start: int
     rva_end: int
     unit_status: str
+    return_cleanup_bytes: int | None
     instructions: tuple[InstructionOccurrenceV3, ...]
     faults: tuple[FaultOccurrenceV3, ...]
     direct_target_rvas: tuple[int, ...]
@@ -186,6 +187,12 @@ class SemanticIndexRecordV3:
                 "regenerate it from exact-unit authority",
             )
         text(self.unit_status, "semantic-index unit status")
+        if self.return_cleanup_bytes is not None:
+            uint(
+                self.return_cleanup_bytes,
+                "semantic-index return cleanup",
+                maximum=(1 << 16) - 1,
+            )
         if self.instructions != tuple(
             sorted(set(self.instructions), key=lambda row: row.index)
         ) or tuple(row.index for row in self.instructions) != tuple(
@@ -238,6 +245,7 @@ def _encode(value: SemanticIndexRecordV3) -> dict[str, Any]:
         "rva_start": value.rva_start,
         "rva_end": value.rva_end,
         "unit_status": value.unit_status,
+        "return_cleanup_bytes": value.return_cleanup_bytes,
         "instructions": [row.to_payload() for row in value.instructions],
         "faults": [row.to_payload() for row in value.faults],
         "direct_target_rvas": list(value.direct_target_rvas),
@@ -258,6 +266,7 @@ def _decode(value: Any) -> SemanticIndexRecordV3:
             "rva_start",
             "rva_end",
             "unit_status",
+            "return_cleanup_bytes",
             "instructions",
             "faults",
             "direct_target_rvas",
@@ -280,6 +289,15 @@ def _decode(value: Any) -> SemanticIndexRecordV3:
         rva_start=uint(row["rva_start"], "semantic-index start RVA"),
         rva_end=uint(row["rva_end"], "semantic-index end RVA"),
         unit_status=text(row["unit_status"], "semantic-index unit status"),
+        return_cleanup_bytes=(
+            None
+            if row["return_cleanup_bytes"] is None
+            else uint(
+                row["return_cleanup_bytes"],
+                "semantic-index return cleanup",
+                maximum=(1 << 16) - 1,
+            )
+        ),
         instructions=tuple(
             InstructionOccurrenceV3.parse(item)
             for item in sequence(row["instructions"], "semantic-index instructions")
@@ -364,14 +382,54 @@ def _indirect_exit(
     )
 
 
+def _return_cleanup_bytes_v3(
+    instructions: tuple[Mapping[str, Any], ...], outcome: Mapping[str, Any]
+) -> int | None:
+    """Recover only the argument-pop immediate of an exact near return.
+
+    Whole-block ESP deltas also include local-frame teardown and restored
+    registers, so they cannot establish an ABI cleanup convention.
+    """
+
+    if outcome.get("kind") != "return" or not instructions:
+        return None
+    terminal = instructions[-1]
+    if terminal.get("mnemonic") != "ret":
+        return None
+    raw_operands = terminal.get("operands", [])
+    immediates = tuple(
+        operand.get("value")
+        for operand_value in sequence(
+            raw_operands, "exact return operands"
+        )
+        for operand in (mapping(operand_value, "exact return operand"),)
+        if operand.get("kind") == "immediate"
+    )
+    if not immediates:
+        return 0
+    if len(immediates) != 1:
+        fail(
+            "exact_return_cleanup_contradiction",
+            "near return carries multiple immediate operands",
+            "repair the exact instruction decoder",
+        )
+    return uint(
+        immediates[0],
+        "exact return cleanup",
+        maximum=(1 << 16) - 1,
+    )
+
+
 def derive_semantic_index_v3(exact: ExactUnitV3) -> SemanticIndexRecordV3:
     unit = mapping(exact.unit.to_value(), "exact semantic-index unit")
     instructions: list[InstructionOccurrenceV3] = []
+    exact_instructions: list[Mapping[str, Any]] = []
     cursor = exact.rva_start
     for index, raw_value in enumerate(
         sequence(unit.get("instructions"), "exact instructions")
     ):
         raw = mapping(raw_value, "exact instruction")
+        exact_instructions.append(raw)
         start = uint(raw.get("rva_start"), "exact instruction start RVA")
         end = uint(raw.get("rva_end"), "exact instruction end RVA")
         if start != cursor or end > exact.rva_end or end <= start:
@@ -453,6 +511,9 @@ def derive_semantic_index_v3(exact: ExactUnitV3) -> SemanticIndexRecordV3:
         rva_start=exact.rva_start,
         rva_end=exact.rva_end,
         unit_status=text(unit.get("status"), "exact unit status"),
+        return_cleanup_bytes=_return_cleanup_bytes_v3(
+            tuple(exact_instructions), outcome
+        ),
         instructions=tuple(instructions),
         faults=faults,
         direct_target_rvas=direct_targets,
@@ -507,7 +568,7 @@ def check_semantic_index_completeness_v3(
 
 SEMANTIC_INDEX_PHASE_V3 = map_units(
     name="semantic-index-v3",
-    version="1",
+    version="2",
     source_input="exact_units",
     input_artifact_kinds={"exact_units": "exact-units-v3"},
     output_artifact_kind=SEMANTIC_INDEX_ARTIFACT_KIND_V3,

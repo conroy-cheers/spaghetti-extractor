@@ -30,7 +30,7 @@ def _unit(
     external_events: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "id": identity,
         "source": {"original": {"rva_start": rva, "rva_end": rva + 1}},
         "instructions": instructions or [],
@@ -237,7 +237,9 @@ class ReconstructionContractAnalysisTests(unittest.TestCase):
         atomic = result["atomic_effects"][0]
         self.assertEqual(atomic["effect_kind"], "atomic_read_modify_write")
         self.assertEqual(atomic["operation"], "compare_exchange")
-        self.assertTrue(atomic["conditional_write"])
+        self.assertFalse(atomic["conditional_write"])
+        self.assertTrue(atomic["conditional_written_value"])
+        self.assertEqual(atomic["write_occurs"], "always")
         self.assertEqual(len(atomic["concrete_reads"]), 1)
         self.assertEqual(len(atomic["concrete_writes"]), 1)
         self.assertEqual(len(atomic["concrete_memory_events"]), 2)

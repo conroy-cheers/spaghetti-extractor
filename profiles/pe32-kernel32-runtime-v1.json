@@ -1,7 +1,6 @@
 {
-  "format": "spaghetti-extractor-static-machine-import-profile-v1",
+  "format": "spaghetti-extractor-static-machine-import-profile-v2",
   "id": "pe32-kernel32-runtime-v1",
-  "default_callback_effect": "none",
   "machine_import_signatures": [
     {
       "import": {"dll": "kernel32.dll", "symbol": "CloseHandle"},
@@ -355,19 +354,35 @@
       "memory_effect": "none",
       "memory_footprints": [],
       "world_effect": "callbackRegistration",
-      "callback_effect": "explicit",
-      "callback_source": {"kind": "argument_word", "argument": 0},
-      "callback_lifetime": "until_replaced_or_process_exit",
-      "callback_result": {
-        "register": "eax",
-        "origin": "previous_registered_callback",
-        "nullable": true
-      },
-      "callback_abi": {
-        "kind": "generic_callback",
-        "argument_words": 1,
-        "stack_cleanup_bytes": 4,
-        "nullable": true
+      "callback_protocol": {
+        "format": "spaghetti-extractor-callback-protocol-v1",
+        "id": "win32-unhandled-exception-filter",
+        "action": "replace",
+        "source": {
+          "kind": "argument_word",
+          "argument": 0,
+          "sentinels": [{"word": 0, "kind": "null"}]
+        },
+        "signature": {
+          "abi_template": "pe32-stdcall-v1",
+          "argument_words": 1,
+          "stack_cleanup_bytes": 4,
+          "result": {"kind": "word", "register": "eax"}
+        },
+        "instance": {"kind": "singleton"},
+        "previous_result": {
+          "register": "eax",
+          "nullable": true,
+          "sentinels": [{"word": 0, "kind": "null"}]
+        },
+        "lifetime": {"kind": "until_replaced_or_process_exit"},
+        "delivery": {"timing": "deferred", "thread": "external_concurrent"},
+        "cardinality": {
+          "minimum": 0,
+          "maximum": null,
+          "scope": "registration_generation"
+        },
+        "provider_behavior": null
       }
     },
     {

@@ -219,14 +219,17 @@ def _bound_through_predecessor_chain(
     depth: int = 0,
     visited: frozenset[str] = frozenset(),
     path_budget: list[int] | None = None,
+    condition_is_pre_state: bool = False,
 ) -> tuple[_BoundProof | None, _Issue | None]:
     """Prove one selector bound by replaying a finite direct-control prefix.
 
-    The edge condition is stated over the predecessor's post-state. Replacing
-    register and flag outputs rewrites it over the predecessor's input state;
-    repeating that operation walks back to the instruction that established
-    the compare operands. Every incoming direct path must establish the same
-    bound, so a join cannot silently discard an alternative.
+    Machine-IR edge conditions are stated over their owning predecessor's
+    input state, while the successor selector is stated over the predecessor's
+    output state.  The first step therefore rewrites only the selector.  On
+    earlier edges both expressions describe the downstream input state, so
+    replacing the earlier predecessor's outputs walks them back together.
+    Every incoming direct path must establish the same bound, so a join cannot
+    silently discard an alternative.
     """
 
     if path_budget is None:
@@ -251,7 +254,11 @@ def _bound_through_predecessor_chain(
             f"selector-bound proof reaches cycle at {predecessor.record_id}",
         )
 
-    rewritten_condition = _substitute_summary_outputs(condition, summary)
+    rewritten_condition = (
+        condition
+        if condition_is_pre_state
+        else _substitute_summary_outputs(condition, summary)
+    )
     rewritten_selector = _substitute_summary_outputs(selector, summary)
     bound = _condition_bound(rewritten_condition, rewritten_selector)
     if bound is not None:
@@ -293,6 +300,7 @@ def _bound_through_predecessor_chain(
             depth=depth + 1,
             visited=next_visited,
             path_budget=path_budget,
+            condition_is_pre_state=False,
         )
         if issue is not None:
             return None, issue
@@ -783,6 +791,7 @@ def _proof_for_exit(
             machine_units=machine_units,
             semantics=semantics,
             summaries=summaries,
+            condition_is_pre_state=True,
         )
         if issue is not None:
             return fail(

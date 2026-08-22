@@ -47,7 +47,7 @@ BINDING = ArtifactBindingV3("binary", "pe32", "fixture.exe", PE_SHA256)
 def _unit() -> dict[str, object]:
     instruction = {"rva_start": 0x1000, "rva_end": 0x1001}
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": "unit:1000",
         "status": "qualified",
@@ -99,6 +99,7 @@ def _base_inputs(root: Path) -> tuple[Path, Path, Path, ExactUnitV3]:
         "launch-root-closure-v3",
         {
             "submitted_root_ids": ["root:entry"],
+            "callback_root_ids": [],
             "dependency_records": [row.to_payload() for row in dependencies],
         },
     )
@@ -108,6 +109,7 @@ def _base_inputs(root: Path) -> tuple[Path, Path, Path, ExactUnitV3]:
         authorizing=True,
         submitted_root_ids=("root:entry",),
         admitted_root_ids=("root:entry",),
+        callback_root_ids=(),
         root_unit_ids=(exact.unit_id,),
         reachable_unit_ids=(exact.unit_id,),
         edges=(),

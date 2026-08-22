@@ -48,7 +48,6 @@ from ..authority.parametric_summary_records import (
 )
 from ..authority.root_closure import (
     LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3,
-    LAUNCH_ROOT_CLOSURE_CODEC_V3,
 )
 from ..authority.semantic_index import (
     SEMANTIC_INDEX_ARTIFACT_KIND_V3,
@@ -64,6 +63,11 @@ from ..components.lifecycle_records import (
     ComponentLifecycleRecordError,
 )
 from ..machine_ir.fallback_capability import FallbackCapabilityAnalysis
+from .authority.rooted_projection import (
+    RootedBehavioralProjectionError,
+    RootedBehavioralProjectionV1,
+    load_rooted_behavioral_projection_v1,
+)
 
 
 STRUCTURAL_EXECUTABLE_V1 = STRUCTURAL_EXECUTABLE_FORMAT
@@ -142,11 +146,9 @@ _STRUCTURAL_ARTIFACTS = {
         lambda row: SEMANTIC_INDEX_CODEC_V3.read(row).value,
         _semantic_complete,
     ),
-    "root_closure": _ArtifactFamily(
-        LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3,
-        lambda row: LAUNCH_ROOT_CLOSURE_CODEC_V3.read(row).value,
-        _authority_complete,
-    ),
+}
+
+_ROOTED_BEHAVIORAL_ARTIFACTS = {
     "callbacks": _ArtifactFamily(
         CALLBACK_AUTHORITY_ARTIFACT_KIND_V3,
         lambda row: CALLBACK_AUTHORITY_CODEC_V3.read(row).value,
@@ -162,12 +164,17 @@ _STRUCTURAL_ARTIFACTS = {
         lambda row: CANONICAL_EXTERNAL_SITE_CODEC_V3.read(row).value,
         _authority_complete,
     ),
+    "target_certificates": _ArtifactFamily(
+        INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
+        lambda row: INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.read(row).value,
+        _authority_complete,
+    ),
 }
 
 _STRUCTURAL_AUXILIARY_ARTIFACTS = frozenset({
     "inductive_authority",
     "parametric_summaries",
-    "target_certificates",
+    "root_closure",
 })
 
 
@@ -178,11 +185,14 @@ def build_structural_executable_receipt(
     activation_plan: Path | str,
     machine_ir: Path | str,
     machine_ir_manifest: Path | str,
+    rooted_projection: Path | str | Mapping[str, object],
 ) -> CandidatePolicyReceiptV1:
     """Reduce exact checked facts into the sole whole-candidate execution gate."""
 
-    expected_artifacts = set(_STRUCTURAL_ARTIFACTS) | set(
-        _STRUCTURAL_AUXILIARY_ARTIFACTS
+    expected_artifacts = (
+        set(_STRUCTURAL_ARTIFACTS)
+        | set(_ROOTED_BEHAVIORAL_ARTIFACTS)
+        | set(_STRUCTURAL_AUXILIARY_ARTIFACTS)
     )
     unknown = sorted(set(artifacts) - expected_artifacts)
     missing = sorted(expected_artifacts - set(artifacts))
@@ -190,25 +200,59 @@ def build_structural_executable_receipt(
         raise CandidatePolicyError(
             f"structural policy artifact families differ: missing={missing}, extra={unknown}"
         )
+    try:
+        projection = load_rooted_behavioral_projection_v1(rooted_projection)
+    except RootedBehavioralProjectionError as exc:
+        raise CandidatePolicyError(str(exc)) from exc
     families = [
-        _check_artifact_family(identity, Path(artifacts[identity]), specification)
+        _check_artifact_family(
+            f"structural_universe_{identity}",
+            Path(artifacts[identity]),
+            specification,
+        )
         for identity, specification in sorted(_STRUCTURAL_ARTIFACTS.items())
     ]
     families.append(
-        _check_target_induction(
+        _check_rooted_projection_inputs(
+            projection=projection,
             root_closure=Path(artifacts["root_closure"]),
+            semantic_index=Path(artifacts["semantic_index"]),
+        )
+    )
+    families.extend(
+        _check_rooted_artifact_family(
+            f"rooted_behavior_{identity}",
+            Path(artifacts[identity]),
+            specification,
+            projection,
+        )
+        for identity, specification in sorted(_ROOTED_BEHAVIORAL_ARTIFACTS.items())
+    )
+    families.append(
+        _check_target_induction(
+            projection=projection,
             target_certificates=Path(artifacts["target_certificates"]),
             inductive_authority=Path(artifacts["inductive_authority"]),
         )
     )
     families.append(
         _check_rooted_parametric_summaries(
-            root_closure=Path(artifacts["root_closure"]),
+            projection=projection,
             parametric_summaries=Path(artifacts["parametric_summaries"]),
         )
     )
-    families.append(_check_fallback_analysis(Path(fallback_capability_analysis)))
-    families.append(_check_activation_plan(Path(activation_plan)))
+    families.append(
+        _check_fallback_analysis(
+            Path(fallback_capability_analysis),
+            expected_structural_units=projection.structural_unit_count,
+        )
+    )
+    families.append(
+        _check_activation_plan(
+            Path(activation_plan),
+            expected_structural_units=projection.structural_unit_count,
+        )
+    )
     machine_path = Path(machine_ir)
     manifest_path = Path(machine_ir_manifest)
     manifest = _load_json(manifest_path, "machine-IR manifest")
@@ -219,6 +263,7 @@ def build_structural_executable_receipt(
         "pe_sha256": _manifest_pe_sha256(manifest),
         "activation_plan_sha256": activation["activation_plan_sha256"],
         "component_authority_receipts": _component_authority_bindings(activation),
+        "rooted_behavioral_projection": projection.to_payload(),
     }
     return _finish_policy(STRUCTURAL_EXECUTABLE_V1, families, bindings=bindings)
 
@@ -246,11 +291,21 @@ def build_release_acceptance_receipt(
     structural_bindings = _object(
         structural.get("bindings"), "structural receipt bindings"
     )
+    try:
+        projection = load_rooted_behavioral_projection_v1(
+            _object(
+                structural_bindings.get("rooted_behavioral_projection"),
+                "structural rooted behavioral projection",
+            )
+        )
+    except RootedBehavioralProjectionError as exc:
+        raise CandidatePolicyError(str(exc)) from exc
     component_family, component_gate = _check_component_release_gate(
         component_release_gate,
         expected_activation_plan_sha256=structural_bindings.get(
             "activation_plan_sha256"
         ),
+        expected_rooted_projection_sha256=projection.projection_sha256,
     )
     families = [
         PolicyFamilyReceiptV1(
@@ -260,14 +315,15 @@ def build_release_acceptance_receipt(
             len(_array(structural.get("families"), "structural receipt families")),
             None,
         ),
-        _check_artifact_family(
-            "isa_qualification",
+        _check_rooted_artifact_family(
+            "rooted_behavior_isa_qualification",
             Path(isa_qualification),
             _ArtifactFamily(
                 ISA_QUALIFICATION_ARTIFACT_KIND_V3,
                 lambda row: ISA_QUALIFICATION_CODEC_V3.read(row).value,
                 _authority_complete,
             ),
+            projection,
         ),
         component_family,
     ]
@@ -409,23 +465,104 @@ def _check_artifact_family(
     )
 
 
+def _check_rooted_projection_inputs(
+    *,
+    projection: RootedBehavioralProjectionV1,
+    root_closure: Path,
+    semantic_index: Path,
+) -> PolicyFamilyReceiptV1:
+    root_reader = open_artifact_reader_v3(root_closure)
+    semantic_reader = open_artifact_reader_v3(semantic_index)
+    if root_reader.manifest.artifact_kind != LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3:
+        raise CandidatePolicyError(
+            "rooted behavioral projection has the wrong root-closure artifact kind"
+        )
+    if semantic_reader.manifest.artifact_kind != SEMANTIC_INDEX_ARTIFACT_KIND_V3:
+        raise CandidatePolicyError(
+            "rooted behavioral projection has the wrong semantic-index artifact kind"
+        )
+    if (
+        root_reader.manifest_sha256 != projection.root_closure_manifest_sha256
+        or semantic_reader.manifest_sha256
+        != projection.semantic_index_manifest_sha256
+    ):
+        raise CandidatePolicyError(
+            "rooted behavioral projection is bound to different checked inputs"
+        )
+    return PolicyFamilyReceiptV1(
+        "rooted_behavior_scope",
+        "complete",
+        projection.projection_sha256,
+        len(projection.reachable_unit_ids),
+        None,
+    )
+
+
+def _check_rooted_artifact_family(
+    identity: str,
+    path: Path,
+    specification: _ArtifactFamily,
+    projection: RootedBehavioralProjectionV1,
+) -> PolicyFamilyReceiptV1:
+    reader = open_artifact_reader_v3(path)
+    if reader.manifest.artifact_kind != specification.kind:
+        raise CandidatePolicyError(
+            f"{identity} artifact kind is {reader.manifest.artifact_kind!r}, "
+            f"expected {specification.kind!r}"
+        )
+    reachable = projection.reachable_unit_id_set
+    records = tuple(
+        record for record in reader.iter_records() if record.record_id in reachable
+    )
+    selected_ids = tuple(record.record_id for record in records)
+    missing = sorted(reachable - set(selected_ids))
+    duplicated = len(selected_ids) != len(set(selected_ids))
+    incomplete: list[str] = []
+    for record in records:
+        decoded = specification.decode(record)
+        if getattr(decoded, "record_id", record.record_id) != record.record_id:
+            raise CandidatePolicyError(
+                f"{identity} record {record.record_id!r} has a stale unit binding"
+            )
+        if not specification.complete(decoded):
+            incomplete.append(record.record_id)
+    complete = not missing and not duplicated and not incomplete
+    if missing:
+        blocker = (
+            f"rooted behavioral coverage is missing {len(missing)} reachable "
+            f"unit records: {missing[:3]!r}"
+        )
+    elif duplicated:
+        blocker = "rooted behavioral coverage duplicates reachable unit records"
+    elif incomplete:
+        blocker = (
+            f"{len(incomplete)} root-reachable records are not behaviorally "
+            f"complete: {incomplete[:3]!r}"
+        )
+    else:
+        blocker = None
+    return PolicyFamilyReceiptV1(
+        identity,
+        "complete" if complete else "incomplete",
+        canonical_sha256_v3(
+            {
+                "artifact_manifest_sha256": reader.manifest_sha256,
+                "rooted_projection_sha256": projection.projection_sha256,
+                "selected_record_ids": list(selected_ids),
+            }
+        ),
+        len(records),
+        blocker,
+    )
+
+
 def _check_target_induction(
     *,
-    root_closure: Path,
+    projection: RootedBehavioralProjectionV1,
     target_certificates: Path,
     inductive_authority: Path,
 ) -> PolicyFamilyReceiptV1:
     """Require checked induction exactly where rooted target proofs consume it."""
-
-    root_reader = open_artifact_reader_v3(root_closure)
-    if root_reader.manifest.artifact_kind != LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3:
-        raise CandidatePolicyError("target-induction root closure has the wrong kind")
-    root_records = tuple(root_reader.iter_records())
-    if len(root_records) != 1:
-        raise CandidatePolicyError(
-            "target-induction selection requires exactly one root-closure record"
-        )
-    root = LAUNCH_ROOT_CLOSURE_CODEC_V3.read(root_records[0]).value
 
     target_reader = open_artifact_reader_v3(target_certificates)
     if (
@@ -436,11 +573,11 @@ def _check_target_induction(
             "target-induction target certificates have the wrong kind"
         )
     required_cutpoints: set[str] = set()
-    reachable = set(root.reachable_unit_ids)
+    reachable = projection.reachable_unit_id_set
     for record in target_reader.iter_records():
-        unit = INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.read(record).value
-        if unit.source_unit_id not in reachable:
+        if record.record_id not in reachable:
             continue
+        unit = INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.read(record).value
         for certificate in unit.certificates:
             if not certificate.authorizing:
                 continue
@@ -478,21 +615,18 @@ def _check_target_induction(
         for cutpoint in required_cutpoints
         if coverage.get(cutpoint) != [True]
     )
-    root_incomplete = not root.authorizing or root.status != "complete"
-    complete = not root_incomplete and not unresolved
+    complete = not unresolved
     blocker = None
-    if root_incomplete:
-        blocker = "root closure is incomplete, so rooted induction use is not closed"
-    elif unresolved:
+    if unresolved:
         blocker = (
             f"{len(unresolved)} rooted finite-target cutpoints lack one exact "
             f"checked induction certificate: {unresolved[:3]!r}"
         )
     return PolicyFamilyReceiptV1(
-        "target_induction",
+        "rooted_behavior_target_induction",
         "complete" if complete else "incomplete",
         canonical_sha256_v3({
-            "root_closure": root_reader.manifest_sha256,
+            "rooted_projection": projection.projection_sha256,
             "target_certificates": target_reader.manifest_sha256,
             "inductive_authority": authority_reader.manifest_sha256,
             "required_cutpoints": sorted(required_cutpoints),
@@ -504,22 +638,10 @@ def _check_target_induction(
 
 def _check_rooted_parametric_summaries(
     *,
-    root_closure: Path,
+    projection: RootedBehavioralProjectionV1,
     parametric_summaries: Path,
 ) -> PolicyFamilyReceiptV1:
     """Require one checked root-independent summary for every rooted unit."""
-
-    root_reader = open_artifact_reader_v3(root_closure)
-    if root_reader.manifest.artifact_kind != LAUNCH_ROOT_CLOSURE_ARTIFACT_KIND_V3:
-        raise CandidatePolicyError(
-            "rooted parametric-summary selection has the wrong root-closure kind"
-        )
-    root_records = tuple(root_reader.iter_records())
-    if len(root_records) != 1:
-        raise CandidatePolicyError(
-            "rooted parametric-summary selection requires exactly one root closure"
-        )
-    root = LAUNCH_ROOT_CLOSURE_CODEC_V3.read(root_records[0]).value
 
     summary_reader = open_artifact_reader_v3(parametric_summaries)
     if (
@@ -536,18 +658,12 @@ def _check_rooted_parametric_summaries(
         for unit_id in summary.member_unit_ids:
             coverage.setdefault(unit_id, []).append(checked)
 
-    reachable = tuple(sorted(set(root.reachable_unit_ids)))
+    reachable = projection.reachable_unit_ids
     unresolved = tuple(
         unit_id for unit_id in reachable if coverage.get(unit_id) != [True]
     )
-    root_incomplete = root.status != "complete" or not root.authorizing
-    complete = not root_incomplete and not unresolved
-    if root_incomplete:
-        blocker = (
-            "root closure is incomplete, so rooted parametric summaries are "
-            "not closed"
-        )
-    elif unresolved:
+    complete = not unresolved
+    if unresolved:
         blocker = (
             f"{len(unresolved)} reachable units lack one exact checked "
             f"parametric summary: {list(unresolved[:3])!r}"
@@ -555,11 +671,11 @@ def _check_rooted_parametric_summaries(
     else:
         blocker = None
     return PolicyFamilyReceiptV1(
-        "rooted_parametric_summaries",
+        "rooted_behavior_parametric_summaries",
         "complete" if complete else "incomplete",
         canonical_sha256_v3(
             {
-                "root_closure": root_reader.manifest_sha256,
+                "rooted_projection": projection.projection_sha256,
                 "parametric_summaries": summary_reader.manifest_sha256,
                 "reachable_unit_ids": list(reachable),
             }
@@ -569,26 +685,35 @@ def _check_rooted_parametric_summaries(
     )
 
 
-def _check_fallback_analysis(path: Path) -> PolicyFamilyReceiptV1:
+def _check_fallback_analysis(
+    path: Path, *, expected_structural_units: int
+) -> PolicyFamilyReceiptV1:
     payload = _load_json(path, "fallback capability analysis")
     analysis = FallbackCapabilityAnalysis.from_payload(payload)
     complete = (
         analysis.complete
         and analysis.required_units > 0
+        and analysis.required_units == expected_structural_units
         and len(analysis.lowerable_unit_ids) == analysis.required_units
         and not analysis.unlowerable_unit_ids
         and not analysis.blockers
     )
     return PolicyFamilyReceiptV1(
-        "fallback_execution",
+        "structural_universe_fallback_execution",
         "complete" if complete else "incomplete",
         canonical_sha256_v3(payload),
         analysis.required_units,
-        None if complete else "fallback engine cannot execute every structural unit",
+        (
+            None
+            if complete
+            else "structural-universe fallback capability is incomplete or targets another unit inventory"
+        ),
     )
 
 
-def _check_activation_plan(path: Path) -> PolicyFamilyReceiptV1:
+def _check_activation_plan(
+    path: Path, *, expected_structural_units: int
+) -> PolicyFamilyReceiptV1:
     payload = _load_json(path, "component activation plan")
     counts = _object(payload.get("counts"), "activation-plan counts")
     entries = _array(payload.get("entries"), "activation-plan entries")
@@ -617,6 +742,7 @@ def _check_activation_plan(path: Path) -> PolicyFamilyReceiptV1:
         and payload.get("status") == "checked"
         and counts.get("blocked") == 0
         and counts.get("structural_units") == len(entries)
+        and len(entries) == expected_structural_units
         and all(
             isinstance(row, Mapping)
             and row.get("implementation_kind")
@@ -631,12 +757,14 @@ def _check_activation_plan(path: Path) -> PolicyFamilyReceiptV1:
         blocker = "implementation ownership contains blocked structural units"
     elif not authority_inventory_complete:
         blocker = "an enabled component has no exact activation authority receipt"
+    elif len(entries) != expected_structural_units:
+        blocker = "structural-universe implementation ownership targets another unit inventory"
     elif not complete:
         blocker = "implementation ownership is incomplete or nonexclusive"
     else:
         blocker = None
     return PolicyFamilyReceiptV1(
-        "implementation_ownership",
+        "structural_universe_implementation_ownership",
         "complete" if complete else "incomplete",
         canonical_sha256_v3(payload),
         len(entries),
@@ -670,6 +798,7 @@ def _check_component_release_gate(
     value: Path | str | Mapping[str, object],
     *,
     expected_activation_plan_sha256: object,
+    expected_rooted_projection_sha256: object,
 ) -> tuple[PolicyFamilyReceiptV1, dict[str, object]]:
     payload = _load_json(value, "component release gate")
     expected_fields = {
@@ -679,6 +808,7 @@ def _check_component_release_gate(
         "ready",
         "graph_sha256",
         "activation_plan_sha256",
+        "rooted_behavioral_projection_sha256",
         "counts",
         "issues",
         "policy",
@@ -701,10 +831,17 @@ def _check_component_release_gate(
         and _is_digest(payload.get("graph_sha256"))
         and payload.get("activation_plan_sha256")
         == expected_activation_plan_sha256
+        and payload.get("rooted_behavioral_projection_sha256")
+        == expected_rooted_projection_sha256
         and not issues
     )
     if payload.get("activation_plan_sha256") != expected_activation_plan_sha256:
         blocker = "component release gate targets another activation plan"
+    elif (
+        payload.get("rooted_behavioral_projection_sha256")
+        != expected_rooted_projection_sha256
+    ):
+        blocker = "component release gate targets another rooted behavioral scope"
     elif payload.get("mode") != "hybrid":
         blocker = "candidate release requires the hybrid component gate"
     elif not complete:

@@ -25,9 +25,17 @@ from spaghetti_extractor.authority.external_site_records import (
     ExternalProfileV3,
     external_site_id_v3,
 )
+from spaghetti_extractor.authority.incoming_call_frames import (
+    INCOMING_CALL_FRAMES_PHASE_V3,
+)
 from spaghetti_extractor.authority.semantic_index import (
     SEMANTIC_INDEX_CODEC_V3,
     SEMANTIC_INDEX_PHASE_V3,
+)
+from spaghetti_extractor.authority.static_value_records import (
+    PE32_STATIC_IMAGE_CODEC_V3,
+    STATIC_VALUE_ORIGINS_ARTIFACT_KIND_V3,
+    PE32StaticImageV3,
 )
 from spaghetti_extractor.authority.target_certificate_records import (
     INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3,
@@ -57,6 +65,7 @@ from spaghetti_extractor.authority_inputs.external_site_evidence import (
 PE_SHA256 = "a" * 64
 PROFILE_SHA256 = "b" * 64
 BINDING = ArtifactBindingV3("binary", "pe32", "fixture.exe", PE_SHA256)
+IMAGE_BASE = 0x400000
 
 
 def _register(name: str) -> dict[str, object]:
@@ -144,9 +153,16 @@ def _variadic_profile() -> ExternalProfileV3:
     )
 
 
-def _unit(event: dict[str, object]) -> dict[str, object]:
+def _unit(
+    event: dict[str, object],
+    *,
+    ordered_prefix: tuple[dict[str, object], ...] = (),
+) -> dict[str, object]:
+    memory_events = [
+        row for row in ordered_prefix if row.get("family") == "memory"
+    ]
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": "source:unit",
         "status": "qualified",
@@ -169,20 +185,20 @@ def _unit(event: dict[str, object]) -> dict[str, object]:
             },
             "register_writes": [],
             "flag_writes": [],
-            "memory_events": [],
+            "memory_events": memory_events,
             "external_events": [event],
             "faults": [],
-            "ordered_events": [event],
+            "ordered_events": [*ordered_prefix, event],
             "edge_conditions": [],
             "outcome": {"kind": "return"},
             "stack_delta": None,
             "counts": {
                 "register_writes": 0,
                 "flag_writes": 0,
-                "memory_events": 0,
+                "memory_events": len(memory_events),
                 "external_events": 1,
                 "faults": 0,
-                "ordered_events": 1,
+                "ordered_events": len(ordered_prefix) + 1,
                 "edge_conditions": 0,
             },
         },
@@ -209,6 +225,17 @@ def _write(
     return path
 
 
+def _incoming_frames(root: Path, semantic: Path, transitions: Path) -> Path:
+    return INCOMING_CALL_FRAMES_PHASE_V3.run(
+        output_directory=root / "incoming-call-frames",
+        inputs={
+            "semantic_index": semantic,
+            "transition_summaries": transitions,
+        },
+        bindings=(BINDING,),
+    ).output_directory
+
+
 class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
     def _inputs(
         self,
@@ -219,13 +246,40 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
         profile_issue: ExternalProfileIssueV3 | None = None,
         include_profile: bool = True,
         external_target: dict[str, object] | None = None,
+        ordered_prefix: tuple[dict[str, object], ...] = (),
+        additional_units: tuple[dict[str, object], ...] = (),
     ) -> tuple[Path, Path, Path, Path, ExactUnitV3, dict[str, object]]:
         exact_event = _event() if event is None else event
-        exact_unit = ExactUnitV3.create(_unit(exact_event), pe_sha256=PE_SHA256)
+        static_image = PE32StaticImageV3.create(
+            image_base=IMAGE_BASE, size_of_image=0x100000
+        )
+        _write(
+            root / "static-values",
+            STATIC_VALUE_ORIGINS_ARTIFACT_KIND_V3,
+            (
+                PE32_STATIC_IMAGE_CODEC_V3.write(
+                    static_image.record_id, static_image
+                ),
+            ),
+        )
+        exact_unit = ExactUnitV3.create(
+            _unit(exact_event, ordered_prefix=ordered_prefix),
+            pe_sha256=PE_SHA256,
+        )
+        exact_units = (
+            exact_unit,
+            *(
+                ExactUnitV3.create(unit, pe_sha256=PE_SHA256)
+                for unit in additional_units
+            ),
+        )
         exact = _write(
             root / "exact",
             "exact-units-v3",
-            (EXACT_UNIT_CODEC_V3.write(exact_unit.record_id, exact_unit),),
+            tuple(
+                EXACT_UNIT_CODEC_V3.write(unit.record_id, unit)
+                for unit in exact_units
+            ),
         )
         transitions = TRANSITION_SUMMARIES_PHASE_V3.run(
             output_directory=root / "transitions",
@@ -255,23 +309,32 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
                     primary_blocker=None,
                 ),
             )
-        certificate_unit = IndirectTargetCertificateUnitV3(
-            record_id=exact_unit.unit_id,
-            source_unit_id=exact_unit.unit_id,
-            unit_sha256=exact_unit.unit_sha256,
-            status="complete",
-            authorizing=True,
-            certificates=certificates,
-            dependencies=(),
-            primary_blocker=None,
+        semantic_records = tuple(
+            SEMANTIC_INDEX_CODEC_V3.read(source).value
+            for source in ArtifactSetReaderV3(semantic).iter_records()
         )
         targets = _write(
             root / "targets",
             INDIRECT_TARGET_CERTIFICATES_ARTIFACT_KIND_V3,
-            (
+            tuple(
                 INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3.write(
-                    certificate_unit.record_id, certificate_unit
-                ),
+                    semantic_record.record_id,
+                    IndirectTargetCertificateUnitV3(
+                        record_id=semantic_record.record_id,
+                        source_unit_id=semantic_record.record_id,
+                        unit_sha256=semantic_record.unit_sha256,
+                        status="complete",
+                        authorizing=True,
+                        certificates=(
+                            certificates
+                            if semantic_record.record_id == exact_unit.unit_id
+                            else ()
+                        ),
+                        dependencies=(),
+                        primary_blocker=None,
+                    ),
+                )
+                for semantic_record in semantic_records
             ),
         )
         selected_profile = profile or ExternalProfileV3.create(
@@ -334,6 +397,8 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
         profile_issue: ExternalProfileIssueV3 | None = None,
         include_profile: bool = True,
         external_target: dict[str, object] | None = None,
+        ordered_prefix: tuple[dict[str, object], ...] = (),
+        additional_units: tuple[dict[str, object], ...] = (),
     ):
         semantic, transitions, targets, profiles, exact, exact_event = self._inputs(
             root,
@@ -342,6 +407,8 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
             profile_issue=profile_issue,
             include_profile=include_profile,
             external_target=external_target,
+            ordered_prefix=ordered_prefix,
+            additional_units=additional_units,
         )
         output = root / "evidence"
         manifest = generate_standard_external_site_evidence_v3(
@@ -349,6 +416,7 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
             transition_summaries_path=transitions,
             target_certificates_path=targets,
             external_profiles_path=profiles,
+            static_value_origins_path=root / "static-values",
             output_directory=output,
         )
         site_id = external_site_id_v3(
@@ -414,6 +482,7 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
                 {
                     "external_profiles",
                     "semantic_index",
+                    "static_value_origins",
                     "target_certificates",
                     "transition_summaries",
                 },
@@ -452,6 +521,7 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
                 transition_summaries_path=transitions,
                 target_certificates_path=targets,
                 external_profiles_path=profiles,
+                static_value_origins_path=root / "static-values",
                 output_directory=root / "evidence-repeated",
             )
             self.assertEqual(repeated.artifact_id, manifest.artifact_id)
@@ -460,7 +530,12 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
             ).dependencies
             self.assertEqual(
                 {row.input_name for row in dependencies},
-                {"external_profiles", "semantic_index", "transition_summaries"},
+                {
+                    "external_profiles",
+                    "semantic_index",
+                    "static_value_origins",
+                    "transition_summaries",
+                },
             )
 
             canonical = CANONICAL_EXTERNAL_SITES_PHASE_V3.run(
@@ -468,7 +543,11 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
                 inputs={
                     "external_profiles": profiles,
                     "external_site_evidence": output,
+                    "incoming_call_frames": _incoming_frames(
+                        root, semantic, transitions
+                    ),
                     "semantic_index": semantic,
+                    "static_value_origins": root / "static-values",
                     "target_certificates": targets,
                     "transition_summaries": transitions,
                 },
@@ -518,7 +597,11 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
                 inputs={
                     "external_profiles": profiles,
                     "external_site_evidence": output,
+                    "incoming_call_frames": _incoming_frames(
+                        root, semantic, transitions
+                    ),
                     "semantic_index": semantic,
+                    "static_value_origins": root / "static-values",
                     "target_certificates": targets,
                     "transition_summaries": transitions,
                 },
@@ -635,7 +718,11 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
                 inputs={
                     "external_profiles": profiles,
                     "external_site_evidence": output,
+                    "incoming_call_frames": _incoming_frames(
+                        root, semantic, transitions
+                    ),
                     "semantic_index": semantic,
+                    "static_value_origins": root / "static-values",
                     "target_certificates": targets,
                     "transition_summaries": transitions,
                 },
@@ -837,7 +924,11 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
                 inputs={
                     "external_profiles": profiles,
                     "external_site_evidence": output,
+                    "incoming_call_frames": _incoming_frames(
+                        root, semantic, transitions
+                    ),
                     "semantic_index": semantic,
+                    "static_value_origins": root / "static-values",
                     "target_certificates": targets,
                     "transition_summaries": transitions,
                 },
@@ -865,6 +956,7 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
                     transition_summaries_path=transitions,
                     target_certificates_path=targets,
                     external_profiles_path=profiles,
+                    static_value_origins_path=root / "static-values",
                     output_directory=root / "evidence",
                 )
 
@@ -886,6 +978,8 @@ class StandardExternalSiteEvidenceV3Tests(unittest.TestCase):
                         str(targets),
                         "--external-profiles",
                         str(profiles),
+                        "--static-value-origins",
+                        str(root / "static-values"),
                         "--out",
                         str(output),
                     ]

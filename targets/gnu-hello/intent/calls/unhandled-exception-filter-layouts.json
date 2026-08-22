@@ -1,0 +1,30 @@
+{
+  "abi_dialect": "pe32-i386-gnu-v1",
+  "byte_order": "little",
+  "format": "spaghetti-extractor-target-layout-set-v1",
+  "id": "target-layout-set-v1:d3eb02e74da0a97793db2bf8e87fcb117a51fd874e3a455e699775aa42cfbae5",
+  "layouts": [
+    {
+      "alignment_bits": 32,
+      "array_stride_bits": null,
+      "fields": [],
+      "padding": [],
+      "size_bits": 32,
+      "type_id": "i32",
+      "value_bits": 32
+    },
+    {
+      "alignment_bits": 32,
+      "array_stride_bits": null,
+      "fields": [],
+      "padding": [],
+      "size_bits": 32,
+      "type_id": "p_exception_pointers",
+      "value_bits": 32
+    }
+  ],
+  "packing": "natural",
+  "pointer_width_bits": 32,
+  "target": "i686-pc-windows-pe32",
+  "type_graph_sha256": "96043d1bc6ed0e51f278e17a26c32c3404a8cffb09f7749a779d7c6a2f732d99"
+}

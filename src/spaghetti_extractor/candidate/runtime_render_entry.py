@@ -132,6 +132,8 @@ spx_call_status spx_native_runtime_run_at_rva(
     context->process_world_initialized = 1U;
   }}
   context->owner_fs_base = input->fs_base;
+  if (context->invocation_generation != 0xffffffffU)
+    ++context->invocation_generation;
   context->initialized = 1U;
   status = spx_native_run_initialized(entry_rva, input, output);
 release:

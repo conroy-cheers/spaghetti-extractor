@@ -78,6 +78,11 @@ class InterpreterFailurePolicyTests(unittest.TestCase):
                     "runtime_header_sha256",
                     "interpreter_header_sha256",
                     "interpreter_internal_header_sha256",
+                    "capability_backend_header_sha256",
+                    "capability_backend_source_sha256",
+                    "atomics_header_sha256",
+                    "atomics_backend_header_sha256",
+                    "atomics_source_sha256",
                 },
             )
             report["lowering"]["program_source_sha256"] = "f" * 64

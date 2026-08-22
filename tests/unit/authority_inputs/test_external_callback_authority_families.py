@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,7 +12,7 @@ from spaghetti_extractor.authority.callbacks import (
     CALLBACK_AUTHORITY_PHASE_V3,
     CALLBACK_EVIDENCE_ARTIFACT_KIND_V3,
     CALLBACK_EVIDENCE_CODEC_V3,
-    CallbackEvidenceV3,
+    derive_callback_entry_state_v3,
 )
 from spaghetti_extractor.authority.exact_units import (
     EXACT_UNIT_CODEC_V3,
@@ -27,14 +28,23 @@ from spaghetti_extractor.authority.external_site_records import (
     EXTERNAL_PROFILE_ARTIFACT_KIND_V3,
     EXTERNAL_PROFILE_CODEC_V3,
     CallbackRequirementV3,
+    CallbackSourceDecisionV3,
     ExternalContractV3,
     ExternalProfileV3,
     ExternalSiteEvidenceV3,
     external_site_id_v3,
 )
+from spaghetti_extractor.authority.incoming_call_frames import (
+    INCOMING_CALL_FRAMES_PHASE_V3,
+)
 from spaghetti_extractor.authority.semantic_index import (
     SEMANTIC_INDEX_CODEC_V3,
     SEMANTIC_INDEX_PHASE_V3,
+)
+from spaghetti_extractor.authority.static_value_records import (
+    PE32_STATIC_IMAGE_CODEC_V3,
+    STATIC_VALUE_ORIGINS_ARTIFACT_KIND_V3,
+    PE32StaticImageV3,
 )
 from spaghetti_extractor.authority.target_certificate_records import (
     INDIRECT_TARGET_CERTIFICATE_UNIT_CODEC_V3,
@@ -45,18 +55,60 @@ from spaghetti_extractor.authority.transition_summaries import (
 )
 from spaghetti_extractor.artifacts.artifact_set import (
     ArtifactBindingV3,
+    ArtifactDependencyV3,
     ArtifactRecordV3,
     ArtifactSetWriterV3,
     CanonicalValueV3,
+    RecordDependencyV3,
     canonical_sha256_v3,
 )
 from spaghetti_extractor.artifacts.io import ArtifactSetReaderV3
+from spaghetti_extractor.authority_inputs.callback_evidence import (
+    generate_standard_callback_evidence_v3,
+)
 
 
 PE_SHA256 = "a" * 64
 PROFILE_SHA256 = "c" * 64
-ABI_SHA256 = "d" * 64
+CALLBACK_PROTOCOL = {
+    "format": "spaghetti-extractor-callback-protocol-v1",
+    "id": "fixture-callback",
+    "action": "replace",
+    "source": {"kind": "argument_word", "argument": 0, "sentinels": []},
+    "signature": {
+        "abi_template": "pe32-cdecl-v1",
+        "argument_words": 1,
+        "stack_cleanup_bytes": 0,
+        "result": {"kind": "void"},
+    },
+    "instance": {"kind": "singleton"},
+    "previous_result": None,
+    "lifetime": {"kind": "until_replaced_or_process_exit"},
+    "delivery": {"timing": "deferred", "thread": "external_concurrent"},
+    "cardinality": {
+        "minimum": 0,
+        "maximum": None,
+        "scope": "registration_generation",
+    },
+    "provider_behavior": None,
+}
+CALLBACK_ABI = CALLBACK_PROTOCOL["signature"]
+ABI_SHA256 = canonical_sha256_v3(CALLBACK_ABI)
 BINDING = ArtifactBindingV3("binary", "pe32", "fixture.exe", PE_SHA256)
+STATIC_IMAGE = PE32StaticImageV3.create(
+    image_base=0x400000, size_of_image=0x100000
+)
+
+
+def _external_evidence_record(
+    evidence: ExternalSiteEvidenceV3,
+) -> ArtifactRecordV3:
+    return replace(
+        EXTERNAL_SITE_EVIDENCE_CODEC_V3.write(evidence.record_id, evidence),
+        dependencies=(
+            RecordDependencyV3("static_value_origins", STATIC_IMAGE.record_id),
+        ),
+    )
 
 
 def _reg(name: str) -> dict[str, object]:
@@ -71,7 +123,7 @@ def _unit(
 ) -> dict[str, object]:
     events = external_events or []
     return {
-        "format": "spaghetti-extractor-machine-ir-v2",
+        "format": "spaghetti-extractor-machine-ir-v3",
         "record_kind": "unit",
         "id": unit_id,
         "status": "qualified",
@@ -125,13 +177,25 @@ def _write(
     records: tuple[ArtifactRecordV3, ...],
     *,
     status: str = "complete",
+    dependencies: tuple[ArtifactDependencyV3, ...] = (),
 ) -> Path:
     ArtifactSetWriterV3(
         artifact_kind=kind,
         bindings=(BINDING,),
+        dependencies=dependencies,
         status=status,
     ).write(path, records)
     return path
+
+
+def _static_image_artifact_dependency(root: Path) -> ArtifactDependencyV3:
+    reader = ArtifactSetReaderV3(root / "static-values")
+    return ArtifactDependencyV3(
+        "static_value_origins",
+        reader.manifest.artifact_kind,
+        reader.manifest.artifact_id,
+        reader.manifest_sha256,
+    )
 
 
 def _empty_target_certificates(path: Path, semantic: Path) -> Path:
@@ -156,8 +220,28 @@ def _empty_target_certificates(path: Path, semantic: Path) -> Path:
     return _write(path, "indirect-target-certificates-v3", tuple(records))
 
 
+def _incoming_frames(root: Path, semantic: Path, transitions: Path) -> Path:
+    return INCOMING_CALL_FRAMES_PHASE_V3.run(
+        output_directory=root / "incoming-call-frames",
+        inputs={
+            "semantic_index": semantic,
+            "transition_summaries": transitions,
+        },
+        bindings=(BINDING,),
+    ).output_directory
+
+
 class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
     def _inputs(self, root: Path, *, evidence_unit_sha256: str | None = None):
+        _write(
+            root / "static-values",
+            STATIC_VALUE_ORIGINS_ARTIFACT_KIND_V3,
+            (
+                PE32_STATIC_IMAGE_CODEC_V3.write(
+                    STATIC_IMAGE.record_id, STATIC_IMAGE
+                ),
+            ),
+        )
         callback_unit = _unit("callback:unit", 0x2000)
         callback_exact = ExactUnitV3.create(
             callback_unit,
@@ -167,21 +251,22 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             "kind": "external_call",
             "dll": "Fixture.DLL",
             "symbol": "RegisterCallback",
-            "arguments": [],
+            "arguments": [{"op": "const", "value": 0x402000, "width": 32}],
             "abi_contract": {
-                "argument_words": 0,
+                "argument_words": 1,
                 "profile_binding": {
                     "profile_id": "fixture-profile",
                     "profile_sha256": PROFILE_SHA256,
                 },
                 "callback_effect": "registers",
+                "callback_protocol": CALLBACK_PROTOCOL,
             },
             "callback_requirements": [
                 {
                     "target_unit_id": callback_exact.unit_id,
                     "target_rva": callback_exact.rva_start,
                     "abi_sha256": ABI_SHA256,
-                    "lifetime": "process",
+                    "lifetime": "until_replaced_or_process_exit",
                 }
             ],
         }
@@ -224,7 +309,7 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             target_unit_id=callback_exact.unit_id,
             target_rva=callback_exact.rva_start,
             abi_sha256=ABI_SHA256,
-            lifetime="process",
+            lifetime="until_replaced_or_process_exit",
         )
         contract = ExternalContractV3.create(
             identity=identity,
@@ -232,20 +317,26 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             disposition="returns",
             profile_id="fixture-profile",
             profile_sha256=PROFILE_SHA256,
-            argument_words=0,
-            arguments=(),
+            argument_words=1,
+            arguments=({"op": "const", "value": 0x402000, "width": 32},),
             memory_effect="none",
             world_effect="registers-callback",
             callback_effect="registers",
             machine_contract={
                 "abi_template": "pe32-cdecl-v1",
-                "argument_words": 0,
+                "argument_words": 1,
                 "disposition": "returns",
                 "memory_effect": "none",
                 "world_effect": "registers-callback",
                 "callback_effect": "registers",
+                "callback_protocol": CALLBACK_PROTOCOL,
             },
             callbacks=(callback,),
+            callback_source_decision=CallbackSourceDecisionV3.create(
+                kind="callback_target",
+                argument_index=0,
+                source_expression={"op": "const", "value": 0x402000, "width": 32},
+            ),
         )
         profile = ExternalProfileV3.create(
             profile_id="fixture-profile",
@@ -253,17 +344,18 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             identity=identity,
             allowed_transfers=("call",),
             allowed_dispositions=("returns",),
-            argument_words=0,
+            argument_words=1,
             memory_effect="none",
             world_effect="registers-callback",
             callback_effect="registers",
             machine_contract={
                 "abi_template": "pe32-cdecl-v1",
-                "argument_words": 0,
+                "argument_words": 1,
                 "disposition": "returns",
                 "memory_effect": "none",
                 "world_effect": "registers-callback",
                 "callback_effect": "registers",
+                "callback_protocol": CALLBACK_PROTOCOL,
             },
         )
         profiles = _write(
@@ -315,14 +407,18 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             external_evidence = _write(
                 root / "external-evidence",
                 EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3,
-                (EXTERNAL_SITE_EVIDENCE_CODEC_V3.write(evidence.record_id, evidence),),
+                (_external_evidence_record(evidence),),
+                dependencies=(_static_image_artifact_dependency(root),),
             )
+            incoming_frames = _incoming_frames(root, semantic, transitions)
             external = CANONICAL_EXTERNAL_SITES_PHASE_V3.run(
                 output_directory=root / "external",
                 inputs={
                     "external_profiles": profiles,
                     "external_site_evidence": external_evidence,
+                    "incoming_call_frames": incoming_frames,
                     "semantic_index": semantic,
+                    "static_value_origins": root / "static-values",
                     "target_certificates": target_certificates,
                     "transition_summaries": transitions,
                 },
@@ -341,33 +437,36 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
                 source_external.dependencies, source_external_record.dependencies
             )
 
-            callback_evidence = CallbackEvidenceV3(
-                record_id=callback.callback_id,
+            entry_state, entry_blocker = derive_callback_entry_state_v3(
                 external_site_id=evidence.record_id,
-                target_unit_id=callback.target_unit_id,
-                target_unit_sha256=callback_exact.unit_sha256,
-                target_rva=callback.target_rva,
-                abi_sha256=callback.abi_sha256,
-                lifetime=callback.lifetime,
-                status="complete",
-                entry_state=CanonicalValueV3.of({"ecx": {"kind": "callback"}}),
-                primary_blocker=None,
+                requirement=callback,
+                machine_contract=evidence.contract.machine_contract,
             )
-            callback_inputs = _write(
-                root / "callback-evidence",
-                CALLBACK_EVIDENCE_ARTIFACT_KIND_V3,
-                (
-                    CALLBACK_EVIDENCE_CODEC_V3.write(
-                        callback_evidence.record_id, callback_evidence
-                    ),
-                ),
+            self.assertIsNone(entry_blocker)
+            self.assertIsNotNone(entry_state)
+            callback_inputs = root / "callback-evidence"
+            callback_manifest = generate_standard_callback_evidence_v3(
+                canonical_external_sites_path=external,
+                incoming_call_frames_path=incoming_frames,
+                output_directory=callback_inputs,
+            )
+            self.assertEqual(callback_manifest.status, "complete")
+            generated_evidence = CALLBACK_EVIDENCE_CODEC_V3.read(
+                ArtifactSetReaderV3(callback_inputs).get_record(
+                    callback.callback_id
+                )
+            ).value
+            self.assertEqual(generated_evidence.entry_state, entry_state)
+            self.assertEqual(
+                generated_evidence.target_unit_sha256,
+                callback_exact.unit_sha256,
             )
             callback_authority = CALLBACK_AUTHORITY_PHASE_V3.run(
                 output_directory=root / "callbacks",
                 inputs={
                     "callback_evidence": callback_inputs,
                     "external_sites": external,
-                    "semantic_index": semantic,
+                    "incoming_call_frames": incoming_frames,
                 },
                 bindings=(BINDING,),
             ).output_directory
@@ -378,6 +477,39 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             self.assertEqual(checked.status, "complete")
             self.assertEqual(checked.callbacks[0].callback_id, callback.callback_id)
             self.assertEqual(checked.dependencies, callback_record.dependencies)
+
+            stale_evidence = replace(
+                generated_evidence,
+                entry_state=CanonicalValueV3.of({"model": "stale-entry"}),
+            )
+            stale_inputs = _write(
+                root / "stale-callback-evidence",
+                CALLBACK_EVIDENCE_ARTIFACT_KIND_V3,
+                (
+                    CALLBACK_EVIDENCE_CODEC_V3.write(
+                        stale_evidence.record_id,
+                        stale_evidence,
+                    ),
+                ),
+            )
+            stale_authority = CALLBACK_AUTHORITY_PHASE_V3.run(
+                output_directory=root / "stale-callback-authority",
+                inputs={
+                    "callback_evidence": stale_inputs,
+                    "external_sites": external,
+                    "incoming_call_frames": incoming_frames,
+                },
+                bindings=(BINDING,),
+            ).output_directory
+            stale = CALLBACK_AUTHORITY_CODEC_V3.read(
+                ArtifactSetReaderV3(stale_authority).get_record("source:unit")
+            ).value
+            self.assertEqual(stale.status, "violated")
+            assert stale.primary_blocker is not None
+            self.assertEqual(
+                stale.primary_blocker.code,
+                "callback_entry_state_contradiction",
+            )
 
     def test_noncomplete_profile_manifest_cannot_authorize_a_site(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -401,14 +533,19 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             external_evidence = _write(
                 root / "profile-status-evidence",
                 EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3,
-                (EXTERNAL_SITE_EVIDENCE_CODEC_V3.write(evidence.record_id, evidence),),
+                (_external_evidence_record(evidence),),
+                dependencies=(_static_image_artifact_dependency(root),),
             )
             external = CANONICAL_EXTERNAL_SITES_PHASE_V3.run(
                 output_directory=root / "external-profile-status",
                 inputs={
                     "external_profiles": incomplete_profiles,
                     "external_site_evidence": external_evidence,
+                    "incoming_call_frames": _incoming_frames(
+                        root, semantic, transitions
+                    ),
                     "semantic_index": semantic,
+                    "static_value_origins": root / "static-values",
                     "target_certificates": target_certificates,
                     "transition_summaries": transitions,
                 },
@@ -439,7 +576,11 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
                 inputs={
                     "external_profiles": profiles,
                     "external_site_evidence": missing,
+                    "incoming_call_frames": _incoming_frames(
+                        root, semantic, transitions
+                    ),
                     "semantic_index": semantic,
+                    "static_value_origins": root / "static-values",
                     "target_certificates": target_certificates,
                     "transition_summaries": transitions,
                 },
@@ -471,14 +612,19 @@ class ExternalAndCallbackAuthorityV3Tests(unittest.TestCase):
             evidence_artifact = _write(
                 root / "stale-evidence",
                 EXTERNAL_SITE_EVIDENCE_ARTIFACT_KIND_V3,
-                (EXTERNAL_SITE_EVIDENCE_CODEC_V3.write(stale.record_id, stale),),
+                (_external_evidence_record(stale),),
+                dependencies=(_static_image_artifact_dependency(root),),
             )
             external = CANONICAL_EXTERNAL_SITES_PHASE_V3.run(
                 output_directory=root / "external-stale",
                 inputs={
                     "external_profiles": profiles,
                     "external_site_evidence": evidence_artifact,
+                    "incoming_call_frames": _incoming_frames(
+                        root, semantic, transitions
+                    ),
                     "semantic_index": semantic,
+                    "static_value_origins": root / "static-values",
                     "target_certificates": target_certificates,
                     "transition_summaries": transitions,
                 },
