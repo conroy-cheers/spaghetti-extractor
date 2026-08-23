@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..artifacts.artifact_set import canonical_sha256_v3
 from ..artifacts.formats import NATIVE_ENGINE_PLAN_FORMAT
 from ..external.contracts import (
     CheckedExternalSiteContractError,
@@ -23,9 +24,9 @@ from .runtime_model import (
     _InterpreterTransferBinding,
 )
 from .runtime_receipts import (
-    _validate_callback_adapter_receipts,
     _validate_implementation_dispatch_receipt,
 )
+from ..calls.frame import PhysicalCallFrameV2
 from .runtime_values import (
     _required_count,
     _required_list,
@@ -43,10 +44,9 @@ def _validate_native_plan(
     input_mode: str,
     transfer_rvas: tuple[int, ...],
     transfer_bindings: tuple[_InterpreterTransferBinding, ...],
+    ingress_descriptors: tuple[dict[str, Any], ...],
+    ingress_plan_id: str,
 ) -> tuple[
-    int,
-    tuple[tuple[int, int], ...],
-    tuple[dict[str, Any], ...],
     dict[str, Any],
     tuple[NativeImplementationDispatch, ...],
     tuple[tuple[int, int], ...],
@@ -72,12 +72,29 @@ def _validate_native_plan(
             transfer_bindings=transfer_bindings,
         )
     )
-    callback_targets = tuple(
-        _required_u32(value, "native-engine callback RVA")
-        for value in _required_list(
-            payload.get("callback_targets"), "native-engine callbacks"
+    if payload.get("native_ingress_plan_id") != ingress_plan_id:
+        raise CandidateRuntimeError(
+            "native-engine plan binds a different native ingress plan"
         )
+    module_entries = tuple(
+        row for row in ingress_descriptors
+        if row.get("role") in {"process_entry", "dll_entry"}
     )
+    if len(module_entries) != 1:
+        raise CandidateRuntimeError(
+            "native ingress plan must contain exactly one module entry"
+        )
+    entry_rva = _required_u32(
+        module_entries[0].get("target_rva"), "native ingress module entry RVA"
+    )
+    callback_rows = tuple(
+        row for row in ingress_descriptors
+        if row.get("role") in {"callback", "tls_callback"}
+    )
+    callback_targets = tuple(sorted({
+        _required_u32(row.get("target_rva"), "native ingress callback RVA")
+        for row in callback_rows
+    }))
     if callback_targets != tuple(sorted(set(callback_targets))):
         raise CandidateRuntimeError(
             "native-engine callback RVAs must be sorted and unique"
@@ -122,7 +139,6 @@ def _validate_native_plan(
                 "native-engine recovered executable-data ranges overlap or are unsorted"
             )
         recovered_ranges.append((start, end))
-    entry_rva = _required_u32(payload.get("entry_rva"), "native-engine entry RVA")
     if any(
         start <= target < end
         for target in (entry_rva, *callback_targets)
@@ -131,49 +147,147 @@ def _validate_native_plan(
         raise CandidateRuntimeError(
             "native entry or callback target overlaps recovered executable data"
         )
-    callback_abis = _required_list(
-        payload.get("callback_abis"), "native-engine callback ABIs"
-    )
-    if len(callback_abis) != len(callback_targets):
-        raise CandidateRuntimeError(
-            "native-engine callback ABI inventory differs from callback targets"
+    for index, row in enumerate(callback_rows):
+        frame = _required_object(
+            row.get("physical_frame"), f"native ingress callback frame {index}"
         )
-    for index, (raw, target) in enumerate(
-        zip(callback_abis, callback_targets, strict=True)
+        try:
+            transport = PhysicalCallFrameV2.parse(frame.get("transport"))
+        except Exception as exc:
+            raise CandidateRuntimeError(str(exc)) from exc
+        cleanup = transport.stack.cleanup_bytes
+        if row.get("role") == "tls_callback" and cleanup != 12:
+            raise CandidateRuntimeError(
+                "PE32 TLS callback ingress must clean exactly 12 stack bytes"
+            )
+    capability_registrations = _required_list(
+        payload.get("code_capability_registrations"),
+        "native-engine code capability registrations",
+    )
+    callback_capabilities = {
+        int(row["target_rva"]) for row in callback_rows
+        if row.get("role") == "callback"
+    }
+    seen_registrations: set[tuple[int, int, int]] = set()
+    expected_registrations: dict[tuple[int, int, int], dict[str, Any]] = {}
+    for site_index, raw_site in enumerate(
+        _required_list(payload.get("external_sites"), "native-engine external sites")
     ):
-        callback = _required_object(raw, f"native-engine callback ABI {index}")
-        if _required_u32(callback.get("rva"), "callback ABI RVA") != target:
-            raise CandidateRuntimeError(
-                "native-engine callback ABI RVA differs from its target"
-            )
-        expected_symbol = f"spx_payload_callback_{target:08x}"
-        if _required_string(callback.get("symbol"), "callback ABI symbol") != expected_symbol:
-            raise CandidateRuntimeError(
-                "native-engine callback ABI symbol is not the canonical RVA anchor"
-            )
-        _required_string(callback.get("transfer_id"), "callback ABI transfer id")
-        _required_sha256(
-            callback.get("transfer_sha256"), "callback ABI transfer SHA-256"
+        site = _required_object(raw_site, f"native-engine external site {site_index}")
+        contract = site.get("checked_external_contract")
+        if not isinstance(contract, Mapping) or contract.get("callback_effect") != "explicit":
+            continue
+        adapter = _required_object(
+            contract.get("callback_adapter"),
+            f"native-engine external site {site_index} callback adapter",
         )
-        kind = _required_string(callback.get("kind"), "callback ABI kind")
-        cleanup = _required_count(
-            callback.get("stack_cleanup_bytes"), "callback ABI stack cleanup"
+        source = _required_object(
+            adapter.get("source"),
+            f"native-engine external site {site_index} callback source",
         )
-        if kind == "tls_callback":
-            if cleanup != 12:
+        argument_index = _required_count(
+            source.get("argument"),
+            f"native-engine external site {site_index} callback argument",
+        )
+        instruction_rva = _required_u32(
+            site.get("instruction_rva"),
+            f"native-engine external site {site_index} instruction",
+        )
+        for raw_target in _required_list(
+            adapter.get("target_rvas"),
+            f"native-engine external site {site_index} callback targets",
+        ):
+            target = _required_u32(
+                raw_target,
+                f"native-engine external site {site_index} callback target",
+            )
+            key = (instruction_rva, argument_index, target)
+            if key in expected_registrations:
                 raise CandidateRuntimeError(
-                    "PE32 TLS callback ABI must clean exactly 12 stack bytes"
+                    "native-engine callback capability authority is ambiguous"
                 )
-        elif kind != "generic_callback":
+            expected_registrations[key] = {
+                "lifetime": adapter.get("lifetime"),
+                "invocation": adapter.get("invocation"),
+                "checked_external_contract_sha256": canonical_sha256_v3(contract),
+            }
+    expected_registration_fields = {
+        "instruction_rva",
+        "argument_index",
+        "logical_target_rva",
+        "code_target_rva",
+        "lifetime",
+        "invocation",
+        "checked_external_contract_sha256",
+    }
+    for index, raw in enumerate(capability_registrations):
+        registration = _required_object(
+            raw, f"code capability registration {index}"
+        )
+        if set(registration) != expected_registration_fields:
             raise CandidateRuntimeError(
-                "native-engine callback ABI kind is unsupported"
+                "code capability registration fields are not canonical"
             )
-    callback_adapter_receipts = _validate_callback_adapter_receipts(
-        payload, callback_abis=callback_abis
-    )
+        target = _required_u32(
+            registration.get("code_target_rva"),
+            f"code capability registration {index} target",
+        )
+        if target not in callback_capabilities:
+            raise CandidateRuntimeError(
+                "code capability registration target lacks callback ingress"
+            )
+        logical_target = _required_u32(
+            registration.get("logical_target_rva"),
+            f"code capability registration {index} logical target",
+        )
+        if logical_target != target:
+            raise CandidateRuntimeError(
+                "code capability registration logical and code targets differ"
+            )
+        instruction_rva = _required_u32(
+            registration.get("instruction_rva"),
+            f"code capability registration {index} instruction",
+        )
+        argument_index = _required_count(
+            registration.get("argument_index"),
+            f"code capability registration {index} argument",
+        )
+        key = (instruction_rva, argument_index, target)
+        if key in seen_registrations:
+            raise CandidateRuntimeError("code capability registration is duplicated")
+        seen_registrations.add(key)
+        invocation = _required_string(
+            registration.get("invocation"),
+            f"code capability registration {index} invocation",
+        )
+        contract_sha256 = _required_sha256(
+            registration.get("checked_external_contract_sha256"),
+            f"code capability registration {index} contract SHA-256",
+        )
+        lifetime = _required_object(
+            registration.get("lifetime"),
+            f"code capability registration {index} lifetime",
+        )
+        _required_string(
+            lifetime.get("kind"),
+            f"code capability registration {index} lifetime kind",
+        )
+        expected = expected_registrations.get(key)
+        if expected is None or (
+            dict(lifetime) != expected["lifetime"]
+            or invocation != expected["invocation"]
+            or contract_sha256 != expected["checked_external_contract_sha256"]
+        ):
+            raise CandidateRuntimeError(
+                "code capability registration does not match checked callback authority"
+            )
+    if seen_registrations != set(expected_registrations):
+        raise CandidateRuntimeError(
+            "native-engine code capability registrations omit or add checked callback authority"
+        )
     passthroughs = _required_list(
-        payload.get("callback_passthroughs"),
-        "native-engine callback passthroughs",
+        payload.get("code_capability_passthroughs"),
+        "native-engine code capability passthroughs",
     )
     seen_passthroughs: set[tuple[int, int]] = set()
     for index, raw in enumerate(passthroughs):
@@ -217,45 +331,22 @@ def _validate_native_plan(
             "native-engine and interpreter transfer counts differ"
         )
     if _required_count(
-        counts.get("callback_adapters"),
-        "native-engine callback adapter count",
-    ) != len(_required_list(
-        payload.get("callback_adapters"), "native-engine callback adapters"
-    )):
+        counts.get("code_capability_registrations"),
+        "native-engine code capability registration count",
+    ) != len(capability_registrations):
         raise CandidateRuntimeError(
-            "native-engine callback adapter count differs from its inventory"
+            "native-engine code capability registration count differs from its inventory"
         )
     if _required_count(
-        counts.get("callback_adapter_receipts"),
-        "native-engine callback adapter receipt count",
-    ) != len(callback_adapter_receipts):
-        raise CandidateRuntimeError(
-            "native-engine callback adapter receipt count differs from its inventory"
-        )
-    if _required_count(
-        counts.get("callback_passthroughs"),
-        "native-engine callback passthrough count",
+        counts.get("code_capability_passthroughs"),
+        "native-engine code capability passthrough count",
     ) != len(passthroughs):
         raise CandidateRuntimeError(
             "native-engine callback passthrough count differs from its inventory"
         )
-    return entry_rva, tuple(
-        (
-            _required_u32(
-                _required_object(raw, f"native-engine callback ABI {index}").get("rva"),
-                "callback ABI RVA",
-            ),
-            _required_count(
-                _required_object(raw, f"native-engine callback ABI {index}").get(
-                    "stack_cleanup_bytes"
-                ),
-                "callback ABI stack cleanup",
-            ),
-        )
-        for index, raw in enumerate(callback_abis)
-    ), callback_adapter_receipts, implementation_dispatch_receipt, (
-        implementation_dispatches
-    ), tuple(recovered_ranges)
+    return implementation_dispatch_receipt, implementation_dispatches, (
+        tuple(recovered_ranges)
+    )
 
 
 def _validate_native_termination(value: Any) -> bool:

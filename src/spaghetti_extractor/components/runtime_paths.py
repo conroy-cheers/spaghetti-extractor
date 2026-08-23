@@ -32,7 +32,8 @@ def render_finite_path_operation(
     """Render one source operation and its exact external-event protocol."""
 
     if boundary_plan is not None:
-        clause_ids = {item.identity for item in boundary_plan.actions}
+        clause_ids = _covered_boundary_clause_ids(boundary_plan)
+        interaction_effect_ids = _interaction_effect_ids(boundary_plan)
         expected_clause_ids = {
             f"parameter.{item.identity}" for item in operation.parameters
         } | {
@@ -40,7 +41,13 @@ def render_finite_path_operation(
         } | {
             f"state.{item.identity}" for item in interface.state
         } | {
-            f"effect.{item.identity}" for item in binding.effects
+            "effect."
+            + (
+                item.effect_id
+                if item.effect_id in interaction_effect_ids
+                else item.identity
+            )
+            for item in binding.effects
         }
         if not expected_clause_ids <= clause_ids:
             raise SemanticPathError(
@@ -52,9 +59,10 @@ def render_finite_path_operation(
         raise SemanticPathError(
             "finite runtime lowering requires operations without callbacks"
         )
-    if bool(operation.effect_ids or binding.effects) != bool(atomic_actions) or {
+    direct_effect_ids = _direct_operation_effect_ids(interface, operation)
+    if bool(direct_effect_ids or binding.effects) != bool(atomic_actions) or {
         row.effect_id for row in binding.effects
-    } != set(operation.effect_ids):
+    } != direct_effect_ids:
         raise SemanticPathError(
             "finite runtime direct effects require an exact atomic world model"
         )
@@ -679,6 +687,53 @@ def render_finite_path_operation(
         ]
     )
     return "\n".join(lines)
+
+
+def _covered_boundary_clause_ids(
+    boundary_plan: BoundaryOperationPlanV2,
+) -> set[str]:
+    """Include logical effects owned by checked interaction invocations."""
+
+    covered = {item.identity for item in boundary_plan.actions}
+    for interaction in boundary_plan.interactions:
+        raw_effects = interaction.invoke_action.clause.get("effect_ids", [])
+        if not isinstance(raw_effects, list):
+            continue
+        covered.update(
+            f"effect.{effect_id}"
+            for effect_id in raw_effects
+            if isinstance(effect_id, str)
+        )
+    return covered
+
+
+def _interaction_effect_ids(
+    boundary_plan: BoundaryOperationPlanV2,
+) -> set[str]:
+    result: set[str] = set()
+    for interaction in boundary_plan.interactions:
+        raw_effects = interaction.invoke_action.clause.get("effect_ids", [])
+        if isinstance(raw_effects, list):
+            result.update(
+                effect_id for effect_id in raw_effects if isinstance(effect_id, str)
+            )
+    return result
+
+
+def _direct_operation_effect_ids(
+    interface: PortableComponentInterfaceV2,
+    operation: PortableOperationV2,
+) -> set[str]:
+    """Return effects implemented directly rather than by an allowed service."""
+
+    allowed_service_ids = set(operation.allowed_service_ids)
+    service_effect_ids = {
+        effect_id
+        for service in interface.services
+        if service.identity in allowed_service_ids
+        for effect_id in service.effect_ids
+    }
+    return set(operation.effect_ids) - service_effect_ids
 
 
 def attach_service_bindings(

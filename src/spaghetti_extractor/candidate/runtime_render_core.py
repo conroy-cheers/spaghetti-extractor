@@ -6,7 +6,12 @@ from .runtime_model import NativeRuntimePlan
 
 
 def _native_runtime_source_core(plan: NativeRuntimePlan) -> str:
-    return f'''  return spx_program_lookup(0x{plan.entry_rva:08x}U) != 0;
+    runtime_context_initializer = "0"
+    ingress_checks = " &&\n      ".join(
+        f"spx_program_lookup(0x{int(row['target_rva']):08x}U) != 0"
+        for row in plan.ingress_descriptors
+    ) or "0U"
+    return f'''  return {ingress_checks};
 }}
 
 uint32_t spx_native_machine_fallback_allowed(uint32_t rva) {{
@@ -1086,7 +1091,7 @@ static spx_boundary_status spx_native_realize_reference(
 }}
 
 spx_runtime spx_native_runtime_instance = {{
-  .context = &spx_native_context_value,
+  .context = {runtime_context_initializer},
   .read = spx_native_flat_read,
   .write = spx_native_flat_write,
   .atomic_compare_exchange = spx_native_atomic_compare_exchange,

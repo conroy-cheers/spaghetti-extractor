@@ -6,12 +6,16 @@
   machineIr,
   staticExport,
   staticAuthority ? null,
+  nativeIngressPlan,
+  moduleInterface,
+  candidateFilename,
   structuralExecutionGate,
   machineImportProfiles,
   namePrefix,
   compiler ? pkgs.pkgsCross.mingw32.stdenv.cc,
   interpreterPackage,
   componentRuntimePackage,
+  nativeProcessTermination ? null,
 }:
 
 assert pkgs.lib.assertMsg
@@ -61,6 +65,9 @@ let
   ];
   profileArgs = lib.concatMapStringsSep " "
     (profile: lib.escapeShellArg (toString profile)) machineImportProfiles;
+  terminationIntent = pkgs.writeText
+    "${namePrefix}-native-process-termination.json"
+    (builtins.toJSON nativeProcessTermination);
   interpreter = interpreterPackage;
   componentRuntime = componentRuntimePackage;
   portableReplacementSelection =
@@ -68,6 +75,15 @@ let
   portableReplacementArg = lib.escapeShellArg
     (toString portableReplacementSelection);
   componentRuntimeArg = lib.escapeShellArg (toString componentRuntime);
+  ingressPayload = builtins.fromJSON (
+    builtins.readFile "${nativeIngressPlan}/native-ingress-plan.json"
+  );
+  moduleIngresses = builtins.filter
+    (row: builtins.elem row.role [ "process_entry" "dll_entry" ])
+    ingressPayload.ingresses;
+  entrySymbol = assert lib.assertMsg (builtins.length moduleIngresses == 1)
+    "native ingress plan must contain one module entry";
+    (builtins.head moduleIngresses).bridge_symbol;
   machineImportProfileBundle = pkgs.runCommand
     "${namePrefix}-machine-import-profile-bundle-v1"
     {
@@ -130,6 +146,7 @@ let
       ${machineIr}/machine-ir.jsonl \
       ${machineIr}/machine-ir-manifest.json \
       ${machineIr}/recovered-executable-data.json \
+      ${nativeIngressPlan}/native-ingress-plan.json \
       ${loadImageContract} \
       ${portableReplacementArg} \
       ${machineImportProfileBundle}/profile.json \
@@ -138,7 +155,7 @@ let
       ${lib.escapeShellArg (toString rootClosure)} \
       ${lib.escapeShellArg (toString targetCertificates)} \
       ${lib.escapeShellArg (toString parametricSummaries)} \
-      "$out" ${profileArgs} <<'PY'
+      ${terminationIntent} "$out" ${profileArgs} <<'PY'
     import json
     import pathlib
     import sys
@@ -154,16 +171,18 @@ let
     machine_ir = pathlib.Path(sys.argv[1])
     machine_ir_manifest = pathlib.Path(sys.argv[2])
     recovered_executable_data = pathlib.Path(sys.argv[3])
-    load_contract = pathlib.Path(sys.argv[4])
-    portable_path = sys.argv[5]
-    profile_bundle = pathlib.Path(sys.argv[6])
-    canonical_external_sites_path = sys.argv[7]
-    callback_authority_path = pathlib.Path(sys.argv[8])
-    root_closure_path = pathlib.Path(sys.argv[9])
-    target_certificates_path = pathlib.Path(sys.argv[10])
-    parametric_summaries_path = pathlib.Path(sys.argv[11])
-    output = pathlib.Path(sys.argv[12])
-    profiles = tuple(pathlib.Path(value) for value in sys.argv[13:])
+    ingress_plan = pathlib.Path(sys.argv[4])
+    load_contract = pathlib.Path(sys.argv[5])
+    portable_path = sys.argv[6]
+    profile_bundle = pathlib.Path(sys.argv[7])
+    canonical_external_sites_path = sys.argv[8]
+    callback_authority_path = pathlib.Path(sys.argv[9])
+    root_closure_path = pathlib.Path(sys.argv[10])
+    target_certificates_path = pathlib.Path(sys.argv[11])
+    parametric_summaries_path = pathlib.Path(sys.argv[12])
+    termination_intent = json.loads(pathlib.Path(sys.argv[13]).read_text())
+    output = pathlib.Path(sys.argv[14])
+    profiles = tuple(pathlib.Path(value) for value in sys.argv[15:])
     selected_portable_components = ()
     if portable_path:
         portable_payload = json.loads(
@@ -191,15 +210,15 @@ let
     )
     termination = select_native_termination_import(
         profile_paths=profiles,
-        import_iat_vas=inputs.import_iat_vas,
+        import_slots=inputs.import_slots,
+        preferred_identity=termination_intent,
     )
     write_spx_native_engine_package(
         machine_ir=machine_ir,
         machine_ir_manifest=machine_ir_manifest,
         recovered_executable_data=recovered_executable_data,
-        entry_rva=inputs.entry_rva,
-        tls_callback_targets=inputs.tls_callback_targets,
-        import_iat_vas=inputs.import_iat_vas,
+        native_ingress_plan=ingress_plan,
+        import_slots=inputs.import_slots,
         termination_import=termination,
         base_relocation_evidence=inputs.base_relocation_evidence,
         fixed_image_base=inputs.fixed_image_base,
@@ -270,9 +289,10 @@ let
     nativeRuntimePackage = nativeRuntime;
     inherit compiler namePrefix;
     regionOverridePackage = componentRuntime;
+    inherit entrySymbol;
   };
 
-  candidate = pkgs.runCommand "${namePrefix}-hybrid-candidate-v1" {
+  baseCandidate = pkgs.runCommand "${namePrefix}-linked-base-module-v1" {
     nativeBuildInputs = [ pythonEnv compiler pkgs.jq ];
     preferLocalBuild = false;
     allowSubstitutes = true;
@@ -323,6 +343,10 @@ let
         precompiled_objects=pathlib.Path(sys.argv[10]),
         compiler=pathlib.Path(sys.argv[11]),
         out_dir=pathlib.Path(sys.argv[12]),
+        native_ingress_plan=pathlib.Path(
+            ${builtins.toJSON "${nativeIngressPlan}/native-ingress-plan.json"}
+        ),
+        candidate_filename=${builtins.toJSON candidateFilename},
       )
     PY
     jq -e '
@@ -336,8 +360,21 @@ let
       .inputs.execution_scope.acceptance_authority == "none" and
       .policy.candidate_class == "structural-executable-hybrid"
     ' "$out/interpreter-native-build-manifest.json" >/dev/null
-    test -s "$out/candidate.exe"
+    test -s "$out/${candidateFilename}"
   '';
+  nativeIngressLinkReceipt = import ./native-ingress-link-receipt.nix {
+    inherit pkgs pythonEnv nativeIngressPlan namePrefix;
+    linkedModule = "${baseCandidate}/${candidateFilename}";
+    linkerMap = "${baseCandidate}/payload.map";
+  };
+  candidate = import ./pe32-module-composition.nix {
+    inherit pkgs pythonEnv nativeIngressPlan candidateFilename namePrefix;
+    baseCandidate = "${baseCandidate}/${candidateFilename}";
+    baseCompositionManifest =
+      "${baseCandidate}/pe-composition-manifest.json";
+    originalModuleInterface = moduleInterface;
+    nativeIngressLinkReceipt = nativeIngressLinkReceipt;
+  };
 in
 {
   inherit
@@ -348,6 +385,8 @@ in
     nativeEngine
     nativeRuntime
     nativeObjects
+    baseCandidate
+    nativeIngressLinkReceipt
     candidate
     ;
 }

@@ -130,6 +130,13 @@
       candidateTestSuiteCheck = import ../tests/candidate-test-suite.nix {
         inherit pkgs;
       };
+      pe32ProjectCheck = import ../tests/pe32-project.nix {
+        inherit pkgs;
+        inherit (context) pythonEnv;
+      };
+      nativeIngressRuntimeCheck = import ../tests/native-ingress-runtime.nix {
+        inherit pkgs;
+      };
       profileRegistryCheck = import ../profile-registry-check.nix {
         inherit pkgs;
         inherit (context) pythonEnv;
@@ -145,6 +152,8 @@
         { name = "authority-graph-v3"; path = authorityGraphV3Check; }
         { name = "artifact-seed-v3"; path = artifactSeedV3Check; }
         { name = "candidate-test-suite"; path = candidateTestSuiteCheck; }
+        { name = "pe32-project"; path = pe32ProjectCheck; }
+        { name = "native-ingress-runtime"; path = nativeIngressRuntimeCheck; }
         { name = "profile-registry"; path = profileRegistryCheck; }
         { name = "roundtrip-qualification"; path = roundtrip.qualification; }
       ];
@@ -243,6 +252,8 @@
         relation-kernel = context.kernels.relationKernel;
         roundtrip = roundtrip.qualification;
         target-sdk = targetSdkCheck;
+        pe32-project = pe32ProjectCheck;
+        native-ingress-runtime = nativeIngressRuntimeCheck;
         components = componentsCheck;
         candidate-test-suite = candidateTestSuiteCheck;
         profile-registry = profileRegistryCheck;

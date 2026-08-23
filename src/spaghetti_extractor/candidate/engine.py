@@ -6,7 +6,12 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from ..artifacts.formats import NATIVE_ENGINE_PACKAGE_FORMAT, NATIVE_ENGINE_PLAN_FORMAT
+from ..artifacts.artifact_set import canonical_sha256_v3
+from ..artifacts.formats import (
+    NATIVE_ENGINE_PACKAGE_FORMAT,
+    NATIVE_ENGINE_PLAN_FORMAT,
+    NATIVE_INGRESS_PLAN_FORMAT,
+)
 from ..external.callbacks import CallbackABI, CallbackSource
 from ..external.callback_protocols import parse_callback_protocol
 from ..external.contracts import (
@@ -34,7 +39,7 @@ from .engine_analysis import (
     _static_iat_import_identity,
 )
 from .engine_components import (
-    _build_callback_adapter_receipts,
+    _build_code_capability_registrations,
     _build_implementation_dispatch_receipt,
     _callback_storage_origin_is_safe,
     _previous_callback_storage_writes,
@@ -42,9 +47,9 @@ from .engine_components import (
 from .authority.execution import load_candidate_execution_authority_v3
 from .callback_authority import load_callback_protocol_authority_v1
 from .engine_model import (
-    NativeCallbackAdapter,
+    NativeCodeCapabilityBinding,
     NativeCallbackPassthrough,
-    NativeCallbackTarget,
+    NativeCodeTarget,
     NativeEnginePlan,
     NativeExternalSite,
     NativeImportBinding,
@@ -58,6 +63,7 @@ from .engine_model import (
     _X87ReplayASLRUnsafe,
     _canonical_sha256,
 )
+from .imports import NativeImportSlot, normalize_native_import_slots
 from .engine_x87 import (
     _absolute_iat_va,
     _blocker,
@@ -86,8 +92,8 @@ def plan_spx_native_engine(
     machine_ir: Path,
     machine_ir_manifest: Path,
     recovered_executable_data: Path | str | None = None,
-    entry_rva: int,
-    tls_callback_targets: Iterable[int | Mapping[str, Any]] = (),
+    native_ingress_plan: Mapping[str, Any],
+    import_slots: Iterable[NativeImportSlot | Mapping[str, Any]] | None = None,
     import_iat_vas: Mapping[tuple[str, str | int], int] | None = None,
     termination_import: Mapping[str, Any] | None = None,
     base_relocation_evidence: Mapping[str, Any] | None = None,
@@ -104,6 +110,9 @@ def plan_spx_native_engine(
     """Plan machine-level external bridges from one strict or byte-free input."""
 
     input_path = Path(machine_ir)
+    entry_rva, tls_callback_targets, declared_callback_rvas = (
+        _native_ingress_engine_roots(native_ingress_plan)
+    )
     if fixed_image_base is not None:
         fixed_image_base = _required_u32(fixed_image_base, "fixed image base")
     if preferred_image_base is None:
@@ -185,34 +194,26 @@ def plan_spx_native_engine(
     ]
     implementation_source_rows = raw_rows
     sites: list[NativeExternalSite] = []
-    import_iat_vas = import_iat_vas or {}
-    import_bindings: list[NativeImportBinding] = []
-    if preferred_image_base is not None:
-        for (dll, identity), raw_iat_va in sorted(
-            import_iat_vas.items(), key=lambda item: (item[0][0].lower(), str(item[0][1]))
-        ):
-            iat_va = _required_u32(raw_iat_va, "import IAT VA")
-            if iat_va < preferred_image_base:
-                raise ToolkitInputError("import IAT VA precedes the preferred image base")
-            if not isinstance(dll, str) or not dll:
-                raise ToolkitInputError("import binding DLL must be nonempty")
-            if isinstance(identity, str) and identity:
-                symbol, ordinal = identity, None
-            elif isinstance(identity, int) and not isinstance(identity, bool) and identity >= 0:
-                symbol, ordinal = None, identity
-            else:
-                raise ToolkitInputError("import binding must use one symbol or ordinal")
-            import_bindings.append(NativeImportBinding(
-                dll=dll.lower(),
-                symbol=symbol,
-                ordinal=ordinal,
-                iat_va=iat_va,
-                iat_rva=iat_va - preferred_image_base,
-            ))
+    import_index = normalize_native_import_slots(
+        import_slots,
+        legacy_import_iat_vas=import_iat_vas,
+        preferred_image_base=preferred_image_base,
+    )
+    import_bindings = [NativeImportBinding(
+        slot_id=slot.slot_id,
+        image_id=slot.image_id,
+        descriptor_index=slot.descriptor_index,
+        cell_index=slot.cell_index,
+        dll=slot.dll,
+        symbol=slot.symbol,
+        ordinal=slot.ordinal,
+        iat_va=slot.iat_va,
+        iat_rva=slot.iat_rva,
+    ) for slot in import_index.slots]
     propagated_import_analysis = (
         _machine_ir_register_import_sites(
             rows,
-            import_iat_vas=import_iat_vas,
+            import_slots=import_index,
             call_preserved_registers=execution_authority.call_preservation_by_site,
             allow_diagnostic_abi_hypotheses=False,
         )
@@ -225,7 +226,7 @@ def plan_spx_native_engine(
     )
     blockers: list[dict[str, Any]] = []
     checked_termination_import = _parse_native_termination_import(
-        termination_import, import_iat_vas
+        termination_import, import_index
     )
     indirect_calls = 0
     seen_sites: dict[int, NativeExternalSite] = {}
@@ -463,7 +464,7 @@ def plan_spx_native_engine(
                 symbol = None
                 ordinal = None
                 resolved_import = _static_iat_import_identity(
-                    target_expression, import_iat_vas=import_iat_vas
+                    target_expression, import_slots=import_index
                 )
                 if resolved_import is None:
                     resolved_import = propagated_import_sites.get(
@@ -526,7 +527,24 @@ def plan_spx_native_engine(
                         f"{transfer_id} external event must name exactly one symbol or ordinal"
                     )
                 identity: str | int = symbol if isinstance(symbol, str) else int(ordinal)
-                supplied_iat = import_iat_vas.get((dll.lower(), identity))
+                exact_slot = _static_iat_import_identity(
+                    target_expression, import_slots=import_index
+                )
+                identity_slots = import_index.by_identity.get(
+                    (dll.lower(), identity), ()
+                )
+                supplied_iat = (
+                    exact_slot[3]
+                    if exact_slot is not None
+                    and exact_slot[:3] == (
+                        dll.lower(),
+                        symbol if isinstance(symbol, str) else None,
+                        ordinal if isinstance(ordinal, int) else None,
+                    )
+                    else identity_slots[0].iat_va
+                    if len(identity_slots) == 1
+                    else None
+                )
                 encoded_iat = (
                     None
                     if machine_ir_mode or raw is None
@@ -548,6 +566,12 @@ def plan_spx_native_engine(
                     continue
                 iat_va = encoded_iat if encoded_iat is not None else supplied_iat
                 if iat_va is None:
+                    detail = (
+                        "logical import has multiple physical IAT cells and the "
+                        "external event lacks exact slot evidence"
+                        if len(identity_slots) > 1
+                        else None
+                    )
                     blockers.append(_blocker(
                         "external_import_iat_evidence_missing",
                         transfer_id=transfer_id,
@@ -558,6 +582,7 @@ def plan_spx_native_engine(
                             if machine_ir_mode
                             else raw.hex() if raw is not None else None
                         ),
+                        detail=detail,
                         next_action=(
                             "bind this import identity to one exact original IAT cell "
                             "from the load-image contract"
@@ -1138,7 +1163,7 @@ def plan_spx_native_engine(
                 callback_rva,
             ))
     callbacks = tuple(
-        NativeCallbackTarget(
+        NativeCodeTarget(
             id=index,
             rva=rva,
             transfer_id=callback_specs[rva][0],
@@ -1148,27 +1173,40 @@ def plan_spx_native_engine(
         )
         for index, rva in enumerate(sorted(callback_specs))
     )
-    callback_adapters = tuple(
-        NativeCallbackAdapter(
+    observed_callback_rvas = {
+        target.rva for target in callbacks if target.kind == "generic_callback"
+    }
+    if observed_callback_rvas != declared_callback_rvas:
+        blockers.append(_blocker(
+            "native_ingress_callback_registry_mismatch",
+            expected=sorted(declared_callback_rvas),
+            observed=sorted(observed_callback_rvas),
+            next_action=(
+                "regenerate the native ingress plan from the exact checked "
+                "callback capability inventory"
+            ),
+        ))
+    code_capability_bindings = tuple(
+        NativeCodeCapabilityBinding(
             id=index,
             instruction_rva=instruction_rva,
             argument_index=argument_index,
             original_rva=original_rva,
-            callback_rva=callback_rva,
+            code_target_rva=callback_rva,
         )
         for index, (
             instruction_rva, argument_index, original_rva, callback_rva
         ) in enumerate(sorted(callback_adapter_specs))
     )
-    callback_adapter_receipts, receipt_blockers = (
-        _build_callback_adapter_receipts(
+    code_capability_registrations, registration_blockers = (
+        _build_code_capability_registrations(
             sites=tuple(sites),
-            adapters=callback_adapters,
+            bindings=code_capability_bindings,
             targets=callbacks,
         )
     )
-    blockers.extend(receipt_blockers)
-    callback_passthroughs = tuple(
+    blockers.extend(registration_blockers)
+    code_capability_passthroughs = tuple(
         NativeCallbackPassthrough(
             instruction_rva=instruction_rva,
             argument_index=argument_index,
@@ -1203,21 +1241,63 @@ def plan_spx_native_engine(
     return NativeEnginePlan(
         input_mode=_MACHINE_IR_INPUT_MODE,
         entry_rva=_required_u32(entry_rva, "entry RVA"),
+        native_ingress_plan_id=str(native_ingress_plan["plan_sha256"]),
         transfer_count=len(rows),
         external_sites=tuple(sorted(sites, key=lambda item: item.instruction_rva)),
         import_bindings=tuple(import_bindings),
         indirect_call_count=indirect_calls,
-        callback_targets=callbacks,
-        callback_adapters=callback_adapters,
-        callback_adapter_receipts=callback_adapter_receipts,
+        code_targets=callbacks,
+        code_capability_bindings=code_capability_bindings,
+        code_capability_registrations=code_capability_registrations,
         implementation_dispatch_receipt=implementation_dispatch_receipt,
-        callback_passthroughs=callback_passthroughs,
+        code_capability_passthroughs=code_capability_passthroughs,
         x87_operations=tuple(x87_operations),
         termination_import=checked_termination_import,
         recovered_executable_data_ranges=recovered_data_ranges,
         fixed_image_base=fixed_image_base,
         blockers=tuple(blockers),
     )
+
+
+def _native_ingress_engine_roots(
+    payload: Mapping[str, Any],
+) -> tuple[int, tuple[dict[str, int | str], ...], set[int]]:
+    if not isinstance(payload, Mapping):
+        raise ToolkitInputError("native ingress plan is not an object")
+    core = {key: value for key, value in payload.items() if key != "plan_sha256"}
+    if (
+        payload.get("format") != NATIVE_INGRESS_PLAN_FORMAT
+        or payload.get("status") != "complete"
+        or payload.get("plan_sha256") != canonical_sha256_v3(core)
+    ):
+        raise ToolkitInputError("native ingress plan is stale or incomplete")
+    ingresses = payload.get("ingresses")
+    if not isinstance(ingresses, list) or any(
+        not isinstance(row, Mapping) for row in ingresses
+    ):
+        raise ToolkitInputError("native ingress descriptor inventory is malformed")
+    module_entries = [
+        row for row in ingresses
+        if row.get("role") in {"process_entry", "dll_entry"}
+    ]
+    if len(module_entries) != 1:
+        raise ToolkitInputError(
+            "native ingress plan must contain exactly one module entry"
+        )
+    entry_rva = _required_u32(
+        module_entries[0].get("target_rva"), "native ingress module entry RVA"
+    )
+    tls = tuple({
+        "rva": _required_u32(row.get("target_rva"), "TLS callback ingress RVA"),
+        "kind": "tls_callback",
+        "stack_cleanup_bytes": 12,
+    } for row in ingresses if row.get("role") == "tls_callback")
+    tls = tuple(sorted(tls, key=lambda row: int(row["rva"])))
+    callbacks = {
+        _required_u32(row.get("target_rva"), "callback ingress RVA")
+        for row in ingresses if row.get("role") == "callback"
+    }
+    return entry_rva, tls, callbacks
 
 
 from .engine_package import write_spx_native_engine_package  # noqa: E402
@@ -1230,7 +1310,7 @@ __all__ = [
     "NATIVE_ENGINE_PLAN_FORMAT",
     "PE32_BASE_RELOCATION_EVIDENCE_FORMAT",
     "NativeEnginePlan",
-    "NativeCallbackTarget",
+    "NativeCodeTarget",
     "NativeExternalSite",
     "NativeTerminationImport",
     "NativeX87Operation",

@@ -19,6 +19,9 @@
   profile, concurrency signatures, and the lifted-C atomic API.
 - [Checked callbacks](callbacks.md): structured provider protocols, callback
   authority V4, opaque portable handles, and generational delivery semantics.
+- [Native ingress and deployable PE32 modules](native-ingress.md): exact loader
+  surfaces, object/data-export authority, generic ingress, outcomes/SEH, link
+  receipts, and candidate-observed multi-image completion.
 - [Checked boundary transducers](boundary-transducers.md): reusable interaction
   contracts, Relation IR V3, object origins, executable plans, and plan-aware
   activation.

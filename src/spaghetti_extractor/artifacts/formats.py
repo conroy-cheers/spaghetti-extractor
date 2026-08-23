@@ -15,6 +15,33 @@ INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT = (
 INTERPRETER_NATIVE_BUILD_FORMAT = "spaghetti-extractor-interpreter-native-build-v1"
 SPX_INTERPRETER_PROGRAM_FORMAT = "spaghetti-extractor-semantic-interpreter-program-v1"
 SPX_INTERPRETER_PACKAGE_FORMAT = "spaghetti-extractor-semantic-interpreter-package-v1"
+BEHAVIORAL_C_LAYOUT_INTENT_FORMAT = "spaghetti-extractor-behavioral-c-layout-intent-v1"
+BEHAVIORAL_C_PLAN_FORMAT = "spaghetti-extractor-behavioral-c-plan-v1"
+BEHAVIORAL_C_PACKAGE_FORMAT = "spaghetti-extractor-behavioral-c-package-v1"
+BEHAVIORAL_C_LOWERING_FORMAT = "spaghetti-extractor-behavioral-c-lowering-v1"
+BEHAVIORAL_C_COVERAGE_FORMAT = "spaghetti-extractor-behavioral-c-coverage-v1"
+BEHAVIORAL_C_RUNTIME_QUALIFICATION_FORMAT = (
+    "spaghetti-extractor-behavioral-c-runtime-qualification-v1"
+)
+BEHAVIORAL_C_COMPLETION_FORMAT = "spaghetti-extractor-behavioral-c-completion-v1"
+PE32_MODULE_INTERFACE_FORMAT = "spaghetti-extractor-pe32-module-interface-v2"
+NATIVE_INGRESS_PLAN_FORMAT = "spaghetti-extractor-native-ingress-plan-v1"
+CHECKED_BOUNDARY_OUTCOME_PROTOCOL_FORMAT = (
+    "spaghetti-extractor-checked-boundary-outcome-protocol-v1"
+)
+CHECKED_SEH_PROTOCOL_FORMAT = "spaghetti-extractor-checked-seh-protocol-v1"
+NATIVE_INGRESS_LINK_RECEIPT_FORMAT = (
+    "spaghetti-extractor-native-ingress-link-receipt-v1"
+)
+PE32_MODULE_DEPLOYMENT_FORMAT = "spaghetti-extractor-pe32-module-deployment-v1"
+PE32_LOADER_SURFACE_RECEIPT_FORMAT = (
+    "spaghetti-extractor-pe32-loader-surface-receipt-v1"
+)
+PE32_PROJECT_INTENT_FORMAT = "spaghetti-extractor-pe32-project-intent-v1"
+PE32_PROJECT_LOAD_PLAN_FORMAT = "spaghetti-extractor-pe32-project-load-plan-v1"
+PE32_LOAD_OBSERVATION_FORMAT = "spaghetti-extractor-pe32-load-observation-v1"
+PE32_OBSERVED_LOAD_GRAPH_FORMAT = "spaghetti-extractor-pe32-observed-load-graph-v1"
+PE32_PROJECT_COMPLETION_FORMAT = "spaghetti-extractor-pe32-project-completion-v2"
 NATIVE_ENGINE_PLAN_FORMAT = "spaghetti-extractor-native-engine-plan-v1"
 NATIVE_ENGINE_PACKAGE_FORMAT = "spaghetti-extractor-native-engine-package-v1"
 NATIVE_RUNTIME_PACKAGE_FORMAT = "spaghetti-extractor-native-runtime-package-v1"
@@ -53,7 +80,6 @@ STATIC_MACHINE_IMPORT_PROFILE_FORMAT = "spaghetti-extractor-static-machine-impor
 AUTHORITY_DIAGNOSTICS_V3_FORMAT = (
     "spaghetti-extractor-authority-diagnostics-v3"
 )
-CALLBACK_ADAPTER_RECEIPT_FORMAT = "spaghetti-extractor-native-callback-adapter-receipt-v1"
 IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT = (
     "spaghetti-extractor-native-implementation-dispatch-receipt-v3"
 )
@@ -211,6 +237,25 @@ BOUNDARY_PROJECTION_RECEIPT_V1_FORMAT = (
     "spaghetti-extractor-boundary-projection-receipt-v1"
 )
 __all__ = [
+    "BEHAVIORAL_C_COMPLETION_FORMAT",
+    "BEHAVIORAL_C_COVERAGE_FORMAT",
+    "BEHAVIORAL_C_LAYOUT_INTENT_FORMAT",
+    "BEHAVIORAL_C_LOWERING_FORMAT",
+    "BEHAVIORAL_C_PACKAGE_FORMAT",
+    "BEHAVIORAL_C_PLAN_FORMAT",
+    "BEHAVIORAL_C_RUNTIME_QUALIFICATION_FORMAT",
+    "CHECKED_BOUNDARY_OUTCOME_PROTOCOL_FORMAT",
+    "CHECKED_SEH_PROTOCOL_FORMAT",
+    "NATIVE_INGRESS_LINK_RECEIPT_FORMAT",
+    "NATIVE_INGRESS_PLAN_FORMAT",
+    "PE32_MODULE_DEPLOYMENT_FORMAT",
+    "PE32_LOADER_SURFACE_RECEIPT_FORMAT",
+    "PE32_MODULE_INTERFACE_FORMAT",
+    "PE32_PROJECT_INTENT_FORMAT",
+    "PE32_PROJECT_LOAD_PLAN_FORMAT",
+    "PE32_LOAD_OBSERVATION_FORMAT",
+    "PE32_OBSERVED_LOAD_GRAPH_FORMAT",
+    "PE32_PROJECT_COMPLETION_FORMAT",
     "ABI_ANALYSIS_BUNDLE_FORMAT",
     "ABI_CONSTRAINT_RESULT_FORMAT",
     "ABI_EVIDENCE_FORMAT",
@@ -228,7 +273,6 @@ __all__ = [
     "COMPONENT_INTERFACE_SPEC_FORMAT",
     "COMPONENT_QUALIFICATION_FORMAT",
     "INSTRUCTION_ORDERED_EFFECT_SCHEDULE_FORMAT",
-    "CALLBACK_ADAPTER_RECEIPT_FORMAT",
     "CALLER_MEMORY_FRAME_MODEL",
     "IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT",
     "ISA_ENCODING_PROPOSAL_FORMAT",

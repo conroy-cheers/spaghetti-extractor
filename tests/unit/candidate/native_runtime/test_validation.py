@@ -5,56 +5,47 @@ from tests.unit.candidate.native_runtime._callback_support import *
 
 
 class NativeRuntimeValidationTests(unittest.TestCase):
-    def test_callback_adapter_receipt_tampering_fails_closed(self) -> None:
-        def missing_receipt(plan: dict[str, object]) -> None:
-            plan["callback_adapter_receipts"] = []
-            plan["counts"]["callback_adapter_receipts"] = 0
+    def test_code_capability_registration_tampering_fails_closed(self) -> None:
+        def missing_registration(plan: dict[str, object]) -> None:
+            plan["code_capability_registrations"] = []
+            plan["counts"]["code_capability_registrations"] = 0
 
-        def missing_adapter(plan: dict[str, object]) -> None:
-            plan["callback_adapters"] = []
-            plan["counts"]["callback_adapters"] = 0
+        def extra_registration(plan: dict[str, object]) -> None:
+            registration = dict(plan["code_capability_registrations"][0])
+            registration["instruction_rva"] = 0x2000
+            plan["code_capability_registrations"].append(registration)
+            plan["counts"]["code_capability_registrations"] = 2
 
-        def extra_adapter(plan: dict[str, object]) -> None:
-            adapter = dict(plan["callback_adapters"][0])
-            adapter["id"] = 1
-            adapter["instruction_rva"] = 0x2000
-            plan["callback_adapters"].append(adapter)
-            plan["counts"]["callback_adapters"] = 2
+        def duplicate_registration(plan: dict[str, object]) -> None:
+            registration = dict(plan["code_capability_registrations"][0])
+            plan["code_capability_registrations"].append(registration)
+            plan["counts"]["code_capability_registrations"] = 2
 
-        def duplicate_adapter(plan: dict[str, object]) -> None:
-            adapter = dict(plan["callback_adapters"][0])
-            adapter["id"] = 1
-            plan["callback_adapters"].append(adapter)
-            plan["counts"]["callback_adapters"] = 2
-
-        def mismatched_adapter(plan: dict[str, object]) -> None:
-            receipt = plan["callback_adapter_receipts"][0]
-            receipt["adapter_entries"][0]["original_rva"] = 0x3010
-            _rehash_callback_receipt(receipt)
+        def mismatched_target(plan: dict[str, object]) -> None:
+            plan["code_capability_registrations"][0]["logical_target_rva"] = 0x3010
 
         def mismatched_metadata(plan: dict[str, object]) -> None:
-            receipt = plan["callback_adapter_receipts"][0]
-            receipt["lifetime"] = "until-process-exit"
-            _rehash_callback_receipt(receipt)
+            plan["code_capability_registrations"][0]["lifetime"] = {
+                "kind": "process"
+            }
 
-        def mismatched_abi(plan: dict[str, object]) -> None:
-            receipt = plan["callback_adapter_receipts"][0]
-            receipt["abi"]["stack_cleanup_bytes"] = 12
-            _rehash_callback_receipt(receipt)
+        def mismatched_contract(plan: dict[str, object]) -> None:
+            plan["code_capability_registrations"][0][
+                "checked_external_contract_sha256"
+            ] = "0" * 64
 
         def mismatched_invocation(plan: dict[str, object]) -> None:
-            receipt = plan["callback_adapter_receipts"][0]
-            receipt["invocation"] = "direct-native-callback"
-            _rehash_callback_receipt(receipt)
+            plan["code_capability_registrations"][0]["invocation"] = (
+                "direct-native-callback"
+            )
 
         cases = {
-            "missing receipt": missing_receipt,
-            "missing adapter": missing_adapter,
-            "extra": extra_adapter,
-            "duplicate": duplicate_adapter,
-            "adapter mismatch": mismatched_adapter,
+            "missing": missing_registration,
+            "extra": extra_registration,
+            "duplicate": duplicate_registration,
+            "target mismatch": mismatched_target,
             "lifetime mismatch": mismatched_metadata,
-            "ABI mismatch": mismatched_abi,
+            "contract mismatch": mismatched_contract,
             "invocation mismatch": mismatched_invocation,
         }
         for label, mutate in cases.items():

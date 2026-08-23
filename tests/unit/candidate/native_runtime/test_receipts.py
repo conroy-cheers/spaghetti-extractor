@@ -5,7 +5,33 @@ from tests.unit.candidate.native_runtime._callback_support import *
 
 
 class NativeRuntimeReceiptTests(unittest.TestCase):
-    def test_callback_adapter_receipt_is_bound_into_runtime_plan(self) -> None:
+    def test_generic_ingress_closes_outgoing_bridge_thread_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            interpreter, engine = _packages(root)
+            package = write_spx_native_runtime_package(
+                interpreter_package=interpreter,
+                native_engine_package=engine,
+                out=root / "runtime",
+            )
+
+            self.assertEqual(package["status"], "ready")
+            self.assertEqual(
+                package["policy"]["native_ingress"]["features"],
+                [
+                    "code_capability_registry_v1",
+                    "host_thread_concurrency_v1",
+                    "loader_lock_safe_bootstrap_v1",
+                    "outgoing_bridge_pe_tls_state_v1",
+                    "per_thread_ingress_frame_chain_v1",
+                    "same_thread_reentrancy_v1",
+                    "tls_private_engine_stack_v1",
+                    "transactional_boundary_writeback_v1",
+                ],
+            )
+            self.assertEqual(package["blockers"], [])
+
+    def test_code_capability_registration_is_bound_by_engine_plan(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             interpreter, engine, profile = _callback_adapter_packages(root)
@@ -15,12 +41,14 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
                 external_profile=profile,
             )
 
-            self.assertEqual(len(plan.callback_adapter_receipts), 1)
-            receipt = plan.callback_adapter_receipts[0]
-            self.assertEqual(receipt["target_rvas"], [0x3000])
-            self.assertEqual(len(receipt["adapter_entries"]), 1)
+            engine_plan = json.loads(
+                (engine / "native-engine-plan.json").read_text(encoding="utf-8")
+            )
+            registrations = engine_plan["code_capability_registrations"]
+            self.assertEqual(len(registrations), 1)
+            self.assertEqual(registrations[0]["code_target_rva"], 0x3000)
             self.assertEqual(
-                receipt["invocation"],
+                registrations[0]["invocation"],
                 "nested-machine-ir-callback-adapter-v1",
             )
             package = write_spx_native_runtime_package(
@@ -29,10 +57,8 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
                 external_profile=profile,
                 out=root / "runtime",
             )
-            self.assertEqual(
-                package["inputs"]["callback_adapter_receipts"],
-                [receipt],
-            )
+            self.assertNotIn("callback_adapter_receipts", package["inputs"])
+            self.assertNotIn("callback_abis", package["inputs"])
 
     def test_package_binds_both_manifests_and_is_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -61,7 +87,7 @@ class NativeRuntimeReceiptTests(unittest.TestCase):
                     "blocked_external_sites": 0,
                 },
             )
-            self.assertEqual(first["inputs"]["entry_rva"], 0x1000)
+            self.assertNotIn("entry_rva", first["inputs"])
             self.assertEqual(first["inputs"]["transfer_rvas"], [0x1000])
             for name in (
                 "native-runtime.h",

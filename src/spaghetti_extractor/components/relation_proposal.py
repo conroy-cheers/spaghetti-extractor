@@ -24,6 +24,7 @@ from .machine_binding import (
     ComponentMachineBindingV1,
     MachineProjectionV1,
     OperationMachineBindingV1,
+    ServiceMachineBindingV1,
 )
 from .relation_projection import (
     RelationProjectionError,
@@ -119,6 +120,9 @@ def build_component_relation_proposal(
     }
     operations = interface.operation_index()
     types = interface.type_index()
+    service_bindings = {
+        item.service_id: item for item in machine_binding.services
+    }
     relation_operations: list[dict[str, object]] = []
     consumed_selections: set[str] = set()
     for bound in machine_binding.operations:
@@ -135,6 +139,7 @@ def build_component_relation_proposal(
                 operation=logical,
                 interface=interface,
                 types=types,
+                service_bindings=service_bindings,
                 contract_catalog=contract_catalog,
                 selected_contract_id=selections.get(site.identity),
             )
@@ -200,6 +205,7 @@ def _interaction_payload(
     operation: object,
     interface: PortableComponentInterfaceV2,
     types: Mapping[str, LogicalTypeV1],
+    service_bindings: Mapping[str, ServiceMachineBindingV1],
     contract_catalog: InteractionContractCatalogV1,
     selected_contract_id: str | None,
 ) -> dict[str, object]:
@@ -241,6 +247,11 @@ def _interaction_payload(
             types=types,
             contract_authority=contract_authorities.get(
                 (port.direction, port.identity)
+            ),
+            authority_selector=_service_argument_authority_selector(
+                site=site,
+                port=port,
+                service_bindings=service_bindings,
             ),
         )
         for port in site.ports
@@ -291,6 +302,7 @@ def _port_clause(
     interface: PortableComponentInterfaceV2,
     types: Mapping[str, LogicalTypeV1],
     contract_authority: MachineProjectionV1 | None,
+    authority_selector: str | None,
 ) -> dict[str, object]:
     logical_type = types[port.type_id]
     source = port.source
@@ -329,6 +341,7 @@ def _port_clause(
                 operation=operation,
                 interface=interface,
                 type_id=port.type_id,
+                authority_selector=authority_selector,
             ),
         )
         realize = []
@@ -503,6 +516,7 @@ def _authority_template(
     operation: object,
     interface: PortableComponentInterfaceV2,
     type_id: str,
+    authority_selector: str | None = None,
 ) -> MachineProjectionV1 | None:
     parameter_types = {item.identity: item.type_id for item in getattr(operation, "parameters")}
     result_types = {item.identity: item.type_id for item in getattr(operation, "results")}
@@ -531,9 +545,42 @@ def _authority_template(
             authorities.setdefault(_authority_id(item), item)
         except RelationProjectionError:
             continue
+    if authority_selector is not None:
+        return authorities.get(authority_selector)
     if len(authorities) == 1:
         return next(iter(authorities.values()))
     return None
+
+
+def _service_argument_authority_selector(
+    *,
+    site: ComponentInteractionSiteV1,
+    port: InteractionPortBindingV1,
+    service_bindings: Mapping[str, ServiceMachineBindingV1],
+) -> str | None:
+    """Resolve an explicitly checked origin selector for one service argument."""
+
+    if port.direction != "input" or not port.identity.startswith("argument."):
+        return None
+    service_id = site.machine_event.get("service_id")
+    if not isinstance(service_id, str) and site.subject.get("kind") == "machine_service":
+        service_id = site.subject.get("service_id")
+    if not isinstance(service_id, str):
+        return None
+    service = service_bindings.get(service_id)
+    if service is None:
+        return None
+    raw_selectors = service.provider.get("argument_authority_selectors")
+    if not isinstance(raw_selectors, list):
+        return None
+    try:
+        index = int(port.identity.removeprefix("argument."), 10)
+    except ValueError:
+        return None
+    if index < 0 or index >= len(raw_selectors):
+        return None
+    selector = raw_selectors[index]
+    return selector if isinstance(selector, str) else None
 
 
 def _validate_contract_specialization(

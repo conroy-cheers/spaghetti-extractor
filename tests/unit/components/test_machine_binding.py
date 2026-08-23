@@ -690,6 +690,48 @@ class ComponentMachineBindingTests(unittest.TestCase):
         self.assertTrue(receipt["activation_authorized"])
         self.assertTrue(receipt["policy"]["runtime_lowering_is_separate_authority"])
 
+    def test_external_service_authority_selector_inventory_is_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine, manifest, interface, binding = self._fixture(Path(temporary))
+            binding = copy.deepcopy(binding)
+            binding["services"][0]["provider"][
+                "argument_authority_selectors"
+            ] = []
+            binding.pop("binding_sha256")
+            binding["binding_sha256"] = canonical_sha256_v3(binding)
+            receipt = check_component_machine_binding(
+                binding=binding,
+                interface=interface,
+                machine_ir=machine,
+                machine_ir_manifest=manifest,
+                external_site_ids=("site:notify",),
+            )
+
+        self.assertEqual(receipt["status"], "violated")
+        self.assertIn(
+            "service_argument_authority_selector_inventory_mismatch",
+            {row["code"] for row in receipt["issues"]},
+        )
+
+    def test_service_owned_effect_needs_no_duplicate_machine_effect_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            machine, manifest, interface, binding = self._fixture(Path(temporary))
+            interface["services"][0]["effect_ids"] = ["value_written"]
+            binding = copy.deepcopy(binding)
+            binding["interface"]["sha256"] = canonical_sha256_v3(interface)
+            binding["operations"][0]["effects"] = []
+            binding.pop("binding_sha256")
+            binding["binding_sha256"] = canonical_sha256_v3(binding)
+            receipt = check_component_machine_binding(
+                binding=binding,
+                interface=interface,
+                machine_ir=machine,
+                machine_ir_manifest=manifest,
+                external_site_ids=("site:notify",),
+            )
+
+        self.assertEqual(receipt["status"], "checked", receipt["issues"])
+
     def test_unknown_external_provider_is_incomplete(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             machine, manifest, interface, binding = self._fixture(Path(temporary))

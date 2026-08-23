@@ -1,8 +1,6 @@
-"""Object receipts, linker anchors, and output helpers for native builds."""
-
+"""Object receipts, linked-symbol evidence, and output helpers for native builds."""
 from __future__ import annotations
 
-import struct
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -26,11 +24,6 @@ from .build_values import (
     _read_json_object,
     _relative_path,
     _u32,
-)
-from .pe import (
-    EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
-    ExecutableAnchor,
-    ExecutableAnchorManifest,
 )
 
 
@@ -212,120 +205,6 @@ def _load_precompiled_native_objects(
     return result
 
 
-def _generate_anchor_manifest(
-    *, contract: Any, engine: _Package, linker_map: Path
-) -> ExecutableAnchorManifest:
-    symbols = _payload_symbol_rvas(
-        linker_map, image_base=contract.identity.preferred_base
-    )
-    entry_target = symbols.get("spx_payload_entry")
-    if entry_target is None:
-        raise CandidateNativeBuildError(
-            "linked payload map omits spx_payload_entry"
-        )
-
-    callback_rows = engine.payload.get("callback_abis")
-    if not isinstance(callback_rows, list):
-        raise CandidateNativeBuildError(
-            "native-engine callback ABI inventory is malformed"
-        )
-    callback_rvas: list[int] = []
-    targets: dict[int, int] = {}
-    for index, raw in enumerate(callback_rows):
-        if not isinstance(raw, Mapping):
-            raise CandidateNativeBuildError(
-                f"native-engine callback ABI {index} is not an object"
-            )
-        callback_rva = _u32(raw.get("rva"), f"callback ABI {index} RVA")
-        symbol = raw.get("symbol")
-        expected_symbol = f"spx_payload_callback_{callback_rva:08x}"
-        if symbol != expected_symbol:
-            raise CandidateNativeBuildError(
-                f"callback ABI {index} has a noncanonical bridge symbol"
-            )
-        target = symbols.get(expected_symbol)
-        if target is None:
-            raise CandidateNativeBuildError(
-                f"linked payload map omits {expected_symbol}"
-            )
-        callback_rvas.append(callback_rva)
-        targets[callback_rva] = target
-    if len(set(callback_rvas)) != len(callback_rvas):
-        raise CandidateNativeBuildError(
-            "native-engine callback ABI inventory contains duplicate RVAs"
-        )
-
-    tls_rvas = tuple(
-        callback.rva for callback in (() if contract.tls is None else contract.tls.callbacks)
-    )
-    missing_tls = sorted(set(tls_rvas) - set(callback_rvas))
-    if missing_tls:
-        raise CandidateNativeBuildError(
-            "native-engine package omits TLS callback bridges: "
-            + ", ".join(f"{rva:#x}" for rva in missing_tls)
-        )
-    ordinary_callbacks = tuple(sorted(set(callback_rvas) - set(tls_rvas)))
-    routes = [(contract.identity.entry_rva, entry_target)]
-    routes.extend((rva, targets[rva]) for rva in tls_rvas)
-    routes.extend((rva, targets[rva]) for rva in ordinary_callbacks)
-    anchors = tuple(
-        ExecutableAnchor(
-            rva=source,
-            bytes=_near_jump_covering_original_relocations(
-                source,
-                target,
-                contract.relocations,
-            ),
-        )
-        for source, target in sorted(routes)
-    )
-    for left, right in zip(anchors, anchors[1:]):
-        if left.end_rva > right.rva:
-            raise CandidateNativeBuildError(
-                "generated executable anchors overlap"
-            )
-    return ExecutableAnchorManifest(
-        image_base=contract.identity.preferred_base,
-        entry_anchor_rva=contract.identity.entry_rva,
-        tls_callback_anchor_rvas=tls_rvas,
-        callback_anchor_rvas=ordinary_callbacks,
-        anchors=anchors,
-        format=EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
-    )
-
-
-def _near_jump_covering_original_relocations(
-    source_rva: int,
-    target_rva: int,
-    relocation_blocks: Sequence[Any],
-) -> bytes:
-    """Pad a root jump so loader fixups cannot partially rewrite its bytes."""
-
-    jump = _near_jump(source_rva, target_rva)
-    end_rva = source_rva + len(jump)
-    relocations = [
-        relocation
-        for block in relocation_blocks
-        for relocation in block.relocations
-        if relocation.type != 0 and relocation.target_rva is not None
-    ]
-    changed = True
-    while changed:
-        changed = False
-        for relocation in relocations:
-            relocation_start = relocation.target_rva
-            relocation_end = relocation_start + relocation.width
-            if relocation_start < end_rva and source_rva < relocation_end:
-                if relocation_start < source_rva:
-                    raise CandidateNativeBuildError(
-                        "original relocation begins before and overlaps a generated anchor"
-                    )
-                if relocation_end > end_rva:
-                    end_rva = relocation_end
-                    changed = True
-    return jump + b"\x90" * (end_rva - source_rva - len(jump))
-
-
 def _payload_symbol_rvas(linker_map: Path, *, image_base: int) -> dict[str, int]:
     try:
         text = linker_map.read_text(encoding="utf-8", errors="strict")
@@ -348,15 +227,6 @@ def _payload_symbol_rvas(linker_map: Path, *, image_base: int) -> dict[str, int]
                 f"payload linker map gives ambiguous addresses for {name}"
             )
     return result
-
-
-def _near_jump(source_rva: int, target_rva: int) -> bytes:
-    displacement = target_rva - (source_rva + 5)
-    if not -(1 << 31) <= displacement < (1 << 31):
-        raise CandidateNativeBuildError(
-            "generated executable anchor target is outside near-jump range"
-        )
-    return b"\xe9" + struct.pack("<i", displacement)
 
 
 def _output_binding(path: Path, root: Path) -> dict[str, Any]:

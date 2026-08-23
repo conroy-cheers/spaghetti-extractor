@@ -157,11 +157,8 @@ class NativeExternalRangeRule:
 class NativeRuntimePlan:
     """Checked immutable inputs used to render one native runtime."""
 
-    entry_rva: int
     transfer_rvas: tuple[int, ...]
     recovered_executable_data_ranges: tuple[tuple[int, int], ...]
-    callback_abis: tuple[tuple[int, int], ...]
-    callback_adapter_receipts: tuple[dict[str, Any], ...]
     implementation_dispatch_receipt: dict[str, Any]
     implementation_dispatches: tuple[NativeImplementationDispatch, ...]
     external_range_rules: tuple[NativeExternalRangeRule, ...]
@@ -181,6 +178,11 @@ class NativeRuntimePlan:
     native_engine_manifest_sha256: str
     native_engine_plan_path: Path
     native_engine_plan_sha256: str
+    native_ingress_plan_path: Path
+    native_ingress_plan_sha256: str
+    ingress_descriptors: tuple[dict[str, Any], ...]
+    ingress_tls_layout: dict[str, Any]
+    ingress_runtime_features: tuple[str, ...]
     x87_handler_mode: str
     has_modeled_termination: bool
 
@@ -190,18 +192,10 @@ class NativeRuntimePlan:
 
     def payload(self) -> dict[str, Any]:
         return {
-            "entry_rva": self.entry_rva,
             "transfer_rvas": list(self.transfer_rvas),
             "recovered_executable_data_ranges": [
                 {"rva_start": start, "rva_end": end}
                 for start, end in self.recovered_executable_data_ranges
-            ],
-            "callback_abis": [
-                {"rva": rva, "stack_cleanup_bytes": cleanup}
-                for rva, cleanup in self.callback_abis
-            ],
-            "callback_adapter_receipts": [
-                dict(receipt) for receipt in self.callback_adapter_receipts
             ],
             "implementation_dispatch_receipt": dict(
                 self.implementation_dispatch_receipt
@@ -264,6 +258,13 @@ class NativeRuntimePlan:
             "native_engine_plan": {
                 "path": self.native_engine_plan_path.name,
                 "sha256": self.native_engine_plan_sha256,
+            },
+            "native_ingress_plan": {
+                "path": self.native_ingress_plan_path.name,
+                "sha256": self.native_ingress_plan_sha256,
+                "ingresses": [dict(row) for row in self.ingress_descriptors],
+                "tls_layout": dict(self.ingress_tls_layout),
+                "runtime_features": list(self.ingress_runtime_features),
             },
             "runtime_abi": {
                 "atomic_compare_exchange_handler": True,

@@ -12,6 +12,7 @@ from ..roundtrip_fuzz.image_io import (
     load_spx_load_image_contract,
 )
 from ..errors import ToolkitInputError
+from .imports import NativeImportSlot, NativeImportSlotIndex
 
 
 _DYNAMIC_BASE = 0x0040
@@ -22,7 +23,7 @@ class NativeImageInputs:
     entry_rva: int
     image_base: int
     fixed_image_base: int | None
-    import_iat_vas: Mapping[tuple[str, str | int], int]
+    import_slots: tuple[NativeImportSlot, ...]
     tls_callback_targets: tuple[Mapping[str, Any], ...]
     base_relocation_evidence: Mapping[str, Any] | None
     initial_zero_ranges: tuple[tuple[int, int], ...]
@@ -46,7 +47,7 @@ def derive_native_image_inputs(
     dll_characteristics = struct.unpack_from("<H", headers, optional_offset + 70)[0]
     dynamic_base = bool(dll_characteristics & _DYNAMIC_BASE)
 
-    imports: dict[tuple[str, str | int], int] = {}
+    imports: list[NativeImportSlot] = []
     for descriptor in contract.imports:
         for cell in descriptor.cells:
             identity: str | int | None = (
@@ -54,14 +55,17 @@ def derive_native_image_inputs(
             )
             if identity is None:
                 raise ToolkitInputError("load-image import cell has no identity")
-            key = (descriptor.dll.lower(), identity)
-            value = contract.identity.preferred_base + cell.iat_rva
-            prior = imports.get(key)
-            if prior is not None and prior != value:
-                raise ToolkitInputError(
-                    f"load-image import identity {key!r} has multiple IAT cells"
-                )
-            imports[key] = value
+            imports.append(NativeImportSlot(
+                image_id=contract.identity.pe_sha256,
+                descriptor_index=descriptor.index,
+                cell_index=cell.index,
+                dll=descriptor.dll.lower(),
+                symbol=cell.symbol,
+                ordinal=cell.ordinal,
+                iat_rva=cell.iat_rva,
+                iat_va=contract.identity.preferred_base + cell.iat_rva,
+            ))
+    import_index = NativeImportSlotIndex.create(imports)
 
     relocation_rows = [
         {
@@ -121,7 +125,7 @@ def derive_native_image_inputs(
         entry_rva=contract.identity.entry_rva,
         image_base=contract.identity.preferred_base,
         fixed_image_base=fixed_image_base,
-        import_iat_vas=imports,
+        import_slots=import_index.slots,
         tls_callback_targets=tuple(callbacks),
         base_relocation_evidence=relocation_evidence,
         initial_zero_ranges=initial_zero_ranges,
@@ -131,9 +135,38 @@ def derive_native_image_inputs(
 def select_native_termination_import(
     *,
     profile_paths: Sequence[Path | str],
-    import_iat_vas: Mapping[tuple[str, str | int], int],
+    import_slots: Sequence[NativeImportSlot],
+    preferred_identity: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any] | None:
     profile_set = load_machine_import_profile_set(profile_paths)
+    import_index = NativeImportSlotIndex.create(import_slots)
+    requested_profile_paths = {Path(path).resolve() for path in profile_paths}
+    declared_identities: list[tuple[str, str | int]] = []
+    if preferred_identity is not None:
+        declared_identities.append(
+            _native_termination_identity(
+                preferred_identity, context="native process termination intent"
+            )
+        )
+    for profile in profile_set.profiles:
+        if profile.path not in requested_profile_paths:
+            continue
+        declared = profile.payload.get("native_process_termination")
+        if declared is None:
+            continue
+        declared_identities.append(
+            _native_termination_identity(
+                declared, context=f"{profile.path} native_process_termination"
+            )
+        )
+    if len(set(declared_identities)) > 1:
+        raise ToolkitInputError(
+            "requested machine-import profiles declare conflicting native process "
+            "termination imports"
+        )
+    declared_identity = (
+        declared_identities[0] if declared_identities else None
+    )
     candidates: list[Mapping[str, Any]] = []
     for selected in profile_set.contracts:
         contract = selected.contract
@@ -143,14 +176,28 @@ def select_native_termination_import(
             contract.get("disposition") == "terminates"
             and selected.arity_kind == "fixed"
             and selected.argument_words == 1
-            and key in import_iat_vas
+            and key in import_index.by_identity
+            and (declared_identity is None or key == declared_identity)
         ):
+            slots = import_index.by_identity[key]
+            if len(slots) != 1:
+                raise ToolkitInputError(
+                    "native process termination import has multiple physical IAT "
+                    "cells; select an exact termination slot in target intent"
+                )
+            selected_slot = slots[0]
             candidates.append({
                 "dll": selected.identity.dll,
                 "symbol": identity if isinstance(identity, str) else None,
                 "ordinal": identity if isinstance(identity, int) else None,
                 "disposition": "terminates",
+                "slot_id": selected_slot.slot_id,
             })
+    if declared_identity is not None and not candidates:
+        raise ToolkitInputError(
+            "declared native process termination import is not an imported, "
+            "one-word terminates contract"
+        )
     if len(candidates) > 1:
         rendered = ", ".join(
             f"{item['dll']}!{item['symbol'] or ('#' + str(item['ordinal']))}"
@@ -160,6 +207,31 @@ def select_native_termination_import(
             "multiple imported one-word termination contracts are available: " + rendered
         )
     return candidates[0] if candidates else None
+
+
+def _native_termination_identity(
+    value: Mapping[str, Any], *, context: str
+) -> tuple[str, str | int]:
+    if not isinstance(value, Mapping):
+        raise ToolkitInputError(f"{context} must be an import identity")
+    dll = value.get("dll")
+    symbol = value.get("symbol")
+    ordinal = value.get("ordinal")
+    allowed = {"dll", "symbol"} if symbol is not None else {"dll", "ordinal"}
+    has_symbol = isinstance(symbol, str) and bool(symbol)
+    has_ordinal = (
+        isinstance(ordinal, int)
+        and not isinstance(ordinal, bool)
+        and ordinal >= 0
+    )
+    if (
+        set(value) != allowed
+        or not isinstance(dll, str)
+        or not dll
+        or has_symbol == has_ordinal
+    ):
+        raise ToolkitInputError(f"{context} is malformed")
+    return dll.lower(), symbol if has_symbol else int(ordinal)
 
 
 __all__ = [

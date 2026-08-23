@@ -108,7 +108,12 @@
       "service_id": "compare_memory",
       "provider": {
         "kind": "external_site",
-        "site_id": "external-site-v3:113b3481e724d854f3ba27d44c90758a943de5b69ade25293e7db67512986955"
+        "site_id": "external-site-v3:113b3481e724d854f3ba27d44c90758a943de5b69ade25293e7db67512986955",
+        "argument_authority_selectors": [
+          "left_region",
+          "right_region",
+          null
+        ]
       },
       "mediation": "direct"
     }

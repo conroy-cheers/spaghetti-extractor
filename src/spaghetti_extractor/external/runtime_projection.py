@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..artifacts.io import ArtifactSetReaderV3
+from ..artifacts.io import open_artifact_reader_v3
 from ..authority.external_site_records import (
     CANONICAL_EXTERNAL_SITE_CODEC_V3,
     CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
@@ -50,7 +50,7 @@ def load_authoritative_external_sites(
 ) -> AuthoritativeExternalSiteIndex:
     """Load only complete, authorizing canonical v3 site records."""
 
-    reader = ArtifactSetReaderV3(path)
+    reader = open_artifact_reader_v3(path)
     if reader.manifest.artifact_kind != CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3:
         raise ToolkitInputError(
             "external runtime projection requires canonical-external-sites-v3"
@@ -61,14 +61,19 @@ def load_authoritative_external_sites(
             artifact_record.value.to_value()
         )
         if record.status != "complete" or not record.authorizing:
-            raise ToolkitInputError(
-                f"canonical external-site record {record.record_id!r} is not authorizing"
-            )
+            continue
         for site in record.sites:
             if site.status != "complete" or not site.authorizing or site.contract is None:
-                raise ToolkitInputError(
-                    f"canonical external site {site.site_id!r} is not authorizing"
-                )
+                continue
+            callback_source = site.contract.callback_source_decision
+            if (
+                callback_source is not None
+                and callback_source.kind == "parametric_entry_word"
+            ):
+                # This is valid generic proof authority, but cannot authorize
+                # the finite native bridge required by this runtime.  Leaving
+                # it out makes a reachable use fail as missing authority.
+                continue
             sites.append(
                 AuthoritativeExternalSite(
                     site_id=site.site_id,

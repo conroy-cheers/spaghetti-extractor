@@ -93,16 +93,21 @@ def read_authorized_callback_protocols_v4(
         row = _object(source.value.to_value(), "callback authority record")
         if row.get("schema") != CALLBACK_AUTHORITY_RECORD_V4_SCHEMA:
             raise ValueError("callback authority record schema is unsupported")
-        if row.get("status") != "complete" or row.get("authorizing") is not True:
-            raise ValueError("callback authority inventory is not authorizing")
         callbacks = row.get("callbacks")
         if not isinstance(callbacks, list):
             raise ValueError("callback authority inventory is malformed")
-        for raw in callbacks:
+        selected = [
+            raw
+            for raw in callbacks
+            if isinstance(raw, Mapping) and raw.get("id") in authority_ids
+        ]
+        if not selected:
+            continue
+        if row.get("status") != "complete" or row.get("authorizing") is not True:
+            raise ValueError("callback authority inventory is not authorizing")
+        for raw in selected:
             callback = _object(raw, "callback authority")
             callback_id = _text(callback.get("id"), "callback authority ID")
-            if callback_id not in authority_ids:
-                continue
             if (
                 callback.get("status") != "complete"
                 or callback.get("authorizing") is not True

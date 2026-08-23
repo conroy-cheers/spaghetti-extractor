@@ -567,8 +567,22 @@ class ServiceMachineBindingV1:
             fields = {"kind", "site_id"}
             if "result_projection" in provider:
                 fields.add("result_projection")
+            if "argument_authority_selectors" in provider:
+                fields.add("argument_authority_selectors")
             _exact(provider, fields, f"{context} provider")
             _text(provider["site_id"], f"{context} site id")
+            if "argument_authority_selectors" in provider:
+                for index, selector in enumerate(
+                    _array(
+                        provider["argument_authority_selectors"],
+                        f"{context} argument authority selectors",
+                    )
+                ):
+                    if selector is not None:
+                        _identifier(
+                            selector,
+                            f"{context} argument authority selector {index}",
+                        )
             if "result_projection" in provider:
                 MachineProjectionV1.parse(
                     provider["result_projection"],
@@ -1129,6 +1143,7 @@ def check_component_machine_binding(
             types,
             states,
             effects,
+            services,
             machine,
             set(parsed.unit_ids),
             component_id=parsed.identity,
@@ -1313,11 +1328,27 @@ def _check_machine_service_bindings(
     selected = set(binding.unit_ids)
     for service_binding in binding.services:
         provider = service_binding.provider
+        logical = services.get(service_binding.service_id)
+        selectors = provider.get("argument_authority_selectors")
+        if selectors is not None and logical is not None:
+            parameter_count = len(
+                _array(logical.get("parameter_type_ids"), "service parameters")
+            )
+            if len(_array(selectors, "service argument authority selectors")) != parameter_count:
+                _issue(
+                    issues,
+                    "violated",
+                    "service_argument_authority_selector_inventory_mismatch",
+                    id=service_binding.service_id,
+                    expected=parameter_count,
+                    observed=len(
+                        _array(selectors, "service argument authority selectors")
+                    ),
+                )
         if provider.get("kind") not in {"machine_events", "component_operation"}:
             continue
         if "events" not in provider:
             continue
-        logical = services.get(service_binding.service_id)
         if logical is None:
             continue
         parameter_count = len(
@@ -1402,6 +1433,7 @@ def _check_operation_binding(
     types: Mapping[str, Mapping[str, object]],
     states: Mapping[str, Mapping[str, object]],
     effects: Mapping[str, Mapping[str, object]],
+    services: Mapping[str, Mapping[str, object]],
     machine: Mapping[str, Mapping[str, object]],
     selected_unit_ids: set[str],
     *,
@@ -1533,8 +1565,17 @@ def _check_operation_binding(
         issues=issues,
     )
     expected_effects = set(operation.get("effect_ids", []))
+    service_effects = {
+        effect_id
+        for service_id in operation.get("allowed_service_ids", [])
+        for effect_id in services.get(str(service_id), {}).get("effect_ids", [])
+    }
+    expected_direct_effects = expected_effects - service_effects
     observed_effects = {row.effect_id for row in bound.effects}
-    if observed_effects != expected_effects or not observed_effects <= set(effects):
+    if (
+        observed_effects != expected_direct_effects
+        or not expected_effects <= set(effects)
+    ):
         _issue(issues, "incomplete", "operation_effect_binding_mismatch", id=bound.operation_id)
     if not set(bound.callback_operation_ids) <= set(operations):
         _issue(issues, "violated", "operation_callback_target_unknown", id=bound.operation_id)

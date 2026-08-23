@@ -43,22 +43,19 @@ class NativeRuntimeRenderingTests(unittest.TestCase):
             self.assertIn("spx_native_transfer_rvas", source)
             self.assertIn("spx_program_lookup(rva)", source)
             self.assertIn("target_word - context->image_base", source)
-            self.assertIn("SPX_NATIVE_TERMINAL_UNDEFINED_VALUE", source)
             self.assertIn("context->undefined_fault = 1U", source)
             self.assertNotIn(
                 "spx_native_halt(SPX_NATIVE_TERMINAL_UNDEFINED_VALUE)",
                 source,
             )
-            self.assertIn("__sync_lock_test_and_set", source)
+            self.assertNotIn("__sync_lock_test_and_set", source)
+            self.assertIn("spx_native_runtime_context_current", source)
             self.assertIn("spx_run_function(", source)
             self.assertIn("spx_native_runtime_run_at_rva(", source)
-            self.assertIn("spx_native_runtime_run_nested_callback(", source)
+            self.assertNotIn("spx_native_runtime_run_nested_callback(", source)
             self.assertIn("spx_runtime spx_native_runtime_instance", source)
             self.assertNotIn("static spx_runtime spx_native_runtime", source)
             self.assertNotIn("spx_native_replay_checked_x87_command", source)
-            self.assertIn(
-                "spx_native_terminate(spx_native_terminal_status)", source
-            )
             self.assertIn("__attribute__((noreturn))", header)
             self.assertNotIn("hello", source.lower())
             self.assertNotIn("ExitProcess", source)
@@ -123,6 +120,15 @@ class NativeRuntimeRenderingTests(unittest.TestCase):
             stub = runtime / "interpreter-stub.c"
             stub.write_text(
                 """#include "native-runtime.h"
+#include "native-ingress-runtime.h"
+static uint32_t fixture_runtime_context[0x60000U / 4U];
+static volatile uint32_t fixture_diagnostics[4];
+void *spx_native_runtime_context_current(void) {
+  return fixture_runtime_context;
+}
+volatile uint32_t *spx_native_runtime_diagnostic_slot(uint32_t index) {
+  return index < 4U ? &fixture_diagnostics[index] : 0;
+}
 const spx_program_transfer *spx_program_lookup(uint32_t source_rva) {
   return source_rva == 0x1000U ? (const spx_program_transfer *)1 : 0;
 }
@@ -176,7 +182,7 @@ void spx_native_terminate(spx_native_terminal_kind status) {
                 [
                     compiler,
                     "-nostdlib",
-                    "-Wl,--entry,_spx_native_runtime_coordinate",
+                    "-Wl,--entry,_spx_native_runtime_run_at_rva",
                     "-Wl,--subsystem,console",
                     "-Wl,--disable-runtime-pseudo-reloc",
                     str(runtime / "native-runtime.o"),

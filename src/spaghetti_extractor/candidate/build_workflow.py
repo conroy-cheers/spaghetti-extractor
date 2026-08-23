@@ -30,7 +30,6 @@ from .build_model import (
     _C_IDENTIFIER,
     _ENGINE_LAYOUT_FILENAME,
     _ENGINE_MANIFEST_FILENAME,
-    _GENERATED_ANCHOR_FILENAME,
     _INTERPRETER_MANIFEST_FILENAME,
     _PAYLOAD_FILENAME,
     _PAYLOAD_MAP_FILENAME,
@@ -38,10 +37,10 @@ from .build_model import (
 )
 from .build_objects import (
     _compiler_runtime,
-    _generate_anchor_manifest,
     _load_native_object_graph,
     _load_precompiled_native_objects,
     _output_binding,
+    _payload_symbol_rvas,
 )
 from .build_sources import (
     _bound_bundle_artifact,
@@ -75,9 +74,7 @@ from .build_values import (
     _u32,
 )
 from .pe import (
-    CANDIDATE_FILENAME,
     COMPOSITION_MANIFEST_FILENAME,
-    ExecutableAnchorManifest,
     compose_spx_pe,
 )
 from .runtime import NATIVE_RUNTIME_MANIFEST_FILENAME
@@ -91,7 +88,7 @@ def prepare_spx_interpreter_native_object_graph(
     out_dir: Path | str,
     region_override_package: Path | str | None = None,
     compiler: Path | str = "i686-w64-mingw32-gcc",
-    entry_symbol: str = "spx_payload_entry",
+    entry_symbol: str,
 ) -> dict[str, Any]:
     """Emit a deterministic per-source compile graph for Nix CA derivations."""
 
@@ -456,18 +453,37 @@ def build_spx_interpreter_native_candidate(
     load_image_contract: Path | str,
     recovered_executable_data: Path | str | None = None,
     out_dir: Path | str,
-    anchor_manifest: Path | str | None = None,
+    native_ingress_plan: Path | str,
+    candidate_filename: str,
     compiler: Path | str = "i686-w64-mingw32-gcc",
-    entry_symbol: str = "spx_payload_entry",
     payload_rva: int | None = None,
     precompiled_objects: Path | str | None = None,
 ) -> dict[str, Any]:
     """Compile and compose one explicitly classified interpreter candidate."""
 
-    if _C_IDENTIFIER.fullmatch(entry_symbol) is None:
+    ingress_path = _file(native_ingress_plan, "native ingress plan")
+    ingress_artifact_sha256 = sha256_file(ingress_path)
+    ingress = _read_json_object(ingress_path, "native ingress plan")
+    module_entries = [
+        row for row in ingress.get("ingresses", [])
+        if isinstance(row, Mapping)
+        and row.get("role") in {"process_entry", "dll_entry"}
+    ]
+    if ingress.get("status") != "complete" or len(module_entries) != 1:
         raise CandidateNativeBuildError(
-            "payload entry symbol is not a C identifier"
+            "native build requires one complete module-entry ingress"
         )
+    entry_symbol = module_entries[0].get("bridge_symbol")
+    if not isinstance(entry_symbol, str) or _C_IDENTIFIER.fullmatch(entry_symbol) is None:
+        raise CandidateNativeBuildError(
+            "native ingress module-entry symbol is not a C identifier"
+        )
+    if (
+        not isinstance(candidate_filename, str)
+        or not candidate_filename
+        or Path(candidate_filename).name != candidate_filename
+    ):
+        raise CandidateNativeBuildError("candidate filename must be a loader basename")
 
     if component_runtime_package is None:
         raise CandidateNativeBuildError(
@@ -577,23 +593,6 @@ def build_spx_interpreter_native_candidate(
             raise CandidateNativeBuildError(
                 "recovered executable-data contract binds a different machine IR"
             )
-    anchor_path: Path | None = None
-    anchors: ExecutableAnchorManifest | None = None
-    anchor_artifact_sha256: str | None = None
-    if anchor_manifest is not None:
-        anchor_path = _file(anchor_manifest, "executable-anchor manifest")
-        anchor_artifact_sha256 = sha256_file(anchor_path)
-        try:
-            anchors = ExecutableAnchorManifest.parse(
-                _read_json_object(anchor_path, "executable-anchor manifest")
-            )
-        except Exception as exc:
-            raise CandidateNativeBuildError(str(exc)) from exc
-        if anchors.image_base != contract.identity.preferred_base:
-            raise CandidateNativeBuildError(
-                "executable-anchor manifest image base differs from the load-image contract"
-            )
-
     header_pe = native_build._pe(
         contract.runtime_headers.data, "load-image runtime headers"
     )
@@ -809,16 +808,14 @@ def build_spx_interpreter_native_candidate(
             payload_pe, normalized
         )
         relocations = native_build._payload_relocation_inventory(payload_pe, normalized)
-        if anchors is None:
-            anchors = _generate_anchor_manifest(
-                contract=contract,
-                engine=engine,
-                linker_map=linker_map,
+        linked_symbols = _payload_symbol_rvas(
+            linker_map, image_base=contract.identity.preferred_base
+        )
+        linked_entry_rva = linked_symbols.get(entry_symbol)
+        if linked_entry_rva is None:
+            raise CandidateNativeBuildError(
+                f"linked payload map omits native ingress {entry_symbol}"
             )
-            anchor_path = output / _GENERATED_ANCHOR_FILENAME
-            native_build._write_json(anchor_path, anchors.to_payload())
-            anchor_artifact_sha256 = sha256_file(anchor_path)
-        native_build._validate_anchor_routes(payload_pe, anchors)
         file_header = native_build._file_header(payload_pe)
         relocations_stripped = bool(
             int(file_header.Characteristics) & native_build._IMAGE_FILE_RELOCS_STRIPPED
@@ -851,13 +848,8 @@ def build_spx_interpreter_native_candidate(
         raise CandidateNativeBuildError(
             "recovered executable-data contract changed during compilation"
         )
-    assert anchor_path is not None
-    assert anchors is not None
-    assert anchor_artifact_sha256 is not None
-    if sha256_file(anchor_path) != anchor_artifact_sha256:
-        raise CandidateNativeBuildError(
-            "executable-anchor manifest changed during compilation"
-        )
+    if sha256_file(ingress_path) != ingress_artifact_sha256:
+        raise CandidateNativeBuildError("native ingress plan changed during compilation")
     if sha256_file(compiler_runtime) != compiler_runtime_sha256:
         raise CandidateNativeBuildError(
             "compiler runtime changed during compilation"
@@ -905,13 +897,14 @@ def build_spx_interpreter_native_candidate(
     composition = compose_spx_pe(
         load_image_contract=contract_path,
         payload_pe=payload_path,
-        anchor_manifest=anchor_path,
+        entry_rva=linked_entry_rva,
         payload_relocation_inventory=relocations,
         recovered_executable_data=executable_data_path,
         out_dir=output,
+        candidate_filename=candidate_filename,
     )
     composition_path = output / COMPOSITION_MANIFEST_FILENAME
-    candidate_path = output / CANDIDATE_FILENAME
+    candidate_path = output / candidate_filename
 
     core: dict[str, Any] = {
         "format": INTERPRETER_NATIVE_BUILD_FORMAT,
@@ -952,11 +945,9 @@ def build_spx_interpreter_native_candidate(
                     "bytes": sum(item.size for item in executable_data.ranges),
                 }
             ),
-            "executable_anchor_manifest": {
-                "artifact_sha256": anchor_artifact_sha256,
-                "canonical_sha256": native_build._canonical_sha256(
-                    anchors.to_payload()
-                ),
+            "native_ingress_plan": {
+                "artifact_sha256": ingress_artifact_sha256,
+                "plan_sha256": ingress.get("plan_sha256"),
             },
         },
         "toolchain": {

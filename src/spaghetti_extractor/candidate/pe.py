@@ -20,10 +20,7 @@ from ..util import sha256_bytes
 from .pe_model import (
     CANDIDATE_FILENAME,
     COMPOSITION_MANIFEST_FILENAME,
-    EXECUTABLE_ANCHOR_MANIFEST_FORMAT,
     ByteClassification,
-    ExecutableAnchor,
-    ExecutableAnchorManifest,
     PECompositionPlan,
     PayloadRelocation,
     PayloadRelocationInventory,
@@ -48,7 +45,6 @@ from .pe_model import (
     _canonical_bytes,
     _classify_executable_bytes,
     _directories,
-    _load_anchor_manifest,
     _load_contract,
     _load_payload,
     _load_recovered_executable_data,
@@ -60,7 +56,6 @@ from .pe_model import (
     _section_containing_rva,
     _sections_from_pe,
     _shift_original_raw_pointers,
-    _validate_anchors,
     _validate_original_layout,
     _validate_payload,
     _validate_payload_relocation_inventory,
@@ -103,7 +98,7 @@ def plan_spx_pe_composition(
     *,
     load_image_contract: Path | str | Mapping[str, Any] | LoadImageContract,
     payload_pe: Path | str | bytes | bytearray,
-    anchor_manifest: Path | str | Mapping[str, Any] | ExecutableAnchorManifest,
+    entry_rva: int,
     payload_relocation_inventory: (
         Path | str | Mapping[str, Any] | PayloadRelocationInventory | None
     ) = None,
@@ -118,7 +113,8 @@ def plan_spx_pe_composition(
     """Validate all inputs and return a deterministic, write-free plan."""
 
     contract = _load_contract(load_image_contract)
-    anchors = _load_anchor_manifest(anchor_manifest)
+    if not isinstance(entry_rva, int) or isinstance(entry_rva, bool) or not 0 <= entry_rva <= _UINT32_MAX:
+        raise PECompositionError("linked ingress entry RVA must fit PE32")
     recovered = _load_recovered_executable_data(recovered_executable_data)
     payload = _load_payload(payload_pe)
     (
@@ -143,14 +139,10 @@ def plan_spx_pe_composition(
         file_alignment=file_alignment,
         section_alignment=section_alignment,
     )
-    indexed_anchors = _validate_anchors(
-        anchors, contract=contract, sections=contract_original_sections
-    )
     recovered_ranges = _validate_recovered_executable_data(
         recovered,
         contract=contract,
         sections=contract_original_sections,
-        indexed_anchors=indexed_anchors,
     )
 
     parsed_payload_inventory = _parse_payload_relocation_directory(
@@ -189,7 +181,7 @@ def plan_spx_pe_composition(
     )
 
     classifications = _classify_executable_bytes(
-        contract_original_sections, indexed_anchors, recovered_ranges
+        contract_original_sections, recovered_ranges
     )
     provisional_payload_sections = tuple(
         _Section(
@@ -205,7 +197,6 @@ def plan_spx_pe_composition(
     )
     merged_relocations = _merge_relocations(
         contract=contract,
-        anchor_manifest=anchors,
         original_sections=contract_original_sections,
         payload_inventory=relocation_inventory,
         payload_sections=payload_sections,
@@ -312,7 +303,7 @@ def plan_spx_pe_composition(
     original_pe.close()
     return PECompositionPlan(
         contract=contract,
-        anchor_manifest=anchors,
+        entry_rva=entry_rva,
         recovered_executable_data=recovered,
         relocation_inventory=relocation_inventory,
         payload_bytes=payload,
@@ -372,10 +363,6 @@ def _original_section_bytes(
                 f"non-executable section {section.index} changed raw size"
             )
 
-    for anchor in plan.anchor_manifest.anchors:
-        if section.rva <= anchor.rva and anchor.end_rva <= section.rva + section.raw_size:
-            offset = anchor.rva - section.rva
-            result[offset : offset + len(anchor.bytes)] = anchor.bytes
     for rewrite in plan.file_offset_rewrites:
         if section.rva <= rewrite.field_rva and rewrite.field_rva + 4 <= section.rva + section.raw_size:
             offset = rewrite.field_rva - section.rva
@@ -499,7 +486,7 @@ def _update_headers(image: bytearray, plan: PECompositionPlan) -> int:
     struct.pack_into("<I", image, optional_offset + 8, size_of_initialized)
     struct.pack_into("<I", image, optional_offset + 12, size_of_uninitialized)
     struct.pack_into(
-        "<I", image, optional_offset + 16, plan.anchor_manifest.entry_anchor_rva
+        "<I", image, optional_offset + 16, plan.entry_rva
     )
     struct.pack_into("<I", image, optional_offset + 56, plan.new_size_of_image)
     struct.pack_into("<I", image, optional_offset + 60, plan.new_size_of_headers)
@@ -545,7 +532,7 @@ def _validate_candidate(image: bytes, plan: PECompositionPlan, checksum: int) ->
         raise PECompositionError(
             "composed candidate retains an unavailable COFF symbol table"
         )
-    if int(pe.OPTIONAL_HEADER.AddressOfEntryPoint) != plan.anchor_manifest.entry_anchor_rva:
+    if int(pe.OPTIONAL_HEADER.AddressOfEntryPoint) != plan.entry_rva:
         raise PECompositionError("composed candidate entry point did not update")
     if int(pe.OPTIONAL_HEADER.CheckSum) != checksum or not pe.verify_checksum():
         raise PECompositionError("composed candidate checksum is invalid")
@@ -656,10 +643,10 @@ def _section_manifest_row(section: _Section) -> dict[str, Any]:
 
 
 def _composition_manifest(
-    plan: PECompositionPlan, *, candidate: bytes, checksum: int
+    plan: PECompositionPlan, *, candidate: bytes, checksum: int,
+    candidate_filename: str = CANDIDATE_FILENAME,
 ) -> dict[str, Any]:
     contract_payload = plan.contract.to_payload()
-    anchor_payload = plan.anchor_manifest.to_payload()
     relocation_inventory_payload = plan.relocation_inventory.to_payload()
     recovered_payload = (
         None
@@ -688,10 +675,6 @@ def _composition_manifest(
                     _canonical_bytes(relocation_inventory_payload)
                 ),
                 "complete": True,
-            },
-            "executable_anchor_manifest": {
-                "format": plan.anchor_manifest.format,
-                "sha256": sha256_bytes(_canonical_bytes(anchor_payload)),
             },
             "recovered_executable_data": (
                 None
@@ -736,11 +719,11 @@ def _composition_manifest(
             ],
         },
         "candidate": {
-            "path": CANDIDATE_FILENAME,
+            "path": candidate_filename,
             "sha256": sha256_bytes(candidate),
             "file_size": len(candidate),
             "image_base": plan.contract.identity.preferred_base,
-            "entry_rva": plan.anchor_manifest.entry_anchor_rva,
+            "entry_rva": plan.entry_rva,
             "size_of_image": plan.new_size_of_image,
             "checksum": checksum,
             "section_count": len(plan.original_sections)
@@ -750,19 +733,6 @@ def _composition_manifest(
                 "rva": plan.relocation_directory[0],
                 "size": plan.relocation_directory[1],
             },
-        },
-        "anchors": {
-            "entry_rva": plan.anchor_manifest.entry_anchor_rva,
-            "tls_callback_rvas": list(plan.anchor_manifest.tls_callback_anchor_rvas),
-            "callback_rvas": list(plan.anchor_manifest.callback_anchor_rvas),
-            "stubs": [
-                {
-                    **anchor.to_payload(),
-                    "size": len(anchor.bytes),
-                    "bytes_sha256": sha256_bytes(anchor.bytes),
-                }
-                for anchor in plan.anchor_manifest.anchors
-            ],
         },
         "executable_byte_classification": [
             item.to_payload() for item in plan.classifications
@@ -821,7 +791,7 @@ def compose_spx_pe(
     *,
     load_image_contract: Path | str | Mapping[str, Any] | LoadImageContract,
     payload_pe: Path | str | bytes | bytearray,
-    anchor_manifest: Path | str | Mapping[str, Any] | ExecutableAnchorManifest,
+    entry_rva: int,
     payload_relocation_inventory: (
         Path | str | Mapping[str, Any] | PayloadRelocationInventory | None
     ) = None,
@@ -833,13 +803,22 @@ def compose_spx_pe(
         | None
     ) = None,
     out_dir: Path | str,
+    candidate_filename: str = CANDIDATE_FILENAME,
 ) -> dict[str, Any]:
-    """Compose and emit ``candidate.exe`` and a non-authoritative manifest."""
+    """Compose and emit the project-declared module name plus its manifest."""
+
+    if (
+        not isinstance(candidate_filename, str)
+        or not candidate_filename
+        or Path(candidate_filename).name != candidate_filename
+        or candidate_filename in {".", ".."}
+    ):
+        raise PECompositionError("candidate filename must be a loader basename")
 
     plan = plan_spx_pe_composition(
         load_image_contract=load_image_contract,
         payload_pe=payload_pe,
-        anchor_manifest=anchor_manifest,
+        entry_rva=entry_rva,
         payload_relocation_inventory=payload_relocation_inventory,
         recovered_executable_data=recovered_executable_data,
     )
@@ -865,13 +844,18 @@ def compose_spx_pe(
     checksum = _update_headers(image, plan)
     candidate = bytes(image)
     _validate_candidate(candidate, plan, checksum)
-    manifest = _composition_manifest(plan, candidate=candidate, checksum=checksum)
+    manifest = _composition_manifest(
+        plan,
+        candidate=candidate,
+        checksum=checksum,
+        candidate_filename=candidate_filename,
+    )
 
     output = Path(out_dir)
     output.mkdir(parents=True, exist_ok=True)
-    candidate_path = output / CANDIDATE_FILENAME
+    candidate_path = output / candidate_filename
     manifest_path = output / COMPOSITION_MANIFEST_FILENAME
-    candidate_temporary = output / f".{CANDIDATE_FILENAME}.tmp"
+    candidate_temporary = output / f".{candidate_filename}.tmp"
     manifest_temporary = output / f".{COMPOSITION_MANIFEST_FILENAME}.tmp"
     try:
         candidate_temporary.write_bytes(candidate)
@@ -893,12 +877,9 @@ def compose_spx_pe(
 __all__ = [
     "CANDIDATE_FILENAME",
     "COMPOSITION_MANIFEST_FILENAME",
-    "EXECUTABLE_ANCHOR_MANIFEST_FORMAT",
     "PAYLOAD_RELOCATION_INVENTORY_FORMAT",
     "PE_COMPOSITION_MANIFEST_FORMAT",
     "ByteClassification",
-    "ExecutableAnchor",
-    "ExecutableAnchorManifest",
     "PECompositionPlan",
     "PayloadRelocation",
     "PayloadRelocationInventory",

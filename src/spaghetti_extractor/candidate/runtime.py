@@ -6,10 +6,12 @@ from pathlib import Path
 from typing import Any
 
 from ..artifacts.formats import (
+    NATIVE_INGRESS_PLAN_FORMAT,
     NATIVE_ENGINE_PACKAGE_FORMAT,
     NATIVE_RUNTIME_PACKAGE_FORMAT,
     SPX_INTERPRETER_PACKAGE_FORMAT,
 )
+from ..artifacts.artifact_set import canonical_sha256_v3
 from ..external.machine_import_profiles import (
     MachineImportProfileError,
     load_machine_import_profile_set,
@@ -151,16 +153,62 @@ def plan_spx_native_runtime(
         native_manifest_path.parent, plan_ref, "native-engine plan"
     )
     native_plan = _read_json_object(native_plan_path, "native-engine plan")
+    ingress_plan_path: Path | None = None
+    ingress_plan_sha256: str | None = None
+    ingress_plan_id: str | None = None
+    ingress_descriptors: tuple[dict[str, Any], ...] = ()
+    ingress_tls_layout: dict[str, Any] | None = None
+    ingress_runtime_features: tuple[str, ...] = ()
+    ingress_ref = native.get("native_ingress_plan")
+    if ingress_ref is not None:
+        ingress_plan_path = _bound_artifact(
+            native_manifest_path.parent,
+            _required_object(ingress_ref, "native ingress plan binding"),
+            "native ingress plan",
+        )
+        ingress_payload = _read_json_object(ingress_plan_path, "native ingress plan")
+        ingress_core = {
+            key: value for key, value in ingress_payload.items()
+            if key != "plan_sha256"
+        }
+        if (
+            ingress_payload.get("format") != NATIVE_INGRESS_PLAN_FORMAT
+            or ingress_payload.get("status") != "complete"
+            or ingress_payload.get("plan_sha256") != canonical_sha256_v3(ingress_core)
+            or ingress_ref.get("sha256") != sha256_file(ingress_plan_path)
+            or ingress_ref.get("plan_sha256") != ingress_payload.get("plan_sha256")
+        ):
+            raise CandidateRuntimeError("native ingress plan is stale or incomplete")
+        raw_ingresses = ingress_payload.get("ingresses")
+        if not isinstance(raw_ingresses, list) or any(not isinstance(row, dict) for row in raw_ingresses):
+            raise CandidateRuntimeError("native ingress descriptor inventory is malformed")
+        ingress_plan_sha256 = sha256_file(ingress_plan_path)
+        ingress_plan_id = str(ingress_payload["plan_sha256"])
+        ingress_descriptors = tuple(dict(row) for row in raw_ingresses)
+        raw_tls_layout = ingress_payload.get("tls_layout")
+        requirements = ingress_payload.get("runtime_requirements")
+        if not isinstance(raw_tls_layout, dict) or not isinstance(requirements, dict):
+            raise CandidateRuntimeError("native ingress runtime layout is malformed")
+        raw_features = requirements.get("features")
+        if (
+            not isinstance(raw_features, list)
+            or any(not isinstance(item, str) or not item for item in raw_features)
+        ):
+            raise CandidateRuntimeError("native ingress runtime feature inventory is malformed")
+        ingress_tls_layout = dict(raw_tls_layout)
+        ingress_runtime_features = tuple(raw_features)
+    if ingress_plan_id is None:
+        raise CandidateRuntimeError("native engine lacks a native ingress plan")
+    if (
+        ingress_plan_path is None
+        or ingress_plan_sha256 is None
+        or ingress_tls_layout is None
+    ):
+        raise CandidateRuntimeError("native ingress plan binding is incomplete")
     native_policy = _required_object(native.get("policy"), "native-engine policy")
     if native_policy.get("execution_scope") != "structural-executable-v1":
         raise CandidateRuntimeError(
             "native-engine package does not require structural executability"
-        )
-    if native.get("callback_adapter_receipts") != native_plan.get(
-        "callback_adapter_receipts"
-    ):
-        raise CandidateRuntimeError(
-            "native-engine manifest and plan bind different callback adapter receipts"
         )
     if native.get("implementation_dispatch_receipt") != native_plan.get(
         "implementation_dispatch_receipt"
@@ -181,9 +229,6 @@ def plan_spx_native_runtime(
             "native-engine typed x87 operations require the interpreter typed ABI"
         )
     (
-        entry_rva,
-        callback_abis,
-        callback_adapter_receipts,
         implementation_dispatch_receipt,
         implementation_dispatches,
         recovered_executable_data_ranges,
@@ -193,6 +238,8 @@ def plan_spx_native_runtime(
         input_mode=input_mode,
         transfer_rvas=transfer_rvas,
         transfer_bindings=transfer_bindings,
+        ingress_descriptors=ingress_descriptors,
+        ingress_plan_id=ingress_plan_id,
     )
     has_modeled_termination = _validate_native_termination(
         native_plan.get("termination_import")
@@ -228,11 +275,8 @@ def plan_spx_native_runtime(
     )
 
     return NativeRuntimePlan(
-        entry_rva=entry_rva,
         transfer_rvas=transfer_rvas,
         recovered_executable_data_ranges=recovered_executable_data_ranges,
-        callback_abis=callback_abis,
-        callback_adapter_receipts=callback_adapter_receipts,
         implementation_dispatch_receipt=implementation_dispatch_receipt,
         implementation_dispatches=implementation_dispatches,
         external_range_rules=external_range_rules,
@@ -256,6 +300,11 @@ def plan_spx_native_runtime(
         native_engine_manifest_sha256=sha256_file(native_manifest_path),
         native_engine_plan_path=native_plan_path,
         native_engine_plan_sha256=sha256_file(native_plan_path),
+        native_ingress_plan_path=ingress_plan_path,
+        native_ingress_plan_sha256=ingress_plan_sha256,
+        ingress_descriptors=ingress_descriptors,
+        ingress_tls_layout=ingress_tls_layout,
+        ingress_runtime_features=ingress_runtime_features,
         x87_handler_mode=x87_handler_mode,
         has_modeled_termination=has_modeled_termination,
     )
@@ -280,9 +329,18 @@ def write_spx_native_runtime_package(
     header_path = out_path / NATIVE_RUNTIME_HEADER_FILENAME
     source_path = out_path / NATIVE_RUNTIME_SOURCE_FILENAME
     bindings_path = out_path / NATIVE_RUNTIME_BINDINGS_FILENAME
+    ingress_header_path = out_path / "native-ingress-runtime.h"
     header_path.write_text(_native_runtime_header(), encoding="ascii")
     source_path.write_text(_native_runtime_source(plan), encoding="ascii")
     bindings_path.write_text(_native_runtime_bindings_source(plan), encoding="ascii")
+    try:
+        ingress_header_path.write_bytes(
+            (plan.native_engine_manifest_path.parent / "native-ingress-runtime.h").read_bytes()
+        )
+    except OSError as exc:
+        raise CandidateRuntimeError(
+            "cannot copy the bound native ingress runtime header"
+        ) from exc
     profile_source: dict[str, Any] | None = None
     profile_dependencies: list[dict[str, Any]] = []
     if plan.external_profile_path is not None:
@@ -330,9 +388,47 @@ def write_spx_native_runtime_package(
                 "path": str(relative),
                 "sha256": expected_sha256,
             })
+    implemented_feature_set = {
+            "checked_seh_gateway_v1",
+            "code_capability_registry_v1",
+            "exceptional_outcome_dispatch_v1",
+            "host_thread_concurrency_v1",
+            "loader_lock_safe_bootstrap_v1",
+            "outgoing_bridge_pe_tls_state_v1",
+            "per_thread_ingress_frame_chain_v1",
+            "same_thread_reentrancy_v1",
+            "seh_unwind_frame_cleanup_v1",
+            "tls_private_engine_stack_v1",
+            "transactional_boundary_writeback_v1",
+        }
+    required_base_features = {
+        "code_capability_registry_v1",
+        "host_thread_concurrency_v1",
+        "loader_lock_safe_bootstrap_v1",
+        "outgoing_bridge_pe_tls_state_v1",
+        "per_thread_ingress_frame_chain_v1",
+        "same_thread_reentrancy_v1",
+        "tls_private_engine_stack_v1",
+        "transactional_boundary_writeback_v1",
+    }
+    implemented_ingress_features = sorted(
+        set(plan.ingress_runtime_features) & implemented_feature_set
+    )
+    native_ingress_blockers = []
+    declared = set(plan.ingress_runtime_features)
+    for feature in sorted(required_base_features - declared):
+        native_ingress_blockers.append({
+            "category": "native_ingress_required_runtime_feature_missing",
+            "feature": feature,
+        })
+    for feature in sorted(declared - implemented_feature_set):
+        native_ingress_blockers.append({
+            "category": "native_ingress_runtime_feature_unimplemented",
+            "feature": feature,
+        })
     result = {
         "format": NATIVE_RUNTIME_PACKAGE_FORMAT,
-        "status": "ready",
+        "status": "ready" if not native_ingress_blockers else "incomplete",
         "acceptance_authority": False,
         "inputs": plan.payload(),
         "sources": [
@@ -351,6 +447,11 @@ def write_spx_native_runtime_package(
                 "path": bindings_path.name,
                 "sha256": sha256_file(bindings_path),
             },
+            {
+                "role": "native_ingress_runtime_header",
+                "path": ingress_header_path.name,
+                "sha256": sha256_file(ingress_header_path),
+            },
         ] + ([] if profile_source is None else [profile_source]) + profile_dependencies,
         "counts": {
             "transfers": len(plan.transfer_rvas),
@@ -360,6 +461,7 @@ def write_spx_native_runtime_package(
             ),
             "blocked_external_sites": len(plan.blocked_external_sites),
         },
+        "blockers": native_ingress_blockers,
         "policy": {
             "architecture": "i686-pe32",
             "execution_scope": "structural-executable-v1",
@@ -383,10 +485,15 @@ def write_spx_native_runtime_package(
                 "absolute-image-va-in-checked-transfer-table-or-"
                 "canonical-external-site-target-set"
             ),
-            "threads": "fail-closed-on-concurrent-entry",
-            "engine_stack": (
-                "dedicated-64KiB-private-stack-disjoint-from-modeled-program-stack"
-            ),
+            "threads": "pe-tls-ingress-and-outgoing-frame-state; host-thread-concurrent",
+            "native_ingress": {
+                "features": implemented_ingress_features,
+                "private_stack_bytes": int(
+                    plan.ingress_tls_layout["private_stack_bytes"]
+                ),
+                "qualification": "complete PE-TLS generic ingress runtime",
+            },
+            "engine_stack": "checked-PE-TLS-private-stack-disjoint-from-modeled-program-stack",
             "executable_writes": (
                 "only-checked-nonexecuting-image-sections, captured-stack, or "
                 "bounded-profile-derived-external-ranges"

@@ -22,8 +22,7 @@ typedef enum spx_native_terminal_kind {
   SPX_NATIVE_TERMINAL_MEMORY_FAULT = 3,
   SPX_NATIVE_TERMINAL_EXTERNAL_FAULT = 4,
   SPX_NATIVE_TERMINAL_UNDEFINED_VALUE = 5,
-  SPX_NATIVE_TERMINAL_INVALID_IMAGE = 6,
-  SPX_NATIVE_TERMINAL_CONCURRENT_ENTRY = 7
+  SPX_NATIVE_TERMINAL_INVALID_IMAGE = 6
 } spx_native_terminal_kind;
 
 extern const char spx_native_interpreter_manifest_sha256[65];
@@ -39,19 +38,13 @@ void spx_native_terminate(spx_native_terminal_kind status)
 spx_call_status spx_native_runtime_run_at_rva(
     uint32_t entry_rva, const spx_machine_state *input,
     spx_machine_state *output);
-spx_call_status spx_native_runtime_run_nested_callback(
-    uint32_t callback_rva, uint32_t stack_cleanup_bytes,
-    const spx_machine_state *input, spx_machine_state *output);
-spx_call_status spx_native_runtime_run_captured(
-    const spx_machine_state *captured, spx_machine_state *output);
-void spx_native_runtime_coordinate(
-    const spx_machine_state *captured) __attribute__((noreturn));
 
 #endif
 '''
 
 
 def _native_runtime_source(plan: NativeRuntimePlan) -> str:
+    ingress_include = '#include "native-ingress-runtime.h"\n'
     transfer_rows = "\n".join(
         f"  0x{rva:08x}U," for rva in plan.transfer_rvas
     )
@@ -84,10 +77,6 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
     recovered_data_rows = "\n".join(
         f"  {{ 0x{start:08x}U, 0x{end:08x}U }},"
         for start, end in plan.recovered_executable_data_ranges
-    ) or "  { 0U, 0U },"
-    callback_rows = "\n".join(
-        f"  {{ 0x{rva:08x}U, {cleanup}U }},"
-        for rva, cleanup in plan.callback_abis
     ) or "  { 0U, 0U },"
     undefined_rows = "\n".join(
         f"  {{ 0x{policy.slot:08x}U, {policy.policy_code}U, "
@@ -166,7 +155,26 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
         if plan.has_typed_x87_handler
         else ""
     )
+    control_bytes = int(plan.ingress_tls_layout["runtime_control_bytes"])
+    context_offset = int(
+        plan.ingress_tls_layout["runtime_regions"]["runtime_context"]["offset"]
+    )
+    context_storage = f'''extern void *spx_native_runtime_context_current(void);
+#define spx_native_context_value \
+  (*(spx_native_context *)spx_native_runtime_context_current())
+_Static_assert(sizeof(spx_native_context) <= {control_bytes - context_offset}U,
+    "native runtime context exceeds its checked PE TLS region");'''
+    diagnostic_storage = r'''#define spx_native_diagnostic_reason \
+  (*spx_native_runtime_diagnostic_slot(0U))
+#define spx_native_diagnostic_value \
+  (*spx_native_runtime_diagnostic_slot(1U))
+#define spx_native_diagnostic_aux \
+  (*spx_native_runtime_diagnostic_slot(2U))
+#define spx_native_diagnostic_detail \
+  (*spx_native_runtime_diagnostic_slot(3U))'''
+    diagnostic_declarations = ""
     return (f'''#include "native-runtime.h"
+{ingress_include}
 
 #include <stdint.h>
 
@@ -176,10 +184,8 @@ def _native_runtime_source(plan: NativeRuntimePlan) -> str:
 #define SPX_NATIVE_MAX_EXTERNAL_LIFECYCLE_EVENTS 64U
 
 extern const unsigned char __ImageBase[];
-volatile uint32_t spx_native_diagnostic_reason;
-volatile uint32_t spx_native_diagnostic_value;
-volatile uint32_t spx_native_diagnostic_aux;
-volatile uint32_t spx_native_diagnostic_detail;
+{diagnostic_declarations}
+{diagnostic_storage}
 extern spx_call_status spx_dispatch_external_call(
     spx_runtime *runtime, const spx_call_event *event,
     const spx_machine_state *input, spx_machine_state *output);
@@ -225,14 +231,6 @@ static const spx_native_noncode_range spx_native_noncode_ranges[] = {{
 {recovered_data_rows}
 }};
 static const uint32_t spx_native_noncode_range_count = {len(plan.recovered_executable_data_ranges)}U;
-
-typedef struct spx_native_callback_abi {{
-  uint32_t rva, stack_cleanup_bytes;
-}} spx_native_callback_abi;
-static const spx_native_callback_abi spx_native_callback_abis[] = {{
-{callback_rows}
-}};
-static const uint32_t spx_native_callback_abi_count = {len(plan.callback_abis)}U;
 
 typedef struct spx_native_undefined_policy {{
   uint32_t slot, policy, input_location;
@@ -321,7 +319,6 @@ typedef struct spx_native_context {{
   uint32_t section_count;
   uint32_t stack_low;
   uint32_t stack_high;
-  volatile uint32_t active;
   uint32_t initialized;
   uint32_t process_world_initialized;
   uint32_t owner_fs_base;
@@ -344,7 +341,7 @@ typedef struct spx_native_context {{
 
 #define SPX_NATIVE_THREAD_ENVIRONMENT_BYTES 0x1000U
 
-static spx_native_context spx_native_context_value;
+{context_storage}
 
 static uint16_t spx_native_u16(uint32_t address) {{
   const volatile uint8_t *p = (const volatile uint8_t *)(uintptr_t)address;

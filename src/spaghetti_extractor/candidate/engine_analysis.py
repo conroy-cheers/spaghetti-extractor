@@ -29,6 +29,7 @@ from .engine_model import (
     _PE32_CALLEE_PRESERVED_REGISTERS,
     _canonical_sha256,
 )
+from .imports import NativeImportSlotIndex
 from .engine_x87 import (
     _required_portable_identity,
     _required_sha256,
@@ -43,7 +44,7 @@ _RAW_INSTRUCTION_FIELDS = RAW_INSTRUCTION_FIELDS
 
 def _parse_native_termination_import(
     value: Mapping[str, Any] | None,
-    import_iat_vas: Mapping[tuple[str, str | int], int],
+    import_slots: NativeImportSlotIndex,
 ) -> NativeTerminationImport | None:
     if value is None:
         return None
@@ -73,8 +74,18 @@ def _parse_native_termination_import(
     else:
         assert ordinal is not None
         identity = ordinal
-    iat_va = import_iat_vas.get((dll, identity))
-    if iat_va is None:
+    raw_slot_id = value.get("slot_id")
+    if raw_slot_id is not None and not isinstance(raw_slot_id, str):
+        raise ToolkitInputError("termination import slot ID must be a string")
+    if raw_slot_id is None:
+        slot = import_slots.unique_for_identity((dll, identity))
+    else:
+        slot = import_slots.by_id.get(raw_slot_id)
+        if slot is not None and slot.identity != (dll, identity):
+            raise ToolkitInputError(
+                "termination import slot identifies a different logical import"
+            )
+    if slot is None:
         raise ToolkitInputError(
             "termination import has no unique IAT cell in the load-image contract"
         )
@@ -82,7 +93,8 @@ def _parse_native_termination_import(
         dll=dll,
         symbol=symbol,
         ordinal=ordinal,
-        iat_va=_required_u32(iat_va, "termination import IAT VA"),
+        iat_va=_required_u32(slot.iat_va, "termination import IAT VA"),
+        slot_id=slot.slot_id,
     )
 
 
@@ -350,7 +362,7 @@ def _exact_u32_expression(value: Any) -> int | None:
 def _static_iat_import_identity(
     target: Any,
     *,
-    import_iat_vas: Mapping[tuple[str, str | int], int],
+    import_slots: NativeImportSlotIndex,
 ) -> tuple[str, str | None, int | None, int] | None:
     """Resolve an indirect target that is exactly one checked IAT-cell load."""
 
@@ -363,23 +375,10 @@ def _static_iat_import_identity(
     iat_va = _exact_u32_expression(target.get("address"))
     if iat_va is None:
         return None
-    matches = [
-        (dll.lower(), identity)
-        for (dll, identity), value in import_iat_vas.items()
-        if _required_u32(value, "import IAT VA") == iat_va
-    ]
-    if not matches:
+    slot = import_slots.by_va.get(iat_va)
+    if slot is None:
         return None
-    if len(matches) != 1:
-        raise ToolkitInputError(
-            f"indirect target IAT cell {iat_va:#x} has ambiguous import identities"
-        )
-    dll, identity = matches[0]
-    if isinstance(identity, str) and identity:
-        return dll, identity, None, iat_va
-    if isinstance(identity, int) and not isinstance(identity, bool) and identity >= 0:
-        return dll, None, identity, iat_va
-    raise ToolkitInputError("import IAT identity must be one symbol or ordinal")
+    return slot.dll, slot.symbol, slot.ordinal, slot.iat_va
 
 
 def _stack_expression_at_offset(event: Mapping[str, Any], offset: int) -> Any:
@@ -516,7 +515,7 @@ class _RegisterImportSiteAnalysis:
 def _machine_ir_register_import_sites(
     rows: Iterable[Mapping[str, Any]],
     *,
-    import_iat_vas: Mapping[tuple[str, str | int], int],
+    import_slots: NativeImportSlotIndex,
     call_preserved_registers: Mapping[tuple[str, int], frozenset[str]],
     allow_diagnostic_abi_hypotheses: bool,
 ) -> _RegisterImportSiteAnalysis:
@@ -574,7 +573,7 @@ def _machine_ir_register_import_sites(
 
     def expression_origin(expression: Any, inputs: Mapping[str, Any]) -> Any:
         direct = _static_iat_import_identity(
-            expression, import_iat_vas=import_iat_vas
+            expression, import_slots=import_slots
         )
         if direct is not None:
             return _RegisterImportOrigin(*direct)
@@ -604,10 +603,10 @@ def _machine_ir_register_import_sites(
             identity = ordinal
         else:
             return _IMPORT_ORIGIN_UNKNOWN
-        iat_va = import_iat_vas.get((dll.lower(), identity))
-        if iat_va is None:
+        slot = import_slots.unique_for_identity((dll.lower(), identity))
+        if slot is None:
             return _IMPORT_ORIGIN_UNKNOWN
-        checked_iat = _required_u32(iat_va, "import IAT VA")
+        checked_iat = _required_u32(slot.iat_va, "import IAT VA")
         return _RegisterImportOrigin(
             dll.lower(),
             identity if isinstance(identity, str) else None,

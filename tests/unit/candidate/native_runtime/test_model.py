@@ -238,12 +238,16 @@ class NativeRuntimeModelTests(unittest.TestCase):
             assembly = (engine / "native-engine-bridges.S").read_text(
                 encoding="ascii"
             )
+            ingress_assembly = (engine / "native-ingress-bridges.S").read_text(
+                encoding="ascii"
+            )
             self.assertEqual(
                 plan["termination_import"],
                 {
                     "argument_source": "cdecl-stack-word-0-from-eax",
                     "dll": "msvcrt.dll",
                     "iat_va": 0x4321D8,
+                    "slot_id": "main:iat:000321d8",
                     "ordinal": None,
                     "required_disposition": "terminates",
                     "symbol": "_amsg_exit",
@@ -252,44 +256,20 @@ class NativeRuntimeModelTests(unittest.TestCase):
             )
             self.assertIn("jmp DWORD PTR ds:0x004321d8", assembly)
             self.assertNotIn("ud2", assembly)
-            self.assertIn("_spx_native_entry_dispatch_return:", assembly)
-            self.assertIn("_spx_native_entry_return:", assembly)
+            self.assertNotIn("_spx_native_entry_dispatch_return:", assembly)
+            self.assertIn("_spx_ingress_0000:", ingress_assembly)
             self.assertIn("_spx_native_termination:", assembly)
-            self.assertIn(
-                "_spx_native_callback_dispatch_return_00002000:",
-                assembly,
-            )
-            self.assertIn(
-                "mov edx, OFFSET FLAT:_spx_native_launch_state", assembly
-            )
-            self.assertIn(
-                "mov ebx, OFFSET FLAT:_spx_native_launch_output", assembly
-            )
-            self.assertIn(
-                "mov DWORD PTR [edx + 248], 0x00001000", assembly
-            )
-            self.assertIn(
-                "mov DWORD PTR [edx + 248], 0x00002000", assembly
-            )
+            self.assertNotIn("spx_native_callback_dispatch_return", assembly)
+            self.assertNotIn("spx_native_launch_state", assembly)
+            self.assertIn("_spx_ingress_0001:", ingress_assembly)
             self.assertIn(
                 "mov DWORD PTR [edx + 44], ecx", assembly
             )
             self.assertEqual(
                 engine_package["policy"]["nested_callback_engine_buffers"],
-                "stack-local-requires-checked-runtime-frame",
+                "pe-tls-frame-chain",
             )
-            self.assertEqual(
-                plan["launch_wrapper_symbols"],
-                {
-                    "entry_dispatch_return":
-                        "spx_native_entry_dispatch_return",
-                    "entry_return": "spx_native_entry_return",
-                    "termination": "spx_native_termination",
-                    "callback_dispatch_returns": [
-                        "spx_native_callback_dispatch_return_00002000"
-                    ],
-                },
-            )
+            self.assertNotIn("launch_wrapper_symbols", plan)
             self.assertEqual(
                 package["policy"]["terminal_control"],
                 "record-status-and-modeled-environment-termination",
@@ -335,7 +315,11 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 ".resolve_code_target = spx_native_resolve_code_target",
                 runtime_source,
             )
-            self.assertIn("spx_native_runtime_run_at_rva(", engine_source)
+            ingress_source = (
+                engine / "native-ingress-runtime.c"
+            ).read_text(encoding="ascii")
+            self.assertNotIn("spx_native_runtime_run_at_rva(", engine_source)
+            self.assertIn("spx_native_runtime_run_at_rva(", ingress_source)
             self.assertIn("spx_native_read_allowed", runtime_source)
             self.assertIn("context->headers_size = headers_size;", runtime_source)
             self.assertIn(
@@ -361,6 +345,8 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 engine / "native-engine-bridges.S",
                 engine / "native-engine-wrapper.c",
                 engine / "native-engine-layout.c",
+                engine / "native-ingress-runtime.c",
+                engine / "native-ingress-bridges.S",
                 runtime / "native-runtime.c",
             ]
             objects: list[Path] = []
@@ -398,7 +384,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 [
                     compiler,
                     "-nostdlib",
-                    "-Wl,--entry,_spx_payload_entry",
+                    "-Wl,--entry,_spx_ingress_0000",
                     "-Wl,--subsystem,console",
                     "-Wl,--dynamicbase",
                     "-Wl,--enable-reloc-section",
@@ -426,10 +412,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 symbols,
                 r"(?m)^\S+ T _spx_native_runtime_run_at_rva$",
             )
-            self.assertRegex(
-                symbols,
-                r"(?m)^\S+ T _spx_native_runtime_run_nested_callback$",
-            )
+            self.assertNotIn("spx_native_runtime_run_nested_callback", symbols)
             self.assertEqual(
                 len(re.findall(
                     r"(?m)^\S+ T _spx_dispatch_external_call$", symbols
@@ -455,11 +438,9 @@ class NativeRuntimeModelTests(unittest.TestCase):
             bridge_source = (engine / "native-engine-bridges.S").read_text(
                 encoding="ascii"
             )
-            self.assertIn("mov WORD PTR [edx + 216], ax", bridge_source)
-            self.assertIn("mov BYTE PTR [edx + 220], al", bridge_source)
-            self.assertIn("mov WORD PTR [edx + 236], ax", bridge_source)
-            self.assertIn("shr ecx, 11", bridge_source)
-            self.assertIn("imul ecx, ecx, 10", bridge_source)
+            self.assertIn("call _spx_native_x87_frame_current", bridge_source)
+            self.assertIn("fnsave [eax + 128]", bridge_source)
+            self.assertIn("frstor [eax + 20]", bridge_source)
             self.assertIn(
                 "extern spx_call_status spx_native_execute_typed_x87_operation",
                 runtime_source,
@@ -476,6 +457,8 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 engine / "native-engine-bridges.S",
                 engine / "native-engine-wrapper.c",
                 engine / "native-engine-layout.c",
+                engine / "native-ingress-runtime.c",
+                engine / "native-ingress-bridges.S",
                 runtime / "native-runtime.c",
             ]
             objects: list[Path] = []
@@ -520,7 +503,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 [
                     compiler,
                     "-nostdlib",
-                    "-Wl,--entry,_spx_payload_entry",
+                    "-Wl,--entry,_spx_ingress_0000",
                     "-Wl,--subsystem,console",
                     "-Wl,--dynamicbase",
                     "-Wl,--enable-reloc-section",
@@ -591,6 +574,8 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 engine / "native-engine-bridges.S",
                 engine / "native-engine-wrapper.c",
                 engine / "native-engine-layout.c",
+                engine / "native-ingress-runtime.c",
+                engine / "native-ingress-bridges.S",
                 runtime / "native-runtime.c",
             ]
             objects: list[Path] = []
@@ -627,7 +612,7 @@ class NativeRuntimeModelTests(unittest.TestCase):
                 [
                     compiler,
                     "-nostdlib",
-                    "-Wl,--entry,_spx_payload_entry",
+                    "-Wl,--entry,_spx_ingress_0000",
                     "-Wl,--subsystem,console",
                     "-Wl,--dynamicbase",
                     "-Wl,--enable-reloc-section",

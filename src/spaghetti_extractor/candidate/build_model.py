@@ -27,13 +27,12 @@ _PAYLOAD_FILENAME = native_build.PAYLOAD_FILENAME
 _PAYLOAD_MAP_FILENAME = native_build.PAYLOAD_MAP_FILENAME
 _ENGINE_LAYOUT_FILENAME = native_build.ENGINE_LAYOUT_FILENAME
 _RELOCATION_INVENTORY_FILENAME = native_build.PAYLOAD_RELOCATION_INVENTORY_FILENAME
-_GENERATED_ANCHOR_FILENAME = "executable-anchor-manifest.json"
 _C_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 _INCLUDE_DIRECTIVE = re.compile(r'^\s*#\s*include\s+(.+?)\s*(?://.*)?$')
 _QUOTED_INCLUDE = re.compile(r'^"([^"\r\n]+)"(?:\s*/\*.*\*/\s*)?$')
 _SYSTEM_INCLUDE = re.compile(r"^<[^>\r\n]+>(?:\s*/\*.*\*/\s*)?$")
 _PAYLOAD_SYMBOL = re.compile(
-    r"(?m)^\s*(0x[0-9a-fA-F]+)\s+(_?spx_payload_(?:entry|callback_[0-9a-fA-F]{8}))\b"
+    r"(?m)^\s*(0x[0-9a-fA-F]+)\s+(_?spx_[A-Za-z0-9_]+)\b"
 )
 
 

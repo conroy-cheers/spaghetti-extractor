@@ -33,7 +33,6 @@ from ..pe32.recovered_executable_data import (
 from ..util import sha256_bytes
 
 
-EXECUTABLE_ANCHOR_MANIFEST_FORMAT = "spaghetti-extractor-pe-executable-anchor-manifest-v1"
 CANDIDATE_FILENAME = "candidate.exe"
 COMPOSITION_MANIFEST_FILENAME = "composition-manifest.json"
 
@@ -166,89 +165,6 @@ def _unique_rva_list(value: Any, context: str) -> tuple[int, ...]:
     if len(set(result)) != len(result):
         raise PECompositionError(f"{context} contains duplicate RVAs")
     return result
-
-
-@dataclass(frozen=True)
-class ExecutableAnchor:
-    rva: int
-    bytes: bytes
-
-    @property
-    def end_rva(self) -> int:
-        return self.rva + len(self.bytes)
-
-    def to_payload(self) -> dict[str, Any]:
-        return {"rva": self.rva, "bytes_hex": self.bytes.hex()}
-
-    @classmethod
-    def parse(cls, value: Mapping[str, Any], *, context: str) -> "ExecutableAnchor":
-        _exact_fields(value, {"rva", "bytes_hex"}, context)
-        return cls(
-            rva=_integer(value["rva"], f"{context}.rva"),
-            bytes=_hex_bytes(value["bytes_hex"], f"{context}.bytes_hex"),
-        )
-
-
-@dataclass(frozen=True)
-class ExecutableAnchorManifest:
-    image_base: int
-    entry_anchor_rva: int
-    tls_callback_anchor_rvas: tuple[int, ...]
-    callback_anchor_rvas: tuple[int, ...]
-    anchors: tuple[ExecutableAnchor, ...]
-    format: str = EXECUTABLE_ANCHOR_MANIFEST_FORMAT
-
-    def to_payload(self) -> dict[str, Any]:
-        return {
-            "format": self.format,
-            "image_base": self.image_base,
-            "entry_anchor_rva": self.entry_anchor_rva,
-            "tls_callback_anchor_rvas": list(self.tls_callback_anchor_rvas),
-            "callback_anchor_rvas": list(self.callback_anchor_rvas),
-            "anchors": [anchor.to_payload() for anchor in self.anchors],
-        }
-
-    @classmethod
-    def parse(cls, value: Mapping[str, Any]) -> "ExecutableAnchorManifest":
-        context = "executable-anchor manifest"
-        _exact_fields(
-            value,
-            {
-                "format",
-                "image_base",
-                "entry_anchor_rva",
-                "tls_callback_anchor_rvas",
-                "callback_anchor_rvas",
-                "anchors",
-            },
-            context,
-        )
-        if value["format"] != EXECUTABLE_ANCHOR_MANIFEST_FORMAT:
-            raise PECompositionError("unsupported executable-anchor manifest format")
-        parsed_anchors = tuple(
-            ExecutableAnchor.parse(
-                _mapping(item, f"{context}.anchors[{index}]"),
-                context=f"{context}.anchors[{index}]",
-            )
-            for index, item in enumerate(_list(value["anchors"], f"{context}.anchors"))
-        )
-        if not parsed_anchors:
-            raise PECompositionError("executable-anchor manifest has no anchors")
-        anchors = tuple(sorted(parsed_anchors, key=lambda item: item.rva))
-        return cls(
-            image_base=_integer(value["image_base"], f"{context}.image_base"),
-            entry_anchor_rva=_integer(
-                value["entry_anchor_rva"], f"{context}.entry_anchor_rva", minimum=1
-            ),
-            tls_callback_anchor_rvas=_unique_rva_list(
-                value["tls_callback_anchor_rvas"],
-                f"{context}.tls_callback_anchor_rvas",
-            ),
-            callback_anchor_rvas=_unique_rva_list(
-                value["callback_anchor_rvas"], f"{context}.callback_anchor_rvas"
-            ),
-            anchors=anchors,
-        )
 
 
 @dataclass(frozen=True)
@@ -463,7 +379,7 @@ class PECompositionPlan:
     """A fully validated, write-free PE32 composition plan."""
 
     contract: LoadImageContract
-    anchor_manifest: ExecutableAnchorManifest
+    entry_rva: int
     recovered_executable_data: RecoveredExecutableDataContract | None
     relocation_inventory: PayloadRelocationInventory
     payload_bytes: bytes
@@ -572,29 +488,6 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise PECompositionError(f"JSON object contains duplicate field {key!r}")
         result[key] = value
     return result
-
-
-def _load_anchor_manifest(
-    source: Path | str | Mapping[str, Any] | ExecutableAnchorManifest,
-) -> ExecutableAnchorManifest:
-    if isinstance(source, ExecutableAnchorManifest):
-        return ExecutableAnchorManifest.parse(source.to_payload())
-    if isinstance(source, Mapping):
-        return ExecutableAnchorManifest.parse(source)
-    if not isinstance(source, (str, Path)):
-        raise PECompositionError(
-            "anchor manifest must be a path, object, or ExecutableAnchorManifest"
-        )
-    path = Path(source)
-    try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys
-        )
-    except PECompositionError:
-        raise
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise PECompositionError(f"cannot read anchor manifest {path}: {exc}") from exc
-    return ExecutableAnchorManifest.parse(_mapping(payload, "executable-anchor manifest"))
 
 
 def _load_recovered_executable_data(
@@ -892,76 +785,11 @@ def _validate_payload(
     return pe, sections, directories
 
 
-def _anchor_section(
-    anchor: ExecutableAnchor, sections: tuple[_Section, ...]
-) -> _Section:
-    matches = [
-        section
-        for section in sections
-        if section.executable
-        and section.raw_size
-        and section.rva <= anchor.rva
-        and anchor.end_rva <= section.rva + section.raw_size
-    ]
-    if len(matches) != 1:
-        raise PECompositionError(
-            f"anchor at RVA 0x{anchor.rva:x} is not bounded by exactly one executable raw section"
-        )
-    return matches[0]
-
-
-def _validate_anchors(
-    manifest: ExecutableAnchorManifest,
-    *,
-    contract: LoadImageContract,
-    sections: tuple[_Section, ...],
-) -> dict[int, tuple[ExecutableAnchor, _Section]]:
-    if manifest.image_base != contract.identity.preferred_base:
-        raise PECompositionError("anchor manifest image base differs from the contract")
-    starts = [anchor.rva for anchor in manifest.anchors]
-    if len(set(starts)) != len(starts):
-        raise PECompositionError("anchor RVAs are not unique")
-    _require_disjoint(
-        [(anchor.rva, anchor.end_rva, f"0x{anchor.rva:x}") for anchor in manifest.anchors],
-        context="executable anchor",
-    )
-    indexed = {
-        anchor.rva: (anchor, _anchor_section(anchor, sections))
-        for anchor in manifest.anchors
-    }
-    required_roots = (
-        ((manifest.entry_anchor_rva, "entry"),)
-        + tuple((rva, "TLS callback") for rva in manifest.tls_callback_anchor_rvas)
-        + tuple((rva, "callback") for rva in manifest.callback_anchor_rvas)
-    )
-    for rva, kind in required_roots:
-        if rva not in indexed:
-            raise PECompositionError(
-                f"{kind} RVA 0x{rva:x} does not name an exact supplied anchor"
-            )
-    expected_tls = tuple(
-        callback.rva for callback in (() if contract.tls is None else contract.tls.callbacks)
-    )
-    if manifest.tls_callback_anchor_rvas != expected_tls:
-        raise PECompositionError(
-            "anchor manifest TLS callback order differs from the load-image contract"
-        )
-    all_roots = (
-        (manifest.entry_anchor_rva,)
-        + manifest.tls_callback_anchor_rvas
-        + manifest.callback_anchor_rvas
-    )
-    if len(set(all_roots)) != len(all_roots):
-        raise PECompositionError("entry/TLS/callback root RVAs are not unique")
-    return indexed
-
-
 def _validate_recovered_executable_data(
     recovered: RecoveredExecutableDataContract | None,
     *,
     contract: LoadImageContract,
     sections: tuple[_Section, ...],
-    indexed_anchors: Mapping[int, tuple[ExecutableAnchor, _Section]],
 ) -> tuple[RecoveredExecutableDataRange, ...]:
     if recovered is None:
         return ()
@@ -973,7 +801,6 @@ def _validate_recovered_executable_data(
         raise PECompositionError(
             "recovered executable-data image base differs from the load-image contract"
         )
-    anchors = tuple(anchor for anchor, _section in indexed_anchors.values())
     for item in recovered.ranges:
         if item.section_index >= len(sections):
             raise PECompositionError(
@@ -999,19 +826,11 @@ def _validate_recovered_executable_data(
                 f"recovered executable-data range {item.identity} is not immutable "
                 "initialized data in its declared executable section"
             )
-        if any(
-            item.rva_start < anchor.end_rva and anchor.rva < item.rva_end
-            for anchor in anchors
-        ):
-            raise PECompositionError(
-                f"recovered executable-data range {item.identity} overlaps an anchor"
-            )
     return recovered.ranges
 
 
 def _classify_executable_bytes(
     sections: tuple[_Section, ...],
-    indexed_anchors: Mapping[int, tuple[ExecutableAnchor, _Section]],
     recovered_data: Sequence[RecoveredExecutableDataRange] = (),
 ) -> tuple[ByteClassification, ...]:
     result: list[ByteClassification] = []
@@ -1036,15 +855,10 @@ def _classify_executable_bytes(
         if not section.executable or not section.raw_size:
             continue
         classified_ranges = [
-            (anchor.rva, anchor.end_rva, "anchor", anchor.bytes)
-            for anchor, anchor_section in indexed_anchors.values()
-            if anchor_section.index == section.index
-        ]
-        classified_ranges.extend(
             (item.rva_start, item.rva_end, "recovered_data", item.data)
             for item in recovered_data
             if item.section_index == section.index
-        )
+        ]
         classified_ranges.sort(key=lambda item: item[0])
         logical_end = section.rva + (
             min(section.virtual_size, section.raw_size)
@@ -1471,14 +1285,12 @@ def _translate_payload_preferred_value(
 def _merge_relocations(
     *,
     contract: LoadImageContract,
-    anchor_manifest: ExecutableAnchorManifest,
     original_sections: tuple[_Section, ...],
     payload_inventory: PayloadRelocationInventory,
     payload_sections: tuple[_Section, ...],
     output_payload_sections: tuple[_Section, ...],
 ) -> tuple[_MergedRelocation, ...]:
     merged: list[_MergedRelocation] = []
-    anchors = tuple(anchor_manifest.anchors)
     for block in contract.relocations:
         for relocation in block.relocations:
             if relocation.type == _IMAGE_REL_BASED_ABSOLUTE:
@@ -1501,25 +1313,6 @@ def _merge_relocations(
                 context="original HIGHLOW relocation target",
                 require_raw=False,
             )
-            overlapping = [
-                anchor
-                for anchor in anchors
-                if relocation.target_rva < anchor.end_rva
-                and anchor.rva < relocation.target_rva + relocation.width
-            ]
-            if overlapping:
-                if len(overlapping) != 1 or not (
-                    overlapping[0].rva <= relocation.target_rva
-                    and relocation.target_rva + relocation.width
-                    <= overlapping[0].end_rva
-                ):
-                    raise PECompositionError(
-                        "original HIGHLOW relocation target is only partially covered "
-                        "by an executable anchor"
-                    )
-                # The anchor replaces every byte the loader would have patched.
-                # Its relative jump and NOP suffix contain no preferred-base value.
-                continue
             merged.append(
                 _MergedRelocation(
                     source_target_rva=relocation.target_rva,

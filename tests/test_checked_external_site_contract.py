@@ -259,6 +259,55 @@ class CheckedExternalSiteContractTests(unittest.TestCase):
         self.assertEqual(projected.callback_effect, "explicit")
         self.assertEqual(projected.callback_adapter.target_rvas, (0x1234,))
 
+    def test_projects_callback_sentinel_without_native_adapter(self) -> None:
+        source = _expression(0)
+        contract = ExternalContractV3.create(
+            identity={"kind": "import", "dll": "msvcrt.dll", "symbol": "signal"},
+            transfer_kind="call",
+            disposition="returns",
+            profile_id="msvcrt",
+            profile_sha256="1" * 64,
+            argument_words=1,
+            arguments=(source,),
+            memory_effect="none",
+            world_effect="callbackRegistration",
+            callback_effect="registers",
+            machine_contract={
+                "abi_template": "pe32-cdecl-v1",
+                "argument_words": 1,
+                "disposition": "returns",
+                "memory_effect": "none",
+                "memory_footprints": [],
+                "world_effect": "callbackRegistration",
+                "callback_effect": "registers",
+                "result_register_relations": [],
+                "out_pointer_relations": [],
+                "out_interface_relations": [],
+                "callback_source": {"kind": "argument_word", "argument": 0},
+                "callback_abi": {
+                    "kind": "generic_callback",
+                    "argument_words": 1,
+                    "stack_cleanup_bytes": 0,
+                    "nullable": True,
+                },
+                "callback_lifetime": "until_replaced_or_process_exit",
+            },
+            callbacks=(),
+            callback_source_decision=CallbackSourceDecisionV3.create(
+                kind="non_callback_sentinel",
+                argument_index=0,
+                source_expression=source,
+                sentinel_word=1,
+            ),
+        )
+
+        projected = checked_external_site_contract_from_authority(
+            contract.to_payload()
+        )
+
+        self.assertEqual(projected.callback_effect, "none")
+        self.assertIsNone(projected.callback_adapter)
+
     def test_resolved_contract_derives_exact_stack_arguments(self) -> None:
         contract = _profile_entry()
         contract["profile_binding"] = {

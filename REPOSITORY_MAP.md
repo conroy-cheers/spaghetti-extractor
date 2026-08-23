@@ -20,6 +20,7 @@ experiments remain available in Git history and are not supported interfaces.
 | `targets/registry.nix`, `targets/<id>/` | Explicit target registry and authored GNU Hello, jq, and DX-Ball bundles. |
 | `docs/` | Canonical architecture and workflow documentation. |
 | `docs/call-protocols.md` | Checked semantic, layout, transport, lifecycle, evidence, and source-view model for calls and callbacks. |
+| `docs/native-ingress.md` | Generic native entry, object/data-export authority, SEH outcomes, PE32 deployment, and multi-image completion contracts. |
 | `docs/canonical-boundaries.md` | Shared type, data-layout, evidence, lifecycle, projection, call, callback, and component-boundary model. |
 | `docs/boundary-transducers.md` | Typed relations between logical component values, machine places, object authority, and checked effects. |
 | `docs/callbacks.md` | Provider-neutral callback registration, lifetime, delivery, cardinality, and invocation semantics. |
@@ -440,6 +441,10 @@ enforce this with `xvfb-run` where Wine is used.
 | `fallback-capability-analysis.nix` | Non-executable lowering analysis projected into final static authority; emits no source or object code. |
 | `candidate-native-object-graph.nix` | Controlled-IFD source normalization plus independently content-addressed native objects and assembly; a changed compile bundle invalidates only its object and final package. |
 | `candidate-hybrid.nix` | Composes interpreter, native engine/runtime, cached objects, and a PE candidate. |
+| `behavioral-c-package.nix`, `behavioral-c-runtime-qualification.nix`, `behavioral-c-completion-gate.nix`, `behavioral-c-exact-runtime.nix` | Direct behavioral-C packaging, exact runtime qualification, completion gating, and the reproducible runtime assembly path. |
+| `pe32-module-interface.nix`, `pe32-machine-object-authority.nix`, `native-ingress-plan.nix`, `native-ingress-link-receipt.nix` | Decode exact module loader surfaces and derive/link checked native ingress and loader-realized object authority. |
+| `pe32-module-composition.nix`, `pe32-loader-surface-receipt.nix`, `pe32-module-deployment.nix` | Regenerate PE32 loader surfaces, verify the decoded candidate, and close one exact deployed module. |
+| `pe32-project-load-plan.nix`, `pe32-observed-load-graph.nix`, `pe32-project-completion.nix` | Check multi-image import edges, candidate-observed loader evidence, and deployment-bound project completion. |
 | `ca-python-json-phase.nix` | Generic CA phase constructor with explicit store dependencies, schema/status checking, and phase manifests. |
 | `artifact-seed-v3.nix`, `artifact-set-v3.nix`, `artifact-phase-v3.nix` | Strict source-byte-bound artifact ingestion, typed streaming validation, complete checker-source provenance, and framework-owned map/reduce/SCC phase execution over bounded CA packs. |
 | `authority-source-plan.nix`, `authority-machine-ir-input.nix` | One streaming dynamic-analysis preparation boundary followed by stable bucket re-interning, so one changed unit invalidates one bounded machine-IR shard without thousands of evaluator reads. |

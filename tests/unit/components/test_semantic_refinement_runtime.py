@@ -7,10 +7,15 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from spaghetti_extractor.artifacts.artifact_set import canonical_sha256_v3
 from spaghetti_extractor.components.refinement import check_component_refinement
-from spaghetti_extractor.components.runtime_paths import render_finite_path_operation
+from spaghetti_extractor.components.runtime_paths import (
+    _covered_boundary_clause_ids,
+    _direct_operation_effect_ids,
+    render_finite_path_operation,
+)
 from spaghetti_extractor.components.source_profile import (
     check_component_source_profile,
 )
@@ -28,6 +33,38 @@ class SemanticRefinementRuntimeAndCbmcTests(unittest.TestCase):
     _service_fixture = _support.SemanticRefinementTests._service_fixture
     _bytes_fixture = _support.SemanticRefinementTests._bytes_fixture
     _state_fixture = _support.SemanticRefinementTests._state_fixture
+
+    def test_interaction_owned_effect_covers_runtime_boundary(self) -> None:
+        plan = SimpleNamespace(
+            actions=(SimpleNamespace(identity="parameter.object"),),
+            interactions=(SimpleNamespace(
+                invoke_action=SimpleNamespace(
+                    clause={"effect_ids": ["atomic_update"]}
+                )
+            ),),
+        )
+
+        self.assertEqual(
+            _covered_boundary_clause_ids(plan),
+            {"parameter.object", "effect.atomic_update"},
+        )
+
+    def test_service_owned_effect_is_not_a_direct_runtime_effect(self) -> None:
+        interface = SimpleNamespace(
+            services=(SimpleNamespace(
+                identity="install_filter",
+                effect_ids=("filter_replaced",),
+            ),),
+        )
+        operation = SimpleNamespace(
+            allowed_service_ids=("install_filter",),
+            effect_ids=("filter_replaced", "local_update"),
+        )
+
+        self.assertEqual(
+            _direct_operation_effect_ids(interface, operation),
+            {"local_update"},
+        )
 
     @unittest.skipUnless(shutil.which("cc"), "a C compiler is required")
     def test_exact_service_paths_render_an_executable_adapter(self) -> None:

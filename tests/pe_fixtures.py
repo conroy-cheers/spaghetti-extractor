@@ -44,7 +44,10 @@ def pe32_import_image(
     symbol: str,
     dll: str = "KERNEL32.dll",
     iat_offset: int = 0x40,
+    cell_count: int = 1,
 ) -> bytes:
+    if cell_count < 1 or cell_count > 3:
+        raise ValueError("synthetic import cell count must be between one and three")
     file_alignment = 0x200
     section_alignment = 0x1000
     headers_size = 0x200
@@ -63,8 +66,9 @@ def pe32_import_image(
     import_name_rva = idata_rva + 0x80
     idata = bytearray(idata_raw_size)
     struct.pack_into("<IIIII", idata, 0, int_rva, 0, 0, dll_name_rva, iat_rva)
-    struct.pack_into("<II", idata, 0x30, import_name_rva, 0)
-    struct.pack_into("<II", idata, iat_offset, import_name_rva, 0)
+    for index in range(cell_count):
+        struct.pack_into("<I", idata, 0x30 + 4 * index, import_name_rva)
+        struct.pack_into("<I", idata, iat_offset + 4 * index, import_name_rva)
     idata[0x50 : 0x50 + len(dll) + 1] = dll.encode("ascii") + b"\0"
     name = symbol.encode("ascii")
     struct.pack_into("<H", idata, 0x80, 0)
@@ -98,6 +102,157 @@ def pe32_import_image(
         + text_section + idata_section
     ).ljust(headers_size, b"\0")
     return headers + code.ljust(text_raw_size, b"\0") + bytes(idata)
+
+
+def pe32_export_image(
+    code: bytes,
+    *,
+    symbol: str,
+    dll: str = "fixture.dll",
+    ordinal: int = 1,
+) -> bytes:
+    """Build a small PE32 DLL exporting one code RVA by name and ordinal."""
+
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    headers_size = 0x200
+    image_base = 0x500000
+    text_rva = 0x1000
+    edata_rva = 0x2000
+    text_raw = 0x200
+    text_raw_size = align(len(code), file_alignment)
+    edata_raw = text_raw + text_raw_size
+    edata_raw_size = 0x200
+    size_of_image = align(edata_rva + edata_raw_size, section_alignment)
+
+    edata = bytearray(edata_raw_size)
+    dll_rva = edata_rva + 0x40
+    symbol_rva = edata_rva + 0x70
+    functions_rva = edata_rva + 0x90
+    names_rva = edata_rva + 0x94
+    ordinals_rva = edata_rva + 0x98
+    struct.pack_into(
+        "<IIHHIIIIIII",
+        edata,
+        0,
+        0,
+        0,
+        0,
+        0,
+        dll_rva,
+        ordinal,
+        1,
+        1,
+        functions_rva,
+        names_rva,
+        ordinals_rva,
+    )
+    edata[0x40 : 0x40 + len(dll) + 1] = dll.encode("ascii") + b"\0"
+    edata[0x70 : 0x70 + len(symbol) + 1] = symbol.encode("ascii") + b"\0"
+    struct.pack_into("<I", edata, 0x90, text_rva)
+    struct.pack_into("<I", edata, 0x94, symbol_rva)
+    struct.pack_into("<H", edata, 0x98, 0)
+
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+    coff = struct.pack("<HHIIIHH", 0x014C, 2, 0, 0, 0, 224, 0x210F)
+    optional_prefix = struct.pack(
+        "<HBB" + "I" * 9 + "H" * 6 + "I" * 4 + "H" * 2 + "I" * 6,
+        0x10B, 0, 0, text_raw_size, edata_raw_size, 0, text_rva,
+        text_rva, edata_rva, image_base, section_alignment, file_alignment,
+        4, 0, 0, 0, 4, 0, 0, size_of_image, headers_size, 0, 3, 0,
+        0x100000, 0x1000, 0x100000, 0x1000, 0, 16,
+    )
+    optional = bytearray(optional_prefix + (b"\0" * (16 * 8)))
+    struct.pack_into("<II", optional, len(optional_prefix), edata_rva, 0x9A)
+    text_section = struct.pack(
+        "<8sIIIIIIHHI",
+        b".text\0\0\0", len(code), text_rva, text_raw_size, text_raw,
+        0, 0, 0, 0, 0x60000020,
+    )
+    edata_section = struct.pack(
+        "<8sIIIIIIHHI",
+        b".edata\0\0", edata_raw_size, edata_rva, edata_raw_size,
+        edata_raw, 0, 0, 0, 0, 0x40000040,
+    )
+    headers = (
+        bytes(dos) + b"PE\0\0" + coff + bytes(optional)
+        + text_section + edata_section
+    ).ljust(headers_size, b"\0")
+    return headers + code.ljust(text_raw_size, b"\0") + bytes(edata)
+
+
+def pe32_data_export_image(
+    data: bytes,
+    *,
+    symbol: str = "SharedValue",
+    dll: str = "fixture.dll",
+    ordinal: int = 1,
+) -> bytes:
+    """Build a PE32 DLL whose named EAT slot points into writable storage."""
+
+    if not data:
+        raise ValueError("synthetic data export must be nonempty")
+    file_alignment = 0x200
+    section_alignment = 0x1000
+    headers_size = 0x200
+    image_base = 0x500000
+    text_rva, data_rva, edata_rva = 0x1000, 0x2000, 0x3000
+    text_raw, data_raw, edata_raw = 0x200, 0x400, 0x600
+    raw_size = 0x200
+    size_of_image = 0x4000
+
+    edata = bytearray(raw_size)
+    dll_rva = edata_rva + 0x40
+    symbol_rva = edata_rva + 0x70
+    functions_rva = edata_rva + 0x90
+    names_rva = edata_rva + 0x94
+    ordinals_rva = edata_rva + 0x98
+    struct.pack_into(
+        "<IIHHIIIIIII", edata, 0, 0, 0, 0, 0, dll_rva, ordinal,
+        1, 1, functions_rva, names_rva, ordinals_rva,
+    )
+    edata[0x40 : 0x40 + len(dll) + 1] = dll.encode("ascii") + b"\0"
+    edata[0x70 : 0x70 + len(symbol) + 1] = symbol.encode("ascii") + b"\0"
+    struct.pack_into("<I", edata, 0x90, data_rva)
+    struct.pack_into("<I", edata, 0x94, symbol_rva)
+    struct.pack_into("<H", edata, 0x98, 0)
+
+    dos = bytearray(0x80)
+    dos[0:2] = b"MZ"
+    struct.pack_into("<I", dos, 0x3C, 0x80)
+    coff = struct.pack("<HHIIIHH", 0x014C, 3, 0, 0, 0, 224, 0x210F)
+    optional_prefix = struct.pack(
+        "<HBB" + "I" * 9 + "H" * 6 + "I" * 4 + "H" * 2 + "I" * 6,
+        0x10B, 0, 0, raw_size, raw_size * 2, 0, text_rva, text_rva,
+        data_rva, image_base, section_alignment, file_alignment, 4, 0, 0, 0,
+        4, 0, 0, size_of_image, headers_size, 0, 3, 0, 0x100000,
+        0x1000, 0x100000, 0x1000, 0, 16,
+    )
+    optional = bytearray(optional_prefix + b"\0" * (16 * 8))
+    struct.pack_into("<II", optional, len(optional_prefix), edata_rva, 0x9A)
+    sections = b"".join((
+        struct.pack(
+            "<8sIIIIIIHHI", b".text\0\0\0", 1, text_rva, raw_size,
+            text_raw, 0, 0, 0, 0, 0x60000020,
+        ),
+        struct.pack(
+            "<8sIIIIIIHHI", b".data\0\0\0", len(data), data_rva, raw_size,
+            data_raw, 0, 0, 0, 0, 0xC0000040,
+        ),
+        struct.pack(
+            "<8sIIIIIIHHI", b".edata\0\0", raw_size, edata_rva, raw_size,
+            edata_raw, 0, 0, 0, 0, 0x40000040,
+        ),
+    ))
+    headers = (
+        bytes(dos) + b"PE\0\0" + coff + bytes(optional) + sections
+    ).ljust(headers_size, b"\0")
+    return (
+        headers + b"\xC3".ljust(raw_size, b"\0")
+        + data.ljust(raw_size, b"\0") + bytes(edata)
+    )
 
 
 def pe32_image_with_pointer_slot(

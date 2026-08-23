@@ -57,7 +57,19 @@
       "service_id": "set_unhandled_exception_filter",
       "provider": {
         "kind": "external_site",
-        "site_id": "external-site-v3:12325277926d47f6a2b0994e2b05207ba9c19427b84dab100751e4307459e418"
+        "site_id": "external-site-v3:12325277926d47f6a2b0994e2b05207ba9c19427b84dab100751e4307459e418",
+        "result_projection": {
+          "kind": "callback_handle",
+          "protocol_id": "win32-unhandled-exception-filter",
+          "authority_id": "callback-v3:3c8e0f2081cc08e02d4923d4565ae4617c9d80389b78de1ef72a38a06200f7e3",
+          "source": {
+            "kind": "register",
+            "register": "eax",
+            "width": 32,
+            "at": "call"
+          },
+          "at": "call"
+        }
       },
       "mediation": "callback"
     }

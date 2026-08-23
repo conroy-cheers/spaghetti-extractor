@@ -101,6 +101,11 @@ let
     componentBindingRoot = ./intent/bindings;
     componentInductionRoot = ./intent/induction;
     componentRelationRoot = ./intent/relations;
+    behavioralCExactRuntime = true;
+    nativeProcessTermination = {
+      dll = "msvcrt.dll";
+      symbol = "exit";
+    };
     callProtocols.unhandled-exception-filter = {
       intent = ./intent/calls/unhandled-exception-filter.json;
       layouts = ./intent/calls/unhandled-exception-filter-layouts.json;
@@ -194,4 +199,5 @@ sdk.target.pe32Bundle {
     startup-sleep-service-semantic-refinement = components.refinementReceipts.startup-sleep-service;
     startup-sleep-service-activation = components.activationCheckGates.startup-sleep-service;
   };
+  acceptanceChecks.behavioral-c-completion = workflow.behavioralCCompletion;
 }

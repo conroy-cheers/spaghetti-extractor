@@ -38,6 +38,19 @@ let
   componentWorkflow = callWith ./component-workflow.nix analysisCommon;
   callProtocolWorkflow = callWith ./call-protocol-workflow.nix analysisCommon;
   hybridCandidate = callWith ./candidate-hybrid.nix candidateCommon;
+  behavioralCPackage = callWith ./behavioral-c-package.nix candidateCommon;
+  pe32ModuleInterface = callWith ./pe32-module-interface.nix candidateCommon;
+  pe32MachineObjectAuthority = callWith
+    ./pe32-machine-object-authority.nix candidateCommon;
+  nativeIngressPlan = callWith ./native-ingress-plan.nix candidateCommon;
+  nativeIngressLinkReceipt = callWith
+    ./native-ingress-link-receipt.nix candidateCommon;
+  pe32ModuleComposition = callWith
+    ./pe32-module-composition.nix candidateCommon;
+  pe32LoaderSurfaceReceipt = callWith
+    ./pe32-loader-surface-receipt.nix candidateCommon;
+  pe32ModuleDeployment = callWith
+    ./pe32-module-deployment.nix candidateCommon;
   runtimeFrontierReport = callWith ./runtime-frontier-report.nix analysisCommon;
   candidateTestSuite = callWith ./candidate-test-suite.nix candidateCommon;
   targetBundleLint = callWith ./target-bundle-lint.nix analysisCommon;
@@ -165,6 +178,10 @@ let
     libraryCatalogLock ? null,
     libraryImplementations ? { },
     libraryAdoptionIntentRoot ? null,
+    behavioralCLayoutIntent ? null,
+    behavioralCRuntimeQualification ? null,
+    behavioralCExactRuntime ? false,
+    nativeProcessTermination ? null,
     maxUnits ? 512,
     maxCandidatesPerSeed ? 12,
   }:
@@ -265,9 +282,34 @@ let
         protocols = callProtocols;
         namePrefix = "${namePrefix}-calls";
       };
+      moduleInterface = pe32ModuleInterface {
+        inherit original namePrefix;
+        imageId = binaryIdentity;
+        staticExport = analysis.staticExport;
+      };
+      moduleObjectAuthority = pe32MachineObjectAuthority {
+        inherit namePrefix;
+        moduleInterface = moduleInterface;
+      };
+      moduleNativeIngressPlan = nativeIngressPlan {
+        inherit namePrefix;
+        moduleInterface = moduleInterface;
+        objectAuthority = moduleObjectAuthority;
+        behavioralRoots = "${analysis.staticExport}/behavioral-roots.json";
+        machineIr = analysis.machineIr;
+        rootClosure = authority.graph.phases."launch-root-closure-v3".artifact;
+        callbackAuthority =
+          authority.graph.phases."callback-authority-v4".artifact;
+        callProtocolPackages = builtins.attrValues calls.checked;
+      };
       interpreterSupport = assert lib.assertMsg (authority.fallbackSupport != null)
         "PE32 workflows require reusable machine-IR support";
         authority.fallbackSupport;
+      behavioralCSource = behavioralCPackage {
+        machineIr = analysis.machineIr;
+        inherit namePrefix;
+        layoutIntent = behavioralCLayoutIntent;
+      };
       components = if !hasComponents then null else componentWorkflow {
           machineIr = analysis.machineIr;
           reconstructionPlan = analysis.reconstructionPlan;
@@ -339,11 +381,15 @@ let
         machineIr = analysis.machineIr;
         staticExport = analysis.staticExport;
         staticAuthority = authority;
+        nativeIngressPlan = moduleNativeIngressPlan;
+        moduleInterface = moduleInterface;
+        candidateFilename = binaryIdentity;
         machineImportProfiles = machineImportProfiles
           ++ candidateMachineImportProfiles
           ++ extraMachineImportProfiles;
         namePrefix = "${namePrefix}-${configurationId}";
         inherit compiler;
+        inherit nativeProcessTermination;
         structuralExecutionGate = structuralGates.${configurationId};
         interpreterPackage = interpreters.${configurationId};
         componentRuntimePackage = components.mkRuntime {
@@ -359,6 +405,88 @@ let
         name = configurationId;
         value = candidateFor { inherit configurationId; };
       }) configurationIds);
+      candidateLoadContracts = lib.mapAttrs (configurationId: candidate:
+        pkgs.runCommand "${namePrefix}-${configurationId}-candidate-load-contract-v1" {
+          nativeBuildInputs = [ context.pythonEnv ];
+          __contentAddressed = true;
+        } ''
+          export PYTHONPATH=${context.sources.fullSource}/src
+          mkdir -p "$out"
+          ${context.pythonEnv}/bin/python3 - \
+            ${candidate.candidate}/${binaryIdentity} \
+            "$out/load-image-contract.json" <<'PY'
+          import pathlib
+          import sys
+          from spaghetti_extractor.roundtrip_fuzz.image_io import (
+              write_spx_load_image_contract,
+          )
+          write_spx_load_image_contract(
+              original_pe=pathlib.Path(sys.argv[1]),
+              out=pathlib.Path(sys.argv[2]),
+          )
+          PY
+        '') staticCandidates;
+      candidateModuleInterfaces = lib.mapAttrs (configurationId: candidate:
+        pe32ModuleInterface {
+          original = "${staticCandidates.${configurationId}.candidate}/${binaryIdentity}";
+          loadImageContract =
+            "${candidateLoadContracts.${configurationId}}/load-image-contract.json";
+          imageId = binaryIdentity;
+          namePrefix = "${namePrefix}-${configurationId}-candidate";
+        }) staticCandidates;
+      loaderSurfaceReceipts = lib.mapAttrs (configurationId: candidate:
+        pe32LoaderSurfaceReceipt {
+          originalModuleInterface = moduleInterface;
+          nativeIngressPlan = moduleNativeIngressPlan;
+          nativeIngressLinkReceipt = candidate.nativeIngressLinkReceipt;
+          compositionManifest =
+            "${candidate.candidate}/pe-composition-manifest.json";
+          candidateModule = "${candidate.candidate}/${binaryIdentity}";
+          candidateModuleInterface = candidateModuleInterfaces.${configurationId};
+          namePrefix = "${namePrefix}-${configurationId}";
+        }) staticCandidates;
+      behavioralCExactRuntimeSupport =
+        if !behavioralCExactRuntime then null else
+        import ./behavioral-c-exact-runtime.nix {
+          inherit pkgs;
+          inherit (context) pythonEnv;
+          pythonSource = context.sources.fullSource;
+          machineIr = analysis.machineIr;
+          staticExport = analysis.staticExport;
+          staticAuthority = authority;
+          nativeIngressPlan = moduleNativeIngressPlan;
+          inherit machineImportProfiles namePrefix;
+          inherit nativeProcessTermination;
+          interpreterPackage = interpreterSupport;
+        };
+      generatedBehavioralCRuntimeQualification =
+        if behavioralCExactRuntimeSupport == null then null else
+        import ./behavioral-c-runtime-qualification.nix {
+          inherit pkgs;
+          behavioralCPackage = behavioralCSource;
+          interpreterPackage = interpreterSupport;
+          nativeRuntimePackage = behavioralCExactRuntimeSupport.nativeRuntime;
+          namePrefix = "${namePrefix}-behavioral";
+        };
+      effectiveBehavioralCRuntimeQualification =
+        if behavioralCRuntimeQualification != null
+        then behavioralCRuntimeQualification
+        else generatedBehavioralCRuntimeQualification;
+      behavioralC =
+        if effectiveBehavioralCRuntimeQualification == null
+        then behavioralCSource
+        else behavioralCPackage {
+          machineIr = analysis.machineIr;
+          inherit namePrefix;
+          layoutIntent = behavioralCLayoutIntent;
+          runtimeQualification =
+            "${effectiveBehavioralCRuntimeQualification}/runtime-qualification.json";
+        };
+      behavioralCCompletion = import ./behavioral-c-completion-gate.nix {
+        inherit pkgs;
+        package = behavioralC;
+        inherit namePrefix;
+      };
       releaseFor = { configurationId }:
         let
           receipt = import ./candidate-release-receipt.nix {
@@ -368,7 +496,7 @@ let
             structuralReceipt = structuralReceipts.${configurationId};
             isaQualification = authority.graph.phases."isa-qualification-v3".artifact;
             candidateBinary =
-              "${staticCandidates.${configurationId}.candidate}/candidate.exe";
+              "${staticCandidates.${configurationId}.candidate}/${binaryIdentity}";
             componentReleaseGate = components.hybridGates.${configurationId};
           };
           gate = import ./candidate-release-gate.nix {
@@ -380,6 +508,24 @@ let
         name = configurationId;
         value = releaseFor { inherit configurationId; };
       }) configurationIds);
+      moduleDeployments =
+        if effectiveBehavioralCRuntimeQualification == null then { } else
+        lib.mapAttrs (configurationId: candidate:
+          pe32ModuleDeployment {
+            originalModuleInterface = moduleInterface;
+            behavioralCCompletion =
+              "${behavioralCCompletion}/behavioral-c-completion.json";
+            nativeIngressPlan = moduleNativeIngressPlan;
+            nativeIngressLinkReceipt = candidate.nativeIngressLinkReceipt;
+            exactRuntimeQualification =
+              "${effectiveBehavioralCRuntimeQualification}/runtime-qualification.json";
+            loaderSurfaceReceipt = loaderSurfaceReceipts.${configurationId};
+            candidateStaticAssurance =
+              "${staticReleasePolicies.${configurationId}.receipt}/release-acceptance.json";
+            candidateModule = "${candidate.candidate}/${binaryIdentity}";
+            candidateModuleInterface = candidateModuleInterfaces.${configurationId};
+            namePrefix = "${namePrefix}-${configurationId}";
+          }) staticCandidates;
       candidateTestFor = {
         id,
         configurationId,
@@ -391,11 +537,11 @@ let
         inherit id configurationId suite runtimeData timeoutSeconds
           stripStderrLineRegexes;
         namePrefix = "${namePrefix}-${configurationId}";
-        candidateBinary = "${staticCandidates.${configurationId}.candidate}/candidate.exe";
+        candidateBinary = "${staticCandidates.${configurationId}.candidate}/${binaryIdentity}";
         releaseGate = staticReleasePolicies.${configurationId}.gate;
       };
     in {
-      inherit analysis authority rootedBehavioralProjection libraryRecognition linkedLibraries libraryOperator libraryCatalogConfigured calls components interpreterSupport interpreters
+      inherit analysis authority rootedBehavioralProjection libraryRecognition linkedLibraries libraryOperator libraryCatalogConfigured calls moduleInterface moduleObjectAuthority moduleNativeIngressPlan components interpreterSupport interpreters behavioralC behavioralCSource behavioralCCompletion behavioralCExactRuntimeSupport candidateLoadContracts candidateModuleInterfaces loaderSurfaceReceipts moduleDeployments
         structuralArtifacts structuralReceipts structuralGates candidateFor
         candidateTestFor releaseFor staticReleasePolicies configurationIds staticCandidates runtimeFrontiers
         hasComponents;
@@ -407,6 +553,127 @@ let
         static = staticCandidates;
       };
     };
+  mkPe32ProjectWorkflow = {
+    projectId,
+    rootImageId,
+    images,
+    hostEnvironment,
+    targetDistributionRoots ? [ ],
+    loadObservation ? null,
+    observedLoadGraph ? null,
+    moduleDeployments ? null,
+    nativeIngressPlans ? null,
+    edgeAuthorities ? { },
+    namePrefix ? "spaghetti-extractor-${projectId}",
+  }:
+    let
+      imageIds = builtins.attrNames images;
+      imageWorkflows = lib.mapAttrs (imageId: image:
+        mkPe32Workflow (image.workflowArgs // {
+          targetId = "${projectId}:${imageId}";
+          binaryIdentity = image.filename;
+          namePrefix = "${namePrefix}-${imageId}";
+        })) (lib.filterAttrs (_imageId: image: image.ownership == "target") images);
+      projectIntent = pkgs.writeText "${namePrefix}-project-intent-v1.json"
+        (builtins.toJSON {
+          format = "spaghetti-extractor-pe32-project-intent-v1";
+          project_id = projectId;
+          root_image_id = rootImageId;
+          target_distribution_roots = targetDistributionRoots;
+          host_environment = {
+            id = hostEnvironment.id;
+            sha256 = hostEnvironment.sha256;
+          };
+          images = map (imageId: {
+            image_id = imageId;
+            filename = images.${imageId}.filename;
+            aliases = images.${imageId}.aliases or [ ];
+            ownership = images.${imageId}.ownership;
+            implementation = images.${imageId}.implementation;
+          }) imageIds;
+        });
+      moduleInterfaces = lib.mapAttrs (_imageId: workflow:
+        workflow.moduleInterface) imageWorkflows;
+      effectiveNativeIngressPlans =
+        if nativeIngressPlans == null
+        then lib.mapAttrs (_imageId: workflow: workflow.moduleNativeIngressPlan)
+          imageWorkflows
+        else nativeIngressPlans;
+      generatedModuleDeployments = lib.mapAttrs (imageId: workflow:
+        let
+          available = builtins.attrNames workflow.moduleDeployments;
+          selected = images.${imageId}.configuration_id or (
+            if builtins.length available == 1 then builtins.head available else null
+          );
+        in
+          assert lib.assertMsg (selected != null)
+            "project image ${imageId} must select a deployment configuration";
+          assert lib.assertMsg (builtins.hasAttr selected workflow.moduleDeployments)
+            "project image ${imageId} selected an unknown deployment configuration";
+          workflow.moduleDeployments.${selected}) imageWorkflows;
+      effectiveModuleDeployments =
+        if moduleDeployments != null then moduleDeployments
+        else if lib.all (workflow: workflow.moduleDeployments != { })
+          (builtins.attrValues imageWorkflows)
+        then generatedModuleDeployments
+        else null;
+      loadPlan = import ./pe32-project-load-plan.nix {
+        inherit pkgs moduleInterfaces edgeAuthorities;
+        pythonEnv = context.pythonEnv;
+        intent = projectIntent;
+        nativeIngressPlans = effectiveNativeIngressPlans;
+        namePrefix = namePrefix;
+      };
+      observedLoadGraphPackage =
+        if loadObservation == null then null else
+        import ./pe32-observed-load-graph.nix {
+          inherit pkgs loadPlan;
+          pythonEnv = context.pythonEnv;
+          observation = loadObservation;
+          namePrefix = namePrefix;
+        };
+      checkedObservedLoadGraph =
+        if observedLoadGraphPackage == null then observedLoadGraph else
+        "${observedLoadGraphPackage}/observed-load-graph.json";
+      completion =
+        if effectiveModuleDeployments == null || checkedObservedLoadGraph == null
+        then null else
+        import ./pe32-project-completion.nix {
+          inherit pkgs loadPlan;
+          moduleDeployments = effectiveModuleDeployments;
+          pythonEnv = context.pythonEnv;
+          observedLoadGraph = checkedObservedLoadGraph;
+          namePrefix = namePrefix;
+        };
+    in
+      assert lib.assertMsg (images != { })
+        "PE32 project requires at least one image";
+      assert lib.assertMsg (builtins.hasAttr rootImageId images)
+        "PE32 project root image is not declared";
+      assert lib.assertMsg (images.${rootImageId}.ownership == "target")
+        "PE32 project root image must be target-owned";
+      assert lib.assertMsg (loadObservation == null || observedLoadGraph == null)
+        "provide a raw load observation or an already checked graph, not both";
+      assert lib.assertMsg
+        (lib.all (imageId:
+          let image = images.${imageId};
+          in builtins.isString image.filename
+            && builtins.elem image.ownership [ "target" "runtime" ]
+            && builtins.elem image.implementation [ "behavioral_c" "native_host" ]
+            && (image.ownership != "runtime" || image.implementation == "native_host")
+            && ((image.ownership == "target") == (image ? workflowArgs)))
+          imageIds)
+        "PE32 project image declarations are malformed";
+      {
+        _type = "spaghetti-extractor-pe32-project-workflow-v1";
+        inherit projectId rootImageId imageWorkflows moduleInterfaces loadPlan completion edgeAuthorities
+          projectIntent hostEnvironment targetDistributionRoots loadObservation;
+        moduleDeployments = effectiveModuleDeployments;
+        nativeIngressPlans = effectiveNativeIngressPlans;
+        observedLoadGraph = checkedObservedLoadGraph;
+        inherit observedLoadGraphPackage;
+        root = imageWorkflows.${rootImageId};
+      };
   projectCandidate = candidate: lib.filterAttrs (_name: value: value != null) {
     inherit (candidate) interpreter componentRuntime machineImportProfileBundle
       structuralExecutionGate nativeEngine nativeRuntime candidate;
@@ -602,9 +869,17 @@ let
         candidate = {
           static = lib.mapAttrs (_: candidate: projectCandidate candidate)
             workflow.staticCandidates;
+          module-interface = workflow.moduleInterface;
+          object-authority = workflow.moduleObjectAuthority;
+          native-ingress-plan = workflow.moduleNativeIngressPlan;
+          candidate-module-interfaces = workflow.candidateModuleInterfaces;
+          loader-surface-receipts = workflow.loaderSurfaceReceipts;
+          module-deployments = workflow.moduleDeployments;
           tests = lib.mapAttrs (_: test: test.aggregate) candidateTests;
           release-receipts = releaseReceipts;
           release-gates = releaseGates;
+        } // lib.optionalAttrs (workflow ? behavioralC) {
+          behavioral-c = workflow.behavioralC;
         };
       } // lib.optionalAttrs (builtins.attrNames extraArtifacts != [ ]) {
         target = extraArtifacts;
@@ -613,6 +888,11 @@ let
         target-bundle-assets = ownership;
         target-input-identity = targetInputIdentity;
         call-protocols = workflow.calls.check;
+      } // lib.optionalAttrs (workflow ? behavioralCSource) {
+        # Regression checks validate that behavioral C can be emitted.  Exact
+        # runtime qualification and completion remain acceptance authority and
+        # must not turn an incomplete root closure into a regression failure.
+        behavioral-c = workflow.behavioralCSource;
       } // lib.optionalAttrs hasComponents {
         component-resolution = workflow.components.resolution;
         default-component-configuration =
@@ -917,6 +1197,7 @@ let
       bundle // {
         inherit defaultConfiguration candidateTests operator operatorIndex;
         default = {
+          behavioralC = workflow.behavioralC or null;
           componentRuntime = if hasComponents
             then workflow.componentRuntimes.${defaultConfiguration} else null;
           staticCandidate = if hasComponents
@@ -935,7 +1216,11 @@ in
   inherit (context) sources kernels tools;
   profiles = context.sources.profileSource;
 
-  workflow.pe32 = mkPe32Workflow;
+  # Stable consumers enter through workflow.pe32 or workflow.pe32Project.
+  workflow = {
+    pe32 = mkPe32Workflow;
+    pe32Project = mkPe32ProjectWorkflow;
+  };
   analysis = {
     component = analysisComponent;
     authority = authorityWorkflow;
@@ -943,7 +1228,15 @@ in
       ./external-interface-profile.nix analysisCommon;
   };
   candidate = {
+    behavioralC = behavioralCPackage;
     hybrid = hybridCandidate;
+    moduleInterface = pe32ModuleInterface;
+    machineObjectAuthority = pe32MachineObjectAuthority;
+    nativeIngressPlan = nativeIngressPlan;
+    nativeIngressLinkReceipt = nativeIngressLinkReceipt;
+    moduleComposer = pe32ModuleComposition;
+    loaderSurfaceReceipt = pe32LoaderSurfaceReceipt;
+    moduleDeployment = pe32ModuleDeployment;
     runtimeFrontierReport = runtimeFrontierReport;
     testSuite = candidateTestSuite;
   };

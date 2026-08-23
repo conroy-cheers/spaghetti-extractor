@@ -17,6 +17,7 @@ from spaghetti_extractor.authority.external_site_records import (
     CANONICAL_EXTERNAL_SITES_ARTIFACT_KIND_V3,
     CanonicalExternalSiteRecordV3,
     CanonicalExternalSiteV3,
+    CallbackSourceDecisionV3,
     ExternalContractV3,
     external_site_id_v3,
 )
@@ -51,12 +52,17 @@ def _contract() -> ExternalContractV3:
     )
 
 
-def _write_artifact(root: Path, *, complete: bool) -> Path:
+def _write_artifact(
+    root: Path,
+    *,
+    complete: bool,
+    authority_contract: ExternalContractV3 | None = None,
+) -> Path:
     unit_id = "unit-00401000"
     target = {"kind": "import", "dll": "kernel32.dll", "symbol": "ExitProcess"}
     target_sha256 = canonical_sha256_v3(target)
     site_id = external_site_id_v3(unit_id, 0, 0, target)
-    contract = _contract() if complete else None
+    contract = (authority_contract or _contract()) if complete else None
     blocker = None
     if not complete:
         blocker = PrimaryBlockerV3("incomplete", "external_contract_missing")
@@ -111,11 +117,48 @@ class ExternalRuntimeProjectionTests(unittest.TestCase):
         self.assertEqual(site.contract.argument_words, 1)
         self.assertEqual(site.contract.profile_disposition, "terminates")
 
-    def test_rejects_non_authorizing_artifact(self) -> None:
+    def test_omits_non_authorizing_records_from_sparse_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = _write_artifact(Path(directory), complete=False)
-            with self.assertRaisesRegex(ToolkitInputError, "not authorizing"):
-                load_authoritative_external_sites(path)
+            result = load_authoritative_external_sites(path)
+        self.assertEqual(result.sites, ())
+
+    def test_omits_parametric_callback_from_finite_runtime_projection(self) -> None:
+        source = {"op": "input", "name": "argument-0", "width": 32}
+        contract = ExternalContractV3.create(
+            identity={"kind": "import", "dll": "msvcrt.dll", "symbol": "atexit"},
+            transfer_kind="call",
+            disposition="returns",
+            profile_id="msvcrt",
+            profile_sha256=SHA,
+            argument_words=1,
+            arguments=(source,),
+            memory_effect="none",
+            world_effect="callbackRegistration",
+            callback_effect="registers",
+            machine_contract={
+                "abi_template": "pe32-cdecl-v1",
+                "result_register_relations": [],
+                "memory_footprints": [],
+                "out_pointer_relations": [],
+                "out_interface_relations": [],
+            },
+            callbacks=(),
+            callback_source_decision=CallbackSourceDecisionV3.create(
+                kind="parametric_entry_word",
+                argument_index=0,
+                source_expression=source,
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = load_authoritative_external_sites(
+                _write_artifact(
+                    Path(directory),
+                    complete=True,
+                    authority_contract=contract,
+                )
+            )
+        self.assertEqual(result.sites, ())
 
 
 if __name__ == "__main__":

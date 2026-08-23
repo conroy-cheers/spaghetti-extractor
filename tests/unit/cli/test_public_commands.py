@@ -259,11 +259,13 @@ raise SystemExit("unrelated imports: " + repr(loaded) if loaded else 0)
 
         self.assertNotIn("state_machine", actions)
         self.assertNotIn("allow_deferred_potential_transfers", actions)
+        self.assertNotIn("entry_rva", actions)
+        self.assertNotIn("tls_callback_targets", actions)
         for name in (
             "machine_ir",
             "machine_ir_manifest",
             "canonical_external_sites",
-            "entry_rva",
+            "native_ingress_plan",
             "out",
         ):
             self.assertTrue(actions[name].required, name)

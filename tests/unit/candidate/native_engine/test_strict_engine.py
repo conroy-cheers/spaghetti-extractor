@@ -25,7 +25,7 @@ class StrictNativeEngineTests(NativeEngineTestCase):
                 machine_ir=machine_ir,
                 machine_ir_manifest=manifest,
                 canonical_external_sites=sites,
-                entry_rva=0x1000,
+                native_ingress_plan=_native_ingress_plan(0x1000),
                 **authority,
             )
             self.assertEqual(plan.status, "ready", plan.blockers)
@@ -52,7 +52,7 @@ class StrictNativeEngineTests(NativeEngineTestCase):
                     machine_ir=machine_ir,
                     machine_ir_manifest=manifest,
                     canonical_external_sites=sites,
-                    entry_rva=0x1000,
+                    native_ingress_plan=_native_ingress_plan(0x1000),
                     **authority,
                 )
             with self.assertRaisesRegex(ValueError, "complete frontier-free"):
@@ -60,7 +60,7 @@ class StrictNativeEngineTests(NativeEngineTestCase):
                     machine_ir=machine_ir,
                     machine_ir_manifest=manifest,
                     canonical_external_sites=sites,
-                    entry_rva=0x1000,
+                    native_ingress_plan=_write_native_ingress_plan(root, 0x1000),
                     out=root / "package",
                     **authority,
                 )
@@ -79,7 +79,7 @@ class StrictNativeEngineTests(NativeEngineTestCase):
                     machine_ir=machine_ir,
                     machine_ir_manifest=manifest,
                     canonical_external_sites=sites,
-                    entry_rva=0x1000,
+                    native_ingress_plan=_native_ingress_plan(0x1000),
                     **authority,
                 )
 
@@ -93,7 +93,7 @@ class StrictNativeEngineTests(NativeEngineTestCase):
                 machine_ir=machine_ir,
                 machine_ir_manifest=manifest,
                 canonical_external_sites=sites,
-                entry_rva=0x1000,
+                native_ingress_plan=_write_native_ingress_plan(root, 0x1000),
                 out=root / "first",
                 **authority,
             )
@@ -101,7 +101,7 @@ class StrictNativeEngineTests(NativeEngineTestCase):
                 machine_ir=machine_ir,
                 machine_ir_manifest=manifest,
                 canonical_external_sites=sites,
-                entry_rva=0x1000,
+                native_ingress_plan=_write_native_ingress_plan(root, 0x1000),
                 out=root / "second",
                 **authority,
             )

@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 from ..artifacts.formats import (
-    CALLBACK_ADAPTER_RECEIPT_FORMAT as _CALLBACK_ADAPTER_RECEIPT_FORMAT,
     IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT as _IMPLEMENTATION_DISPATCH_RECEIPT_FORMAT,
     NATIVE_ENGINE_PLAN_FORMAT,
 )
@@ -72,6 +71,7 @@ class NativeTerminationImport:
     symbol: str | None
     ordinal: int | None
     iat_va: int
+    slot_id: str
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -79,6 +79,7 @@ class NativeTerminationImport:
             "symbol": self.symbol,
             "ordinal": self.ordinal,
             "iat_va": self.iat_va,
+            "slot_id": self.slot_id,
             "transfer": "tail_jump",
             "argument_source": "cdecl-stack-word-0-from-eax",
             "required_disposition": "terminates",
@@ -260,21 +261,13 @@ class NativeExternalSite:
 
 
 @dataclass(frozen=True)
-class NativeCallbackTarget:
+class NativeCodeTarget:
     id: int
     rva: int
     transfer_id: str
     transfer_sha256: str
     kind: str
     stack_cleanup_bytes: int
-
-    @property
-    def symbol(self) -> str:
-        return f"spx_payload_callback_{self.rva:08x}"
-
-    @property
-    def dispatch_return_symbol(self) -> str:
-        return f"spx_native_callback_dispatch_return_{self.rva:08x}"
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -284,13 +277,15 @@ class NativeCallbackTarget:
             "transfer_sha256": self.transfer_sha256,
             "kind": self.kind,
             "stack_cleanup_bytes": self.stack_cleanup_bytes,
-            "symbol": self.symbol,
-            "dispatch_return_symbol": self.dispatch_return_symbol,
         }
 
 
 @dataclass(frozen=True)
 class NativeImportBinding:
+    slot_id: str
+    image_id: str
+    descriptor_index: int
+    cell_index: int
     dll: str
     symbol: str | None
     ordinal: int | None
@@ -299,6 +294,10 @@ class NativeImportBinding:
 
     def payload(self) -> dict[str, Any]:
         return {
+            "slot_id": self.slot_id,
+            "image_id": self.image_id,
+            "descriptor_index": self.descriptor_index,
+            "cell_index": self.cell_index,
             "dll": self.dll,
             "symbol": self.symbol,
             "ordinal": self.ordinal,
@@ -308,16 +307,12 @@ class NativeImportBinding:
 
 
 @dataclass(frozen=True)
-class NativeCallbackAdapter:
+class NativeCodeCapabilityBinding:
     id: int
     instruction_rva: int
     argument_index: int
     original_rva: int
-    callback_rva: int
-
-    @property
-    def symbol(self) -> str:
-        return f"spx_payload_callback_{self.callback_rva:08x}"
+    code_target_rva: int
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -325,51 +320,32 @@ class NativeCallbackAdapter:
             "instruction_rva": self.instruction_rva,
             "argument_index": self.argument_index,
             "original_rva": self.original_rva,
-            "callback_rva": self.callback_rva,
-            "symbol": self.symbol,
-            "matching": "runtime-image-base-plus-rva",
+            "code_target_rva": self.code_target_rva,
+            "matching": "logical-image-base-plus-rva",
         }
 
 
 @dataclass(frozen=True)
-class NativeCallbackAdapterReceipt:
-    site_id: int
-    transfer_id: str
-    event_index: int
+class NativeCodeCapabilityRegistration:
     instruction_rva: int
+    argument_index: int
+    logical_target_rva: int
+    code_target_rva: int
     checked_external_contract_sha256: str
-    source: Any
-    abi: Any
     lifetime: Any
     invocation: str
-    target_rvas: tuple[int, ...]
-    adapter_entries: tuple[NativeCallbackAdapter, ...]
 
-    def _body(self) -> dict[str, Any]:
+    def payload(self) -> dict[str, Any]:
         return {
-            "site_id": self.site_id,
-            "transfer_id": self.transfer_id,
-            "event_index": self.event_index,
             "instruction_rva": self.instruction_rva,
+            "argument_index": self.argument_index,
+            "logical_target_rva": self.logical_target_rva,
+            "code_target_rva": self.code_target_rva,
+            "lifetime": self.lifetime,
+            "invocation": self.invocation,
             "checked_external_contract_sha256": (
                 self.checked_external_contract_sha256
             ),
-            "source": self.source,
-            "abi": self.abi,
-            "lifetime": self.lifetime,
-            "invocation": self.invocation,
-            "target_rvas": list(self.target_rvas),
-            "adapter_entries": [
-                adapter.payload() for adapter in self.adapter_entries
-            ],
-        }
-
-    def payload(self) -> dict[str, Any]:
-        body = self._body()
-        return {
-            "format": _CALLBACK_ADAPTER_RECEIPT_FORMAT,
-            **body,
-            "receipt_sha256": _canonical_sha256(body),
         }
 
 
@@ -608,15 +584,16 @@ class _PEBaseRelocationEvidence:
 class NativeEnginePlan:
     input_mode: str
     entry_rva: int
+    native_ingress_plan_id: str
     transfer_count: int
     external_sites: tuple[NativeExternalSite, ...]
     import_bindings: tuple[NativeImportBinding, ...]
     indirect_call_count: int
-    callback_targets: tuple[NativeCallbackTarget, ...]
-    callback_adapters: tuple[NativeCallbackAdapter, ...]
-    callback_adapter_receipts: tuple[NativeCallbackAdapterReceipt, ...]
+    code_targets: tuple[NativeCodeTarget, ...]
+    code_capability_bindings: tuple[NativeCodeCapabilityBinding, ...]
+    code_capability_registrations: tuple[NativeCodeCapabilityRegistration, ...]
     implementation_dispatch_receipt: NativeImplementationDispatchReceipt
-    callback_passthroughs: tuple[NativeCallbackPassthrough, ...]
+    code_capability_passthroughs: tuple[NativeCallbackPassthrough, ...]
     x87_operations: tuple[NativeX87Operation, ...]
     termination_import: NativeTerminationImport | None
     recovered_executable_data_ranges: tuple[RecoveredExecutableDataRange, ...]
@@ -628,12 +605,16 @@ class NativeEnginePlan:
         return "ready" if not self.blockers else "incomplete"
 
     def payload(self, *, state_machine_sha256: str) -> dict[str, Any]:
+        capability_registrations = [
+            registration.payload()
+            for registration in self.code_capability_registrations
+        ]
         return {
             "format": NATIVE_ENGINE_PLAN_FORMAT,
             "status": self.status,
             "state_machine_sha256": state_machine_sha256,
             "input_mode": self.input_mode,
-            "entry_rva": self.entry_rva,
+            "native_ingress_plan_id": self.native_ingress_plan_id,
             "counts": {
                 "input_transfers": self.transfer_count,
                 "transfers": self.transfer_count,
@@ -643,33 +624,24 @@ class NativeEnginePlan:
                 "external_sites": len(self.external_sites),
                 "import_bindings": len(self.import_bindings),
                 "indirect_calls": self.indirect_call_count,
-                "callback_targets": len(self.callback_targets),
-                "callback_adapters": len(self.callback_adapters),
-                "callback_adapter_receipts": len(
-                    self.callback_adapter_receipts
+                "code_capability_registrations": len(
+                    capability_registrations
                 ),
                 "implementation_dispatch_entries": len(
                     self.implementation_dispatch_receipt.entries
                 ),
-                "callback_passthroughs": len(self.callback_passthroughs),
+                "code_capability_passthroughs": len(self.code_capability_passthroughs),
                 "x87_operations": len(self.x87_operations),
                 "blockers": len(self.blockers),
             },
             "external_sites": [site.payload() for site in self.external_sites],
             "import_bindings": [binding.payload() for binding in self.import_bindings],
-            "callback_targets": [target.rva for target in self.callback_targets],
-            "callback_abis": [target.payload() for target in self.callback_targets],
-            "callback_adapters": [
-                adapter.payload() for adapter in self.callback_adapters
-            ],
-            "callback_adapter_receipts": [
-                receipt.payload() for receipt in self.callback_adapter_receipts
-            ],
+            "code_capability_registrations": capability_registrations,
             "implementation_dispatch_receipt": (
                 self.implementation_dispatch_receipt.payload()
             ),
-            "callback_passthroughs": [
-                passthrough.payload() for passthrough in self.callback_passthroughs
+            "code_capability_passthroughs": [
+                passthrough.payload() for passthrough in self.code_capability_passthroughs
             ],
             "x87_mode": "sanitized_typed_native_v1",
             "x87_operations": [operation.payload() for operation in self.x87_operations],
@@ -700,15 +672,6 @@ class NativeEnginePlan:
                 if self.fixed_image_base is not None
                 else {"kind": "relocatable"}
             ),
-            "launch_wrapper_symbols": {
-                "entry_dispatch_return": "spx_native_entry_dispatch_return",
-                "entry_return": "spx_native_entry_return",
-                "termination": "spx_native_termination",
-                "callback_dispatch_returns": [
-                    target.dispatch_return_symbol
-                    for target in self.callback_targets
-                ],
-            },
             "relocation_policy": {
                 "original_evidence": "complete-hash-bound-pe32-inventory-when-required",
                 "payload_evidence": "complete-pe32-highlow-inventory-required",

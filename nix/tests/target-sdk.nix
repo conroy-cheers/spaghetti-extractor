@@ -275,8 +275,13 @@ let
   };
 in
 assert sdk.format == "spaghetti-extractor-target-sdk-v3";
+assert builtins.isFunction sdk.workflow.pe32Project;
 assert pe32WorkflowArguments ? componentInductionRoot;
 assert pe32WorkflowArguments ? componentRelationRoot;
+assert pe32WorkflowArguments ? behavioralCLayoutIntent;
+assert pe32WorkflowArguments ? behavioralCRuntimeQualification;
+assert pe32WorkflowArguments ? behavioralCExactRuntime;
+assert pe32WorkflowArguments ? nativeProcessTermination;
 assert registry.minimal-sdk-consumer.metadata.id == "minimal-sdk-consumer";
 assert registry.minimal-sdk-consumer.defaultConfiguration == "default";
 assert registry.minimal-sdk-consumer.artifacts.input.baseline == artifact;

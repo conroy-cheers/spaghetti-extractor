@@ -46,6 +46,7 @@ from tests.unit.candidate.native_engine._support import (
     _empty_callback_authority,
     _implementation_manifest,
     _machine_ir_x87_transfer,
+    _write_native_ingress_plan,
 )
 
 
@@ -317,9 +318,15 @@ def _packages(
     write_spx_native_engine_package(
         machine_ir=semantic_input,
         machine_ir_manifest=manifest,
-        entry_rva=0x1000,
+        native_ingress_plan=_write_native_ingress_plan(
+            root,
+            0x1000,
+            tls_callbacks=tuple(
+                int(row["rva"]) for row in (callback_targets or [])
+                if row.get("kind") == "tls_callback"
+            ),
+        ),
         preferred_image_base=0x400000,
-        tls_callback_targets=callback_targets or [],
         import_iat_vas=(
             import_iat_vas
             if import_iat_vas is not None

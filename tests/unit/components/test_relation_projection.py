@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 from spaghetti_extractor.components.interface_ir import LogicalTypeV1
 from spaghetti_extractor.components.machine_binding import MachineProjectionV1
@@ -13,9 +14,65 @@ from spaghetti_extractor.components.relation_projection import (
     _projection_sort,
     _realize_projection,
 )
+from spaghetti_extractor.components.relation_proposal import _authority_template
 
 
 class RelationProjectionTests(unittest.TestCase):
+    def test_explicit_authority_selector_disambiguates_equal_typed_arguments(self) -> None:
+        def view(authority_id: str, register: str) -> MachineProjectionV1:
+            return MachineProjectionV1.parse({
+                "kind": "view",
+                "base": {
+                    "kind": "register", "register": register,
+                    "width": 32, "at": "entry",
+                },
+                "extent": {"kind": "constant", "value": 8, "width": 32},
+                "requested_extent": {
+                    "kind": "constant", "value": 8, "width": 32,
+                },
+                "authority": {
+                    "id": authority_id, "kind": "external",
+                    "lifetime": "invocation",
+                },
+                "at": "entry",
+            })
+
+        left = view("left_region", "eax")
+        right = view("right_region", "ebx")
+        bound = SimpleNamespace(
+            parameters=(
+                SimpleNamespace(identity="left", projection=left),
+                SimpleNamespace(identity="right", projection=right),
+            ),
+            results=(),
+            state=(),
+        )
+        operation = SimpleNamespace(
+            parameters=(
+                SimpleNamespace(identity="left", type_id="byte_span"),
+                SimpleNamespace(identity="right", type_id="byte_span"),
+            ),
+            results=(),
+        )
+        interface = SimpleNamespace(state=())
+
+        self.assertIsNone(_authority_template(
+            bound=bound,
+            operation=operation,
+            interface=interface,
+            type_id="byte_span",
+        ))
+        self.assertEqual(
+            _authority_template(
+                bound=bound,
+                operation=operation,
+                interface=interface,
+                type_id="byte_span",
+                authority_selector="right_region",
+            ),
+            right,
+        )
+
     def test_control_condition_is_a_boolean_machine_flag(self) -> None:
         projection = MachineProjectionV1.parse(
             {"kind": "control_condition", "at": "exit"}

@@ -56,7 +56,9 @@
               "type_id": "previous_exception_filter"
             }
           ],
-          "effect_ids": [],
+          "effect_ids": [
+            "filter_replaced"
+          ],
           "allowed_service_ids": [
             "set_unhandled_exception_filter"
           ],

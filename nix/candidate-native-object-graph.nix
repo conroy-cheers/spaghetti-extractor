@@ -10,7 +10,7 @@
   compiler,
   namePrefix,
   regionOverridePackage ? null,
-  entrySymbol ? "spx_payload_entry",
+  entrySymbol,
 }:
 
 let

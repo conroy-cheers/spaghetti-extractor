@@ -35,6 +35,9 @@ let
     mkdir -p "$out/runtime"
     cp "$installed/DXBall.exe" "$out/DXBall.exe"
     cp -a "$installed/." "$out/runtime/"
+    # The installer log contains its wall-clock start time and is not consumed
+    # by the game.  Exclude it from this content-addressed runtime fixture.
+    rm -f "$out/runtime/INSTALL.LOG"
   '';
   interfaceProfile = sdk.analysis.externalInterfaceProfile {
     spec = "${sdk.profiles}/pe32-mingw-directx-interface-extraction-v1.json";

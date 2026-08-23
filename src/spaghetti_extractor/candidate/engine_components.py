@@ -1,4 +1,4 @@
-"""Portable dispatch, callback, and interface synthesis for engine plans."""
+"""Portable dispatch, code-capability, and interface synthesis for engine plans."""
 
 from __future__ import annotations
 
@@ -13,9 +13,9 @@ from .engine_analysis import (
     _portable_component_selections,
 )
 from .engine_model import (
-    NativeCallbackAdapter,
-    NativeCallbackAdapterReceipt,
-    NativeCallbackTarget,
+    NativeCodeCapabilityBinding,
+    NativeCodeCapabilityRegistration,
+    NativeCodeTarget,
     NativeExternalSite,
     NativeImplementationDispatchReceipt,
     NativeImplementationEntry,
@@ -352,50 +352,50 @@ def _build_implementation_dispatch_receipt(
     return receipt, blockers_tuple
 
 
-def _build_callback_adapter_receipts(
+def _build_code_capability_registrations(
     *,
     sites: tuple[NativeExternalSite, ...],
-    adapters: tuple[NativeCallbackAdapter, ...],
-    targets: tuple[NativeCallbackTarget, ...],
+    bindings: tuple[NativeCodeCapabilityBinding, ...],
+    targets: tuple[NativeCodeTarget, ...],
 ) -> tuple[
-    tuple[NativeCallbackAdapterReceipt, ...],
+    tuple[NativeCodeCapabilityRegistration, ...],
     tuple[dict[str, Any], ...],
 ]:
-    """Bind generated adapter entries to their normalized callback contracts."""
+    """Bind code-capability publication to normalized checked contracts."""
 
-    adapters_by_site: dict[
-        tuple[int, int], list[NativeCallbackAdapter]
+    bindings_by_site: dict[
+        tuple[int, int], list[NativeCodeCapabilityBinding]
     ] = {}
     duplicate_entries: set[tuple[int, int, int, int]] = set()
     seen_entries: set[tuple[int, int, int, int]] = set()
-    for adapter in adapters:
+    for binding in bindings:
         key = (
-            adapter.instruction_rva,
-            adapter.argument_index,
-            adapter.original_rva,
-            adapter.callback_rva,
+            binding.instruction_rva,
+            binding.argument_index,
+            binding.original_rva,
+            binding.code_target_rva,
         )
         if key in seen_entries:
             duplicate_entries.add(key)
         seen_entries.add(key)
-        adapters_by_site.setdefault(
-            (adapter.instruction_rva, adapter.argument_index), []
-        ).append(adapter)
+        bindings_by_site.setdefault(
+            (binding.instruction_rva, binding.argument_index), []
+        ).append(binding)
 
     blockers: list[dict[str, Any]] = []
     if duplicate_entries:
         blockers.append(_blocker(
-            "callback_adapter_receipt_duplicate",
+            "code_capability_registration_duplicate",
             observed=[list(value) for value in sorted(duplicate_entries)],
             next_action=(
-                "emit exactly one native callback adapter entry for each checked "
-                "registration-site target"
+                "emit exactly one code-capability binding for each checked "
+                "publication-site target"
             ),
         ))
 
     target_by_rva = {target.rva: target for target in targets}
-    consumed_adapter_ids: set[int] = set()
-    receipts: list[NativeCallbackAdapterReceipt] = []
+    consumed_binding_ids: set[int] = set()
+    registrations: list[NativeCodeCapabilityRegistration] = []
     for site in sorted(
         sites, key=lambda item: (item.instruction_rva, item.event_index)
     ):
@@ -405,7 +405,7 @@ def _build_callback_adapter_receipts(
         checked_adapter = contract.callback_adapter
         if checked_adapter is None:
             blockers.append(_blocker(
-                "callback_adapter_receipt_incomplete",
+                "code_capability_registration_incomplete",
                 transfer_id=site.transfer_id,
                 event_index=site.event_index,
                 instruction_rva=site.instruction_rva,
@@ -420,15 +420,15 @@ def _build_callback_adapter_receipts(
             source = parse_callback_source(
                 {"callback_source": checked_adapter.source},
                 argument_words=contract.argument_words,
-                context=f"{site.transfer_id} callback receipt",
+                context=f"{site.transfer_id} code capability",
             )
             abi = parse_callback_abi(
                 {"callback_abi": checked_adapter.abi},
-                context=f"{site.transfer_id} callback receipt",
+                context=f"{site.transfer_id} code capability",
             )
         except ToolkitInputError as exc:
             blockers.append(_blocker(
-                "callback_adapter_receipt_incomplete",
+                "code_capability_registration_incomplete",
                 transfer_id=site.transfer_id,
                 event_index=site.event_index,
                 instruction_rva=site.instruction_rva,
@@ -441,11 +441,11 @@ def _build_callback_adapter_receipts(
 
         site_key = (site.instruction_rva, source.argument_index)
         actual_entries = tuple(sorted(
-            adapters_by_site.get(site_key, []),
-            key=lambda item: (item.callback_rva, item.original_rva, item.id),
+            bindings_by_site.get(site_key, []),
+            key=lambda item: (item.code_target_rva, item.original_rva, item.id),
         ))
         expected_rvas = checked_adapter.target_rvas
-        actual_rvas = tuple(entry.callback_rva for entry in actual_entries)
+        actual_rvas = tuple(entry.code_target_rva for entry in actual_entries)
         source_matches = (
             site.callback_source_kind == source.kind
             and site.callback_argument_index == source.argument_index
@@ -466,15 +466,13 @@ def _build_callback_adapter_receipts(
             and len({entry.id for entry in actual_entries})
             == len(actual_entries)
             and all(
-                entry.original_rva == entry.callback_rva
-                and entry.symbol
-                == f"spx_payload_callback_{entry.callback_rva:08x}"
+                entry.original_rva == entry.code_target_rva
                 for entry in actual_entries
             )
         )
         if not source_matches or not target_abis_match or not entries_match:
             blockers.append(_blocker(
-                "callback_adapter_receipt_mismatch",
+                "code_capability_registration_mismatch",
                 transfer_id=site.transfer_id,
                 event_index=site.event_index,
                 instruction_rva=site.instruction_rva,
@@ -487,48 +485,47 @@ def _build_callback_adapter_receipts(
                     "site_callback_registration": (
                         site.payload().get("callback_registration")
                     ),
-                    "adapter_entries": [
+                    "capability_bindings": [
                         entry.payload() for entry in actual_entries
                     ],
                 },
                 next_action=(
-                    "regenerate the callback adapters from the exact normalized "
+                    "regenerate code-capability bindings from the exact normalized "
                     "finite target set"
                 ),
             ))
             continue
-        consumed_adapter_ids.update(entry.id for entry in actual_entries)
-        receipts.append(NativeCallbackAdapterReceipt(
-            site_id=site.id,
-            transfer_id=site.transfer_id,
-            event_index=site.event_index,
-            instruction_rva=site.instruction_rva,
-            checked_external_contract_sha256=_canonical_sha256(
-                contract.payload()
-            ),
-            source=checked_adapter.source,
-            abi=checked_adapter.abi,
-            lifetime=checked_adapter.lifetime,
-            invocation=checked_adapter.invocation,
-            target_rvas=expected_rvas,
-            adapter_entries=actual_entries,
-        ))
+        consumed_binding_ids.update(entry.id for entry in actual_entries)
+        registrations.extend(
+            NativeCodeCapabilityRegistration(
+                instruction_rva=site.instruction_rva,
+                argument_index=entry.argument_index,
+                logical_target_rva=entry.original_rva,
+                code_target_rva=entry.code_target_rva,
+                checked_external_contract_sha256=_canonical_sha256(
+                    contract.payload()
+                ),
+                lifetime=checked_adapter.lifetime,
+                invocation=checked_adapter.invocation,
+            )
+            for entry in actual_entries
+        )
 
     unreceipted = [
-        adapter.payload()
-        for adapter in adapters
-        if adapter.id not in consumed_adapter_ids
+        binding.payload()
+        for binding in bindings
+        if binding.id not in consumed_binding_ids
     ]
     if unreceipted:
         blockers.append(_blocker(
-            "callback_adapter_receipt_missing",
+            "code_capability_registration_missing",
             observed=unreceipted,
             next_action=(
-                "bind every generated callback adapter to one explicit checked "
-                "external-site callback contract"
+                "bind every generated code capability to one explicit checked "
+                "external-site capability contract"
             ),
         ))
-    return tuple(receipts), tuple(blockers)
+    return tuple(registrations), tuple(blockers)
 
 
 def _previous_callback_storage_writes(

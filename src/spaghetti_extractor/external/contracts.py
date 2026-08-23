@@ -612,7 +612,15 @@ def checked_external_site_contract_from_authority(
     argument_base = 0 if transfer_kind == "call" else 4
     callback_effect = "none"
     callback_adapter = None
-    if authority_callback_effect == "registers":
+    callback_source_kind = (
+        callback_source_decision.get("kind")
+        if isinstance(callback_source_decision, Mapping)
+        else None
+    )
+    if (
+        authority_callback_effect == "registers"
+        and callback_source_kind == "callback_target"
+    ):
         callback_effect = "explicit"
         protocol = callback_protocol_from_machine_contract(
             machine, context=f"{context} callback protocol"

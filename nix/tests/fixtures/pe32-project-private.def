@@ -1,0 +1,13 @@
+LIBRARY private.dll
+EXPORTS
+  Ping @3
+  AliasPing=Ping @4
+  SharedValue @6 DATA
+  SharedAlias=SharedValue @7 DATA
+  InteriorValue @8 DATA
+  ConstValue @9 DATA
+  ForwardSleep=KERNEL32.Sleep @10
+  OrdinalOnly @11 NONAME
+  SharedAtomic @12 DATA
+  LifecycleCount @13 DATA
+  LifecycleEvents @14 DATA

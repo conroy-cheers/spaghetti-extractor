@@ -14,6 +14,7 @@ from tests.unit.candidate.native_engine._support import (
     _canonical_callback_authority,
     _candidate_execution_artifacts,
     _canonical_external_sites,
+    _write_native_ingress_plan,
 )
 from tests.unit.candidate.native_runtime._support import (
     _CONTRACT_SHA256,
@@ -244,7 +245,9 @@ def _callback_adapter_packages(root: Path) -> tuple[Path, Path, Path]:
     write_spx_native_engine_package(
         machine_ir=machine_ir,
         machine_ir_manifest=manifest,
-        entry_rva=0x1000,
+        native_ingress_plan=_write_native_ingress_plan(
+            root, 0x1000, callbacks=((0x3000, 16),)
+        ),
         fixed_image_base=0x400000,
         preferred_image_base=0x400000,
         import_iat_vas={("user32.dll", "RegisterClassA"): 0x432000},
@@ -272,8 +275,8 @@ def _rewrite_callback_engine_plan(
     manifest_path = engine / "native-engine-package.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["plan"]["sha256"] = sha256_file(plan_path)
-    manifest["callback_adapter_receipts"] = plan[
-        "callback_adapter_receipts"
+    manifest["code_capability_registrations"] = plan[
+        "code_capability_registrations"
     ]
     manifest_path.write_text(
         json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",

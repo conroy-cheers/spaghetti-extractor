@@ -399,7 +399,7 @@ class FallbackCoverageTests(unittest.TestCase):
         )
         native_start = module.index('nativeEngine = pkgs.runCommand')
         native_end = module.index('nativeRuntime = pkgs.runCommand', native_start)
-        candidate_start = module.index('candidate = pkgs.runCommand')
+        candidate_start = module.index('baseCandidate = pkgs.runCommand')
         self.assertIn(
             authorization_reference, module[native_start:native_end]
         )

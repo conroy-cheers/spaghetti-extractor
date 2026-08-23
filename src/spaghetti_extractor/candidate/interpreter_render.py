@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .c_backend import _runtime_header, _runtime_helpers
+from .c_backend import _runtime_helpers
 from .interpreter_model import (
     CandidateInterpreterError,
     _Action,
@@ -10,58 +10,11 @@ from .interpreter_model import (
     _Transfer,
 )
 from .interpreter_values import _c_string
+from .runtime_abi import exact_runtime_header
 
 
 def _interpreter_runtime_header() -> str:
-    header = _runtime_header()
-    replay_record = """#define SPX_MACHINE_STATE_HAS_X87 1
-
-typedef struct spx_typed_x87_operation {
-  uint32_t image_base, rva_start, rva_end, source_size;
-  const char *operation_identity;
-  const char *contract_sha256;
-  const char *checked_decoder;
-  const char *checked_executor;
-  const char *mnemonic;
-  uint32_t operand_kind, operand_width;
-  uint32_t stack_register_count, stack_register_0, stack_register_1;
-  uint32_t base_register, index_register, scale;
-  int32_t displacement;
-  uint32_t image_rva, has_image_rva;
-} spx_typed_x87_operation;
-
-"""
-    replay_handler = """typedef spx_call_status (*spx_typed_x87_handler)(
-    spx_runtime *runtime,
-    const spx_typed_x87_operation *program,
-    const spx_machine_state *input,
-    spx_machine_state *output);
-
-"""
-    replacements = (
-        (
-            "typedef struct spx_runtime spx_runtime;\n",
-            replay_record + "typedef struct spx_runtime spx_runtime;\n",
-        ),
-        (
-            "typedef uint32_t (*spx_code_target_resolver)(\n",
-            replay_handler + "typedef uint32_t (*spx_code_target_resolver)(\n",
-        ),
-        (
-            "  spx_code_target_resolver resolve_code_target;\n",
-            "  spx_code_target_resolver resolve_code_target;\n"
-            "  spx_typed_x87_handler execute_typed_x87_operation;\n",
-        ),
-    )
-    for old, new in replacements:
-        if old not in header:
-            raise CandidateInterpreterError(
-                "shared runtime header changed before x87 replay ABI injection",
-                code="interpreter_runtime_abi_drift",
-                next_action="reconcile the interpreter replay ABI with spx_c_backend",
-            )
-        header = header.replace(old, new, 1)
-    return header
+    return exact_runtime_header()
 
 
 def _interpreter_header() -> str:

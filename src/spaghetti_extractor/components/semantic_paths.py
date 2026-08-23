@@ -2200,17 +2200,24 @@ def _atomic_action_models(
 ) -> list[dict[str, object]]:
     """Project exact authoritative RMW actions into the logical world model."""
 
+    service_effect_ids = {
+        effect_id
+        for service in interface.services
+        if service.identity in set(getattr(logical, "allowed_service_ids"))
+        for effect_id in service.effect_ids
+    }
+    direct_effect_ids = set(getattr(logical, "effect_ids")) - service_effect_ids
     logical_effects = {
         row.identity: row
         for row in interface.effects
-        if row.identity in set(getattr(logical, "effect_ids"))
+        if row.identity in direct_effect_ids
     }
     bound_effects = _rows(operation.get("effects", []), "operation effects")
     if not logical_effects and not bound_effects:
         if any(item.kind == "atomic_object" for item in parameter_projections.values()):
             raise SemanticPathError("atomic-object parameter has no direct atomic effect")
         return []
-    if set(logical_effects) != set(getattr(logical, "effect_ids")):
+    if set(logical_effects) != direct_effect_ids:
         raise SemanticPathError("operation effect inventory is stale")
     by_effect: dict[str, list[Mapping[str, object]]] = {
         effect_id: [] for effect_id in logical_effects

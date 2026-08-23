@@ -29,6 +29,7 @@ from spaghetti_extractor.authority.external_site_records import (
     CanonicalExternalSiteRecordV3,
     CanonicalExternalSiteV3,
     CallbackRequirementV3,
+    CallbackSourceDecisionV3,
     ExternalContractV3,
     external_site_id_v3,
 )
@@ -73,7 +74,110 @@ from spaghetti_extractor.candidate.engine import (
     plan_spx_native_engine,
     write_spx_native_engine_package,
 )
-from spaghetti_extractor.util import sha256_bytes
+from spaghetti_extractor.util import sha256_bytes, write_json
+from spaghetti_extractor.calls.frame import PhysicalCallFrameV2
+from spaghetti_extractor.candidate.native_ingress_runtime import exact_tls_regions
+
+
+def _native_ingress_plan(
+    entry_rva: int,
+    *,
+    tls_callbacks: tuple[int, ...] = (),
+    callbacks: tuple[tuple[int, int], ...] = (),
+) -> dict[str, object]:
+    specifications = [("process_entry", entry_rva, 0, None)]
+    specifications.extend(
+        ("tls_callback", rva, 12, None) for rva in tls_callbacks
+    )
+    specifications.extend(
+        ("callback", rva, cleanup, f"fixture-capability-{rva:08x}")
+        for rva, cleanup in callbacks
+    )
+    ingresses = []
+    bridges = []
+    for index, (role, rva, cleanup, capability) in enumerate(specifications):
+        transport = PhysicalCallFrameV2.create(
+            subject={
+                "kind": "callback" if role == "callback" else "function",
+                "id": f"fixture-ingress-{rva:08x}",
+                "image_selector": "fixture",
+            },
+            transfer_kind="callback" if role == "callback" else "direct",
+            target="i686-pc-windows-gnu",
+            abi_dialect="pe32-i386-gnu-v1",
+            calling_convention="stdcall" if cleanup else "cdecl",
+            arguments=[],
+            results=[],
+            stack={
+                "coordinate": "callee-entry-esp",
+                "alignment_bytes": 4,
+                "cleanup": "callee" if cleanup else "caller",
+                "cleanup_bytes": cleanup,
+                "reserved_bytes": 0,
+            },
+            preserved_state=["ebx", "ebp", "esi", "edi"],
+            clobbered_state=["eax", "ecx", "edx", "eflags"],
+            outcomes=["normal"],
+        )
+        symbol = f"spx_ingress_{index:04d}"
+        ingresses.append({
+            "role": role,
+            "target_rva": rva,
+            "target_unit_id": f"unit:{rva:08x}",
+            "bridge_symbol": symbol,
+            "physical_frame_id": transport.frame_id,
+            "physical_frame": {"transport": transport.to_payload()},
+            "outcome_protocol_id": "fixture-normal-outcome",
+            "capability_id": capability,
+            "lifecycle_receipt": {"status": "complete"},
+        })
+        bridges.append({"symbol": symbol})
+    core: dict[str, object] = {
+        "format": "spaghetti-extractor-native-ingress-plan-v1",
+        "status": "complete",
+        "ingresses": ingresses,
+        "bridges": bridges,
+        "outcome_protocols": [{
+            "id": "fixture-normal-outcome", "outcomes": ["normal"]
+        }],
+        "seh_protocols": [],
+        "tls_layout": {
+            "runtime_offset": 0,
+            "runtime_control_bytes": 0x80000,
+            "private_stack_bytes": 0x100000,
+            "runtime_regions": exact_tls_regions(
+                control_bytes=0x80000, stack_bytes=0x100000
+            ),
+        },
+        "runtime_requirements": {"features": [
+            "code_capability_registry_v1",
+            "host_thread_concurrency_v1",
+            "loader_lock_safe_bootstrap_v1",
+            "outgoing_bridge_pe_tls_state_v1",
+            "per_thread_ingress_frame_chain_v1",
+            "same_thread_reentrancy_v1",
+            "tls_private_engine_stack_v1",
+            "transactional_boundary_writeback_v1",
+        ]},
+    }
+    return {**core, "plan_sha256": canonical_sha256_v3(core)}
+
+
+def _write_native_ingress_plan(
+    root: Path,
+    entry_rva: int,
+    *,
+    tls_callbacks: tuple[int, ...] = (),
+    callbacks: tuple[tuple[int, int], ...] = (),
+) -> Path:
+    path = root / "native-ingress-plan.json"
+    write_json(
+        path,
+        _native_ingress_plan(
+            entry_rva, tls_callbacks=tls_callbacks, callbacks=callbacks
+        ),
+    )
+    return path
 
 
 def _transfer(*, event: dict | None = None) -> dict:
@@ -323,6 +427,15 @@ def _canonical_external_sites(
         ),
         machine_contract=machine_contract,
         callbacks=callbacks,
+        callback_source_decision=(
+            None
+            if not callbacks or protocol is None or protocol.source is None
+            else CallbackSourceDecisionV3.create(
+                kind="callback_target",
+                argument_index=protocol.source.argument,
+                source_expression=contract.arguments[protocol.source.argument],
+            )
+        ),
     )
     site = CanonicalExternalSiteV3(
         site_id=site_id,

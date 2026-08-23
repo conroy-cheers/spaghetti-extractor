@@ -141,6 +141,14 @@ def prove_binding_lens(clause: RelationClauseV1) -> LensProofV1:
         return LensProofV1("checked", "x87_value_round_trip_proved_by_kernel")
     if _normalized_extension_lens(clause):
         return LensProofV1("checked", "normalized_extension_round_trip_proved_by_kernel")
+    if _normalized_control_condition_lens(clause):
+        return LensProofV1(
+            "checked", "normalized_control_condition_round_trip_proved_by_kernel"
+        )
+    if _finite_control_target_lens(clause):
+        return LensProofV1(
+            "checked", "finite_control_target_round_trip_proved_by_kernel"
+        )
     if clause.observe.sort.kind not in {"bool", "bitvector"}:
         if _structured_origin_lens(clause):
             return LensProofV1(
@@ -226,6 +234,109 @@ def _normalized_extension_lens(clause: RelationClauseV1) -> bool:
         and LogicalPathV1.parse(logical.attributes["path"]).key == clause.logical_path.key
         and observed.sort == logical.sort
         and realized.sort.width == source.sort.width
+    )
+
+
+def _logical_for_clause(
+    expression: RelationExpressionV1, clause: RelationClauseV1
+) -> bool:
+    return (
+        clause.logical_path is not None
+        and expression.op == "logical"
+        and LogicalPathV1.parse(expression.attributes["path"]).key
+        == clause.logical_path.key
+    )
+
+
+def _normalized_control_condition_lens(clause: RelationClauseV1) -> bool:
+    """Recognize the checked C truth-value quotient of one machine flag.
+
+    The portable result domain is normalized to 0 or 1 by the generated
+    component adapter.  Realization maps zero to false and every admitted
+    nonzero value to true; observation maps the machine flag back to 0 or 1.
+    """
+
+    if clause.observe is None or len(clause.realize) != 1:
+        return False
+    observed = clause.observe
+    write = clause.realize[0]
+    if observed.op != "ite" or len(observed.arguments) != 3:
+        return False
+    condition, when_true, when_false = observed.arguments
+    if (
+        condition.op != "machine"
+        or condition.sort.kind != "bool"
+        or when_true.op != "const"
+        or when_true.attributes.get("value") != 1
+        or when_false.op != "const"
+        or when_false.attributes.get("value") != 0
+        or write.value.op != "not"
+        or len(write.value.arguments) != 1
+    ):
+        return False
+    equality = write.value.arguments[0]
+    if equality.op != "eq" or len(equality.arguments) != 2:
+        return False
+    logical, zero = equality.arguments
+    places = condition.machine_places()
+    return (
+        len(places) == 1
+        and _same_boundary_place(places[0], write.place)
+        and _logical_for_clause(logical, clause)
+        and zero.op == "const"
+        and zero.attributes.get("value") == 0
+    )
+
+
+def _finite_map_shape(
+    expression: RelationExpressionV1,
+) -> tuple[RelationExpressionV1, tuple[tuple[int, int], ...], int] | None:
+    selector: RelationExpressionV1 | None = None
+    cases: list[tuple[int, int]] = []
+    current = expression
+    while current.op == "ite" and len(current.arguments) == 3:
+        condition, value, current = current.arguments
+        if condition.op != "eq" or len(condition.arguments) != 2:
+            return None
+        candidate, match = condition.arguments
+        if match.op != "const" or value.op != "const":
+            return None
+        if selector is None:
+            selector = candidate
+        elif selector.to_payload() != candidate.to_payload():
+            return None
+        cases.append((int(match.attributes["value"]), int(value.attributes["value"])))
+    if selector is None or current.op != "const":
+        return None
+    return selector, tuple(cases), int(current.attributes["value"])
+
+
+def _finite_control_target_lens(clause: RelationClauseV1) -> bool:
+    """Recognize inverse finite maps over admitted route/target domains."""
+
+    if clause.observe is None or len(clause.realize) != 1:
+        return False
+    observed = _finite_map_shape(clause.observe)
+    realized = _finite_map_shape(clause.realize[0].value)
+    if observed is None or realized is None:
+        return False
+    machine, decoded_cases, decoded_default = observed
+    logical, encoded_cases, encoded_default = realized
+    machine_places = machine.machine_places()
+    if (
+        len(machine_places) != 1
+        or not _same_boundary_place(machine_places[0], clause.realize[0].place)
+        or not _logical_for_clause(logical, clause)
+    ):
+        return False
+    decoded = {(target, route) for target, route in decoded_cases}
+    encoded = {(target, route) for route, target in encoded_cases}
+    return (
+        len(decoded) == len(decoded_cases)
+        and len(encoded) == len(encoded_cases)
+        and decoded == encoded
+        and decoded_default not in {route for _, route in decoded}
+        and encoded_default not in {target for target, _ in decoded}
     )
 
 
